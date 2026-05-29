@@ -2,6 +2,10 @@ node_modules/
 dist/
 .turbo/
 coverage/
+# Playwright
+test-results/
+playwright-report/
+.playwright/
 *.log
 .env
 .env.*

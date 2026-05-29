@@ -1,5 +1,12 @@
 # Backend Services & API
 
+> **Decisions locked (see `09-open-questions.md`):** backend framework =
+> **Fastify**; ORM = **Drizzle** (`drizzle-kit` migrations); build tool =
+> **Turborepo**; auth = **email + password** with verification (pluggable
+> mailer), tokens = **access JWT in memory + refresh in httpOnly cookie**.
+> Where the tables below say "recommended/proposed", treat the locked choice as
+> final.
+
 > Architecture context in `01-architecture.md`; domain types in
 > `02-domain-model.md`; engine in `03-calculation-engine.md`.
 

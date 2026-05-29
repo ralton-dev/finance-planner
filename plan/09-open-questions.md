@@ -1,74 +1,57 @@
-# Open Questions & Assumptions
+# Decisions (formerly Open Questions)
 
-Items to resolve in further discovery. Each has a **working assumption** the
-plans currently use, so work can proceed without blocking.
+**Status: all resolved.** Every question below has a locked decision so the
+project can be built end-to-end without further input. These decisions are
+**authoritative** and supersede any "recommended/proposed" wording elsewhere in
+the plans.
 
-## Resolved in discovery (recorded for traceability)
+## Decision log
 
-| Question                   | Decision                                |
-| -------------------------- | --------------------------------------- |
-| Auth / user model          | Multi-user + shared households.         |
-| Service granularity        | A few coarse services sharing Postgres. |
-| Income shortfall behaviour | Prioritise + show shortfall.            |
-| Infrastructure target      | Cloud-agnostic manifests + local dev.   |
+| #   | Topic                        | Decision                                                                                                                                                                                                                     |
+| --- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| —   | Auth / user model            | Multi-user + shared households.                                                                                                                                                                                              |
+| —   | Service granularity          | A few coarse services sharing one Postgres (per-schema isolation).                                                                                                                                                           |
+| —   | Income-shortfall behaviour   | Prioritise + show shortfall.                                                                                                                                                                                                 |
+| —   | Infrastructure target        | Cloud-agnostic manifests + local dev (kind).                                                                                                                                                                                 |
+| —   | Frontend framework           | React 19 + Vite SPA + component library (shadcn/ui default).                                                                                                                                                                 |
+| 1   | Multi-currency               | **Single currency per account.** Overview groups by currency; **no FX conversion**.                                                                                                                                          |
+| 2   | "Already saved" tracking     | **Manual `alreadySavedMinor` field in v1.** Auto-accumulating contribution ledger is Phase 7.                                                                                                                                |
+| 3   | Account balance semantics    | **Informational only** in v1 (no month-over-month carry).                                                                                                                                                                    |
+| 4   | Bills vs. savings goals      | Both consume monthly income; **UI separates "bills" (monthly_recurring) from dated savings goals**.                                                                                                                          |
+| 5   | Savings buffer               | **Include** an optional per-account `monthlyBufferMinor`, reserved off the top before funding. Default 0. Implemented in Phase 1 engine work.                                                                                |
+| 6   | Notifications                | **Deferred to Phase 7** (not built in the core run).                                                                                                                                                                         |
+| 7   | Income variability           | **Fixed amount per frequency** in v1.                                                                                                                                                                                        |
+| 8   | Backend framework            | **Fastify** (already scaffolded; matches the coarse-service shape; minimal overhead).                                                                                                                                        |
+| 9   | ORM / DB toolkit             | **Drizzle ORM** + `drizzle-kit` migrations.                                                                                                                                                                                  |
+| 10  | Monorepo build tool          | **Turborepo** (already in place).                                                                                                                                                                                            |
+| 11  | Auth method in v1            | **Email + password** with email-verification token flow. Mail sent via a pluggable mailer interface (log transport in dev; SMTP wired later). **OIDC deferred to Phase 7.**                                                  |
+| 12  | Client token storage         | **Access token in memory + refresh token in httpOnly, SameSite=strict cookie.**                                                                                                                                              |
+| 13  | Persist computed plans       | **Cache in Redis + snapshot to `calc` schema on write** (history/audit).                                                                                                                                                     |
+| 14  | Physical DB split            | **Single Postgres, per-schema isolation**, splittable later (cross-schema refs kept logical).                                                                                                                                |
+| 15  | First real deploy target     | **kind locally is the verified target.** Staging/prod manifests stay provider-neutral and are **credential-gated** — CI builds & publishes images but does **not** auto-deploy to a real cluster without configured secrets. |
+| 16  | Managed vs. in-cluster infra | **In-cluster Postgres/Redis for non-prod**; prod overlay expects **managed** instances injected via external secrets.                                                                                                        |
+| 17  | Image registry               | **GHCR**: `ghcr.io/bralton/finance-planner/*`.                                                                                                                                                                               |
+| 18  | Domain & TLS                 | **cert-manager + Let's Encrypt**; hostnames `staging.finance.example.com` / `finance.example.com` (placeholders, overridable per overlay).                                                                                   |
 
-## Open — product
+## Notes on selected decisions
 
-1. **Multi-currency.** Is each account single-currency (current assumption), or
-   do you need accounts/goals in different currencies with conversion in the
-   overview? _Assumption: single currency per account; overview groups by
-   currency, no FX._
-2. **"Already saved" tracking.** Does the user manually maintain
-   `already_saved` per goal, or should the app track contributions over time and
-   accumulate it automatically (requires a ledger of actual deposits)?
-   _Assumption: manual field in v1; ledger is a Phase 7 stretch._
-3. **Account balance semantics.** Is `opening_balance` just informational, or
-   should leftover roll into a running balance month over month?
-   _Assumption: informational in v1._
-4. **Monthly recurring vs. savings goals.** Should monthly bills be shown
-   separately from "savings toward future dated goals" in totals? _Assumption:
-   both consume monthly income; UI separates "bills" from "savings" visually._
-5. **Savings buffer.** Do you want to reserve an emergency-fund/buffer off the
-   top before funding goals? _Assumption: not in v1; optional later._
-6. **Notifications.** Email/push when a goal goes at-risk or a payment is due
-   soon? _Assumption: Phase 7._
-7. **Income variability.** Do you need variable/irregular income (e.g. commission)
-   beyond fixed amounts per frequency? _Assumption: fixed amount per frequency in
-   v1._
+- **#5 buffer:** the engine computes `availableForSavings = monthlyIncome −
+monthlyBufferMinor` before the prioritised funding loop. Buffer is surfaced as
+  a distinct line in the plan summary. Added with tests in Phase 1.
+- **#8 Fastify over NestJS:** the services are thin (BFF + auth + calc worker);
+  Fastify keeps cold-start and bundle size low and is already wired. Module
+  boundaries are enforced by folder/package structure, not a DI framework.
+- **#11 mailer:** define a `Mailer` interface with `LogMailer` (dev/test) and
+  `SmtpMailer` (prod, config-gated). Verification works end-to-end in tests
+  against `LogMailer`; no external email provider is required to build/run.
+- **#15 deploys:** "automated without input" means the **code, tests, images and
+  manifests** are produced and verified automatically. Pushing to a live cluster
+  still requires real cluster credentials/secrets, which are intentionally not
+  committed; that final step remains a gated, human-triggered action.
 
-## Open — technical
+## Testing is non-negotiable
 
-8. **Backend framework.** NestJS (recommended) vs. Fastify vs. Express.
-9. **ORM / DB toolkit.** Drizzle (recommended) vs. Prisma vs. Kysely.
-10. **Monorepo build tool.** Turborepo (recommended) vs. Nx.
-11. **Auth method in v1.** Email+password only, OIDC only, or both? Is email
-    verification required for launch? _Assumption: email+password with
-    verification relaxable in early phases; OIDC is a stretch._
-12. **Token storage on the client.** Access token in memory + refresh in
-    httpOnly cookie (recommended) — confirm acceptable given the SPA + BFF split.
-13. **Persist computed contributions?** Always snapshot to `calc` schema, or
-    compute on the fly and only cache in Redis? _Assumption: cache in Redis +
-    snapshot on write for history/audit._
-14. **Physical DB split.** Stay single Postgres with per-schema isolation
-    (current plan) or split per service later? _Assumption: single now,
-    splittable later — cross-schema refs kept logical._
-
-## Open — infra/ops
-
-15. **Target cluster for the first real deployment.** Even though manifests are
-    cloud-agnostic, which cluster hosts staging/prod first (homelab/k3s, a cloud,
-    other)? Affects ingress/cert/secret wiring in overlays.
-16. **Managed vs. in-cluster Postgres/Redis in prod.** _Assumption: in-cluster
-    for non-prod; overlay swaps to managed in prod if a cloud is chosen._
-17. **Image registry.** GHCR assumed (`ghcr.io/bralton/finance-planner/*`).
-    Confirm.
-18. **Domain & TLS.** Hostname(s) and cert issuer (cert-manager + Let's Encrypt
-    assumed).
-
-## How these get resolved
-
-- Items blocking a phase are pulled into that phase's kickoff (see
-  `08-roadmap.md`). Most can default to the working assumption and be revisited
-  without rework, because the architecture isolates these choices (engine is
-  framework-agnostic; DB access is behind a repository layer; infra specifics
-  live in overlays).
+Per the product owner: **tests are completed per feature**, and **UI testing**
+is part of the harness. The policy and gates live in
+`10-testing-strategy.md`; the per-feature Definition of Done is in
+`08-roadmap.md`.

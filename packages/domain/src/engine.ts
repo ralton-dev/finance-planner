@@ -44,9 +44,8 @@ function resolveRecurrence(p: PaymentInput): Recurrence | null {
   if (p.category === "yearly_recurring" && p.dueDate) {
     return { interval: 1, unit: "year", anchor: p.dueDate };
   }
-  if (p.category === "monthly_recurring" && p.dueDate) {
-    return { interval: 1, unit: "month", anchor: p.dueDate };
-  }
+  // Note: monthly_recurring never reaches here — it returns earlier in
+  // requiredMonthlyForPayment with the full amount due each month.
   return null;
 }
 

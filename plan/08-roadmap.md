@@ -100,6 +100,19 @@ passes; prod promotion works with manual approval; rollback verified.
 - Multi-currency conversion (if pursued).
 - Recurring-income edge tooling, audit history UI.
 
+## Definition of Done (every feature)
+
+Tests are completed **per feature** — see `10-testing-strategy.md`. A feature is
+not done until:
+
+- Unit tests cover new pure logic; **`packages/domain` stays ≥ 95% coverage**.
+- Integration tests cover new/changed API endpoints against a real DB
+  (Testcontainers), including auth/authorization.
+- Component tests (React Testing Library) cover new UI with meaningful states.
+- E2E (Playwright) is extended when a user journey is added or changed.
+- `format:check`, `lint`, `typecheck`, `test`, and the E2E smoke are green in CI.
+- Docs updated; the change is demoable on kind/local.
+
 ## Cross-cutting (every phase)
 
 - Tests written alongside code (unit + integration); CI stays green.
