@@ -5,15 +5,15 @@
 
 ## 1. Proposed stack
 
-| Concern | Proposal | Alternatives (see `09-open-questions.md`) |
-|---------|----------|-------------------------------------------|
-| Language | TypeScript (Node 22 LTS) | — |
-| HTTP framework | **NestJS** (structured, DI, good for multi-module services) | Fastify (lighter), Express |
-| Validation | Zod (shared via `packages/contracts`) | class-validator |
-| DB access | **Drizzle ORM** (typed SQL, lightweight migrations) | Prisma, Kysely |
-| Queue | BullMQ on Redis | — |
-| Auth tokens | JWT (access) + opaque refresh tokens | — |
-| Testing | Vitest + Supertest; Testcontainers for Postgres | Jest |
+| Concern        | Proposal                                                    | Alternatives (see `09-open-questions.md`) |
+| -------------- | ----------------------------------------------------------- | ----------------------------------------- |
+| Language       | TypeScript (Node 22 LTS)                                    | —                                         |
+| HTTP framework | **NestJS** (structured, DI, good for multi-module services) | Fastify (lighter), Express                |
+| Validation     | Zod (shared via `packages/contracts`)                       | class-validator                           |
+| DB access      | **Drizzle ORM** (typed SQL, lightweight migrations)         | Prisma, Kysely                            |
+| Queue          | BullMQ on Redis                                             | —                                         |
+| Auth tokens    | JWT (access) + opaque refresh tokens                        | —                                         |
+| Testing        | Vitest + Supertest; Testcontainers for Postgres             | Jest                                      |
 
 > NestJS + Drizzle is the recommended default: NestJS gives clean module
 > boundaries that map to our coarse services, and Drizzle keeps SQL explicit and
@@ -22,14 +22,17 @@
 ## 2. Service responsibilities
 
 ### 2.1 `api` (BFF / gateway)
+
 Public REST API. Owns `core` schema (accounts, incomes, payments). Verifies
 JWTs, enforces authorization, orchestrates `auth` and `calc`.
 
 ### 2.2 `auth`
+
 Users, households, memberships, account shares, token issue/verify. Details in
 `06-auth-and-households.md`. Exposes an internal API to `api`.
 
 ### 2.3 `calc`
+
 Stateless engine host. Internal sync endpoint + queue consumer for async
 recompute. Writes `calc` schema snapshots. Imports `packages/domain`.
 
@@ -40,6 +43,7 @@ All endpoints require a valid access token unless noted. Money fields are
 referenced account.
 
 ### 3.1 Auth (proxied to `auth` service)
+
 ```
 POST   /api/auth/register           { email, password, displayName }
 POST   /api/auth/login              { email, password } -> { accessToken, refreshToken }
@@ -49,6 +53,7 @@ GET    /api/me                      -> current user + households
 ```
 
 ### 3.2 Households & sharing
+
 ```
 GET    /api/households
 POST   /api/households               { name }
@@ -59,6 +64,7 @@ DELETE /api/accounts/:id/shares/:shareId
 ```
 
 ### 3.3 Accounts
+
 ```
 GET    /api/accounts                 -> accounts visible to user (own + shared)
 POST   /api/accounts                 { name, currency, openingBalanceMinor, description? }
@@ -70,6 +76,7 @@ GET    /api/accounts/:id/plan?asOf=YYYY-MM-DD  -> plan for a given reference dat
 ```
 
 ### 3.4 Incomes
+
 ```
 GET    /api/accounts/:id/incomes
 POST   /api/accounts/:id/incomes     { name, amountMinor, frequency, recurrence?, anchorDate }
@@ -78,6 +85,7 @@ DELETE /api/incomes/:incomeId
 ```
 
 ### 3.5 Payments
+
 ```
 GET    /api/accounts/:id/payments
 POST   /api/accounts/:id/payments    { name, category, amountMinor, dueDate?, recurrence?,
@@ -88,12 +96,14 @@ PATCH  /api/accounts/:id/payments/reorder  { orderedPaymentIds[] }  // bulk prio
 ```
 
 ### 3.6 Overview
+
 ```
 GET    /api/overview                 -> aggregated plan across all visible accounts
                                         (grouped per currency; see calc §7)
 ```
 
 ### 3.7 Health
+
 ```
 GET    /healthz   // liveness, no auth
 GET    /readyz    // readiness (DB/redis reachable), no auth
@@ -102,6 +112,7 @@ GET    /readyz    // readiness (DB/redis reachable), no auth
 ## 4. Internal APIs
 
 ### `calc` (internal only)
+
 ```
 POST   /internal/calc/account-plan   { accountId, asOfDate? } -> AccountPlan   // sync
 POST   /internal/calc/recompute      { accountId | "all" }                     // enqueue async
@@ -109,6 +120,7 @@ POST   /internal/calc/recompute      { accountId | "all" }                     /
 ```
 
 ### `auth` (internal only)
+
 ```
 POST   /internal/auth/verify         { token } -> { userId, claims }
 GET    /internal/auth/users/:id/accounts-acl  -> account ids the user can read/write
@@ -127,6 +139,7 @@ GET    /internal/auth/users/:id/accounts-acl  -> account ids the user can read/w
 ## 6. Recompute triggering
 
 A plan snapshot is (re)computed when:
+
 - A payment or income on the account is created/updated/deleted → `api` enqueues
   `recompute(accountId)`.
 - A share/household membership change alters visibility → invalidate overview cache.

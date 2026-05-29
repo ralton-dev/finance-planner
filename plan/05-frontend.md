@@ -13,17 +13,17 @@
 > library is fully supported on Vite (see "Styling" below); shadcn/ui is the
 > default, with MUI / Mantine / Chakra / Radix as drop-in alternatives.
 
-| Concern | Choice | Notes |
-|---------|--------|-------|
-| Build | Vite (SPA) | Fast dev server, simple prod build to static assets served by Nginx. |
-| Language | TypeScript (strict) | |
-| Routing | React Router | |
-| Server state | TanStack Query | Caching, mutations, invalidation mirrors API. |
-| Forms | React Hook Form + Zod resolver | Reuse `packages/contracts` schemas. |
-| Styling | Tailwind CSS + component library (shadcn/ui default) | Fast, consistent, accessible. Alternatives: MUI, Mantine, Chakra, Radix — all work with Vite. |
-| Charts | Recharts (or visx) | Breakdown bars, timelines, progress rings. |
-| Money formatting | `Intl.NumberFormat` per account currency | Always render from minor units. |
-| Testing | Vitest + React Testing Library; Playwright (E2E) | |
+| Concern          | Choice                                               | Notes                                                                                         |
+| ---------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Build            | Vite (SPA)                                           | Fast dev server, simple prod build to static assets served by Nginx.                          |
+| Language         | TypeScript (strict)                                  |                                                                                               |
+| Routing          | React Router                                         |                                                                                               |
+| Server state     | TanStack Query                                       | Caching, mutations, invalidation mirrors API.                                                 |
+| Forms            | React Hook Form + Zod resolver                       | Reuse `packages/contracts` schemas.                                                           |
+| Styling          | Tailwind CSS + component library (shadcn/ui default) | Fast, consistent, accessible. Alternatives: MUI, Mantine, Chakra, Radix — all work with Vite. |
+| Charts           | Recharts (or visx)                                   | Breakdown bars, timelines, progress rings.                                                    |
+| Money formatting | `Intl.NumberFormat` per account currency             | Always render from minor units.                                                               |
+| Testing          | Vitest + React Testing Library; Playwright (E2E)     |                                                                                               |
 
 ## 2. Information architecture / screens
 
@@ -39,7 +39,9 @@
 ```
 
 ### 2.1 Overview screen (all accounts)
+
 The "see an overview of all the accounts" requirement.
+
 - Top KPI row (per currency): total monthly income, total required savings,
   total leftover, total shortfall.
 - Per-account summary cards: income, required, leftover/shortfall, # at-risk goals.
@@ -47,7 +49,9 @@ The "see an overview of all the accounts" requirement.
   across all accounts (sorted by how late they're projected).
 
 ### 2.2 Account detail screen
+
 The "see each account's breakdown" requirement.
+
 - Header: balance, monthly income, leftover/shortfall badge.
 - **Plan table** (one row per payment): name, category chip, amount, due/target
   date, **required £/month**, **funded £/month**, progress (`already_saved` vs
@@ -57,7 +61,9 @@ The "see each account's breakdown" requirement.
 - Timeline view: upcoming payments on a calendar/Gantt-style strip.
 
 ### 2.3 Add/edit payment form (category-aware)
+
 Single form that adapts to the four categories:
+
 - `monthly_recurring`: amount only.
 - `yearly_recurring`: amount + month/day due.
 - `custom_recurring`: amount + interval + unit + anchor date.

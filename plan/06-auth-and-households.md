@@ -13,16 +13,18 @@
 ## 2. Entities
 
 ### 2.1 User
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid (PK) | |
-| email | citext (unique) | Login identifier. |
-| password_hash | text | Argon2id. Null if external IdP only. |
-| display_name | text | |
-| status | enum | `active` \| `invited` \| `disabled`. |
-| created_at / updated_at | timestamptz | |
+
+| Field                   | Type            | Notes                                |
+| ----------------------- | --------------- | ------------------------------------ |
+| id                      | uuid (PK)       |                                      |
+| email                   | citext (unique) | Login identifier.                    |
+| password_hash           | text            | Argon2id. Null if external IdP only. |
+| display_name            | text            |                                      |
+| status                  | enum            | `active` \| `invited` \| `disabled`. |
+| created_at / updated_at | timestamptz     |                                      |
 
 ### 2.2 Household
+
 A named group that accounts can be shared into.
 | Field | Type | Notes |
 |-------|------|-------|
@@ -32,18 +34,20 @@ A named group that accounts can be shared into.
 | created_at | timestamptz | |
 
 ### 2.3 HouseholdMembership
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid (PK) | |
-| household_id | uuid | FK → Household. |
-| user_id | uuid | FK → User. |
-| role | enum | `owner` \| `admin` \| `member`. |
-| status | enum | `active` \| `invited`. |
-| invited_email | citext? | For pending invites before the user exists. |
+
+| Field         | Type      | Notes                                       |
+| ------------- | --------- | ------------------------------------------- |
+| id            | uuid (PK) |                                             |
+| household_id  | uuid      | FK → Household.                             |
+| user_id       | uuid      | FK → User.                                  |
+| role          | enum      | `owner` \| `admin` \| `member`.             |
+| status        | enum      | `active` \| `invited`.                      |
+| invited_email | citext?   | For pending invites before the user exists. |
 
 `owner`/`admin` can manage members and shares; `member` participates.
 
 ### 2.4 AccountShare
+
 Grants a household access to an account (the account itself lives in `core`).
 | Field | Type | Notes |
 |-------|------|-------|
@@ -55,14 +59,15 @@ Grants a household access to an account (the account itself lives in `core`).
 | created_at | timestamptz | |
 
 ### 2.5 Session / refresh tokens
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid (PK) | |
-| user_id | uuid | FK → User. |
-| refresh_token_hash | text | Opaque token, hashed at rest. |
-| user_agent / ip | text | For session listing/revocation. |
-| expires_at | timestamptz | |
-| revoked_at | timestamptz? | |
+
+| Field              | Type         | Notes                           |
+| ------------------ | ------------ | ------------------------------- |
+| id                 | uuid (PK)    |                                 |
+| user_id            | uuid         | FK → User.                      |
+| refresh_token_hash | text         | Opaque token, hashed at rest.   |
+| user_agent / ip    | text         | For session listing/revocation. |
+| expires_at         | timestamptz  |                                 |
+| revoked_at         | timestamptz? |                                 |
 
 ## 3. Authentication flow
 

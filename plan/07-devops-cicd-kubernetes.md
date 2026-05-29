@@ -7,13 +7,13 @@
 
 Each service ships its own image, built from a multi-stage Dockerfile.
 
-| Image | Base | Notes |
-|-------|------|-------|
-| `web` | `node` build → `nginx:alpine` serve | Static SPA + Nginx config (SPA fallback, gzip). |
-| `api` | `node:22-alpine` (distroless for prod) | Runs the BFF. |
-| `auth` | `node:22-alpine` | |
-| `calc` | `node:22-alpine` | Worker + internal HTTP. |
-| `migrator` | `node:22-alpine` | Runs DB migrations as a k8s Job. |
+| Image      | Base                                   | Notes                                           |
+| ---------- | -------------------------------------- | ----------------------------------------------- |
+| `web`      | `node` build → `nginx:alpine` serve    | Static SPA + Nginx config (SPA fallback, gzip). |
+| `api`      | `node:22-alpine` (distroless for prod) | Runs the BFF.                                   |
+| `auth`     | `node:22-alpine`                       |                                                 |
+| `calc`     | `node:22-alpine`                       | Worker + internal HTTP.                         |
+| `migrator` | `node:22-alpine`                       | Runs DB migrations as a k8s Job.                |
 
 Multi-stage pattern: shared `deps` stage (pnpm install with workspace), `build`
 stage (turbo build the target app), slim `runtime` stage. Use `.dockerignore`,
@@ -37,6 +37,7 @@ environment values files and/or **kustomize overlays** for `local` / `staging`
 / `prod`.
 
 Per service:
+
 - `Deployment` (2+ replicas in prod; HPA on CPU/latency).
 - `Service` (ClusterIP; `web` + `api` fronted by Ingress).
 - `ConfigMap` (non-secret config) + `Secret` (DB creds, JWT keys).
@@ -45,6 +46,7 @@ Per service:
 - `NetworkPolicy`: only `api` may reach `auth`/`calc`; only services reach DB.
 
 Cluster-level:
+
 - `Ingress` (nginx-ingress; cert-manager for TLS) routing `/` → web, `/api` → api.
 - **PostgreSQL**: in-cluster StatefulSet (e.g. Bitnami/CloudNativePG) for
   local/staging; in prod, point to managed Postgres via a values override —
@@ -70,8 +72,10 @@ deploy/
 ## 4. CI/CD with GitHub Actions
 
 ### 4.1 CI — `ci.yml` (on PR + push)
+
 Path-filtered, parallel matrix across affected workspaces (Turborepo remote
 cache to skip unchanged):
+
 1. **Setup**: checkout, pnpm install (cached), Turbo cache restore.
 2. **Lint + typecheck**: eslint, `tsc --noEmit`.
 3. **Unit tests**: Vitest per package/app (engine golden-file tests included).
@@ -82,11 +86,13 @@ cache to skip unchanged):
 7. **E2E (optional gate)**: docker-compose up the stack; run Playwright smoke.
 
 ### 4.2 Build & publish — `release.yml` (on push to `main` / tags)
+
 1. Build multi-arch images (`linux/amd64,arm64`) via buildx.
 2. Tag with git SHA + semver; push to GHCR (`ghcr.io/bralton/finance-planner/*`).
 3. Generate SBOM; sign images (cosign).
 
 ### 4.3 Deploy — `deploy.yml`
+
 - **Staging**: auto-deploy on `main` — `helm upgrade --install` against the
   staging cluster using the SHA-tagged images and `values-staging.yaml`.
 - **Production**: manual approval (GitHub Environment protection) → promote the
@@ -97,6 +103,7 @@ cache to skip unchanged):
   readiness probes; `helm rollback` on failure.
 
 ### 4.4 Branching & environments
+
 - Trunk-based: PRs into `main`; feature branches (this work is on
   `claude/finance-planning-app-design-6HBt5`).
 - GitHub Environments: `staging` (auto), `production` (required reviewers).

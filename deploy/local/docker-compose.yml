@@ -1,0 +1,94 @@
+# Local development stack. Run from repo root: `make up` (or docker compose ...).
+name: finance-planner
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-finance}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finance}
+      POSTGRES_DB: ${POSTGRES_DB:-finance}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-run migrations on first start.
+      - ../../db/migrations:/docker-entrypoint-initdb.d:ro
+      # Mounted again for `make migrate` / `make seed`.
+      - ../../db/migrations:/migrations:ro
+      - ../../db/seed:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finance}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      API_PORT: "4000"
+      DATABASE_URL: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  auth:
+    build:
+      context: ../..
+      dockerfile: apps/auth/Dockerfile
+    environment:
+      AUTH_PORT: "4001"
+      DATABASE_URL: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "4001:4001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  calc:
+    build:
+      context: ../..
+      dockerfile: apps/calc/Dockerfile
+    environment:
+      CALC_PORT: "4002"
+      DATABASE_URL: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "4002:4002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

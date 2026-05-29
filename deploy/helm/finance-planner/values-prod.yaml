@@ -1,0 +1,23 @@
+# Production overlay. Use managed Postgres/Redis (provider-agnostic): disable the
+# in-cluster instances and point config/secrets at the managed endpoints
+# (ideally injected via an external secrets operator, not committed here).
+postgres:
+  enabled: false
+redis:
+  enabled: false
+
+services:
+  api:
+    replicas: 3
+  web:
+    replicas: 3
+  auth:
+    replicas: 2
+  calc:
+    replicas: 2
+
+ingress:
+  host: finance.example.com
+
+# config.REDIS_URL and secrets.DATABASE_URL are expected to be overridden by the
+# deployment pipeline / external secrets to reference managed instances.

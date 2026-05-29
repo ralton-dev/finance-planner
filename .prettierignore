@@ -1,0 +1,7 @@
+pnpm-lock.yaml
+**/dist/**
+**/.turbo/**
+**/coverage/**
+# Helm templates contain Go templating that prettier cannot parse as YAML.
+deploy/helm/**/templates/**
+*.tpl

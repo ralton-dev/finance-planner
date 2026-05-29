@@ -1,0 +1,62 @@
+# Default values. Cloud-agnostic; override per environment with values-*.yaml.
+image:
+  registry: ghcr.io/bralton/finance-planner
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Application services. Each entry produces a Deployment + Service.
+services:
+  web:
+    port: 8080
+    replicas: 1
+    health: /
+  api:
+    port: 4000
+    replicas: 1
+    health: /healthz
+  auth:
+    port: 4001
+    replicas: 1
+    health: /healthz
+  calc:
+    port: 4002
+    replicas: 1
+    health: /healthz
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Non-secret config shared by services (rendered into a ConfigMap).
+config:
+  LOG_LEVEL: info
+  REDIS_URL: redis://finance-planner-redis:6379
+
+# Secret values (rendered into a Secret). Override in real environments / via
+# an external secrets operator — do not commit real secrets.
+secrets:
+  DATABASE_URL: postgres://finance:finance@finance-planner-postgres:5432/finance
+  JWT_SIGNING_KEY: "change-me-in-real-environments"
+
+# In-cluster Postgres/Redis for non-prod. In prod, disable these and point
+# config/secrets at managed instances.
+postgres:
+  enabled: true
+  image: postgres:17-alpine
+  user: finance
+  password: finance
+  database: finance
+  storage: 1Gi
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+
+ingress:
+  enabled: true
+  className: nginx
+  host: finance.local

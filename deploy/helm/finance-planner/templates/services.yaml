@@ -1,0 +1,64 @@
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    {{- include "fp.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ $svc.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.registry }}/{{ $name }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ $svc.port }}
+          {{- if $svc.health }}
+          readinessProbe:
+            httpGet:
+              path: {{ $svc.health }}
+              port: {{ $svc.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: {{ $svc.health }}
+              port: {{ $svc.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ $.Release.Name }}-config
+            - secretRef:
+                name: {{ $.Release.Name }}-secrets
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    {{- include "fp.labels" $ | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - port: {{ $svc.port }}
+      targetPort: {{ $svc.port }}
+{{- end }}

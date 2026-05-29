@@ -1,0 +1,15 @@
+Finance Planner ({{ .Chart.Version }}) deployed as release "{{ .Release.Name }}".
+
+Services:
+{{- range $name, $svc := .Values.services }}
+  - {{ $name }} on port {{ $svc.port }}
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+Ingress host: http://{{ .Values.ingress.host }}/  (api under /api)
+{{- end }}
+
+NOTE: DB migrations are not yet wired as a Helm hook (Phase 0). Apply
+db/migrations manually, or via the local stack's initdb. A migration Job is
+added once the migration tool is chosen — see plan/09-open-questions.md (#9)
+and plan/07-devops-cicd-kubernetes.md.

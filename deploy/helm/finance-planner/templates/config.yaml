@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "fp.labels" . | nindent 4 }}
+data:
+  {{- range $k, $v := .Values.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  API_PORT: "4000"
+  AUTH_PORT: "4001"
+  CALC_PORT: "4002"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  labels:
+    {{- include "fp.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  {{- range $k, $v := .Values.secrets }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

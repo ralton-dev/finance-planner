@@ -4,6 +4,7 @@
 > on each other; acceptance criteria gate progress.
 
 ## Phase 0 — Foundations (repo & tooling)
+
 **Goal:** a monorepo that builds, lints, tests, and containerises an empty stack.
 
 - Monorepo scaffold (pnpm workspaces + Turborepo), shared `config`,
@@ -17,6 +18,7 @@
 kind brings all pods to ready.
 
 ## Phase 1 — Domain core & calculation engine
+
 **Goal:** the maths works and is trusted, independent of UI.
 
 - `packages/domain`: types + pure engine for all four payment categories,
@@ -29,6 +31,7 @@ kind brings all pods to ready.
 contributions, leftover, and shortfall across all categories and edge cases.
 
 ## Phase 2 — Accounts, incomes & payments (single-user, no auth yet)
+
 **Goal:** full CRUD + plan, end to end, for one implicit user.
 
 - `api`: CRUD for accounts/incomes/payments; `GET /accounts/:id/plan` wired to
@@ -40,6 +43,7 @@ contributions, leftover, and shortfall across all categories and edge cases.
 correct required-per-month and leftover/shortfall; edits update the plan.
 
 ## Phase 3 — Authentication
+
 **Goal:** real users; data is private per user.
 
 - `auth` service: register/login/refresh/logout, Argon2id, sessions.
@@ -50,6 +54,7 @@ correct required-per-month and leftover/shortfall; edits update the plan.
 auth security tests pass.
 
 ## Phase 4 — Households & sharing
+
 **Goal:** the multi-user collaboration requirement.
 
 - `auth`: households, memberships, invites, account shares; ACL endpoint.
@@ -60,6 +65,7 @@ auth security tests pass.
 the granted permission; permission matrix tests pass.
 
 ## Phase 5 — All-accounts overview
+
 **Goal:** the consolidated view across accounts.
 
 - `calc`: per-currency aggregation; overview snapshotting.
@@ -71,6 +77,7 @@ the granted permission; permission matrix tests pass.
 at-risk goals surface correctly.
 
 ## Phase 6 — Production hardening & deploy
+
 **Goal:** runnable in a real cluster with confidence.
 
 - Helm values for staging/prod; nightly recompute CronJob; HPA; NetworkPolicies;
@@ -85,6 +92,7 @@ at-risk goals surface correctly.
 passes; prod promotion works with manual approval; rollback verified.
 
 ## Phase 7 — Polish & stretch (backlog)
+
 - Email verification + password reset; optional OIDC sign-in.
 - "What-if" simulation; lump-sum/windfall allocation; savings buffers.
 - Notifications (payment due soon, goal at risk).
@@ -93,11 +101,13 @@ passes; prod promotion works with manual approval; rollback verified.
 - Recurring-income edge tooling, audit history UI.
 
 ## Cross-cutting (every phase)
+
 - Tests written alongside code (unit + integration); CI stays green.
 - Each phase ends with updated docs and a demo-able deployment to kind/staging.
 - Accessibility and money/date correctness are not deferred — they're baked in.
 
 ## Suggested sequencing notes
+
 - Phases 1–2 deliver the core value fastest and de-risk the maths early.
 - Auth (3) before sharing (4) before overview (5) keeps authorization correct as
   the data-visibility surface grows.

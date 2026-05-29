@@ -1,0 +1,10 @@
+# Staging overlay. Images are SHA-tagged by CI.
+image:
+  tag: latest
+services:
+  api:
+    replicas: 2
+  web:
+    replicas: 2
+ingress:
+  host: staging.finance.example.com

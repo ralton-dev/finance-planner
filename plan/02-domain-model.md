@@ -23,90 +23,95 @@ Account ──1:1── PlanSnapshot (latest computed plan, calc schema)
   (via `AccountShare`), granting other members access.
 - An **Account** has many **Incomes** and many **Payments**.
 - A **Payment** carries category + recurrence info and a target/due date.
-- **Contributions** and **PlanSnapshots** are *computed* artefacts produced by
+- **Contributions** and **PlanSnapshots** are _computed_ artefacts produced by
   the calc engine, not user-entered.
 
 ## 2. Core entities
 
 ### 2.1 Account
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid (PK) | |
-| owner_user_id | uuid | FK → auth user. |
-| name | text | e.g. "Joint Current Account". |
-| description | text? | Optional. |
-| currency | char(3) | ISO 4217; display currency for the account. |
-| opening_balance_minor | bigint | Current available balance, in minor units. |
-| created_at / updated_at | timestamptz | |
+
+| Field                   | Type        | Notes                                       |
+| ----------------------- | ----------- | ------------------------------------------- |
+| id                      | uuid (PK)   |                                             |
+| owner_user_id           | uuid        | FK → auth user.                             |
+| name                    | text        | e.g. "Joint Current Account".               |
+| description             | text?       | Optional.                                   |
+| currency                | char(3)     | ISO 4217; display currency for the account. |
+| opening_balance_minor   | bigint      | Current available balance, in minor units.  |
+| created_at / updated_at | timestamptz |                                             |
 
 ### 2.2 Income
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid (PK) | |
-| account_id | uuid | FK → Account. |
-| name | text | e.g. "Salary". |
-| amount_minor | bigint | Amount per occurrence, minor units. |
-| frequency | enum | `monthly` \| `yearly` \| `custom` \| `one_off`. |
-| recurrence | jsonb? | For `custom`: interval + unit (see §3). |
-| anchor_date | date | First/next occurrence date. |
-| active | bool | Soft toggle. |
-| created_at / updated_at | timestamptz | |
+
+| Field                   | Type        | Notes                                           |
+| ----------------------- | ----------- | ----------------------------------------------- |
+| id                      | uuid (PK)   |                                                 |
+| account_id              | uuid        | FK → Account.                                   |
+| name                    | text        | e.g. "Salary".                                  |
+| amount_minor            | bigint      | Amount per occurrence, minor units.             |
+| frequency               | enum        | `monthly` \| `yearly` \| `custom` \| `one_off`. |
+| recurrence              | jsonb?      | For `custom`: interval + unit (see §3).         |
+| anchor_date             | date        | First/next occurrence date.                     |
+| active                  | bool        | Soft toggle.                                    |
+| created_at / updated_at | timestamptz |                                                 |
 
 > Incomes reuse the same frequency/recurrence model as payments so monthly
 > available income can be normalised consistently (see calc engine §2).
 
 ### 2.3 Payment
+
 The central outgoing entity. A single table with a `category` discriminator and
 a `recurrence` jsonb for flexibility, plus typed columns for the common fields.
 
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid (PK) | |
-| account_id | uuid | FK → Account. |
-| name | text | e.g. "Car insurance". |
-| category | enum | `monthly_recurring` \| `yearly_recurring` \| `custom_recurring` \| `fixed_point`. |
-| amount_minor | bigint | Amount due per occurrence. |
-| due_date | date | Next due date / target date. **Required for `fixed_point`.** |
-| recurrence | jsonb? | Cadence for recurring categories (see §3). Null for `fixed_point`. |
-| target_date | date? | Optional override of "by when" the goal must be met (defaults to `due_date`). |
-| priority | int | Lower = funded first when income is short (see calc §4). Default 100. |
-| already_saved_minor | bigint | Amount already set aside toward this payment. Default 0. |
-| auto_renew | bool | For recurring: roll `due_date` forward after the occurrence passes. |
-| active | bool | Soft toggle / pause. |
-| notes | text? | |
-| created_at / updated_at | timestamptz | |
+| Field                   | Type        | Notes                                                                             |
+| ----------------------- | ----------- | --------------------------------------------------------------------------------- |
+| id                      | uuid (PK)   |                                                                                   |
+| account_id              | uuid        | FK → Account.                                                                     |
+| name                    | text        | e.g. "Car insurance".                                                             |
+| category                | enum        | `monthly_recurring` \| `yearly_recurring` \| `custom_recurring` \| `fixed_point`. |
+| amount_minor            | bigint      | Amount due per occurrence.                                                        |
+| due_date                | date        | Next due date / target date. **Required for `fixed_point`.**                      |
+| recurrence              | jsonb?      | Cadence for recurring categories (see §3). Null for `fixed_point`.                |
+| target_date             | date?       | Optional override of "by when" the goal must be met (defaults to `due_date`).     |
+| priority                | int         | Lower = funded first when income is short (see calc §4). Default 100.             |
+| already_saved_minor     | bigint      | Amount already set aside toward this payment. Default 0.                          |
+| auto_renew              | bool        | For recurring: roll `due_date` forward after the occurrence passes.               |
+| active                  | bool        | Soft toggle / pause.                                                              |
+| notes                   | text?       |                                                                                   |
+| created_at / updated_at | timestamptz |                                                                                   |
 
 ### 2.4 Contribution (computed, optional persistence)
+
 A per-payment, per-period computed line item. May be materialised in `calc`
 schema for history/auditing, or computed on the fly.
 
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid (PK) | |
-| plan_snapshot_id | uuid | FK → PlanSnapshot. |
-| payment_id | uuid | FK → Payment. |
-| period_month | date | The month this contribution applies to (1st of month). |
-| required_minor | bigint | Ideal monthly contribution to stay on track. |
-| funded_minor | bigint | Amount actually allocated after priority funding. |
-| on_track | bool | Whether the target date is still achievable. |
-| projected_completion_date | date? | If not on track, when it *would* complete. |
+| Field                     | Type      | Notes                                                  |
+| ------------------------- | --------- | ------------------------------------------------------ |
+| id                        | uuid (PK) |                                                        |
+| plan_snapshot_id          | uuid      | FK → PlanSnapshot.                                     |
+| payment_id                | uuid      | FK → Payment.                                          |
+| period_month              | date      | The month this contribution applies to (1st of month). |
+| required_minor            | bigint    | Ideal monthly contribution to stay on track.           |
+| funded_minor              | bigint    | Amount actually allocated after priority funding.      |
+| on_track                  | bool      | Whether the target date is still achievable.           |
+| projected_completion_date | date?     | If not on track, when it _would_ complete.             |
 
 ### 2.5 PlanSnapshot (computed)
+
 A cached result of a full account computation (`calc` schema).
 
-| Field | Type | Notes |
-|-------|------|-------|
-| id | uuid (PK) | |
-| account_id | uuid | FK → Account (or null for an aggregate overview snapshot). |
-| computed_at | timestamptz | |
-| as_of_date | date | The "today" used for the computation. |
-| monthly_income_minor | bigint | Normalised monthly income. |
-| total_required_minor | bigint | Sum of ideal contributions. |
-| total_funded_minor | bigint | Sum after prioritised funding. |
-| leftover_minor | bigint | Surplus (≥0) for the month. |
-| shortfall_minor | bigint | Unfunded amount (≥0) for the month. |
-| inputs_hash | text | Hash of inputs for cache invalidation. |
-| detail | jsonb | Full per-payment breakdown (denormalised for fast reads). |
+| Field                | Type        | Notes                                                      |
+| -------------------- | ----------- | ---------------------------------------------------------- |
+| id                   | uuid (PK)   |                                                            |
+| account_id           | uuid        | FK → Account (or null for an aggregate overview snapshot). |
+| computed_at          | timestamptz |                                                            |
+| as_of_date           | date        | The "today" used for the computation.                      |
+| monthly_income_minor | bigint      | Normalised monthly income.                                 |
+| total_required_minor | bigint      | Sum of ideal contributions.                                |
+| total_funded_minor   | bigint      | Sum after prioritised funding.                             |
+| leftover_minor       | bigint      | Surplus (≥0) for the month.                                |
+| shortfall_minor      | bigint      | Unfunded amount (≥0) for the month.                        |
+| inputs_hash          | text        | Hash of inputs for cache invalidation.                     |
+| detail               | jsonb       | Full per-payment breakdown (denormalised for fast reads).  |
 
 ## 3. Recurrence representation
 
@@ -114,15 +119,16 @@ For `custom_recurring` payments (and custom incomes), `recurrence` is a jsonb:
 
 ```jsonc
 {
-  "interval": 3,            // every 3 ...
-  "unit": "month",          // "day" | "week" | "month" | "year"
-  "anchor": "2026-01-15"    // occurrence anchor; future occurrences derive from this
+  "interval": 3, // every 3 ...
+  "unit": "month", // "day" | "week" | "month" | "year"
+  "anchor": "2026-01-15", // occurrence anchor; future occurrences derive from this
 }
 ```
 
 Monthly / yearly categories are conveniences over this model:
+
 - `monthly_recurring` ≡ `{ interval: 1, unit: "month" }`
-- `yearly_recurring`  ≡ `{ interval: 1, unit: "year" }`
+- `yearly_recurring` ≡ `{ interval: 1, unit: "year" }`
 
 Keeping a normalised recurrence object lets the calc engine treat every
 recurring item uniformly while the UI offers friendly category-specific forms.

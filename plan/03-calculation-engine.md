@@ -23,74 +23,89 @@ Given an account's incomes, payments, and a reference date ("today"), produce:
 
 Each income is converted to an equivalent **monthly amount**:
 
-| Frequency | Monthly equivalent |
-|-----------|--------------------|
-| `monthly` | `amount` |
-| `yearly`  | `amount / 12` |
-| `custom`  | `amount / intervalInMonths(recurrence)` |
+| Frequency | Monthly equivalent                                       |
+| --------- | -------------------------------------------------------- |
+| `monthly` | `amount`                                                 |
+| `yearly`  | `amount / 12`                                            |
+| `custom`  | `amount / intervalInMonths(recurrence)`                  |
 | `one_off` | spread over months until `anchor_date` if future, else 0 |
 
 `monthlyIncome = Σ monthlyEquivalent(income)` over active incomes.
 
 `intervalInMonths({interval, unit})`:
+
 - `month` → `interval`
-- `year`  → `interval * 12`
-- `week`  → `interval * 7 / 30.4375` (avg month length)
-- `day`   → `interval / 30.4375`
+- `year` → `interval * 12`
+- `week` → `interval * 7 / 30.4375` (avg month length)
+- `day` → `interval / 30.4375`
 
 ## 3. Required monthly contribution per payment
 
 Let:
+
 - `now` = `as_of_date`
 - `monthsUntil(d)` = whole months from `now` to date `d`, **floored at a
   minimum of 1** to avoid divide-by-zero and to mean "due this month".
 
 ### 3.1 Fixed-point (one-off)
+
 ```
 remaining        = max(0, amount - already_saved)
 target           = target_date ?? due_date
 monthsLeft       = monthsUntil(target)
 requiredMonthly  = ceilDiv(remaining, monthsLeft)
 ```
+
 > Example: £1,200 holiday due in 8 months, £0 saved →
 > `1200_00 / 8 = 150_00` → **£150/month**. With £400 already saved →
 > `(1200-400)/8 = 100_00` → **£100/month**.
 
 ### 3.2 Yearly recurring
+
 Save smoothly toward the next occurrence, then keep saving for the one after.
+
 ```
 nextDue          = nextOccurrence(due_date, recurrence, now)
 remaining        = max(0, amount - already_saved)   // toward this occurrence
 monthsLeft       = monthsUntil(nextDue)
 requiredMonthly  = ceilDiv(remaining, monthsLeft)
 ```
+
 After `nextDue` passes (and `auto_renew`), `already_saved` resets and the cycle
 repeats; the steady-state contribution converges to `amount / 12`.
+
 > Example: £320 car insurance due in 5 months, nothing saved →
 > `320_00 / 5 = 64_00` → **£64/month** until renewal, then ~£26.67/month
 > (320/12) in steady state.
 
 ### 3.3 Monthly recurring
+
 Due every month — there is nothing to "save up"; the full amount is required
 each month as a direct commitment.
+
 ```
 requiredMonthly  = amount
 ```
+
 > These reduce leftover directly. The UI distinguishes "bills paid this month"
 > from "savings toward future goals", but both consume monthly income.
 
 ### 3.4 Custom recurring
+
 Generalises the above using the recurrence cadence.
+
 ```
 nextDue          = nextOccurrence(due_date, recurrence, now)
 remaining        = max(0, amount - already_saved)
 monthsLeft       = monthsUntil(nextDue)
 requiredMonthly  = ceilDiv(remaining, monthsLeft)
 ```
+
 > Example: £90 water bill every 3 months, next due in 2 months, £0 saved →
 > `90_00 / 2 = 45_00` this cycle; steady state `90/3 = 30_00`/month.
 
 ### 3.5 `nextOccurrence(anchor, recurrence, now)`
+
 Advance `anchor` by `recurrence` steps until the date is `>= now`. Handles
 month-end clamping (e.g. anchor on the 31st in a 30-day month → last day).
 
@@ -117,15 +132,19 @@ shortfall     = max(0, totalRequired - totalFunded)  // unfunded gap
 ```
 
 ### 4.1 Projected completion when underfunded
-If a goal only receives `funded < required`, estimate when it *would* complete at
+
+If a goal only receives `funded < required`, estimate when it _would_ complete at
 the current funding rate:
+
 ```
 monthsNeeded            = ceilDiv(remaining, max(funded, 1))
 projectedCompletion     = now + monthsNeeded months
 ```
+
 This drives the "at risk — projected late by N months" indicator in the UI.
 
 ### 4.2 Why priority funding (not proportional)
+
 The product owner chose explicit prioritisation: the user ranks goals via
 `payment.priority`; the engine funds top priorities fully before lower ones,
 and surfaces exactly which goals are starved and by how much. (Proportional
@@ -139,7 +158,7 @@ interface PaymentPlanLine {
   name: string;
   category: PaymentCategory;
   amountMinor: number;
-  dueDate: string;            // ISO date
+  dueDate: string; // ISO date
   targetDate: string;
   requiredMonthlyMinor: number;
   fundedMonthlyMinor: number;
@@ -156,8 +175,8 @@ interface AccountPlan {
   monthlyIncomeMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
-  leftoverMinor: number;       // surplus
-  shortfallMinor: number;      // deficit
+  leftoverMinor: number; // surplus
+  shortfallMinor: number; // deficit
   lines: PaymentPlanLine[];
 }
 ```
@@ -186,6 +205,7 @@ overview.perCurrency[ccy] = {
   accounts:       [ ...per-account summaries ]
 }
 ```
+
 If all accounts share one currency, this collapses to a single set of totals.
 
 ## 8. Determinism, testing & edge cases
