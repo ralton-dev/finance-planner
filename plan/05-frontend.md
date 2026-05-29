@@ -6,14 +6,21 @@
 
 ## 1. Stack
 
+> **Framework decision (confirmed):** a **Vite single-page app** — client-rendered
+> React built to static assets and served by Nginx, talking to the separate `api`
+> BFF over REST. No React meta-framework (Next/Remix) and therefore no second Node
+> runtime in the cluster, which keeps the service separation clean. A component
+> library is fully supported on Vite (see "Styling" below); shadcn/ui is the
+> default, with MUI / Mantine / Chakra / Radix as drop-in alternatives.
+
 | Concern | Choice | Notes |
 |---------|--------|-------|
-| Build | Vite | Fast dev server, simple prod build to static assets. |
+| Build | Vite (SPA) | Fast dev server, simple prod build to static assets served by Nginx. |
 | Language | TypeScript (strict) | |
 | Routing | React Router | |
 | Server state | TanStack Query | Caching, mutations, invalidation mirrors API. |
 | Forms | React Hook Form + Zod resolver | Reuse `packages/contracts` schemas. |
-| Styling | Tailwind CSS + a component lib (shadcn/ui) | Fast, consistent, accessible. |
+| Styling | Tailwind CSS + component library (shadcn/ui default) | Fast, consistent, accessible. Alternatives: MUI, Mantine, Chakra, Radix — all work with Vite. |
 | Charts | Recharts (or visx) | Breakdown bars, timelines, progress rings. |
 | Money formatting | `Intl.NumberFormat` per account currency | Always render from minor units. |
 | Testing | Vitest + React Testing Library; Playwright (E2E) | |
