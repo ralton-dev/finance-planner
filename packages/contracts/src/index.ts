@@ -52,3 +52,75 @@ export const readinessResponse = z.object({
   checks: z.record(z.string(), z.boolean()),
 });
 export type ReadinessResponse = z.infer<typeof readinessResponse>;
+
+// ---------------------------------------------------------------------------
+// Request body schemas (shared by services and the web client)
+// ---------------------------------------------------------------------------
+
+export const registerBody = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  displayName: z.string().min(1),
+});
+export type RegisterBody = z.infer<typeof registerBody>;
+
+export const loginBody = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+export type LoginBody = z.infer<typeof loginBody>;
+
+export const createAccountBody = z.object({
+  name: z.string().min(1),
+  description: z.string().nullish(),
+  currency: currencyCode.default("GBP"),
+  openingBalanceMinor: amountMinor.default(0),
+  monthlyBufferMinor: amountMinor.default(0),
+});
+export type CreateAccountBody = z.infer<typeof createAccountBody>;
+export const updateAccountBody = createAccountBody.partial();
+
+export const createIncomeBody = z.object({
+  name: z.string().min(1),
+  amountMinor,
+  frequency,
+  recurrence: recurrence.nullish(),
+  anchorDate: isoDate,
+  active: z.boolean().default(true),
+});
+export type CreateIncomeBody = z.infer<typeof createIncomeBody>;
+export const updateIncomeBody = createIncomeBody.partial();
+
+const paymentObject = z.object({
+  name: z.string().min(1),
+  category: paymentCategory,
+  amountMinor,
+  dueDate: isoDate.nullish(),
+  recurrence: recurrence.nullish(),
+  targetDate: isoDate.nullish(),
+  priority: z.number().int().default(100),
+  alreadySavedMinor: amountMinor.default(0),
+  autoRenew: z.boolean().default(true),
+  active: z.boolean().default(true),
+  notes: z.string().nullish(),
+});
+export const createPaymentBody = paymentObject.refine(
+  (p) => p.category !== "fixed_point" || !!p.dueDate,
+  { message: "fixed_point payments require a dueDate", path: ["dueDate"] },
+);
+export type CreatePaymentBody = z.infer<typeof createPaymentBody>;
+export const updatePaymentBody = paymentObject.partial();
+
+export const reorderPaymentsBody = z.object({
+  orderedPaymentIds: z.array(z.string().uuid()),
+});
+
+export const createHouseholdBody = z.object({ name: z.string().min(1) });
+export const addMemberBody = z.object({
+  email: z.string().email(),
+  role: z.enum(["admin", "member"]).default("member"),
+});
+export const shareAccountBody = z.object({
+  householdId: z.string().uuid(),
+  permission: z.enum(["view", "edit"]).default("view"),
+});

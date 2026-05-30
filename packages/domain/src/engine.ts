@@ -115,7 +115,8 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
       return da < db ? -1 : da > db ? 1 : 0;
     });
 
-  let remainingBudget = monthlyIncome;
+  const buffer = Math.max(0, account.monthlyBufferMinor ?? 0);
+  let remainingBudget = Math.max(0, monthlyIncome - buffer);
   let totalRequired = 0;
   let totalFunded = 0;
 
@@ -155,10 +156,77 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
     asOfDate,
     currency: account.currency,
     monthlyIncomeMinor: monthlyIncome,
+    bufferMinor: buffer,
     totalRequiredMinor: totalRequired,
     totalFundedMinor: totalFunded,
     leftoverMinor: Math.max(0, remainingBudget),
     shortfallMinor: Math.max(0, totalRequired - totalFunded),
     lines,
+  };
+}
+
+export interface AccountSummary {
+  accountId: string;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  atRiskCount: number;
+}
+
+export interface CurrencyOverview {
+  currency: string;
+  monthlyIncomeMinor: number;
+  bufferMinor: number;
+  totalRequiredMinor: number;
+  totalFundedMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  accounts: AccountSummary[];
+}
+
+export interface Overview {
+  asOfDate: string;
+  perCurrency: CurrencyOverview[];
+}
+
+/**
+ * Aggregate per-account plans into an all-accounts overview, grouped by
+ * currency (no FX conversion — see decision #1). Currencies are returned in
+ * stable alphabetical order.
+ */
+export function computeOverview(plans: AccountPlan[], asOfDate: string): Overview {
+  const byCurrency = new Map<string, CurrencyOverview>();
+
+  for (const plan of plans) {
+    let bucket = byCurrency.get(plan.currency);
+    if (!bucket) {
+      bucket = {
+        currency: plan.currency,
+        monthlyIncomeMinor: 0,
+        bufferMinor: 0,
+        totalRequiredMinor: 0,
+        totalFundedMinor: 0,
+        leftoverMinor: 0,
+        shortfallMinor: 0,
+        accounts: [],
+      };
+      byCurrency.set(plan.currency, bucket);
+    }
+    bucket.monthlyIncomeMinor += plan.monthlyIncomeMinor;
+    bucket.bufferMinor += plan.bufferMinor;
+    bucket.totalRequiredMinor += plan.totalRequiredMinor;
+    bucket.totalFundedMinor += plan.totalFundedMinor;
+    bucket.leftoverMinor += plan.leftoverMinor;
+    bucket.shortfallMinor += plan.shortfallMinor;
+    bucket.accounts.push({
+      accountId: plan.accountId,
+      leftoverMinor: plan.leftoverMinor,
+      shortfallMinor: plan.shortfallMinor,
+      atRiskCount: plan.lines.filter((l) => !l.onTrack).length,
+    });
+  }
+
+  return {
+    asOfDate,
+    perCurrency: [...byCurrency.values()].sort((a, b) => a.currency.localeCompare(b.currency)),
   };
 }

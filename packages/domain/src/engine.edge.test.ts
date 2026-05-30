@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { monthlyIncomeMinor, requiredMonthlyForPayment } from "./engine.js";
+import {
+  computeAccountPlan,
+  computeOverview,
+  monthlyIncomeMinor,
+  requiredMonthlyForPayment,
+} from "./engine.js";
 import { parseISODate } from "./dates.js";
-import type { IncomeInput, PaymentInput } from "./types.js";
+import type { AccountInput, IncomeInput, PaymentInput } from "./types.js";
 
 const now = parseISODate("2026-01-01");
 
@@ -88,5 +93,75 @@ describe("requiredMonthlyForPayment — recurring edge cases", () => {
     const r = requiredMonthlyForPayment(p, now);
     expect(r.effectiveDate).toBe("2026-07-01");
     expect(r.requiredMinor).toBe(4_000);
+  });
+});
+
+describe("computeAccountPlan — savings buffer", () => {
+  it("reserves the buffer off the top before funding goals", () => {
+    const account: AccountInput = {
+      accountId: "a",
+      currency: "GBP",
+      monthlyBufferMinor: 20_000,
+      incomes: [{ id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" }],
+      payments: [{ id: "p", name: "Phone", category: "monthly_recurring", amountMinor: 50_000 }],
+    };
+    const plan = computeAccountPlan(account, "2026-01-01");
+    expect(plan.bufferMinor).toBe(20_000);
+    // 100k income - 20k buffer = 80k available; 50k funded; 30k leftover.
+    expect(plan.leftoverMinor).toBe(30_000);
+    expect(plan.shortfallMinor).toBe(0);
+  });
+
+  it("can cause a shortfall when the buffer starves a goal", () => {
+    const account: AccountInput = {
+      accountId: "a",
+      currency: "GBP",
+      monthlyBufferMinor: 70_000,
+      incomes: [{ id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" }],
+      payments: [{ id: "p", name: "Phone", category: "monthly_recurring", amountMinor: 50_000 }],
+    };
+    const plan = computeAccountPlan(account, "2026-01-01");
+    // 100k - 70k = 30k available, goal needs 50k → 20k shortfall.
+    expect(plan.shortfallMinor).toBe(20_000);
+    expect(plan.leftoverMinor).toBe(0);
+  });
+});
+
+describe("computeOverview", () => {
+  it("aggregates per currency without FX conversion", () => {
+    const gbp = computeAccountPlan(
+      {
+        accountId: "gbp",
+        currency: "GBP",
+        incomes: [
+          { id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" },
+        ],
+        payments: [{ id: "p", name: "Phone", category: "monthly_recurring", amountMinor: 40_000 }],
+      },
+      "2026-01-01",
+    );
+    const usd = computeAccountPlan(
+      {
+        accountId: "usd",
+        currency: "USD",
+        incomes: [{ id: "i", amountMinor: 50_000, frequency: "monthly", anchorDate: "2026-01-01" }],
+        payments: [
+          {
+            id: "p",
+            name: "Trip",
+            category: "fixed_point",
+            amountMinor: 600_000,
+            dueDate: "2026-02-01",
+          },
+        ],
+      },
+      "2026-01-01",
+    );
+    const overview = computeOverview([usd, gbp], "2026-01-01");
+    expect(overview.perCurrency.map((c) => c.currency)).toEqual(["GBP", "USD"]);
+    const gbpBucket = overview.perCurrency.find((c) => c.currency === "GBP");
+    expect(gbpBucket?.leftoverMinor).toBe(60_000);
+    const usdBucket = overview.perCurrency.find((c) => c.currency === "USD");
+    expect(usdBucket?.accounts[0]?.atRiskCount).toBe(1);
   });
 });

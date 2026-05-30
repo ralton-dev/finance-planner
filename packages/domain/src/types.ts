@@ -32,6 +32,8 @@ export interface PaymentInput {
 export interface AccountInput {
   accountId: string;
   currency: string;
+  /** Optional monthly amount reserved off the top before funding goals. */
+  monthlyBufferMinor?: number;
   incomes: IncomeInput[];
   payments: PaymentInput[];
 }
@@ -58,6 +60,8 @@ export interface AccountPlan {
   asOfDate: string;
   currency: string;
   monthlyIncomeMinor: number;
+  /** Monthly amount reserved before funding goals (>= 0). */
+  bufferMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
   /** Surplus available after funding all goals (>= 0). */

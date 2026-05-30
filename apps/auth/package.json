@@ -12,7 +12,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
     "@finance-planner/contracts": "workspace:*",
+    "@finance-planner/data": "workspace:*",
+    "@finance-planner/security": "workspace:*",
     "fastify": "^5.2.1"
   },
   "devDependencies": {

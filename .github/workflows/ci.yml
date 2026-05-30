@@ -68,6 +68,22 @@ jobs:
       - name: Run Playwright E2E
         run: pnpm --filter @finance-planner/web test:e2e
 
+  integration:
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable Corepack
+        run: corepack enable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Integration tests (Testcontainers Postgres)
+        run: pnpm --filter @finance-planner/data test:int
+
   docker:
     runs-on: ubuntu-latest
     needs: build-test

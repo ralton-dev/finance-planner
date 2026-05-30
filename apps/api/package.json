@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@finance-planner/contracts": "workspace:*",
+    "@finance-planner/data": "workspace:*",
+    "@finance-planner/domain": "workspace:*",
+    "@finance-planner/security": "workspace:*",
     "fastify": "^5.2.1"
   },
   "devDependencies": {

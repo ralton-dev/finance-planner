@@ -1,0 +1,31 @@
+{
+  "name": "@finance-planner/data",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:int": "vitest run --config vitest.int.config.ts"
+  },
+  "dependencies": {
+    "@finance-planner/contracts": "workspace:*",
+    "@finance-planner/domain": "workspace:*",
+    "drizzle-orm": "^0.38.3",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^10.16.0",
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "testcontainers": "^10.16.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0"
+  }
+}
