@@ -1,0 +1,47 @@
+# Weekly dependency updates for the pnpm workspace + GitHub Actions.
+# Vulnerability alerts and security-only updates are configured at the repo
+# level (see `gh api repos/.../security_and_analysis`).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    groups:
+      # Group minor + patch bumps to reduce noise; majors stay individual.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ci"]
+  - package-ecosystem: docker
+    directory: "/apps/api"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "docker"]
+  - package-ecosystem: docker
+    directory: "/apps/auth"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "docker"]
+  - package-ecosystem: docker
+    directory: "/apps/calc"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "docker"]
+  - package-ecosystem: docker
+    directory: "/apps/web"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "docker"]
