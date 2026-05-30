@@ -310,18 +310,22 @@ h3 {
 .section-head .spacer {
   flex: 1;
 }
-.section-head .action {
+/* Link-style inline action — works for both <a> and <button>. */
+.action {
   color: var(--link);
   font-size: 11px;
+  font-weight: 400;
   cursor: pointer;
   background: transparent;
   border: 0;
   padding: 0;
+  text-decoration: none;
+  display: inline;
 }
-.section-head .action:hover {
+.action:hover {
   text-decoration: underline;
 }
-.section-head .action.muted {
+.action.muted {
   color: var(--muted);
 }
 
@@ -618,10 +622,16 @@ button {
   font-weight: 600;
   font-size: 12.5px;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition:
+    filter 0.12s ease,
+    background 0.12s ease,
+    border-color 0.12s ease;
 }
+/* Subtle highlight on hover — keeps the original colour theme so primary
+ * buttons (light ink), nav-items (transparent), and link-style .action
+ * buttons all keep their identity instead of all flashing the same green. */
 button:hover:not(:disabled) {
-  background: var(--good);
+  filter: brightness(1.06);
 }
 button:disabled {
   opacity: 0.4;
