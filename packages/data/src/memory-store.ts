@@ -126,6 +126,20 @@ export class MemoryStore implements Store {
     return null;
   }
 
+  async listMembersForHousehold(householdId: string): Promise<HouseholdMembership[]> {
+    return [...this.memberships.values()].filter((m) => m.householdId === householdId);
+  }
+
+  async removeMember(householdId: string, userId: string): Promise<void> {
+    for (const [k, m] of this.memberships) {
+      if (m.householdId === householdId && m.userId === userId) this.memberships.delete(k);
+    }
+  }
+
+  async listSharesForHousehold(householdId: string): Promise<AccountShare[]> {
+    return [...this.shares.values()].filter((s) => s.householdId === householdId);
+  }
+
   async createAccountShare(
     accountId: string,
     householdId: string,

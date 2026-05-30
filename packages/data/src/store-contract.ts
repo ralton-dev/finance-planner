@@ -94,6 +94,16 @@ export async function exerciseStore(store: Store): Promise<void> {
   const partnerVisible = await store.listAccessibleAccounts(other.id);
   expect(partnerVisible.map((a) => a.accountId)).toContain(account.id);
 
+  // members + household share listings
+  const members = await store.listMembersForHousehold(household.id);
+  expect(members.map((m) => m.userId).sort()).toEqual([user.id, other.id].sort());
+  const householdShares = await store.listSharesForHousehold(household.id);
+  expect(householdShares.map((s) => s.accountId)).toEqual([account.id]);
+
+  // remove the partner from the household; their access goes away.
+  await store.removeMember(household.id, other.id);
+  expect(await store.getAccess(other.id, account.id)).toBeNull();
+
   const stranger = await store.createUser({
     email: "stranger@example.com",
     passwordHash: "hash",

@@ -66,6 +66,8 @@ export interface Store {
     role: HouseholdRole,
   ): Promise<HouseholdMembership>;
   getMembership(householdId: string, userId: string): Promise<HouseholdMembership | null>;
+  listMembersForHousehold(householdId: string): Promise<HouseholdMembership[]>;
+  removeMember(householdId: string, userId: string): Promise<void>;
 
   createAccountShare(
     accountId: string,
@@ -73,6 +75,7 @@ export interface Store {
     permission: SharePermission,
   ): Promise<AccountShare>;
   listSharesForAccount(accountId: string): Promise<AccountShare[]>;
+  listSharesForHousehold(householdId: string): Promise<AccountShare[]>;
   deleteAccountShare(id: string): Promise<void>;
 
   /** Owned + shared accounts, with the user's effective permission. */

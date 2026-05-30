@@ -24,6 +24,34 @@ export interface HouseholdDto {
   name: string;
 }
 
+export type HouseholdRole = "owner" | "admin" | "member";
+
+export interface HouseholdMemberDto {
+  membershipId: string;
+  userId: string;
+  role: HouseholdRole;
+  displayName: string;
+  email: string;
+  isSelf: boolean;
+}
+
+export interface HouseholdShareDto {
+  shareId: string;
+  accountId: string;
+  accountName: string;
+  currency: string;
+  permission: "view" | "edit";
+}
+
+export interface HouseholdDetailDto {
+  id: string;
+  name: string;
+  createdAt: string;
+  yourRole: HouseholdRole;
+  members: HouseholdMemberDto[];
+  shares: HouseholdShareDto[];
+}
+
 export interface AccountDto {
   id: string;
   name: string;

@@ -1,6 +1,8 @@
 import type {
   AccountDto,
   AccountPlanDto,
+  HouseholdDetailDto,
+  HouseholdRole,
   IncomeDto,
   OverviewDto,
   PaymentDto,
@@ -175,6 +177,27 @@ export class ApiClient {
   // ---- households ----
   createHousehold(name: string) {
     return this.request<{ id: string; name: string }>("POST", "/api/auth/households", { name });
+  }
+  getHousehold(id: string) {
+    return this.request<HouseholdDetailDto>("GET", `/api/auth/households/${id}`);
+  }
+  inviteMember(householdId: string, email: string, role: HouseholdRole = "member") {
+    return this.request<{ id: string }>("POST", `/api/auth/households/${householdId}/members`, {
+      email,
+      role,
+    });
+  }
+  removeMember(householdId: string, userId: string) {
+    return this.request<void>("DELETE", `/api/auth/households/${householdId}/members/${userId}`);
+  }
+  shareAccount(accountId: string, householdId: string, permission: "view" | "edit") {
+    return this.request<{ id: string }>("POST", `/api/accounts/${accountId}/shares`, {
+      householdId,
+      permission,
+    });
+  }
+  unshareAccount(accountId: string, shareId: string) {
+    return this.request<void>("DELETE", `/api/accounts/${accountId}/shares/${shareId}`);
   }
 }
 

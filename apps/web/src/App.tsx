@@ -7,6 +7,7 @@ import { NewPaymentDrawer } from "./components/NewPaymentDrawer.js";
 import { QuickAddProvider } from "./contexts/QuickAddContext.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AccountsPage } from "./pages/AccountsPage.js";
+import { HouseholdDetailPage } from "./pages/HouseholdDetailPage.js";
 import { HouseholdsPage } from "./pages/HouseholdsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
 import { OverviewPage } from "./pages/OverviewPage.js";
@@ -33,6 +34,7 @@ export function App() {
               <Route path="/accounts/:id" element={<AccountPage />} />
               <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/households" element={<HouseholdsPage />} />
+              <Route path="/households/:id" element={<HouseholdDetailPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

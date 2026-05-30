@@ -113,4 +113,165 @@ describe("auth service", () => {
     const list = await ctx.app.inject({ method: "GET", url: "/auth/households", headers: auth });
     expect(list.json()).toHaveLength(1);
   });
+
+  it("household detail returns members + shares for the owner", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const ownerAuth = { authorization: `Bearer ${login.json().accessToken}` };
+
+    const partnerPayload = {
+      email: "partner@example.com",
+      password: "password123",
+      displayName: "Partner",
+    };
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: partnerPayload });
+
+    const household = (
+      await ctx.app.inject({
+        method: "POST",
+        url: "/auth/households",
+        headers: ownerAuth,
+        payload: { name: "Home" },
+      })
+    ).json();
+
+    // owner adds the partner
+    const add = await ctx.app.inject({
+      method: "POST",
+      url: `/auth/households/${household.id}/members`,
+      headers: ownerAuth,
+      payload: { email: "partner@example.com", role: "member" },
+    });
+    expect(add.statusCode).toBe(201);
+
+    // duplicate invite → 409
+    const dup = await ctx.app.inject({
+      method: "POST",
+      url: `/auth/households/${household.id}/members`,
+      headers: ownerAuth,
+      payload: { email: "partner@example.com", role: "member" },
+    });
+    expect(dup.statusCode).toBe(409);
+
+    // pre-seed a shared account directly via the store to avoid wiring the api gateway here
+    const ownerUser = await ctx.store.getUserByEmail(register.email);
+    const acct = await ctx.store.createAccount({
+      ownerUserId: ownerUser!.id,
+      name: "Joint",
+      currency: "GBP",
+    });
+    await ctx.store.createAccountShare(acct.id, household.id, "edit");
+
+    const detail = await ctx.app.inject({
+      method: "GET",
+      url: `/auth/households/${household.id}`,
+      headers: ownerAuth,
+    });
+    expect(detail.statusCode).toBe(200);
+    const body = detail.json();
+    expect(body.name).toBe("Home");
+    expect(body.yourRole).toBe("owner");
+    expect(body.members.map((m: { email: string }) => m.email).sort()).toEqual([
+      "partner@example.com",
+      "user@example.com",
+    ]);
+    expect(body.shares).toHaveLength(1);
+    expect(body.shares[0].accountName).toBe("Joint");
+    expect(body.shares[0].permission).toBe("edit");
+  });
+
+  it("hides households from non-members (404)", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const ownerAuth = { authorization: `Bearer ${login.json().accessToken}` };
+    const household = (
+      await ctx.app.inject({
+        method: "POST",
+        url: "/auth/households",
+        headers: ownerAuth,
+        payload: { name: "Home" },
+      })
+    ).json();
+
+    const stranger = {
+      email: "stranger@example.com",
+      password: "password123",
+      displayName: "Stranger",
+    };
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: stranger });
+    const strangerLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: stranger,
+    });
+    const strangerAuth = { authorization: `Bearer ${strangerLogin.json().accessToken}` };
+
+    const res = await ctx.app.inject({
+      method: "GET",
+      url: `/auth/households/${household.id}`,
+      headers: strangerAuth,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("admins can remove members; the owner cannot be removed by others", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const ownerAuth = { authorization: `Bearer ${login.json().accessToken}` };
+
+    const partner = {
+      email: "partner@example.com",
+      password: "password123",
+      displayName: "Partner",
+    };
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: partner });
+    const partnerLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: partner,
+    });
+    const partnerAuth = { authorization: `Bearer ${partnerLogin.json().accessToken}` };
+
+    const household = (
+      await ctx.app.inject({
+        method: "POST",
+        url: "/auth/households",
+        headers: ownerAuth,
+        payload: { name: "Home" },
+      })
+    ).json();
+    await ctx.app.inject({
+      method: "POST",
+      url: `/auth/households/${household.id}/members`,
+      headers: ownerAuth,
+      payload: { email: partner.email, role: "member" },
+    });
+
+    const partnerUser = await ctx.store.getUserByEmail(partner.email);
+    const ownerUser = await ctx.store.getUserByEmail(register.email);
+
+    // partner (a regular member) cannot remove the owner
+    const forbidden = await ctx.app.inject({
+      method: "DELETE",
+      url: `/auth/households/${household.id}/members/${ownerUser!.id}`,
+      headers: partnerAuth,
+    });
+    expect(forbidden.statusCode).toBe(403);
+
+    // owner removes the partner
+    const removed = await ctx.app.inject({
+      method: "DELETE",
+      url: `/auth/households/${household.id}/members/${partnerUser!.id}`,
+      headers: ownerAuth,
+    });
+    expect(removed.statusCode).toBe(204);
+
+    // partner can no longer see the household
+    const after = await ctx.app.inject({
+      method: "GET",
+      url: `/auth/households/${household.id}`,
+      headers: partnerAuth,
+    });
+    expect(after.statusCode).toBe(404);
+  });
 });

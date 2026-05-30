@@ -195,6 +195,40 @@ export class PgStore implements Store {
     };
   }
 
+  async listMembersForHousehold(householdId: string): Promise<HouseholdMembership[]> {
+    const rows = await this.db
+      .select()
+      .from(s.memberships)
+      .where(eq(s.memberships.householdId, householdId));
+    return rows.map((r) => ({
+      id: r.id,
+      householdId: r.householdId,
+      userId: r.userId,
+      role: r.role as HouseholdRole,
+      createdAt: r.createdAt.toISOString(),
+    }));
+  }
+
+  async removeMember(householdId: string, userId: string): Promise<void> {
+    await this.db
+      .delete(s.memberships)
+      .where(and(eq(s.memberships.householdId, householdId), eq(s.memberships.userId, userId)));
+  }
+
+  async listSharesForHousehold(householdId: string): Promise<AccountShare[]> {
+    const rows = await this.db
+      .select()
+      .from(s.accountShares)
+      .where(eq(s.accountShares.householdId, householdId));
+    return rows.map((r) => ({
+      id: r.id,
+      accountId: r.accountId,
+      householdId: r.householdId,
+      permission: r.permission as SharePermission,
+      createdAt: r.createdAt.toISOString(),
+    }));
+  }
+
   async createAccountShare(
     accountId: string,
     householdId: string,

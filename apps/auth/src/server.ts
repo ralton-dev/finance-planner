@@ -223,8 +223,81 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
     }
     const invitee = await store.getUserByEmail(body.email);
     if (!invitee) throw new HttpError(404, "not_found", "No user with that email");
+    if (await store.getMembership(id, invitee.id)) {
+      throw new HttpError(409, "already_member", "That user is already a member");
+    }
     const added = await store.addMembership(id, invitee.id, body.role);
     return reply.code(201).send(added);
+  });
+
+  /** Return household + members + shared accounts in one payload. The caller
+   *  must be a member; non-members get a 404 (not 403) to avoid leaking
+   *  household existence. */
+  app.get("/auth/households/:id", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const membership = await store.getMembership(id, userId);
+    if (!membership) throw new HttpError(404, "not_found", "Household not found");
+    const household = await store.getHousehold(id);
+    if (!household) throw new HttpError(404, "not_found", "Household not found");
+
+    const members = await store.listMembersForHousehold(id);
+    const memberDtos = await Promise.all(
+      members.map(async (m) => {
+        const user = await store.getUserById(m.userId);
+        return {
+          membershipId: m.id,
+          userId: m.userId,
+          role: m.role,
+          displayName: user?.displayName ?? "(unknown)",
+          email: user?.email ?? "",
+          isSelf: m.userId === userId,
+        };
+      }),
+    );
+
+    const shares = await store.listSharesForHousehold(id);
+    const shareDtos = await Promise.all(
+      shares.map(async (sh) => {
+        const account = await store.getAccount(sh.accountId);
+        return {
+          shareId: sh.id,
+          accountId: sh.accountId,
+          accountName: account?.name ?? "(unknown account)",
+          currency: account?.currency ?? "",
+          permission: sh.permission,
+        };
+      }),
+    );
+
+    return {
+      id: household.id,
+      name: household.name,
+      createdAt: household.createdAt,
+      yourRole: membership.role,
+      members: memberDtos,
+      shares: shareDtos,
+    };
+  });
+
+  app.delete("/auth/households/:id/members/:userId", async (req, reply) => {
+    const callerId = await authenticate(req);
+    const { id, userId: targetUserId } = req.params as { id: string; userId: string };
+    const callerMembership = await store.getMembership(id, callerId);
+    if (!callerMembership) throw new HttpError(404, "not_found", "Household not found");
+    // Anyone can leave; only admins/owners can remove others.
+    if (targetUserId !== callerId) {
+      if (callerMembership.role !== "owner" && callerMembership.role !== "admin") {
+        throw new HttpError(403, "forbidden", "Only household admins can remove members");
+      }
+    }
+    const target = await store.getMembership(id, targetUserId);
+    if (!target) throw new HttpError(404, "not_found", "Membership not found");
+    if (target.role === "owner" && targetUserId !== callerId) {
+      throw new HttpError(403, "forbidden", "Cannot remove the household owner");
+    }
+    await store.removeMember(id, targetUserId);
+    return reply.code(204).send();
   });
 
   return app;
