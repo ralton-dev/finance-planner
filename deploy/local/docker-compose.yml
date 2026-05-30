@@ -41,6 +41,8 @@ services:
       API_PORT: "4000"
       DATABASE_URL: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}
       REDIS_URL: redis://redis:6379
+      AUTH_URL: http://auth:4001
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-insecure-secret-change-me}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "4000:4000"
@@ -57,6 +59,7 @@ services:
     environment:
       AUTH_PORT: "4001"
       DATABASE_URL: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-insecure-secret-change-me}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "4001:4001"
@@ -85,6 +88,10 @@ services:
     build:
       context: ../..
       dockerfile: apps/web/Dockerfile
+    # Compose-only nginx that proxies /api -> api. In Kubernetes the ingress
+    # routes /api to the api service, so the image's default config is used.
+    volumes:
+      - ./web-nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "8080:8080"
     depends_on:

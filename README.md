@@ -10,9 +10,18 @@ domain model, calculation engine, API, frontend, auth, DevOps, roadmap).
 
 ## Status
 
-**Phase 0 — Foundations.** Monorepo scaffold with buildable app/package
-skeletons, shared tooling, local stack, and CI. The product features land in
-later phases (see [`plan/08-roadmap.md`](./plan/08-roadmap.md)).
+**Feature-complete (v1).** Multi-user savings planner end to end: auth with
+shared households, accounts with incomes and per-category payments, the savings
+calculation engine (required-per-month, prioritised funding, shortfall, savings
+buffer), per-account breakdowns and an all-accounts overview, a React SPA, and
+cloud-agnostic Kubernetes deployment. Tests run per feature (unit, component,
+integration via Testcontainers, and Playwright E2E). See
+[`plan/08-roadmap.md`](./plan/08-roadmap.md) for the phase history and
+[`plan/09-open-questions.md`](./plan/09-open-questions.md) for the locked
+decisions.
+
+The browser talks to a single `/api` entrypoint: the `api` gateway serves the
+core domain and forwards `/api/auth/*` to the `auth` service.
 
 ## Repository layout
 
@@ -42,18 +51,18 @@ deploy/      docker-compose (local), Helm chart, kind helper
 
 ## Getting started
 
-```bash
-corepack enable
-pnpm install
-pnpm dev            # web on :5173, api :4000, auth :4001, calc :4002
-```
-
-Or run the full containerised stack (Postgres + Redis + services):
+Integrated local development — run the backend (Postgres + Redis + services) in
+containers and the web app via Vite (which proxies `/api` to the gateway):
 
 ```bash
 cp .env.example .env
-make up
+make up              # postgres, redis, api :4000, auth :4001, calc :4002
+pnpm --filter @finance-planner/web dev   # web on :5173, proxies /api -> :4000
 ```
+
+`make up` alone also serves the built SPA at http://localhost:8080 (its nginx
+proxies `/api` to the gateway). Without a database, the services fall back to an
+in-memory store, so `pnpm dev` works for a quick spin too.
 
 ## Common tasks
 

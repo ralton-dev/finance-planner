@@ -35,6 +35,20 @@ resources:
 config:
   LOG_LEVEL: info
   REDIS_URL: redis://finance-planner-redis:6379
+  AUTH_URL: http://finance-planner-auth:4001
+  COOKIE_SECURE: "true"
+
+# DB migration Job (Helm pre-install/pre-upgrade hook).
+migrations:
+  enabled: true
+  image: postgres:17-alpine
+
+# Horizontal Pod Autoscaling for the stateless services.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
 
 # Secret values (rendered into a Secret). Override in real environments / via
 # an external secrets operator — do not commit real secrets.
