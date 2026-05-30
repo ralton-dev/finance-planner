@@ -1,15 +1,18 @@
-import { type FormEvent, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { PlanSummary, PlanTable } from "../components/PlanTable.js";
+import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
-import { formatMinor, toMinor } from "../lib/money.js";
+import { formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
 import type { AccountDto, AccountPlanDto, IncomeDto, PaymentDto } from "../lib/types.js";
 
 export function AccountPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
+  const { openIncome, openPayment, lastCreated } = useQuickAdd();
+
   const account = useAsync<AccountDto>(() => api.getAccount(id), [id]);
   const plan = useAsync<AccountPlanDto>(() => api.getPlan(id), [id]);
   const incomes = useAsync<IncomeDto[]>(() => api.listIncomes(id), [id]);
@@ -23,6 +26,15 @@ export function AccountPage() {
     incomes.refetch();
     payments.refetch();
   };
+
+  // When the quick-add drawer creates an income or payment for THIS account,
+  // refetch the plan + lists so the change appears immediately.
+  useEffect(() => {
+    if (!lastCreated) return;
+    if (lastCreated.kind === "income" || lastCreated.kind === "payment") {
+      if (lastCreated.accountId === id) refresh();
+    }
+  }, [lastCreated, id]);
 
   if (account.error) return <p className="error">account not found.</p>;
   if (account.loading || !account.data) return <p className="muted">loading…</p>;
@@ -88,6 +100,12 @@ export function AccountPage() {
           <div className="section-head">
             <h2>income</h2>
             <span className="meta">[{incomes.data?.length ?? 0} active]</span>
+            <span className="spacer" />
+            {canEdit && (
+              <button type="button" className="action" onClick={() => openIncome(id)}>
+                + add income
+              </button>
+            )}
           </div>
           {incomes.data && incomes.data.length > 0 ? (
             <ul className="entity-list">
@@ -99,31 +117,46 @@ export function AccountPage() {
                       — {formatMinor(i.amountMinor, currency)} / {i.frequency}
                     </em>
                   </span>
-                  <button
-                    type="button"
-                    className="ghost tiny"
-                    onClick={async () => {
-                      await api.deleteIncome(i.id);
-                      refresh();
-                    }}
-                  >
-                    remove
-                  </button>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      className="ghost tiny"
+                      onClick={async () => {
+                        await api.deleteIncome(i.id);
+                        refresh();
+                      }}
+                    >
+                      remove
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
           ) : (
             <p className="muted" style={{ fontSize: "12px" }}>
               no income yet.
+              {canEdit && (
+                <>
+                  {" "}
+                  <button type="button" className="action" onClick={() => openIncome(id)}>
+                    add the first one →
+                  </button>
+                </>
+              )}
             </p>
           )}
-          <IncomeForm accountId={id} onAdded={refresh} />
         </div>
 
         <div>
           <div className="section-head">
             <h2>payments</h2>
             <span className="meta">[{payments.data?.length ?? 0} active]</span>
+            <span className="spacer" />
+            {canEdit && (
+              <button type="button" className="action" onClick={() => openPayment(id)}>
+                + add payment
+              </button>
+            )}
           </div>
           {payments.data && payments.data.length > 0 ? (
             <ul className="entity-list">
@@ -138,55 +171,64 @@ export function AccountPage() {
                         — {formatMinor(p.amountMinor, currency)} ({p.category.replace(/_/g, " ")})
                       </em>
                     </span>
-                    <span className="row-actions">
-                      <button
-                        type="button"
-                        className="ghost tiny"
-                        disabled={idx === 0}
-                        title="higher priority"
-                        onClick={async () => {
-                          const ids = arr.map((x) => x.id);
-                          [ids[idx - 1], ids[idx]] = [ids[idx]!, ids[idx - 1]!];
-                          await api.reorderPayments(id, ids);
-                          refresh();
-                        }}
-                      >
-                        ↑
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost tiny"
-                        disabled={idx === arr.length - 1}
-                        title="lower priority"
-                        onClick={async () => {
-                          const ids = arr.map((x) => x.id);
-                          [ids[idx], ids[idx + 1]] = [ids[idx + 1]!, ids[idx]!];
-                          await api.reorderPayments(id, ids);
-                          refresh();
-                        }}
-                      >
-                        ↓
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost tiny"
-                        onClick={async () => {
-                          await api.deletePayment(p.id);
-                          refresh();
-                        }}
-                      >
-                        ✕
-                      </button>
-                    </span>
+                    {canEdit && (
+                      <span className="row-actions">
+                        <button
+                          type="button"
+                          className="ghost tiny"
+                          disabled={idx === 0}
+                          title="higher priority"
+                          onClick={async () => {
+                            const ids = arr.map((x) => x.id);
+                            [ids[idx - 1], ids[idx]] = [ids[idx]!, ids[idx - 1]!];
+                            await api.reorderPayments(id, ids);
+                            refresh();
+                          }}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost tiny"
+                          disabled={idx === arr.length - 1}
+                          title="lower priority"
+                          onClick={async () => {
+                            const ids = arr.map((x) => x.id);
+                            [ids[idx], ids[idx + 1]] = [ids[idx + 1]!, ids[idx]!];
+                            await api.reorderPayments(id, ids);
+                            refresh();
+                          }}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost tiny"
+                          onClick={async () => {
+                            await api.deletePayment(p.id);
+                            refresh();
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    )}
                   </li>
                 ))}
             </ul>
           ) : (
             <p className="muted" style={{ fontSize: "12px" }}>
               no payments yet.
+              {canEdit && (
+                <>
+                  {" "}
+                  <button type="button" className="action" onClick={() => openPayment(id)}>
+                    add the first one →
+                  </button>
+                </>
+              )}
             </p>
           )}
-          <PaymentForm accountId={id} onAdded={refresh} />
         </div>
       </div>
 
@@ -204,132 +246,5 @@ export function AccountPage() {
         onDeleted={() => navigate("/accounts")}
       />
     </section>
-  );
-}
-
-function IncomeForm({ accountId, onAdded }: { accountId: string; onAdded: () => void }) {
-  const [name, setName] = useState("");
-  const [amount, setAmount] = useState("");
-  const [frequency, setFrequency] = useState("monthly");
-  const [anchorDate, setAnchorDate] = useState(new Date().toISOString().slice(0, 10));
-
-  async function submit(e: FormEvent): Promise<void> {
-    e.preventDefault();
-    await api.createIncome(accountId, {
-      name,
-      amountMinor: toMinor(amount),
-      frequency,
-      anchorDate,
-    });
-    setName("");
-    setAmount("");
-    onAdded();
-  }
-
-  return (
-    <form className="stack-form" onSubmit={submit}>
-      <h3>add income</h3>
-      <input
-        placeholder="name (e.g. salary)"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        required
-      />
-      <input
-        placeholder="amount"
-        value={amount}
-        onChange={(e) => setAmount(e.target.value)}
-        required
-      />
-      <select value={frequency} onChange={(e) => setFrequency(e.target.value)}>
-        <option value="monthly">monthly</option>
-        <option value="yearly">yearly</option>
-        <option value="one_off">one-off</option>
-      </select>
-      <input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
-      <button type="submit">+ add income</button>
-    </form>
-  );
-}
-
-function PaymentForm({ accountId, onAdded }: { accountId: string; onAdded: () => void }) {
-  const [name, setName] = useState("");
-  const [category, setCategory] = useState("fixed_point");
-  const [amount, setAmount] = useState("");
-  const [dueDate, setDueDate] = useState(new Date().toISOString().slice(0, 10));
-  const [interval, setInterval] = useState("3");
-  const [unit, setUnit] = useState("month");
-  const [alreadySaved, setAlreadySaved] = useState("0");
-
-  const needsDate = category !== "monthly_recurring";
-  const isCustom = category === "custom_recurring";
-
-  async function submit(e: FormEvent): Promise<void> {
-    e.preventDefault();
-    const body: Record<string, unknown> = {
-      name,
-      category,
-      amountMinor: toMinor(amount),
-      alreadySavedMinor: toMinor(alreadySaved),
-    };
-    if (needsDate) body.dueDate = dueDate;
-    if (isCustom) {
-      body.recurrence = { interval: Number(interval), unit, anchor: dueDate };
-    }
-    await api.createPayment(accountId, body);
-    setName("");
-    setAmount("");
-    onAdded();
-  }
-
-  return (
-    <form className="stack-form" onSubmit={submit}>
-      <h3>add payment</h3>
-      <input
-        placeholder="name (e.g. holiday)"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        required
-      />
-      <select value={category} onChange={(e) => setCategory(e.target.value)}>
-        <option value="fixed_point">one-off goal (fixed date)</option>
-        <option value="monthly_recurring">monthly bill</option>
-        <option value="yearly_recurring">yearly</option>
-        <option value="custom_recurring">custom recurring</option>
-      </select>
-      <input
-        placeholder="amount"
-        value={amount}
-        onChange={(e) => setAmount(e.target.value)}
-        required
-      />
-      {needsDate && (
-        <label>
-          due / target date
-          <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-        </label>
-      )}
-      {isCustom && (
-        <div className="inline-form">
-          <span className="muted">every</span>
-          <input
-            value={interval}
-            onChange={(e) => setInterval(e.target.value)}
-            style={{ width: "4rem" }}
-          />
-          <select value={unit} onChange={(e) => setUnit(e.target.value)}>
-            <option value="day">days</option>
-            <option value="week">weeks</option>
-            <option value="month">months</option>
-            <option value="year">years</option>
-          </select>
-        </div>
-      )}
-      <label>
-        already saved
-        <input value={alreadySaved} onChange={(e) => setAlreadySaved(e.target.value)} />
-      </label>
-      <button type="submit">+ add payment</button>
-    </form>
   );
 }

@@ -1,10 +1,12 @@
 import { type ReactNode } from "react";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
+import { useQuickAdd } from "../contexts/QuickAddContext.js";
 
 export function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { openPayment, openIncome, openAccount } = useQuickAdd();
 
   return (
     <div className="app">
@@ -34,17 +36,17 @@ export function Layout() {
         </NavLink>
 
         <div className="nav-section">quick add</div>
-        <button type="button" className="nav-item disabled" disabled>
+        <button type="button" className="nav-item" onClick={() => openPayment()}>
           <span className="label">new payment</span>
-          <span className="badge">soon</span>
+          <span className="kbd-ish">n p</span>
         </button>
-        <button type="button" className="nav-item disabled" disabled>
+        <button type="button" className="nav-item" onClick={() => openIncome()}>
           <span className="label">new income</span>
-          <span className="badge">soon</span>
+          <span className="kbd-ish">n i</span>
         </button>
-        <button type="button" className="nav-item disabled" disabled>
+        <button type="button" className="nav-item" onClick={() => openAccount()}>
           <span className="label">new account</span>
-          <span className="badge">soon</span>
+          <span className="kbd-ish">n a</span>
         </button>
 
         <div className="sidebar-foot">

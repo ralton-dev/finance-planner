@@ -1,12 +1,22 @@
+import { useEffect } from "react";
 import { Link } from "react-router-dom";
+import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
 import type { AccountDto, OverviewDto } from "../lib/types.js";
 
 export function OverviewPage() {
+  const { lastCreated } = useQuickAdd();
   const overview = useAsync<OverviewDto>(() => api.overview(), []);
   const accounts = useAsync<AccountDto[]>(() => api.listAccounts(), []);
+
+  // Any quick-add creation can affect what the Overview shows.
+  useEffect(() => {
+    if (!lastCreated) return;
+    overview.refetch();
+    accounts.refetch();
+  }, [lastCreated]);
 
   if (overview.loading || accounts.loading) return <p className="muted">loading…</p>;
   if (overview.error) return <p className="error">failed to load overview.</p>;
