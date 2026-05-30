@@ -9,6 +9,7 @@ import {
   updateMemberRoleBody,
 } from "@finance-planner/contracts";
 import { createStore, type Store } from "@finance-planner/data";
+import { type AppAbility, buildAbility, subject } from "@finance-planner/policies";
 import {
   hashPassword,
   randomToken,
@@ -77,6 +78,18 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
     } catch {
       throw new HttpError(401, "unauthorized", "Invalid token");
     }
+  };
+
+  /** Build the caller's per-request ability from their household memberships. */
+  const abilityFor = async (userId: string): Promise<AppAbility> => {
+    const households = await store.listHouseholdsForUser(userId);
+    const ctx = await Promise.all(
+      households.map(async (h) => {
+        const m = await store.getMembership(h.id, userId);
+        return { id: h.id, role: m?.role ?? "member" };
+      }),
+    );
+    return buildAbility({ userId, accountAccess: [], households: ctx });
   };
 
   const setRefreshCookie = (reply: FastifyReply, token: string): void => {
@@ -218,8 +231,12 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
     const body = addMemberBody.parse(req.body);
-    const membership = await store.getMembership(id, userId);
-    if (!membership || (membership.role !== "owner" && membership.role !== "admin")) {
+    const ability = await abilityFor(userId);
+    const ref = subject("Household", { id });
+    if (!ability.hasAnyAccess(ref)) {
+      throw new HttpError(404, "not_found", "Household not found");
+    }
+    if (!ability.can("manage_members", ref)) {
       throw new HttpError(403, "forbidden", "Only household admins can add members");
     }
     const invitee = await store.getUserByEmail(body.email);
@@ -284,13 +301,14 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   app.delete("/auth/households/:id/members/:userId", async (req, reply) => {
     const callerId = await authenticate(req);
     const { id, userId: targetUserId } = req.params as { id: string; userId: string };
-    const callerMembership = await store.getMembership(id, callerId);
-    if (!callerMembership) throw new HttpError(404, "not_found", "Household not found");
+    const ability = await abilityFor(callerId);
+    const ref = subject("Household", { id });
+    if (!ability.hasAnyAccess(ref)) {
+      throw new HttpError(404, "not_found", "Household not found");
+    }
     // Anyone can leave; only admins/owners can remove others.
-    if (targetUserId !== callerId) {
-      if (callerMembership.role !== "owner" && callerMembership.role !== "admin") {
-        throw new HttpError(403, "forbidden", "Only household admins can remove members");
-      }
+    if (targetUserId !== callerId && !ability.can("manage_members", ref)) {
+      throw new HttpError(403, "forbidden", "Only household admins can remove members");
     }
     const target = await store.getMembership(id, targetUserId);
     if (!target) throw new HttpError(404, "not_found", "Membership not found");
@@ -308,10 +326,12 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
     const callerId = await authenticate(req);
     const { id, userId: targetUserId } = req.params as { id: string; userId: string };
     const body = updateMemberRoleBody.parse(req.body);
-
-    const callerMembership = await store.getMembership(id, callerId);
-    if (!callerMembership) throw new HttpError(404, "not_found", "Household not found");
-    if (callerMembership.role !== "owner") {
+    const ability = await abilityFor(callerId);
+    const ref = subject("Household", { id });
+    if (!ability.hasAnyAccess(ref)) {
+      throw new HttpError(404, "not_found", "Household not found");
+    }
+    if (!ability.can("change_roles", ref)) {
       throw new HttpError(403, "forbidden", "Only the household owner can change roles");
     }
     const target = await store.getMembership(id, targetUserId);
@@ -328,9 +348,12 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   app.delete("/auth/households/:id", async (req, reply) => {
     const callerId = await authenticate(req);
     const { id } = req.params as { id: string };
-    const callerMembership = await store.getMembership(id, callerId);
-    if (!callerMembership) throw new HttpError(404, "not_found", "Household not found");
-    if (callerMembership.role !== "owner") {
+    const ability = await abilityFor(callerId);
+    const ref = subject("Household", { id });
+    if (!ability.hasAnyAccess(ref)) {
+      throw new HttpError(404, "not_found", "Household not found");
+    }
+    if (!ability.can("delete_household", ref)) {
       throw new HttpError(403, "forbidden", "Only the household owner can delete the household");
     }
     await store.deleteHousehold(id);

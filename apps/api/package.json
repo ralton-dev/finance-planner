@@ -16,6 +16,7 @@
     "@finance-planner/contracts": "workspace:*",
     "@finance-planner/data": "workspace:*",
     "@finance-planner/domain": "workspace:*",
+    "@finance-planner/policies": "workspace:*",
     "@finance-planner/security": "workspace:*",
     "fastify": "^5.2.1",
     "pg": "^8.13.1"

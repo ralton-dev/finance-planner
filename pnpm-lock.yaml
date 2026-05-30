@@ -41,6 +41,9 @@ importers:
       '@finance-planner/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@finance-planner/policies':
+        specifier: workspace:*
+        version: link:../../packages/policies
       '@finance-planner/security':
         specifier: workspace:*
         version: link:../../packages/security
@@ -78,6 +81,9 @@ importers:
       '@finance-planner/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@finance-planner/policies':
+        specifier: workspace:*
+        version: link:../../packages/policies
       '@finance-planner/security':
         specifier: workspace:*
         version: link:../../packages/security
@@ -243,6 +249,15 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@22.19.19)(jsdom@25.0.1)(tsx@4.22.3)(yaml@2.9.0))
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.19)(jsdom@25.0.1)(tsx@4.22.3)(yaml@2.9.0)
+
+  packages/policies:
+    devDependencies:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3

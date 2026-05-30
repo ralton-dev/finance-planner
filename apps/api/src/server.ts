@@ -10,14 +10,9 @@ import {
   updateIncomeBody,
   updatePaymentBody,
 } from "@finance-planner/contracts";
-import {
-  type Account,
-  type AccountAccess,
-  createStore,
-  type SharePermission,
-  type Store,
-} from "@finance-planner/data";
+import { type Account, type AccountAccess, createStore, type Store } from "@finance-planner/data";
 import { computeOverview, toISODate } from "@finance-planner/domain";
+import { type Action, type AppAbility, buildAbility, subject } from "@finance-planner/policies";
 import { verifyAccessToken } from "@finance-planner/security";
 import fastifyHttpProxy from "@fastify/http-proxy";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
@@ -91,23 +86,47 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
   };
 
-  /** Resolve access to an account, enforcing the required permission level. */
+  /** Build the caller's per-request ability from their effective access. */
+  const abilityFor = async (userId: string): Promise<AppAbility> => {
+    const accountAccess = await store.listAccessibleAccounts(userId);
+    return buildAbility({
+      userId,
+      accountAccess: accountAccess.map((a) => ({
+        id: a.accountId,
+        isOwner: a.owner,
+        permission: a.permission,
+      })),
+      // The api gateway doesn't authorize household actions; those endpoints
+      // proxy to the auth service which builds its own ability.
+      households: [],
+    });
+  };
+
+  /**
+   * Resolve access to an account at a specific action level. The policy
+   * package handles the 404-vs-403 leak rule: no access at all → 404, has
+   * access but insufficient → 403. Mirrors the prior requireAccess contract
+   * so call sites don't need to change.
+   */
   const requireAccess = async (
     userId: string,
     accountId: string,
-    level: SharePermission | "owner",
-  ): Promise<{ account: Account; access: AccountAccess }> => {
-    const access = await store.getAccess(userId, accountId);
-    const account = access ? await store.getAccount(accountId) : null;
-    // 404 (not 403) when no access at all, to avoid leaking existence.
-    if (!access || !account) throw new HttpError(404, "not_found", "Account not found");
-    if (level === "owner" && !access.owner) {
-      throw new HttpError(403, "forbidden", "Owner access required");
+    action: Action,
+  ): Promise<{ account: Account; access: AccountAccess; ability: AppAbility }> => {
+    const ability = await abilityFor(userId);
+    const ref = subject("Account", { id: accountId });
+    if (!ability.hasAnyAccess(ref)) {
+      throw new HttpError(404, "not_found", "Account not found");
     }
-    if (level === "edit" && access.permission !== "edit") {
-      throw new HttpError(403, "forbidden", "Edit access required");
+    if (!ability.can(action, ref)) {
+      throw new HttpError(403, "forbidden", `${action} access required`);
     }
-    return { account, access };
+    const [account, access] = await Promise.all([
+      store.getAccount(accountId),
+      store.getAccess(userId, accountId),
+    ]);
+    if (!account || !access) throw new HttpError(404, "not_found", "Account not found");
+    return { account, access, ability };
   };
 
   const accountIdOf = async (kind: "income" | "payment", id: string): Promise<string> => {
@@ -169,7 +188,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.delete("/api/accounts/:id", async (req, reply) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    await requireAccess(userId, id, "owner");
+    await requireAccess(userId, id, "delete");
     await store.deleteAccount(id);
     return reply.code(204).send();
   });
@@ -282,7 +301,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.post("/api/accounts/:id/shares", async (req, reply) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    await requireAccess(userId, id, "owner");
+    await requireAccess(userId, id, "share");
     const body = shareAccountBody.parse(req.body);
     const membership = await store.getMembership(body.householdId, userId);
     if (!membership) throw new HttpError(403, "forbidden", "Not a member of that household");
@@ -293,7 +312,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.delete("/api/accounts/:id/shares/:shareId", async (req, reply) => {
     const userId = await authenticate(req);
     const { id, shareId } = req.params as { id: string; shareId: string };
-    await requireAccess(userId, id, "owner");
+    await requireAccess(userId, id, "share");
     await store.deleteAccountShare(shareId);
     return reply.code(204).send();
   });
