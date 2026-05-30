@@ -19,6 +19,7 @@ import {
 } from "@finance-planner/data";
 import { computeOverview, toISODate } from "@finance-planner/domain";
 import { verifyAccessToken } from "@finance-planner/security";
+import fastifyHttpProxy from "@fastify/http-proxy";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { type ApiEnv, loadEnv } from "./env.js";
 import { computePlanForAccount } from "./plan.js";
@@ -30,6 +31,8 @@ const startedAt = Date.now();
 export interface ApiDeps {
   store?: Store;
   env?: ApiEnv;
+  /** Forward /api/auth/* to the auth service. Disabled in unit tests. */
+  registerAuthProxy?: boolean;
 }
 
 class HttpError extends Error {
@@ -55,6 +58,15 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
 
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
   app.addHook("onClose", async () => handle.close());
+
+  // Single public entrypoint: forward /api/auth/* to the auth service.
+  if (deps.registerAuthProxy ?? true) {
+    app.register(fastifyHttpProxy, {
+      upstream: env.authUrl,
+      prefix: "/api/auth",
+      rewritePrefix: "/auth",
+    });
+  }
 
   app.setErrorHandler((err: Error & { validation?: unknown }, _req, reply) => {
     if (err instanceof HttpError) {

@@ -1,0 +1,111 @@
+export type Frequency = "monthly" | "yearly" | "custom" | "one_off";
+export type PaymentCategory =
+  | "monthly_recurring"
+  | "yearly_recurring"
+  | "custom_recurring"
+  | "fixed_point";
+
+export interface Recurrence {
+  interval: number;
+  unit: "day" | "week" | "month" | "year";
+  anchor: string;
+}
+
+export interface UserDto {
+  id: string;
+  email: string;
+  displayName: string;
+  emailVerified?: boolean;
+  households?: HouseholdDto[];
+}
+
+export interface HouseholdDto {
+  id: string;
+  name: string;
+}
+
+export interface AccountDto {
+  id: string;
+  name: string;
+  description?: string | null;
+  currency: string;
+  openingBalanceMinor: number;
+  monthlyBufferMinor: number;
+  permission?: "view" | "edit";
+  owner?: boolean;
+}
+
+export interface IncomeDto {
+  id: string;
+  accountId: string;
+  name: string;
+  amountMinor: number;
+  frequency: Frequency;
+  recurrence: Recurrence | null;
+  anchorDate: string;
+  active: boolean;
+}
+
+export interface PaymentDto {
+  id: string;
+  accountId: string;
+  name: string;
+  category: PaymentCategory;
+  amountMinor: number;
+  dueDate: string | null;
+  recurrence: Recurrence | null;
+  targetDate: string | null;
+  priority: number;
+  alreadySavedMinor: number;
+  autoRenew: boolean;
+  active: boolean;
+  notes: string | null;
+}
+
+export interface PlanLineDto {
+  paymentId: string;
+  name: string;
+  category: PaymentCategory;
+  amountMinor: number;
+  dueDate: string;
+  targetDate: string;
+  monthsUntilDue: number;
+  requiredMonthlyMinor: number;
+  fundedMonthlyMinor: number;
+  alreadySavedMinor: number;
+  onTrack: boolean;
+  projectedCompletionDate?: string;
+}
+
+export interface AccountPlanDto {
+  accountId: string;
+  currency: string;
+  monthlyIncomeMinor: number;
+  bufferMinor: number;
+  totalRequiredMinor: number;
+  totalFundedMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  lines: PlanLineDto[];
+}
+
+export interface CurrencyOverviewDto {
+  currency: string;
+  monthlyIncomeMinor: number;
+  bufferMinor: number;
+  totalRequiredMinor: number;
+  totalFundedMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  accounts: {
+    accountId: string;
+    leftoverMinor: number;
+    shortfallMinor: number;
+    atRiskCount: number;
+  }[];
+}
+
+export interface OverviewDto {
+  asOfDate: string;
+  perCurrency: CurrencyOverviewDto[];
+}

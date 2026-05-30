@@ -11,6 +11,7 @@ const env: AuthEnv = {
   accessTtlSeconds: 900,
   refreshTtlDays: 30,
   cookieSecure: false,
+  cookiePath: "/api/auth",
 };
 
 const register = { email: "user@example.com", password: "password123", displayName: "User" };
@@ -53,7 +54,7 @@ describe("auth service", () => {
 
     const me = await ctx.app.inject({
       method: "GET",
-      url: "/me",
+      url: "/auth/me",
       headers: { authorization: `Bearer ${accessToken}` },
     });
     expect(me.json().email).toBe("user@example.com");
@@ -77,7 +78,7 @@ describe("auth service", () => {
   });
 
   it("rejects /me without a token", async () => {
-    const res = await ctx.app.inject({ method: "GET", url: "/me" });
+    const res = await ctx.app.inject({ method: "GET", url: "/auth/me" });
     expect(res.statusCode).toBe(401);
   });
 
@@ -103,13 +104,13 @@ describe("auth service", () => {
 
     const created = await ctx.app.inject({
       method: "POST",
-      url: "/households",
+      url: "/auth/households",
       headers: auth,
       payload: { name: "Home" },
     });
     expect(created.statusCode).toBe(201);
 
-    const list = await ctx.app.inject({ method: "GET", url: "/households", headers: auth });
+    const list = await ctx.app.inject({ method: "GET", url: "/auth/households", headers: auth });
     expect(list.json()).toHaveLength(1);
   });
 });

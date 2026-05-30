@@ -83,7 +83,7 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
       httpOnly: true,
       sameSite: "strict",
       secure: env.cookieSecure,
-      path: "/auth",
+      path: env.cookiePath,
       maxAge: env.refreshTtlDays * 24 * 60 * 60,
     });
   };
@@ -181,12 +181,12 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
       const session = await store.getSessionByTokenHash(sha256(refresh));
       if (session) await store.revokeSession(session.id);
     }
-    reply.clearCookie(REFRESH_COOKIE, { path: "/auth" });
+    reply.clearCookie(REFRESH_COOKIE, { path: env.cookiePath });
     return reply.send({ ok: true });
   });
 
   // ---- me ----
-  app.get("/me", async (req) => {
+  app.get("/auth/me", async (req) => {
     const userId = await authenticate(req);
     const user = await store.getUserById(userId);
     if (!user) throw new HttpError(404, "not_found", "User not found");
@@ -201,19 +201,19 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   });
 
   // ---- households ----
-  app.get("/households", async (req) => {
+  app.get("/auth/households", async (req) => {
     const userId = await authenticate(req);
     return store.listHouseholdsForUser(userId);
   });
 
-  app.post("/households", async (req, reply) => {
+  app.post("/auth/households", async (req, reply) => {
     const userId = await authenticate(req);
     const body = createHouseholdBody.parse(req.body);
     const household = await store.createHousehold(body.name, userId);
     return reply.code(201).send(household);
   });
 
-  app.post("/households/:id/members", async (req, reply) => {
+  app.post("/auth/households/:id/members", async (req, reply) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
     const body = addMemberBody.parse(req.body);

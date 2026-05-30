@@ -6,6 +6,8 @@ export interface AuthEnv {
   accessTtlSeconds: number;
   refreshTtlDays: number;
   cookieSecure: boolean;
+  /** Path the refresh cookie is scoped to (matches the gateway prefix). */
+  cookiePath: string;
 }
 
 export function loadEnv(): AuthEnv {
@@ -17,5 +19,6 @@ export function loadEnv(): AuthEnv {
     accessTtlSeconds: Number(process.env.ACCESS_TTL_SECONDS ?? 900),
     refreshTtlDays: Number(process.env.REFRESH_TTL_DAYS ?? 30),
     cookieSecure: process.env.COOKIE_SECURE === "true",
+    cookiePath: process.env.COOKIE_PATH ?? "/api/auth",
   };
 }

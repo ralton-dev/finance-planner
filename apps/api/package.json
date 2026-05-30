@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/http-proxy": "^11.1.2",
     "@finance-planner/contracts": "workspace:*",
     "@finance-planner/data": "workspace:*",
     "@finance-planner/domain": "workspace:*",

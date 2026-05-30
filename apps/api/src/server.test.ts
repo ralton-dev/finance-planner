@@ -4,7 +4,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ApiEnv } from "./env.js";
 import { buildServer } from "./server.js";
 
-const env: ApiEnv = { port: 0, host: "127.0.0.1", jwtSecret: "test-secret" };
+const env: ApiEnv = {
+  port: 0,
+  host: "127.0.0.1",
+  jwtSecret: "test-secret",
+  authUrl: "http://localhost:4001",
+};
 
 async function seedUser(store: Store, email = "owner@example.com") {
   const user = await store.createUser({ email, passwordHash: "x", displayName: "Owner" });
@@ -18,7 +23,7 @@ describe("api service", () => {
 
   beforeEach(() => {
     store = new MemoryStore();
-    app = buildServer({ store, env });
+    app = buildServer({ store, env, registerAuthProxy: false });
   });
 
   it("health endpoint works without auth", async () => {
