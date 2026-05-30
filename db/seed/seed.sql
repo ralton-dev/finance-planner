@@ -11,8 +11,9 @@ acc AS (
   SELECT u.id, 'Everyday Account', 'Primary current account', 'GBP', 250000 FROM u
   RETURNING id
 )
+-- category is stored as text (per the migration); no enum cast required.
 INSERT INTO core.payments (account_id, name, category, amount_minor, due_date, recurrence, priority)
-SELECT acc.id, v.name, v.category::core.payment_category, v.amount, v.due::date, v.rec::jsonb, v.priority
+SELECT acc.id, v.name, v.category, v.amount, v.due::date, v.rec::jsonb, v.priority
 FROM acc, (VALUES
   ('Phone bill',     'monthly_recurring', 4500,   NULL,         NULL, 10),
   ('Car insurance',  'yearly_recurring',  32000,  '2026-09-01', NULL, 20),
