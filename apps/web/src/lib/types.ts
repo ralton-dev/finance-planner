@@ -88,6 +88,32 @@ export interface PaymentDto {
   autoRenew: boolean;
   active: boolean;
   notes: string | null;
+  projectId: string | null;
+}
+
+export interface ProjectDto {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  targetDate: string | null;
+}
+
+export interface ProjectMemberPaymentDto {
+  id: string;
+  accountId: string;
+  accountName: string;
+  currency: string;
+  name: string;
+  category: PaymentCategory;
+  amountMinor: number;
+  alreadySavedMinor: number;
+  dueDate: string | null;
+}
+
+export interface ProjectDetailDto extends ProjectDto {
+  payments: ProjectMemberPaymentDto[];
 }
 
 export interface PlanLineDto {

@@ -2,6 +2,7 @@ import {
   createAccountBody,
   createIncomeBody,
   createPaymentBody,
+  createProjectBody,
   type HealthResponse,
   type ReadinessResponse,
   reorderPaymentsBody,
@@ -9,6 +10,7 @@ import {
   updateAccountBody,
   updateIncomeBody,
   updatePaymentBody,
+  updateProjectBody,
 } from "@finance-planner/contracts";
 import { type Account, type AccountAccess, createStore, type Store } from "@finance-planner/data";
 import { computeOverview, toISODate } from "@finance-planner/domain";
@@ -268,6 +270,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       autoRenew: body.autoRenew,
       active: body.active,
       notes: body.notes ?? null,
+      projectId: body.projectId ?? null,
     });
     return reply.code(201).send(payment);
   });
@@ -329,6 +332,85 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       if (account) plans.push(await computePlanForAccount(store, account, asOfDate, false));
     }
     return computeOverview(plans, asOfDate);
+  });
+
+  // ---- projects ----
+  /**
+   * Projects are cross-account groupings of payments. Each project belongs to
+   * exactly one user (the creator). Member payments may live on any account
+   * the user has access to.
+   *
+   * No new permission surface yet — owner == manager == reader. If shared
+   * projects become a thing later, factor into packages/policies.
+   */
+  app.get("/api/projects", async (req) => {
+    const userId = await authenticate(req);
+    return store.listProjectsForOwner(userId);
+  });
+
+  app.post("/api/projects", async (req, reply) => {
+    const userId = await authenticate(req);
+    const body = createProjectBody.parse(req.body);
+    const project = await store.createProject({
+      ownerUserId: userId,
+      name: body.name,
+      description: body.description ?? null,
+      color: body.color ?? null,
+      targetDate: body.targetDate ?? null,
+    });
+    return reply.code(201).send(project);
+  });
+
+  /** GET /api/projects/:id — returns the project plus its member payments and
+   *  per-account totals. Non-owners get 404 (existence leak prevention). */
+  app.get("/api/projects/:id", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const project = await store.getProject(id);
+    if (!project || project.ownerUserId !== userId) {
+      throw new HttpError(404, "not_found", "Project not found");
+    }
+    const payments = await store.listPaymentsForProject(id);
+    const accountIds = [...new Set(payments.map((p) => p.accountId))];
+    const accounts = await Promise.all(accountIds.map((aid) => store.getAccount(aid)));
+    const accountMap = new Map<string, { name: string; currency: string }>();
+    for (const a of accounts) if (a) accountMap.set(a.id, { name: a.name, currency: a.currency });
+    return {
+      ...project,
+      payments: payments.map((p) => ({
+        id: p.id,
+        accountId: p.accountId,
+        accountName: accountMap.get(p.accountId)?.name ?? "(unknown)",
+        currency: accountMap.get(p.accountId)?.currency ?? "",
+        name: p.name,
+        category: p.category,
+        amountMinor: p.amountMinor,
+        alreadySavedMinor: p.alreadySavedMinor,
+        dueDate: p.dueDate,
+      })),
+    };
+  });
+
+  app.patch("/api/projects/:id", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const project = await store.getProject(id);
+    if (!project || project.ownerUserId !== userId) {
+      throw new HttpError(404, "not_found", "Project not found");
+    }
+    const body = updateProjectBody.parse(req.body);
+    return store.updateProject(id, defined(body));
+  });
+
+  app.delete("/api/projects/:id", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const project = await store.getProject(id);
+    if (!project || project.ownerUserId !== userId) {
+      throw new HttpError(404, "not_found", "Project not found");
+    }
+    await store.deleteProject(id);
+    return reply.code(204).send();
   });
 
   return app;

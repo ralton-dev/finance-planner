@@ -3,10 +3,11 @@ import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api, ApiError } from "../lib/api.js";
 import { toMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
-import type { AccountDto, PaymentCategory } from "../lib/types.js";
+import type { AccountDto, PaymentCategory, ProjectDto } from "../lib/types.js";
 import { Drawer } from "./Drawer.js";
 
 const NO_ACCOUNTS = Object.freeze([]) as readonly AccountDto[];
+const NO_PROJECTS = Object.freeze([]) as readonly ProjectDto[];
 type Unit = "day" | "week" | "month" | "year";
 
 export function NewPaymentDrawer() {
@@ -17,8 +18,13 @@ export function NewPaymentDrawer() {
     () => (open ? api.listAccounts() : Promise.resolve(NO_ACCOUNTS as AccountDto[])),
     [open],
   );
+  const projects = useAsync<ProjectDto[]>(
+    () => (open ? api.listProjects() : Promise.resolve(NO_PROJECTS as ProjectDto[])),
+    [open],
+  );
 
   const [accountId, setAccountId] = useState("");
+  const [projectId, setProjectId] = useState("");
   const [name, setName] = useState("");
   const [category, setCategory] = useState<PaymentCategory>("fixed_point");
   const [amount, setAmount] = useState("");
@@ -33,6 +39,7 @@ export function NewPaymentDrawer() {
   useEffect(() => {
     if (!open) return;
     setAccountId(state.accountId ?? "");
+    setProjectId("");
     setName("");
     setCategory("fixed_point");
     setAmount("");
@@ -76,6 +83,7 @@ export function NewPaymentDrawer() {
       };
       if (needsDate) body.dueDate = dueDate;
       if (isCustom) body.recurrence = { interval: Number(intervalN), unit, anchor: dueDate };
+      if (projectId) body.projectId = projectId;
       await api.createPayment(accountId, body);
       notifyCreated("payment", accountId);
       close();
@@ -199,6 +207,23 @@ export function NewPaymentDrawer() {
             inputMode="decimal"
             placeholder="0.00"
           />
+        </label>
+
+        <label>
+          project (optional)
+          <select
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            disabled={projects.loading}
+          >
+            <option value="">— none —</option>
+            {(projects.data ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <span className="field-hint">group this payment with others toward a shared goal.</span>
         </label>
 
         <label>

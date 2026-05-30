@@ -6,6 +6,8 @@ import type {
   IncomeDto,
   OverviewDto,
   PaymentDto,
+  ProjectDetailDto,
+  ProjectDto,
   UserDto,
 } from "./types.js";
 
@@ -208,6 +210,20 @@ export class ApiClient {
   }
   unshareAccount(accountId: string, shareId: string) {
     return this.request<void>("DELETE", `/api/accounts/${accountId}/shares/${shareId}`);
+  }
+
+  // ---- projects ----
+  listProjects() {
+    return this.request<ProjectDto[]>("GET", "/api/projects");
+  }
+  createProject(body: { name: string; description?: string | null; targetDate?: string | null }) {
+    return this.request<ProjectDto>("POST", "/api/projects", body);
+  }
+  getProject(id: string) {
+    return this.request<ProjectDetailDto>("GET", `/api/projects/${id}`);
+  }
+  deleteProject(id: string) {
+    return this.request<void>("DELETE", `/api/projects/${id}`);
   }
 }
 
