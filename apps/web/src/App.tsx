@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./auth/AuthContext.js";
+import { CommandPalette } from "./components/CommandPalette.js";
 import { Layout, RequireAuth } from "./components/Layout.js";
 import { NewAccountDrawer } from "./components/NewAccountDrawer.js";
 import { NewIncomeDrawer } from "./components/NewIncomeDrawer.js";
@@ -42,6 +43,8 @@ export function App() {
           <NewAccountDrawer />
           <NewIncomeDrawer />
           <NewPaymentDrawer />
+          {/* Command palette — listens for ⌘K globally. */}
+          <CommandPalette />
         </BrowserRouter>
       </QuickAddProvider>
     </AuthProvider>
