@@ -52,8 +52,8 @@ describe("PlanTable", () => {
 
   it("flags at-risk goals and marks on-track ones", () => {
     render(<PlanTable plan={plan} />);
-    expect(screen.getByText("On track")).toBeInTheDocument();
-    expect(screen.getByText("At risk")).toBeInTheDocument();
+    expect(screen.getByText("on track")).toBeInTheDocument();
+    expect(screen.getByText("at risk")).toBeInTheDocument();
   });
 
   it("shows an empty state with no payments", () => {
@@ -63,7 +63,7 @@ describe("PlanTable", () => {
 
   it("summary shows leftover when there is no shortfall", () => {
     render(<PlanSummary plan={plan} />);
-    expect(screen.getByText("Left over")).toBeInTheDocument();
+    expect(screen.getByText("left over")).toBeInTheDocument();
     expect(screen.getByText("£2,786.00")).toBeInTheDocument();
   });
 });

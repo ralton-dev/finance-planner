@@ -2,42 +2,45 @@ import type { AccountPlanDto, PlanLineDto } from "../lib/types.js";
 import { formatMinor } from "../lib/money.js";
 
 const CATEGORY_LABEL: Record<PlanLineDto["category"], string> = {
-  monthly_recurring: "Monthly bill",
-  yearly_recurring: "Yearly",
-  custom_recurring: "Recurring",
-  fixed_point: "Goal",
+  monthly_recurring: "monthly",
+  yearly_recurring: "yearly",
+  custom_recurring: "recurring",
+  fixed_point: "goal",
 };
 
 export function PlanTable({ plan }: { plan: AccountPlanDto }) {
   if (plan.lines.length === 0) {
-    return <p className="muted">No payments yet. Add one to see your savings plan.</p>;
+    return <p className="muted">no payments yet. add one to see your savings plan.</p>;
   }
   return (
     <table className="plan-table">
       <thead>
         <tr>
-          <th>Payment</th>
-          <th>Type</th>
-          <th>Due</th>
-          <th className="num">Amount</th>
-          <th className="num">Save / month</th>
-          <th>Status</th>
+          <th>payment</th>
+          <th>type</th>
+          <th>due</th>
+          <th className="num">amount</th>
+          <th className="num">save / mo</th>
+          <th>status</th>
         </tr>
       </thead>
       <tbody>
         {plan.lines.map((line) => (
           <tr key={line.paymentId} className={line.onTrack ? "" : "at-risk"}>
-            <td>{line.name}</td>
-            <td>{CATEGORY_LABEL[line.category]}</td>
-            <td>{line.targetDate}</td>
+            <td className="name">{line.name}</td>
+            <td className="muted">{CATEGORY_LABEL[line.category]}</td>
+            <td className="muted">{line.targetDate}</td>
             <td className="num">{formatMinor(line.amountMinor, plan.currency)}</td>
             <td className="num">{formatMinor(line.requiredMonthlyMinor, plan.currency)}</td>
             <td>
               {line.onTrack ? (
-                <span className="badge ok">On track</span>
+                <span className="tag-status ok">on track</span>
               ) : (
-                <span className="badge warn" title={`Projected ${line.projectedCompletionDate}`}>
-                  At risk
+                <span
+                  className="tag-status warn"
+                  title={`projected ${line.projectedCompletionDate}`}
+                >
+                  at risk
                 </span>
               )}
             </td>
@@ -52,11 +55,11 @@ export function PlanSummary({ plan }: { plan: AccountPlanDto }) {
   const c = plan.currency;
   return (
     <div className="kpis">
-      <Kpi label="Monthly income" value={formatMinor(plan.monthlyIncomeMinor, c)} />
-      <Kpi label="Buffer" value={formatMinor(plan.bufferMinor, c)} />
-      <Kpi label="Required / month" value={formatMinor(plan.totalRequiredMinor, c)} />
+      <Kpi label="monthly income" value={formatMinor(plan.monthlyIncomeMinor, c)} />
+      <Kpi label="buffer" value={formatMinor(plan.bufferMinor, c)} />
+      <Kpi label="required / mo" value={formatMinor(plan.totalRequiredMinor, c)} />
       <Kpi
-        label={plan.shortfallMinor > 0 ? "Shortfall" : "Left over"}
+        label={plan.shortfallMinor > 0 ? "shortfall" : "left over"}
         value={formatMinor(plan.shortfallMinor > 0 ? plan.shortfallMinor : plan.leftoverMinor, c)}
         tone={plan.shortfallMinor > 0 ? "warn" : "ok"}
       />

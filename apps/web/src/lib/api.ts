@@ -159,6 +159,11 @@ export class ApiClient {
   overview(asOf?: string) {
     return this.request<OverviewDto>("GET", `/api/overview${asOf ? `?asOf=${asOf}` : ""}`);
   }
+
+  // ---- households ----
+  createHousehold(name: string) {
+    return this.request<{ id: string; name: string }>("POST", "/api/auth/households", { name });
+  }
 }
 
 export const api = new ApiClient();

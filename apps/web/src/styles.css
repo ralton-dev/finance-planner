@@ -1,81 +1,285 @@
+/* ============================================================================
+ * Console design system — dark, monospace, dense.
+ * Tokens, layout primitives, and component styles for the Finance Planner SPA.
+ * ============================================================================ */
+
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
-  --line: #e3e6ea;
-  --text: #1d2733;
-  --muted: #6b7785;
-  --brand: #2f6df6;
-  --ok: #1d8a4e;
-  --warn: #c0392b;
-  font-family:
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    sans-serif;
+  --bg: #0c0c0c;
+  --bg-2: #131313;
+  --card: #181818;
+  --card-2: #1f1f1f;
+  --line: #232321;
+  --line-strong: #2e2e2c;
+  --ink: #e8e6e0;
+  --ink-2: #a09b91;
+  --muted: #5e5a51;
+  --good: #7be087;
+  --warn-amber: #f6c66b;
+  --warn: #f47b6b;
+  --link: #7eb3f6;
+  --accent: #b89df0;
+
+  --radius: 3px;
+  --sidebar-w: 224px;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 * {
   box-sizing: border-box;
-}
-body {
   margin: 0;
+  padding: 0;
+}
+html,
+body {
   background: var(--bg);
-  color: var(--text);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1.25rem;
-  background: var(--card);
-  border-bottom: 1px solid var(--line);
-}
-.topbar .brand {
-  font-weight: 700;
-  color: var(--brand);
-  text-decoration: none;
-}
-.topbar nav a {
-  margin-right: 1rem;
-  color: var(--text);
-  text-decoration: none;
-}
-.topbar .spacer {
-  flex: 1;
-}
-.content {
-  max-width: 960px;
-  margin: 1.5rem auto;
-  padding: 0 1rem;
+/* Subtle grid backdrop. Sits below content; never interactive. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
-button {
-  background: var(--brand);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  padding: 0.45rem 0.8rem;
-  cursor: pointer;
+a {
+  color: inherit;
+  text-decoration: none;
 }
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+button,
 input,
-select {
-  padding: 0.45rem 0.6rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+select,
+textarea {
   font: inherit;
+  color: inherit;
 }
-label {
+
+/* ============================================================================
+ * App shell (sidebar + main).
+ * Used by the authenticated Layout. Login/Register pages render outside it.
+ * ============================================================================ */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
+}
+
+.sidebar {
+  background: var(--bg-2);
+  border-right: 1px solid var(--line);
+  padding: 1.25rem 0.85rem;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  margin-bottom: 0.6rem;
-  font-size: 0.9rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 700;
+  font-size: 13.5px;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin-bottom: 1.5rem;
+  padding: 0 0.35rem;
+}
+.brand-dot {
+  width: 9px;
+  height: 9px;
+  background: var(--good);
+  border-radius: 1px;
+  box-shadow: 0 0 8px var(--good);
+  flex-shrink: 0;
+}
+.brand-version {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.nav-section {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  margin: 1rem 0.5rem 0.35rem;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+  color: var(--ink-2);
+  cursor: pointer;
+  /* Reset button defaults so <button class="nav-item"> matches <a class="nav-item">. */
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  padding-left: calc(0.6rem - 2px);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  width: 100%;
+  text-decoration: none;
+}
+.nav-item:hover {
+  background: var(--card);
+  color: var(--ink);
+}
+.nav-item.active {
+  background: var(--card);
+  color: var(--ink);
+  border-left-color: var(--good);
+}
+.nav-item.disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.nav-item.disabled:hover {
+  background: transparent;
+  color: var(--ink-2);
+}
+.nav-item .label {
+  flex: 1;
+}
+.nav-item .kbd-ish {
+  color: var(--muted);
+  font-size: 11px;
+}
+.nav-item .badge {
+  background: var(--card-2);
+  color: var(--ink-2);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 0.5rem 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+.sidebar-foot .row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.2rem 0;
+}
+.sidebar-foot .row b {
+  color: var(--ink-2);
+  font-weight: 500;
+}
+.sidebar-foot .logout {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  padding: 0.4rem;
+  border-radius: 3px;
+  margin-top: 0.65rem;
+  cursor: pointer;
+  width: 100%;
+  font-size: 12px;
+}
+.sidebar-foot .logout:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  background: var(--card);
+}
+
+/* ============================================================================
+ * Main column: status bar + page content.
+ * ============================================================================ */
+.main {
+  padding: 1.25rem 1.75rem 4rem;
+  min-width: 0;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.85rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+.statusbar b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.statusbar-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--good);
+  display: inline-block;
+  margin-right: 0.35rem;
+  box-shadow: 0 0 6px var(--good);
+}
+.statusbar .spacer {
+  flex: 1;
+}
+
+/* ============================================================================
+ * Headings & generic text.
+ * ============================================================================ */
+h1 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.25rem;
+}
+h1 .scope {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 0.75rem;
+}
+h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.subhead {
+  color: var(--muted);
+  margin-bottom: 1.5rem;
+  font-size: 12px;
+}
+.subhead b {
+  color: var(--ink-2);
+  font-weight: 500;
 }
 
 .muted {
@@ -85,133 +289,493 @@ label {
   color: var(--warn);
 }
 
-.auth-card,
-.stack-form {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 1.25rem;
-  max-width: 360px;
-  margin: 2rem auto;
-}
-.stack-form {
-  margin: 1rem 0;
+/* ============================================================================
+ * Section headings (used by every page).
+ * ============================================================================ */
+.section-head {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.auth-card form {
-  display: flex;
-  flex-direction: column;
-}
-
-.kpis {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-items: center;
   gap: 0.75rem;
-  margin: 1rem 0;
+  margin: 1.5rem 0 0.65rem;
 }
-.kpi {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0.8rem;
+.section-head h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
 }
-.kpi-label {
-  font-size: 0.8rem;
+.section-head .meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+.section-head .spacer {
+  flex: 1;
+}
+.section-head .action {
+  color: var(--link);
+  font-size: 11px;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.section-head .action:hover {
+  text-decoration: underline;
+}
+.section-head .action.muted {
   color: var(--muted);
 }
+
+/* ============================================================================
+ * KPI strip (Overview + Account detail).
+ * ============================================================================ */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 0 0 1.75rem;
+}
+.kpi {
+  padding: 0.9rem 1rem;
+  border-right: 1px solid var(--line);
+}
+.kpi:last-child {
+  border-right: none;
+}
+.kpi-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 0.3rem;
+}
 .kpi-value {
-  font-size: 1.3rem;
+  font-size: 18px;
   font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 .kpi.ok .kpi-value {
-  color: var(--ok);
+  color: var(--good);
 }
 .kpi.warn .kpi-value {
   color: var(--warn);
 }
-
-.plan-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
+.kpi-delta {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 0.15rem;
 }
-.plan-table th,
-.plan-table td {
-  padding: 0.55rem 0.7rem;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
+.kpi-delta.ok {
+  color: var(--good);
 }
-.plan-table .num {
-  text-align: right;
-}
-.plan-table tr.at-risk {
-  background: #fff5f4;
-}
-.badge {
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-}
-.badge.ok {
-  background: #e3f3ea;
-  color: var(--ok);
-}
-.badge.warn {
-  background: #fbe6e3;
+.kpi-delta.warn {
   color: var(--warn);
 }
 
+/* ============================================================================
+ * Tables — the workhorse of the Console aesthetic.
+ * ============================================================================ */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+th {
+  text-align: left;
+  padding: 0.55rem 0.8rem;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+}
+th.num {
+  text-align: right;
+}
+td {
+  padding: 0.65rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+tr:last-child td {
+  border-bottom: none;
+}
+td.num,
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+tr:hover td {
+  background: var(--card-2);
+}
+td.num.ok {
+  color: var(--good);
+}
+td.num.warn {
+  color: var(--warn);
+}
+td.num.dim {
+  color: var(--muted);
+}
+td.dim {
+  color: var(--muted);
+}
+.name {
+  color: var(--ink);
+  font-weight: 500;
+}
+.shared {
+  color: var(--muted);
+  font-size: 10.5px;
+  margin-left: 0.5rem;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+
+/* Plan-table compatibility: existing PlanTable component uses these classes. */
+.plan-table tr.at-risk td {
+  background: rgba(244, 123, 107, 0.06);
+}
+.badge {
+  padding: 2px 7px;
+  border-radius: 2px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.badge.ok {
+  background: rgba(123, 224, 135, 0.12);
+  color: var(--good);
+}
+.badge.warn {
+  background: rgba(244, 123, 107, 0.12);
+  color: var(--warn);
+}
+.tag-status {
+  padding: 2px 7px;
+  border-radius: 2px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.tag-status.ok {
+  background: rgba(123, 224, 135, 0.12);
+  color: var(--good);
+}
+.tag-status.warn {
+  background: rgba(244, 123, 107, 0.12);
+  color: var(--warn);
+}
+.tag-status.idle {
+  background: var(--bg-2);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.row-actions {
+  display: inline-flex;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 11px;
+}
+.row-actions button,
+.row-actions a {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+}
+.row-actions button:hover,
+.row-actions a:hover {
+  color: var(--ink);
+}
+
+/* ============================================================================
+ * Cards — compact account summaries on Overview.
+ * ============================================================================ */
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 0.75rem;
+  gap: 0.65rem;
+  margin-top: 0.5rem;
 }
 .account-card {
   display: block;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0.9rem;
+  border-radius: var(--radius);
+  padding: 0.85rem 0.95rem;
   text-decoration: none;
   color: inherit;
+  transition: border-color 0.12s ease;
 }
-.account-list,
-.entity-list {
+.account-card:hover {
+  border-color: var(--line-strong);
+  background: var(--card-2);
+}
+.account-card .name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+  display: block;
+  margin-bottom: 0.2rem;
+}
+.account-card .muted {
+  font-size: 11px;
+  display: block;
+}
+
+/* ============================================================================
+ * Lists — used for incomes / payments on the Account detail page.
+ * ============================================================================ */
+.entity-list,
+.account-list {
   list-style: none;
   padding: 0;
+  margin: 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
 }
-.account-list li,
-.entity-list li {
+.entity-list li,
+.account-list li {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.85rem;
   border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
 }
-.row-actions {
+.entity-list li:last-child,
+.account-list li:last-child {
+  border-bottom: none;
+}
+.entity-list li:hover,
+.account-list li:hover {
+  background: var(--card-2);
+}
+.entity-list em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+  margin-left: 0.4rem;
+}
+
+/* ============================================================================
+ * Forms — login/register cards and inline add-forms.
+ * ============================================================================ */
+input,
+select,
+textarea {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  padding: 0.45rem 0.65rem;
+  border-radius: 3px;
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--line-strong);
+  background: var(--card);
+}
+input::placeholder {
+  color: var(--muted);
+}
+
+label {
   display: flex;
+  flex-direction: column;
   gap: 0.3rem;
+  margin-bottom: 0.65rem;
+  font-size: 11.5px;
+  color: var(--ink-2);
 }
+
+button {
+  background: var(--ink);
+  color: var(--bg);
+  border: 0;
+  border-radius: 3px;
+  padding: 0.5rem 0.9rem;
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+button:hover:not(:disabled) {
+  background: var(--good);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+button.ghost {
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+button.ghost:hover:not(:disabled) {
+  background: var(--card);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+button.danger {
+  background: var(--warn);
+  color: var(--bg);
+}
+button.danger:hover:not(:disabled) {
+  background: #ff8e7d;
+}
+button.tiny {
+  font-size: 11px;
+  padding: 0.25rem 0.55rem;
+  font-weight: 500;
+}
+
+.auth-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1.5rem;
+  max-width: 360px;
+  margin: 6rem auto;
+}
+.auth-card h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 1.25rem;
+}
+.auth-card form {
+  display: flex;
+  flex-direction: column;
+}
+.auth-card .muted {
+  font-size: 11.5px;
+  margin-top: 0.85rem;
+}
+.auth-card a {
+  color: var(--link);
+}
+
+.stack-form {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin: 1rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.stack-form h3 {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
 .inline-form {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.55rem;
   align-items: center;
   flex-wrap: wrap;
-  margin: 1rem 0;
+  margin: 0.5rem 0 1.25rem;
 }
+.inline-form input,
+.inline-form select {
+  flex: 0 1 auto;
+}
+
+/* ============================================================================
+ * Layout helpers.
+ * ============================================================================ */
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1.5rem;
+  margin-top: 1rem;
 }
-@media (max-width: 720px) {
+@media (max-width: 900px) {
   .two-col {
     grid-template-columns: 1fr;
+  }
+}
+
+.scope-block {
+  margin-bottom: 2rem;
+}
+.scope-block + .scope-block {
+  margin-top: 2.5rem;
+}
+.scope-block-head {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 12.5px;
+  background: var(--bg-2);
+}
+.empty-state h3 {
+  color: var(--ink-2);
+  font-size: 13px;
+  margin-bottom: 0.35rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.empty-state p {
+  max-width: 50ch;
+  margin: 0 auto 0.85rem;
+}
+.empty-state code {
+  background: var(--card);
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+
+@media (max-width: 720px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .main {
+    padding: 1rem;
   }
 }

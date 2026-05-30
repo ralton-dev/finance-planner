@@ -3,8 +3,10 @@ import { AuthProvider } from "./auth/AuthContext.js";
 import { Layout, RequireAuth } from "./components/Layout.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AccountsPage } from "./pages/AccountsPage.js";
+import { HouseholdsPage } from "./pages/HouseholdsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
 import { OverviewPage } from "./pages/OverviewPage.js";
+import { ProjectsPage } from "./pages/ProjectsPage.js";
 import { RegisterPage } from "./pages/RegisterPage.js";
 
 export function App() {
@@ -24,6 +26,8 @@ export function App() {
             <Route path="/" element={<OverviewPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/accounts/:id" element={<AccountPage />} />
+            <Route path="/projects" element={<ProjectsPage />} />
+            <Route path="/households" element={<HouseholdsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

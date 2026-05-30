@@ -11,7 +11,7 @@ export function RegisterPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function onSubmit(e: FormEvent) {
+  async function onSubmit(e: FormEvent): Promise<void> {
     e.preventDefault();
     setError(null);
     setBusy(true);
@@ -19,9 +19,7 @@ export function RegisterPage() {
       await register(email, password, displayName);
       navigate("/");
     } catch {
-      setError(
-        "Could not register. The email may already be in use, or the password is too short.",
-      );
+      setError("could not register. email may be taken, or password is too short.");
     } finally {
       setBusy(false);
     }
@@ -29,18 +27,18 @@ export function RegisterPage() {
 
   return (
     <div className="auth-card">
-      <h1>Create account</h1>
+      <h1>create account</h1>
       <form onSubmit={onSubmit}>
         <label>
-          Name
+          name
           <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
         </label>
         <label>
-          Email
+          email
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </label>
         <label>
-          Password
+          password
           <input
             type="password"
             value={password}
@@ -55,11 +53,11 @@ export function RegisterPage() {
           </p>
         )}
         <button type="submit" disabled={busy}>
-          {busy ? "Creating…" : "Create account"}
+          {busy ? "creating…" : "create account"}
         </button>
       </form>
       <p className="muted">
-        Already have an account? <Link to="/login">Log in</Link>
+        already have an account? <Link to="/login">log in →</Link>
       </p>
     </div>
   );

@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { formatMinor, toMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -13,96 +13,140 @@ export function AccountPage() {
   const incomes = useAsync<IncomeDto[]>(() => api.listIncomes(id), [id]);
   const payments = useAsync<PaymentDto[]>(() => api.listPayments(id), [id]);
 
-  const refresh = () => {
+  const refresh = (): void => {
     plan.refetch();
     incomes.refetch();
     payments.refetch();
   };
 
-  if (account.error) return <p className="error">Account not found.</p>;
-  if (account.loading || !account.data) return <p>Loading…</p>;
+  if (account.error) return <p className="error">account not found.</p>;
+  if (account.loading || !account.data) return <p className="muted">loading…</p>;
   const currency = account.data.currency;
 
   return (
     <section>
-      <h1>{account.data.name}</h1>
+      <h1>
+        account <span className="scope">/ {account.data.name}</span>
+      </h1>
+      <div className="subhead">
+        <Link to="/accounts" className="action" style={{ marginRight: "0.75rem" }}>
+          ← back
+        </Link>
+        {currency} ·{" "}
+        {account.data.owner ? "owned" : `shared · ${account.data.permission ?? "view"}`}
+      </div>
+
       {plan.data && <PlanSummary plan={plan.data} />}
 
-      <h2>Savings plan</h2>
+      <div className="section-head">
+        <h2>savings plan</h2>
+        <span className="meta">[per-payment funding · priority asc]</span>
+      </div>
       {plan.data && <PlanTable plan={plan.data} />}
 
       <div className="two-col">
         <div>
-          <h2>Income</h2>
-          <ul className="entity-list">
-            {incomes.data?.map((i) => (
-              <li key={i.id}>
-                <span>
-                  {i.name} — {formatMinor(i.amountMinor, currency)} / {i.frequency}
-                </span>
-                <button
-                  onClick={async () => {
-                    await api.deleteIncome(i.id);
-                    refresh();
-                  }}
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="section-head">
+            <h2>income</h2>
+            <span className="meta">[{incomes.data?.length ?? 0} active]</span>
+          </div>
+          {incomes.data && incomes.data.length > 0 ? (
+            <ul className="entity-list">
+              {incomes.data.map((i) => (
+                <li key={i.id}>
+                  <span>
+                    <span className="name">{i.name}</span>
+                    <em>
+                      — {formatMinor(i.amountMinor, currency)} / {i.frequency}
+                    </em>
+                  </span>
+                  <button
+                    type="button"
+                    className="ghost tiny"
+                    onClick={async () => {
+                      await api.deleteIncome(i.id);
+                      refresh();
+                    }}
+                  >
+                    remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted" style={{ fontSize: "12px" }}>
+              no income yet.
+            </p>
+          )}
           <IncomeForm accountId={id} onAdded={refresh} />
         </div>
 
         <div>
-          <h2>Payments</h2>
-          <ul className="entity-list">
-            {payments.data
-              ?.slice()
-              .sort((a, b) => a.priority - b.priority)
-              .map((p, idx, arr) => (
-                <li key={p.id}>
-                  <span>
-                    {p.name} — {formatMinor(p.amountMinor, currency)}
-                    <em className="muted"> ({p.category.replace(/_/g, " ")})</em>
-                  </span>
-                  <span className="row-actions">
-                    <button
-                      disabled={idx === 0}
-                      title="Higher priority"
-                      onClick={async () => {
-                        const ids = arr.map((x) => x.id);
-                        [ids[idx - 1], ids[idx]] = [ids[idx]!, ids[idx - 1]!];
-                        await api.reorderPayments(id, ids);
-                        refresh();
-                      }}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      disabled={idx === arr.length - 1}
-                      title="Lower priority"
-                      onClick={async () => {
-                        const ids = arr.map((x) => x.id);
-                        [ids[idx], ids[idx + 1]] = [ids[idx + 1]!, ids[idx]!];
-                        await api.reorderPayments(id, ids);
-                        refresh();
-                      }}
-                    >
-                      ↓
-                    </button>
-                    <button
-                      onClick={async () => {
-                        await api.deletePayment(p.id);
-                        refresh();
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </span>
-                </li>
-              ))}
-          </ul>
+          <div className="section-head">
+            <h2>payments</h2>
+            <span className="meta">[{payments.data?.length ?? 0} active]</span>
+          </div>
+          {payments.data && payments.data.length > 0 ? (
+            <ul className="entity-list">
+              {payments.data
+                .slice()
+                .sort((a, b) => a.priority - b.priority)
+                .map((p, idx, arr) => (
+                  <li key={p.id}>
+                    <span>
+                      <span className="name">{p.name}</span>
+                      <em>
+                        — {formatMinor(p.amountMinor, currency)} ({p.category.replace(/_/g, " ")})
+                      </em>
+                    </span>
+                    <span className="row-actions">
+                      <button
+                        type="button"
+                        className="ghost tiny"
+                        disabled={idx === 0}
+                        title="higher priority"
+                        onClick={async () => {
+                          const ids = arr.map((x) => x.id);
+                          [ids[idx - 1], ids[idx]] = [ids[idx]!, ids[idx - 1]!];
+                          await api.reorderPayments(id, ids);
+                          refresh();
+                        }}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost tiny"
+                        disabled={idx === arr.length - 1}
+                        title="lower priority"
+                        onClick={async () => {
+                          const ids = arr.map((x) => x.id);
+                          [ids[idx], ids[idx + 1]] = [ids[idx + 1]!, ids[idx]!];
+                          await api.reorderPayments(id, ids);
+                          refresh();
+                        }}
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost tiny"
+                        onClick={async () => {
+                          await api.deletePayment(p.id);
+                          refresh();
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  </li>
+                ))}
+            </ul>
+          ) : (
+            <p className="muted" style={{ fontSize: "12px" }}>
+              no payments yet.
+            </p>
+          )}
           <PaymentForm accountId={id} onAdded={refresh} />
         </div>
       </div>
@@ -114,9 +158,9 @@ function IncomeForm({ accountId, onAdded }: { accountId: string; onAdded: () => 
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
   const [frequency, setFrequency] = useState("monthly");
-  const [anchorDate, setAnchorDate] = useState("2026-01-01");
+  const [anchorDate, setAnchorDate] = useState(new Date().toISOString().slice(0, 10));
 
-  async function submit(e: FormEvent) {
+  async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
     await api.createIncome(accountId, {
       name,
@@ -131,21 +175,26 @@ function IncomeForm({ accountId, onAdded }: { accountId: string; onAdded: () => 
 
   return (
     <form className="stack-form" onSubmit={submit}>
-      <h3>Add income</h3>
-      <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required />
+      <h3>add income</h3>
       <input
-        placeholder="Amount"
+        placeholder="name (e.g. salary)"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        required
+      />
+      <input
+        placeholder="amount"
         value={amount}
         onChange={(e) => setAmount(e.target.value)}
         required
       />
       <select value={frequency} onChange={(e) => setFrequency(e.target.value)}>
-        <option value="monthly">Monthly</option>
-        <option value="yearly">Yearly</option>
-        <option value="one_off">One-off</option>
+        <option value="monthly">monthly</option>
+        <option value="yearly">yearly</option>
+        <option value="one_off">one-off</option>
       </select>
       <input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
-      <button type="submit">Add income</button>
+      <button type="submit">+ add income</button>
     </form>
   );
 }
@@ -154,7 +203,7 @@ function PaymentForm({ accountId, onAdded }: { accountId: string; onAdded: () =>
   const [name, setName] = useState("");
   const [category, setCategory] = useState("fixed_point");
   const [amount, setAmount] = useState("");
-  const [dueDate, setDueDate] = useState("2026-06-01");
+  const [dueDate, setDueDate] = useState(new Date().toISOString().slice(0, 10));
   const [interval, setInterval] = useState("3");
   const [unit, setUnit] = useState("month");
   const [alreadySaved, setAlreadySaved] = useState("0");
@@ -162,7 +211,7 @@ function PaymentForm({ accountId, onAdded }: { accountId: string; onAdded: () =>
   const needsDate = category !== "monthly_recurring";
   const isCustom = category === "custom_recurring";
 
-  async function submit(e: FormEvent) {
+  async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
     const body: Record<string, unknown> = {
       name,
@@ -182,29 +231,34 @@ function PaymentForm({ accountId, onAdded }: { accountId: string; onAdded: () =>
 
   return (
     <form className="stack-form" onSubmit={submit}>
-      <h3>Add payment</h3>
-      <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required />
+      <h3>add payment</h3>
+      <input
+        placeholder="name (e.g. holiday)"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        required
+      />
       <select value={category} onChange={(e) => setCategory(e.target.value)}>
-        <option value="fixed_point">One-off goal (fixed date)</option>
-        <option value="monthly_recurring">Monthly bill</option>
-        <option value="yearly_recurring">Yearly</option>
-        <option value="custom_recurring">Custom recurring</option>
+        <option value="fixed_point">one-off goal (fixed date)</option>
+        <option value="monthly_recurring">monthly bill</option>
+        <option value="yearly_recurring">yearly</option>
+        <option value="custom_recurring">custom recurring</option>
       </select>
       <input
-        placeholder="Amount"
+        placeholder="amount"
         value={amount}
         onChange={(e) => setAmount(e.target.value)}
         required
       />
       {needsDate && (
         <label>
-          Due / target date
+          due / target date
           <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
         </label>
       )}
       {isCustom && (
         <div className="inline-form">
-          <span>Every</span>
+          <span className="muted">every</span>
           <input
             value={interval}
             onChange={(e) => setInterval(e.target.value)}
@@ -219,10 +273,10 @@ function PaymentForm({ accountId, onAdded }: { accountId: string; onAdded: () =>
         </div>
       )}
       <label>
-        Already saved
+        already saved
         <input value={alreadySaved} onChange={(e) => setAlreadySaved(e.target.value)} />
       </label>
-      <button type="submit">Add payment</button>
+      <button type="submit">+ add payment</button>
     </form>
   );
 }

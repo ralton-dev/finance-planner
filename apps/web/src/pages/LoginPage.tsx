@@ -10,7 +10,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function onSubmit(e: FormEvent) {
+  async function onSubmit(e: FormEvent): Promise<void> {
     e.preventDefault();
     setError(null);
     setBusy(true);
@@ -18,7 +18,7 @@ export function LoginPage() {
       await login(email, password);
       navigate("/");
     } catch {
-      setError("Invalid email or password");
+      setError("invalid email or password");
     } finally {
       setBusy(false);
     }
@@ -26,14 +26,14 @@ export function LoginPage() {
 
   return (
     <div className="auth-card">
-      <h1>Log in</h1>
+      <h1>log in</h1>
       <form onSubmit={onSubmit}>
         <label>
-          Email
+          email
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </label>
         <label>
-          Password
+          password
           <input
             type="password"
             value={password}
@@ -47,11 +47,11 @@ export function LoginPage() {
           </p>
         )}
         <button type="submit" disabled={busy}>
-          {busy ? "Logging in…" : "Log in"}
+          {busy ? "logging in…" : "log in"}
         </button>
       </form>
       <p className="muted">
-        No account? <Link to="/register">Register</Link>
+        no account? <Link to="/register">register →</Link>
       </p>
     </div>
   );
