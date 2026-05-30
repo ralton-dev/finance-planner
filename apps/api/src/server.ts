@@ -152,16 +152,18 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.get("/api/accounts/:id", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    const { account } = await requireAccess(userId, id, "view");
-    return account;
+    const { account, access } = await requireAccess(userId, id, "view");
+    return { ...account, owner: access.owner, permission: access.permission };
   });
 
   app.patch("/api/accounts/:id", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    await requireAccess(userId, id, "edit");
+    const { access } = await requireAccess(userId, id, "edit");
     const body = updateAccountBody.parse(req.body);
-    return store.updateAccount(id, defined(body));
+    const updated = await store.updateAccount(id, defined(body));
+    if (!updated) return null;
+    return { ...updated, owner: access.owner, permission: access.permission };
   });
 
   app.delete("/api/accounts/:id", async (req, reply) => {

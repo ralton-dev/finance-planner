@@ -50,6 +50,26 @@ describe("api service", () => {
     expect(list.json()[0].owner).toBe(true);
   });
 
+  it("GET /api/accounts/:id returns owner + permission for the caller", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Everyday", currency: "GBP" },
+      })
+    ).json();
+    const single = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}`,
+      headers: auth,
+    });
+    expect(single.statusCode).toBe(200);
+    expect(single.json().owner).toBe(true);
+    expect(single.json().permission).toBe("edit");
+  });
+
   it("computes a plan from incomes and payments", async () => {
     const { auth } = await seedUser(store);
     const account = (
@@ -166,6 +186,8 @@ describe("api service", () => {
       headers: partnerAuth,
     });
     expect(seen.statusCode).toBe(200);
+    expect(seen.json().owner).toBe(false);
+    expect(seen.json().permission).toBe("view");
 
     const edit = await app.inject({
       method: "PATCH",
