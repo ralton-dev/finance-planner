@@ -274,4 +274,89 @@ describe("auth service", () => {
     });
     expect(after.statusCode).toBe(404);
   });
+
+  it("only the owner can promote / demote members or delete the household", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const ownerLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: register,
+    });
+    const ownerAuth = { authorization: `Bearer ${ownerLogin.json().accessToken}` };
+
+    const partner = {
+      email: "partner@example.com",
+      password: "password123",
+      displayName: "Partner",
+    };
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: partner });
+    const partnerLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: partner,
+    });
+    const partnerAuth = { authorization: `Bearer ${partnerLogin.json().accessToken}` };
+
+    const household = (
+      await ctx.app.inject({
+        method: "POST",
+        url: "/auth/households",
+        headers: ownerAuth,
+        payload: { name: "Home" },
+      })
+    ).json();
+    await ctx.app.inject({
+      method: "POST",
+      url: `/auth/households/${household.id}/members`,
+      headers: ownerAuth,
+      payload: { email: partner.email, role: "member" },
+    });
+    const partnerUser = await ctx.store.getUserByEmail(partner.email);
+    const ownerUser = await ctx.store.getUserByEmail(register.email);
+
+    // owner promotes partner to admin
+    const promote = await ctx.app.inject({
+      method: "PATCH",
+      url: `/auth/households/${household.id}/members/${partnerUser!.id}`,
+      headers: ownerAuth,
+      payload: { role: "admin" },
+    });
+    expect(promote.statusCode).toBe(200);
+    expect(promote.json().role).toBe("admin");
+
+    // admin partner cannot promote anyone (only owner can)
+    const adminAttempt = await ctx.app.inject({
+      method: "PATCH",
+      url: `/auth/households/${household.id}/members/${partnerUser!.id}`,
+      headers: partnerAuth,
+      payload: { role: "member" },
+    });
+    expect(adminAttempt.statusCode).toBe(403);
+
+    // nobody (not even the owner) can change the owner's role via this endpoint
+    const ownerSelf = await ctx.app.inject({
+      method: "PATCH",
+      url: `/auth/households/${household.id}/members/${ownerUser!.id}`,
+      headers: ownerAuth,
+      payload: { role: "member" },
+    });
+    expect(ownerSelf.statusCode).toBe(403);
+
+    // admin cannot delete the household
+    const adminDelete = await ctx.app.inject({
+      method: "DELETE",
+      url: `/auth/households/${household.id}`,
+      headers: partnerAuth,
+    });
+    expect(adminDelete.statusCode).toBe(403);
+
+    // owner can — household and its memberships go away
+    const ownerDelete = await ctx.app.inject({
+      method: "DELETE",
+      url: `/auth/households/${household.id}`,
+      headers: ownerAuth,
+    });
+    expect(ownerDelete.statusCode).toBe(204);
+    expect(await ctx.store.getHousehold(household.id)).toBeNull();
+  });
 });

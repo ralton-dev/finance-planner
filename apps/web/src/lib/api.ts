@@ -190,6 +190,16 @@ export class ApiClient {
   removeMember(householdId: string, userId: string) {
     return this.request<void>("DELETE", `/api/auth/households/${householdId}/members/${userId}`);
   }
+  updateMemberRole(householdId: string, userId: string, role: "admin" | "member") {
+    return this.request<{ id: string; role: HouseholdRole }>(
+      "PATCH",
+      `/api/auth/households/${householdId}/members/${userId}`,
+      { role },
+    );
+  }
+  deleteHousehold(id: string) {
+    return this.request<void>("DELETE", `/api/auth/households/${id}`);
+  }
   shareAccount(accountId: string, householdId: string, permission: "view" | "edit") {
     return this.request<{ id: string }>("POST", `/api/accounts/${accountId}/shares`, {
       householdId,

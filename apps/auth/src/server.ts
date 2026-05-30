@@ -6,6 +6,7 @@ import {
   loginBody,
   type ReadinessResponse,
   registerBody,
+  updateMemberRoleBody,
 } from "@finance-planner/contracts";
 import { createStore, type Store } from "@finance-planner/data";
 import {
@@ -297,6 +298,42 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
       throw new HttpError(403, "forbidden", "Cannot remove the household owner");
     }
     await store.removeMember(id, targetUserId);
+    return reply.code(204).send();
+  });
+
+  /** Promote / demote a member between admin and member. Owner-only — admins
+   *  cannot grant or revoke the admin badge. Owners themselves are not
+   *  promotable from this endpoint (ownership is the founding role). */
+  app.patch("/auth/households/:id/members/:userId", async (req) => {
+    const callerId = await authenticate(req);
+    const { id, userId: targetUserId } = req.params as { id: string; userId: string };
+    const body = updateMemberRoleBody.parse(req.body);
+
+    const callerMembership = await store.getMembership(id, callerId);
+    if (!callerMembership) throw new HttpError(404, "not_found", "Household not found");
+    if (callerMembership.role !== "owner") {
+      throw new HttpError(403, "forbidden", "Only the household owner can change roles");
+    }
+    const target = await store.getMembership(id, targetUserId);
+    if (!target) throw new HttpError(404, "not_found", "Membership not found");
+    if (target.role === "owner") {
+      throw new HttpError(403, "forbidden", "Cannot change the owner's role");
+    }
+    const updated = await store.updateMembershipRole(id, targetUserId, body.role);
+    if (!updated) throw new HttpError(404, "not_found", "Membership not found");
+    return updated;
+  });
+
+  /** Hard-delete a household. Owner-only. Removes all shares + memberships. */
+  app.delete("/auth/households/:id", async (req, reply) => {
+    const callerId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const callerMembership = await store.getMembership(id, callerId);
+    if (!callerMembership) throw new HttpError(404, "not_found", "Household not found");
+    if (callerMembership.role !== "owner") {
+      throw new HttpError(403, "forbidden", "Only the household owner can delete the household");
+    }
+    await store.deleteHousehold(id);
     return reply.code(204).send();
   });
 

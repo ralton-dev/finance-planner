@@ -100,9 +100,29 @@ export async function exerciseStore(store: Store): Promise<void> {
   const householdShares = await store.listSharesForHousehold(household.id);
   expect(householdShares.map((s) => s.accountId)).toEqual([account.id]);
 
+  // promote the partner to admin, then demote back
+  const promoted = await store.updateMembershipRole(household.id, other.id, "admin");
+  expect(promoted?.role).toBe("admin");
+  const demoted = await store.updateMembershipRole(household.id, other.id, "member");
+  expect(demoted?.role).toBe("member");
+
   // remove the partner from the household; their access goes away.
   await store.removeMember(household.id, other.id);
   expect(await store.getAccess(other.id, account.id)).toBeNull();
+
+  // deleting the household removes its shares and memberships
+  const tempHousehold = await store.createHousehold("Temp", user.id);
+  const tempAccount = await store.createAccount({
+    ownerUserId: user.id,
+    name: "Temp",
+    currency: "GBP",
+  });
+  await store.createAccountShare(tempAccount.id, tempHousehold.id, "view");
+  expect((await store.listSharesForHousehold(tempHousehold.id)).length).toBe(1);
+  await store.deleteHousehold(tempHousehold.id);
+  expect(await store.getHousehold(tempHousehold.id)).toBeNull();
+  expect((await store.listSharesForHousehold(tempHousehold.id)).length).toBe(0);
+  expect((await store.listMembersForHousehold(tempHousehold.id)).length).toBe(0);
 
   const stranger = await store.createUser({
     email: "stranger@example.com",

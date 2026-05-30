@@ -120,6 +120,9 @@ export const addMemberBody = z.object({
   email: z.string().email(),
   role: z.enum(["admin", "member"]).default("member"),
 });
+export const updateMemberRoleBody = z.object({
+  role: z.enum(["admin", "member"]),
+});
 export const shareAccountBody = z.object({
   householdId: z.string().uuid(),
   permission: z.enum(["view", "edit"]).default("view"),

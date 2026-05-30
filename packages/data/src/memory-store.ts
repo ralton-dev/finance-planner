@@ -97,6 +97,12 @@ export class MemoryStore implements Store {
     return this.households.get(id) ?? null;
   }
 
+  async deleteHousehold(id: string): Promise<void> {
+    for (const [k, s] of this.shares) if (s.householdId === id) this.shares.delete(k);
+    for (const [k, m] of this.memberships) if (m.householdId === id) this.memberships.delete(k);
+    this.households.delete(id);
+  }
+
   async listHouseholdsForUser(userId: string): Promise<Household[]> {
     const ids = new Set(
       [...this.memberships.values()].filter((m) => m.userId === userId).map((m) => m.householdId),
@@ -134,6 +140,21 @@ export class MemoryStore implements Store {
     for (const [k, m] of this.memberships) {
       if (m.householdId === householdId && m.userId === userId) this.memberships.delete(k);
     }
+  }
+
+  async updateMembershipRole(
+    householdId: string,
+    userId: string,
+    role: HouseholdRole,
+  ): Promise<HouseholdMembership | null> {
+    for (const [k, m] of this.memberships) {
+      if (m.householdId === householdId && m.userId === userId) {
+        const updated: HouseholdMembership = { ...m, role };
+        this.memberships.set(k, updated);
+        return updated;
+      }
+    }
+    return null;
   }
 
   async listSharesForHousehold(householdId: string): Promise<AccountShare[]> {

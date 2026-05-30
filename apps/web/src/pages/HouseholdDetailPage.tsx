@@ -1,11 +1,12 @@
 import { type FormEvent, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api.js";
 import { useAsync } from "../lib/useAsync.js";
 import type { AccountDto, HouseholdDetailDto } from "../lib/types.js";
 
 export function HouseholdDetailPage() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const household = useAsync<HouseholdDetailDto>(() => api.getHousehold(id), [id]);
   const accounts = useAsync<AccountDto[]>(() => api.listAccounts(), []);
 
@@ -13,7 +14,8 @@ export function HouseholdDetailPage() {
   if (household.loading || !household.data) return <p className="muted">loading…</p>;
 
   const data = household.data;
-  const isAdmin = data.yourRole === "owner" || data.yourRole === "admin";
+  const isOwner = data.yourRole === "owner";
+  const isAdmin = isOwner || data.yourRole === "admin";
   const sharedIds = new Set(data.shares.map((s) => s.accountId));
   const shareableAccounts = (accounts.data ?? []).filter((a) => a.owner && !sharedIds.has(a.id));
 
@@ -57,7 +59,12 @@ export function HouseholdDetailPage() {
               </td>
               <td className="muted">{m.email}</td>
               <td>
-                <span className="tag-status idle">{m.role}</span>
+                <RoleCell
+                  member={m}
+                  canEditRole={isOwner}
+                  householdId={id}
+                  onChanged={() => household.refetch()}
+                />
               </td>
               <td className="row-actions-cell">
                 <RemoveMemberButton
@@ -130,6 +137,115 @@ export function HouseholdDetailPage() {
       ) : (
         <p className="muted" style={{ fontSize: "12px", marginTop: "1rem" }}>
           no accounts left to share — you've shared all your owned accounts with this household.
+        </p>
+      )}
+
+      {isOwner && (
+        <DeleteHouseholdZone
+          householdId={id}
+          householdName={data.name}
+          onDeleted={() => navigate("/households")}
+        />
+      )}
+    </section>
+  );
+}
+
+function RoleCell({
+  member,
+  canEditRole,
+  householdId,
+  onChanged,
+}: {
+  member: import("../lib/types.js").HouseholdMemberDto;
+  canEditRole: boolean;
+  householdId: string;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  // The owner's role is immutable here; only admin <-> member can flip.
+  if (!canEditRole || member.role === "owner") {
+    return <span className="tag-status idle">{member.role}</span>;
+  }
+
+  async function onChange(e: React.ChangeEvent<HTMLSelectElement>): Promise<void> {
+    const next = e.target.value as "admin" | "member";
+    if (next === member.role) return;
+    setBusy(true);
+    try {
+      await api.updateMemberRole(householdId, member.userId, next);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <select
+      value={member.role}
+      onChange={onChange}
+      disabled={busy}
+      aria-label={`change ${member.displayName}'s role`}
+      style={{ width: "8rem" }}
+    >
+      <option value="member">member</option>
+      <option value="admin">admin</option>
+    </select>
+  );
+}
+
+function DeleteHouseholdZone({
+  householdId,
+  householdName,
+  onDeleted,
+}: {
+  householdId: string;
+  householdName: string;
+  onDeleted: () => void;
+}) {
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function destroy(): Promise<void> {
+    if (confirm !== householdName) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.deleteHousehold(householdId);
+      onDeleted();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "could not delete household.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="danger-zone" style={{ marginTop: "3rem" }}>
+      <h3>danger zone</h3>
+      <p className="hint">
+        deleting removes the household, every membership, and every shared-account grant attached to
+        it. owned accounts themselves are not touched. there is no undo. type <b>{householdName}</b>{" "}
+        to confirm.
+      </p>
+      <input
+        placeholder={householdName}
+        value={confirm}
+        onChange={(e) => setConfirm(e.target.value)}
+        disabled={busy}
+        aria-label="type household name to confirm deletion"
+      />
+      <button
+        type="button"
+        className="danger"
+        onClick={destroy}
+        disabled={confirm !== householdName || busy}
+      >
+        {busy ? "deleting…" : "delete household"}
+      </button>
+      {err && (
+        <p className="error" role="alert" style={{ marginTop: "0.5rem" }}>
+          {err}
         </p>
       )}
     </section>

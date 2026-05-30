@@ -59,6 +59,8 @@ export interface Store {
   // ---- households / sharing ----
   createHousehold(name: string, createdBy: string): Promise<Household>;
   getHousehold(id: string): Promise<Household | null>;
+  /** Hard-delete a household: removes its shares, memberships, then itself. */
+  deleteHousehold(id: string): Promise<void>;
   listHouseholdsForUser(userId: string): Promise<Household[]>;
   addMembership(
     householdId: string,
@@ -68,6 +70,11 @@ export interface Store {
   getMembership(householdId: string, userId: string): Promise<HouseholdMembership | null>;
   listMembersForHousehold(householdId: string): Promise<HouseholdMembership[]>;
   removeMember(householdId: string, userId: string): Promise<void>;
+  updateMembershipRole(
+    householdId: string,
+    userId: string,
+    role: HouseholdRole,
+  ): Promise<HouseholdMembership | null>;
 
   createAccountShare(
     accountId: string,

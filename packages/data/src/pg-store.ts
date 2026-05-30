@@ -148,6 +148,13 @@ export class PgStore implements Store {
     };
   }
 
+  async deleteHousehold(id: string): Promise<void> {
+    // account_shares has no FK to households, so wipe them first; memberships
+    // cascade automatically via the schema's ON DELETE CASCADE.
+    await this.db.delete(s.accountShares).where(eq(s.accountShares.householdId, id));
+    await this.db.delete(s.households).where(eq(s.households.id, id));
+  }
+
   async listHouseholdsForUser(userId: string): Promise<Household[]> {
     const rows = await this.db
       .select({ h: s.households })
@@ -213,6 +220,26 @@ export class PgStore implements Store {
     await this.db
       .delete(s.memberships)
       .where(and(eq(s.memberships.householdId, householdId), eq(s.memberships.userId, userId)));
+  }
+
+  async updateMembershipRole(
+    householdId: string,
+    userId: string,
+    role: HouseholdRole,
+  ): Promise<HouseholdMembership | null> {
+    const [row] = await this.db
+      .update(s.memberships)
+      .set({ role })
+      .where(and(eq(s.memberships.householdId, householdId), eq(s.memberships.userId, userId)))
+      .returning();
+    if (!row) return null;
+    return {
+      id: row.id,
+      householdId: row.householdId,
+      userId: row.userId,
+      role: row.role as HouseholdRole,
+      createdAt: row.createdAt.toISOString(),
+    };
   }
 
   async listSharesForHousehold(householdId: string): Promise<AccountShare[]> {
