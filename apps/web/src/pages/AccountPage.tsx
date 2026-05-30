@@ -36,6 +36,9 @@ export function AccountPage() {
           <h1>
             account <span className="scope">/ {account.data.name}</span>
           </h1>
+          {account.data.description && (
+            <p className="account-description">{account.data.description}</p>
+          )}
           <div className="subhead">
             <Link to="/accounts" className="action" style={{ marginRight: "0.75rem" }}>
               ← back

@@ -950,6 +950,14 @@ button.tiny {
   flex-shrink: 0;
 }
 
+.account-description {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  margin: 0.25rem 0 0.45rem;
+  max-width: 70ch;
+  line-height: 1.5;
+}
+
 /* Inline edit affordance on row tables — shown on hover. */
 td.row-actions-cell {
   text-align: right;
