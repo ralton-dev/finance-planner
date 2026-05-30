@@ -779,3 +779,199 @@ button.tiny {
     padding: 1rem;
   }
 }
+
+/* ============================================================================
+ * Drawer — right-anchored slide-over panel.
+ * ============================================================================ */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 50;
+  animation: drawer-backdrop-in 0.18s ease both;
+}
+@keyframes drawer-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 520px;
+  max-width: 92vw;
+  background: var(--bg-2);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: -10px 0 32px rgba(0, 0, 0, 0.5);
+  z-index: 51;
+  display: flex;
+  flex-direction: column;
+  animation: drawer-in 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.95rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  flex-shrink: 0;
+}
+.drawer-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+}
+.drawer-title .scope {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 0.5rem;
+}
+.drawer-close {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  padding: 0.2rem 0.55rem;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+}
+.drawer-close:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--card);
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.25rem;
+  background: var(--bg);
+}
+.drawer-body .field-hint {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: -0.35rem;
+  margin-bottom: 0.65rem;
+  line-height: 1.45;
+}
+
+.drawer-foot {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--line);
+  background: var(--bg-2);
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.danger-zone {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px dashed rgba(244, 123, 107, 0.4);
+}
+.danger-zone h3 {
+  color: var(--warn);
+  margin-bottom: 0.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 11px;
+}
+.danger-zone .hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-bottom: 0.85rem;
+  line-height: 1.55;
+}
+.danger-zone .hint b {
+  color: var(--ink-2);
+  font-weight: 500;
+}
+.danger-zone input {
+  margin-bottom: 0.65rem;
+  width: 100%;
+}
+
+/* ============================================================================
+ * KPI as a button — when an editor is wired up (e.g. Buffer).
+ * ============================================================================ */
+.kpi.clickable {
+  cursor: pointer;
+  transition: background 0.12s ease;
+  position: relative;
+}
+.kpi.clickable:hover {
+  background: var(--card-2);
+}
+.kpi.clickable .kpi-label::after {
+  content: " ✎";
+  color: var(--muted);
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.kpi.clickable:hover .kpi-label::after {
+  opacity: 1;
+}
+
+/* ============================================================================
+ * Page head — H1 + action row.
+ * ============================================================================ */
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.25rem;
+}
+.page-head .actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+/* Inline edit affordance on row tables — shown on hover. */
+td.row-actions-cell {
+  text-align: right;
+  width: 1%;
+  white-space: nowrap;
+}
+td.row-actions-cell .row-edit {
+  opacity: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 11px;
+  padding: 0.2rem 0.55rem;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: opacity 0.12s ease;
+}
+tr:hover td.row-actions-cell .row-edit {
+  opacity: 1;
+}
+td.row-actions-cell .row-edit:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--card);
+}

@@ -1,17 +1,22 @@
 import { type FormEvent, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
+import { PlanSummary, PlanTable } from "../components/PlanTable.js";
 import { api } from "../lib/api.js";
 import { formatMinor, toMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
 import type { AccountDto, AccountPlanDto, IncomeDto, PaymentDto } from "../lib/types.js";
-import { PlanSummary, PlanTable } from "../components/PlanTable.js";
 
 export function AccountPage() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const account = useAsync<AccountDto>(() => api.getAccount(id), [id]);
   const plan = useAsync<AccountPlanDto>(() => api.getPlan(id), [id]);
   const incomes = useAsync<IncomeDto[]>(() => api.listIncomes(id), [id]);
   const payments = useAsync<PaymentDto[]>(() => api.listPayments(id), [id]);
+
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerFocus, setDrawerFocus] = useState<"monthlyBuffer" | undefined>(undefined);
 
   const refresh = (): void => {
     plan.refetch();
@@ -22,21 +27,52 @@ export function AccountPage() {
   if (account.error) return <p className="error">account not found.</p>;
   if (account.loading || !account.data) return <p className="muted">loading…</p>;
   const currency = account.data.currency;
+  const canEdit = account.data.owner || account.data.permission === "edit";
 
   return (
     <section>
-      <h1>
-        account <span className="scope">/ {account.data.name}</span>
-      </h1>
-      <div className="subhead">
-        <Link to="/accounts" className="action" style={{ marginRight: "0.75rem" }}>
-          ← back
-        </Link>
-        {currency} ·{" "}
-        {account.data.owner ? "owned" : `shared · ${account.data.permission ?? "view"}`}
+      <div className="page-head">
+        <div>
+          <h1>
+            account <span className="scope">/ {account.data.name}</span>
+          </h1>
+          <div className="subhead">
+            <Link to="/accounts" className="action" style={{ marginRight: "0.75rem" }}>
+              ← back
+            </Link>
+            {currency} ·{" "}
+            {account.data.owner ? "owned" : `shared · ${account.data.permission ?? "view"}`}
+          </div>
+        </div>
+        {canEdit && (
+          <div className="actions">
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                setDrawerFocus(undefined);
+                setDrawerOpen(true);
+              }}
+            >
+              ⚙ settings
+            </button>
+          </div>
+        )}
       </div>
 
-      {plan.data && <PlanSummary plan={plan.data} />}
+      {plan.data && (
+        <PlanSummary
+          plan={plan.data}
+          onEditBuffer={
+            canEdit
+              ? () => {
+                  setDrawerFocus("monthlyBuffer");
+                  setDrawerOpen(true);
+                }
+              : undefined
+          }
+        />
+      )}
 
       <div className="section-head">
         <h2>savings plan</h2>
@@ -150,6 +186,20 @@ export function AccountPage() {
           <PaymentForm accountId={id} onAdded={refresh} />
         </div>
       </div>
+
+      <AccountSettingsDrawer
+        account={drawerOpen ? account.data : null}
+        focusField={drawerFocus}
+        onClose={() => {
+          setDrawerOpen(false);
+          setDrawerFocus(undefined);
+        }}
+        onSaved={() => {
+          account.refetch();
+          plan.refetch();
+        }}
+        onDeleted={() => navigate("/accounts")}
+      />
     </section>
   );
 }

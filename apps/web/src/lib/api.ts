@@ -118,6 +118,18 @@ export class ApiClient {
   getAccount(id: string) {
     return this.request<AccountDto>("GET", `/api/accounts/${id}`);
   }
+  updateAccount(
+    id: string,
+    body: {
+      name?: string;
+      description?: string | null;
+      currency?: string;
+      openingBalanceMinor?: number;
+      monthlyBufferMinor?: number;
+    },
+  ) {
+    return this.request<AccountDto>("PATCH", `/api/accounts/${id}`, body);
+  }
   deleteAccount(id: string) {
     return this.request<void>("DELETE", `/api/accounts/${id}`);
   }

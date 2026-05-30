@@ -51,12 +51,24 @@ export function PlanTable({ plan }: { plan: AccountPlanDto }) {
   );
 }
 
-export function PlanSummary({ plan }: { plan: AccountPlanDto }) {
+export function PlanSummary({
+  plan,
+  onEditBuffer,
+}: {
+  plan: AccountPlanDto;
+  /** When provided, the Buffer KPI becomes a clickable edit affordance. */
+  onEditBuffer?: () => void;
+}) {
   const c = plan.currency;
   return (
     <div className="kpis">
       <Kpi label="monthly income" value={formatMinor(plan.monthlyIncomeMinor, c)} />
-      <Kpi label="buffer" value={formatMinor(plan.bufferMinor, c)} />
+      <Kpi
+        label="buffer"
+        value={formatMinor(plan.bufferMinor, c)}
+        onClick={onEditBuffer}
+        ariaLabel={onEditBuffer ? "edit monthly buffer" : undefined}
+      />
       <Kpi label="required / mo" value={formatMinor(plan.totalRequiredMinor, c)} />
       <Kpi
         label={plan.shortfallMinor > 0 ? "shortfall" : "left over"}
@@ -67,11 +79,44 @@ export function PlanSummary({ plan }: { plan: AccountPlanDto }) {
   );
 }
 
-function Kpi({ label, value, tone }: { label: string; value: string; tone?: "ok" | "warn" }) {
-  return (
-    <div className={`kpi ${tone ?? ""}`}>
+function Kpi({
+  label,
+  value,
+  tone,
+  onClick,
+  ariaLabel,
+}: {
+  label: string;
+  value: string;
+  tone?: "ok" | "warn";
+  onClick?: () => void;
+  ariaLabel?: string;
+}) {
+  const className = `kpi ${tone ?? ""} ${onClick ? "clickable" : ""}`.trim();
+  const content = (
+    <>
       <div className="kpi-label">{label}</div>
       <div className="kpi-value">{value}</div>
-    </div>
+    </>
   );
+  if (onClick) {
+    return (
+      <div
+        className={className}
+        onClick={onClick}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onClick();
+          }
+        }}
+        role="button"
+        tabIndex={0}
+        aria-label={ariaLabel}
+      >
+        {content}
+      </div>
+    );
+  }
+  return <div className={className}>{content}</div>;
 }

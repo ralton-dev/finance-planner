@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
+import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { api } from "../lib/api.js";
 import { formatMinor, toMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -11,6 +12,7 @@ export function AccountsPage() {
   const [currency, setCurrency] = useState("GBP");
   const [buffer, setBuffer] = useState("0");
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<AccountDto | null>(null);
 
   async function create(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -90,6 +92,7 @@ export function AccountsPage() {
               <th>access</th>
               <th className="num">buffer / mo</th>
               <th className="num">opening balance</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -117,11 +120,28 @@ export function AccountsPage() {
                 <td className={`num${a.openingBalanceMinor > 0 ? "" : " dim"}`}>
                   {a.openingBalanceMinor > 0 ? formatMinor(a.openingBalanceMinor, a.currency) : "—"}
                 </td>
+                <td className="row-actions-cell">
+                  <button
+                    type="button"
+                    className="row-edit"
+                    onClick={() => setEditing(a)}
+                    aria-label={`edit ${a.name}`}
+                  >
+                    edit
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
+
+      <AccountSettingsDrawer
+        account={editing}
+        onClose={() => setEditing(null)}
+        onSaved={() => accounts.refetch()}
+        onDeleted={() => accounts.refetch()}
+      />
     </section>
   );
 }
