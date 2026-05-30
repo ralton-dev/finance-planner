@@ -6,7 +6,9 @@ set aside each month per goal to hit its target date, and how much you have left
 over — per account and across all accounts.
 
 See [`plan/`](./plan) for the full implementation plans (vision, architecture,
-domain model, calculation engine, API, frontend, auth, DevOps, roadmap).
+domain model, calculation engine, API, frontend, auth, DevOps, roadmap), and
+[`HANDOVER.md`](./HANDOVER.md) for the operations/runbook guide (how to run,
+test, deploy, and operate it, plus known limitations).
 
 ## Status
 

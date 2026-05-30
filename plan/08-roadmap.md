@@ -1,5 +1,12 @@
 # Delivery Roadmap
 
+> **Status:** Phases 0–6 implemented and verified (engine, persistence, full
+> API, auth + households, all-accounts overview, React SPA), plus the Phase 6
+> hardening/infra (Dockerfiles, Helm chart with migration Job + HPA + PDB, CI
+> with integration and E2E). **Phase 7 is the deferred backlog** — see
+> `09-open-questions.md` and `HANDOVER.md` §11. Operational details live in
+> `HANDOVER.md`.
+
 > Phased so each phase is independently shippable and demonstrable. Phases build
 > on each other; acceptance criteria gate progress.
 
