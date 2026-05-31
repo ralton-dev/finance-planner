@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickAddProvider, useQuickAdd } from "../contexts/QuickAddContext.js";
-import type { AccountDto } from "../lib/types.js";
+import type { AccountDto, PaymentDto } from "../lib/types.js";
 import { NewPaymentDrawer } from "./NewPaymentDrawer.js";
 
 const accounts: AccountDto[] = [
@@ -59,6 +59,23 @@ function Harness({ accountId }: { accountId?: string }) {
     useEffect(() => {
       openPayment(accountId);
     }, [openPayment, accountId]);
+    return null;
+  };
+  return (
+    <QuickAddProvider>
+      <Opener />
+      <NewPaymentDrawer />
+    </QuickAddProvider>
+  );
+}
+
+/** Edit-mode harness: opens the drawer pre-filled with an existing payment. */
+function EditHarness({ payment }: { payment: PaymentDto }) {
+  const Opener = (): null => {
+    const { openEditPayment } = useQuickAdd();
+    useEffect(() => {
+      openEditPayment(payment);
+    }, [openEditPayment, payment]);
     return null;
   };
   return (
@@ -134,6 +151,86 @@ describe("NewPaymentDrawer", () => {
       amountMinor: 120000,
       dueDate: "2026-09-01",
       priority: 100,
+    });
+  });
+
+  it("edit mode pre-fills, locks account + category, and PATCHes on save", async () => {
+    const existing: PaymentDto = {
+      id: "p-99",
+      accountId: "acc-1",
+      name: "Holiday",
+      category: "fixed_point",
+      amountMinor: 120000,
+      dueDate: "2026-09-01",
+      recurrence: null,
+      targetDate: null,
+      priority: 50,
+      alreadySavedMinor: 4000,
+      autoRenew: true,
+      active: true,
+      notes: null,
+      projectId: null,
+    };
+
+    // Make the PATCH endpoint succeed.
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/accounts") {
+        return { ok: true, status: 200, statusText: "OK", json: async () => accounts };
+      }
+      if (url === "/api/projects") {
+        return { ok: true, status: 200, statusText: "OK", json: async () => [] };
+      }
+      if (url === "/api/payments/p-99" && init?.method === "PATCH") {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => ({ ...existing, name: "Lisbon trip" }),
+        };
+      }
+      return { ok: false, status: 404, statusText: "Not Found", json: async () => ({}) };
+    });
+
+    render(<EditHarness payment={existing} />);
+
+    // Title reflects edit mode
+    await waitFor(() => expect(screen.getByText(/edit payment · Holiday/i)).toBeInTheDocument());
+
+    // Pre-filled values
+    expect(screen.getByDisplayValue("Holiday")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("1200.00")).toBeInTheDocument(); // amount in major
+    expect(screen.getByDisplayValue("40.00")).toBeInTheDocument(); // already saved
+    expect(screen.getByDisplayValue("50")).toBeInTheDocument(); // priority
+    expect(screen.getByDisplayValue("2026-09-01")).toBeInTheDocument();
+
+    // Account + category locked
+    expect(screen.getByLabelText(/account/i)).toBeDisabled();
+    expect(screen.getByLabelText(/category/i)).toBeDisabled();
+
+    // Rename and save
+    const nameInput = screen.getByDisplayValue("Holiday");
+    fireEvent.change(nameInput, { target: { value: "Lisbon trip" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        (c) => String(c[0]) === "/api/payments/p-99" && c[1]?.method === "PATCH",
+      );
+      expect(patch).toBeTruthy();
+    });
+    const patch = fetchMock.mock.calls.find(
+      (c) => String(c[0]) === "/api/payments/p-99" && c[1]?.method === "PATCH",
+    )!;
+    const body = JSON.parse(patch[1].body);
+    expect(body).toMatchObject({
+      name: "Lisbon trip",
+      category: "fixed_point",
+      amountMinor: 120000,
+      alreadySavedMinor: 4000,
+      priority: 50,
+      dueDate: "2026-09-01",
+      projectId: null,
+      active: true,
     });
   });
 });

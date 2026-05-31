@@ -101,6 +101,18 @@ export const payments = coreSchema.table("payments", {
   autoRenew: boolean("auto_renew").notNull().default(true),
   active: boolean("active").notNull().default(true),
   notes: text("notes"),
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const projects = coreSchema.table("projects", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerUserId: uuid("owner_user_id").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  color: text("color"),
+  targetDate: date("target_date"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

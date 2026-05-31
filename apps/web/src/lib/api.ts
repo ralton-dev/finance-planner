@@ -6,6 +6,8 @@ import type {
   IncomeDto,
   OverviewDto,
   PaymentDto,
+  ProjectDetailDto,
+  ProjectDto,
   UserDto,
 } from "./types.js";
 
@@ -149,6 +151,9 @@ export class ApiClient {
   createIncome(accountId: string, body: unknown) {
     return this.request<IncomeDto>("POST", `/api/accounts/${accountId}/incomes`, body);
   }
+  updateIncome(id: string, body: unknown) {
+    return this.request<IncomeDto>("PATCH", `/api/incomes/${id}`, body);
+  }
   deleteIncome(id: string) {
     return this.request<void>("DELETE", `/api/incomes/${id}`);
   }
@@ -159,6 +164,9 @@ export class ApiClient {
   }
   createPayment(accountId: string, body: unknown) {
     return this.request<PaymentDto>("POST", `/api/accounts/${accountId}/payments`, body);
+  }
+  updatePayment(id: string, body: unknown) {
+    return this.request<PaymentDto>("PATCH", `/api/payments/${id}`, body);
   }
   deletePayment(id: string) {
     return this.request<void>("DELETE", `/api/payments/${id}`);
@@ -208,6 +216,20 @@ export class ApiClient {
   }
   unshareAccount(accountId: string, shareId: string) {
     return this.request<void>("DELETE", `/api/accounts/${accountId}/shares/${shareId}`);
+  }
+
+  // ---- projects ----
+  listProjects() {
+    return this.request<ProjectDto[]>("GET", "/api/projects");
+  }
+  createProject(body: { name: string; description?: string | null; targetDate?: string | null }) {
+    return this.request<ProjectDto>("POST", "/api/projects", body);
+  }
+  getProject(id: string) {
+    return this.request<ProjectDetailDto>("GET", `/api/projects/${id}`);
+  }
+  deleteProject(id: string) {
+    return this.request<void>("DELETE", `/api/projects/${id}`);
   }
 }
 

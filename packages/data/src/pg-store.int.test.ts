@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -8,9 +8,11 @@ import { createDb, type DbHandle } from "./db.js";
 import { PgStore } from "./pg-store.js";
 import { exerciseStore } from "./store-contract.js";
 
-const migrationPath = path.resolve(
+/** Apply every SQL file in db/migrations/ in lexical order. New migrations
+ *  drop in as 000N_*.sql and are picked up automatically — no test edit. */
+const migrationsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../../db/migrations/0001_init.sql",
+  "../../../db/migrations",
 );
 
 describe("PgStore (Postgres via Testcontainers)", () => {
@@ -22,7 +24,12 @@ describe("PgStore (Postgres via Testcontainers)", () => {
     const uri = container.getConnectionUri();
     const client = new pg.Client({ connectionString: uri });
     await client.connect();
-    await client.query(readFileSync(migrationPath, "utf8"));
+    const files = readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
+    for (const f of files) {
+      await client.query(readFileSync(path.join(migrationsDir, f), "utf8"));
+    }
     await client.end();
     handle = createDb(uri);
   });
