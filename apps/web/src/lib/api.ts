@@ -151,6 +151,9 @@ export class ApiClient {
   createIncome(accountId: string, body: unknown) {
     return this.request<IncomeDto>("POST", `/api/accounts/${accountId}/incomes`, body);
   }
+  updateIncome(id: string, body: unknown) {
+    return this.request<IncomeDto>("PATCH", `/api/incomes/${id}`, body);
+  }
   deleteIncome(id: string) {
     return this.request<void>("DELETE", `/api/incomes/${id}`);
   }
@@ -161,6 +164,9 @@ export class ApiClient {
   }
   createPayment(accountId: string, body: unknown) {
     return this.request<PaymentDto>("POST", `/api/accounts/${accountId}/payments`, body);
+  }
+  updatePayment(id: string, body: unknown) {
+    return this.request<PaymentDto>("PATCH", `/api/payments/${id}`, body);
   }
   deletePayment(id: string) {
     return this.request<void>("DELETE", `/api/payments/${id}`);
