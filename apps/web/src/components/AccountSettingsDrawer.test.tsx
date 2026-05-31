@@ -5,7 +5,7 @@ import { AccountSettingsDrawer } from "./AccountSettingsDrawer.js";
 
 const account: AccountDto = {
   id: "acc-1",
-  name: "Ben Monzo",
+  name: "Test Account",
   description: "primary current account",
   currency: "GBP",
   openingBalanceMinor: 25000,
@@ -45,7 +45,7 @@ describe("AccountSettingsDrawer", () => {
     render(
       <AccountSettingsDrawer account={account} onClose={noop} onSaved={noop} onDeleted={noop} />,
     );
-    expect(screen.getByDisplayValue("Ben Monzo")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Test Account")).toBeInTheDocument();
     expect(screen.getByDisplayValue("primary current account")).toBeInTheDocument();
     expect(screen.getByDisplayValue("GBP")).toBeInTheDocument();
     expect(screen.getByDisplayValue("100.00")).toBeInTheDocument();
@@ -62,7 +62,7 @@ describe("AccountSettingsDrawer", () => {
     fireEvent.change(confirm, { target: { value: "wrong" } });
     expect(deleteBtn).toBeDisabled();
 
-    fireEvent.change(confirm, { target: { value: "Ben Monzo" } });
+    fireEvent.change(confirm, { target: { value: "Test Account" } });
     expect(deleteBtn).not.toBeDisabled();
   });
 
@@ -78,8 +78,8 @@ describe("AccountSettingsDrawer", () => {
       />,
     );
 
-    const nameInput = screen.getByDisplayValue("Ben Monzo");
-    fireEvent.change(nameInput, { target: { value: "Ben Monzo Personal" } });
+    const nameInput = screen.getByDisplayValue("Test Account");
+    fireEvent.change(nameInput, { target: { value: "Test Account Personal" } });
 
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
@@ -92,7 +92,7 @@ describe("AccountSettingsDrawer", () => {
     expect(init.method).toBe("PATCH");
     const body = JSON.parse(init.body);
     expect(body).toMatchObject({
-      name: "Ben Monzo Personal",
+      name: "Test Account Personal",
       currency: "GBP",
       monthlyBufferMinor: 10000,
     });
@@ -104,7 +104,7 @@ describe("AccountSettingsDrawer", () => {
       <AccountSettingsDrawer account={sharedView} onClose={noop} onSaved={noop} onDeleted={noop} />,
     );
     expect(screen.queryByRole("button", { name: /delete account/i })).toBeNull();
-    expect(screen.getByDisplayValue("Ben Monzo")).toBeDisabled();
+    expect(screen.getByDisplayValue("Test Account")).toBeDisabled();
     expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
     expect(screen.getByRole("button", { name: /^close$/i })).toBeInTheDocument();
   });

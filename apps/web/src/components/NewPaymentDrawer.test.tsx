@@ -8,7 +8,7 @@ import { NewPaymentDrawer } from "./NewPaymentDrawer.js";
 const accounts: AccountDto[] = [
   {
     id: "acc-1",
-    name: "Ben Monzo",
+    name: "Owned Account",
     currency: "GBP",
     openingBalanceMinor: 0,
     monthlyBufferMinor: 0,
@@ -17,7 +17,7 @@ const accounts: AccountDto[] = [
   },
   {
     id: "acc-2",
-    name: "Izzy Monzo",
+    name: "View-Only Shared",
     currency: "GBP",
     openingBalanceMinor: 0,
     monthlyBufferMinor: 0,
@@ -90,9 +90,9 @@ describe("NewPaymentDrawer", () => {
   it("only lists accounts the caller can edit", async () => {
     render(<Harness />);
     await waitFor(() =>
-      expect(screen.getByRole("option", { name: /Ben Monzo/ })).toBeInTheDocument(),
+      expect(screen.getByRole("option", { name: /Owned Account/ })).toBeInTheDocument(),
     );
-    expect(screen.queryByRole("option", { name: /Izzy Monzo/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /View-Only Shared/ })).toBeNull();
   });
 
   it("pre-selects the account passed via openPayment(accountId)", async () => {
