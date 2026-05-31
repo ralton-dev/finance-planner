@@ -227,4 +227,128 @@ describe("api service", () => {
     expect(overview.perCurrency).toHaveLength(1);
     expect(overview.perCurrency[0].monthlyIncomeMinor).toBe(200000);
   });
+
+  it("creates a project and assigns a payment to it", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Personal", currency: "GBP" },
+      })
+    ).json();
+
+    const project = (
+      await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        headers: auth,
+        payload: { name: "House move 2026", targetDate: "2026-09-01" },
+      })
+    ).json();
+    expect(project.id).toBeTruthy();
+    expect(project.name).toBe("House move 2026");
+
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: "Deposit",
+          category: "fixed_point",
+          amountMinor: 500000,
+          dueDate: "2026-09-01",
+          projectId: project.id,
+        },
+      })
+    ).json();
+    expect(payment.projectId).toBe(project.id);
+
+    const detail = (
+      await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}`,
+        headers: auth,
+      })
+    ).json();
+    expect(detail.payments).toHaveLength(1);
+    expect(detail.payments[0].name).toBe("Deposit");
+    expect(detail.payments[0].accountName).toBe("Personal");
+  });
+
+  it("hides another user's project (404) and refuses cross-user access", async () => {
+    const { auth: aAuth } = await seedUser(store, "a@example.com");
+    const { auth: bAuth } = await seedUser(store, "b@example.com");
+
+    const project = (
+      await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        headers: aAuth,
+        payload: { name: "A's project" },
+      })
+    ).json();
+
+    const peek = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}`,
+      headers: bAuth,
+    });
+    expect(peek.statusCode).toBe(404);
+
+    const tryDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}`,
+      headers: bAuth,
+    });
+    expect(tryDelete.statusCode).toBe(404);
+  });
+
+  it("deleting a project leaves member payments intact (just unlinked)", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Personal", currency: "GBP" },
+      })
+    ).json();
+    const project = (
+      await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        headers: auth,
+        payload: { name: "Holiday" },
+      })
+    ).json();
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: "Flights",
+          category: "fixed_point",
+          amountMinor: 60000,
+          dueDate: "2026-08-01",
+          projectId: project.id,
+        },
+      })
+    ).json();
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}`,
+      headers: auth,
+    });
+    expect(deleted.statusCode).toBe(204);
+
+    // payment still exists, but its projectId is now null
+    const after = await store.getPayment(payment.id);
+    expect(after).not.toBeNull();
+    expect(after?.projectId ?? null).toBeNull();
+  });
 });

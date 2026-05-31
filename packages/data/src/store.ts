@@ -8,6 +8,7 @@ import type {
   Income,
   Payment,
   PlanSnapshot,
+  Project,
   Session,
   SharePermission,
   User,
@@ -30,6 +31,7 @@ export interface NewAccount {
 
 export type NewIncome = Omit<Income, "id" | "createdAt" | "updatedAt">;
 export type NewPayment = Omit<Payment, "id" | "createdAt" | "updatedAt">;
+export type NewProject = Omit<Project, "id" | "createdAt" | "updatedAt">;
 
 /** Effective access a user has to an account. */
 export interface AccountAccess {
@@ -110,6 +112,14 @@ export interface Store {
   updatePayment(id: string, patch: Partial<NewPayment>): Promise<Payment | null>;
   deletePayment(id: string): Promise<void>;
   reorderPayments(accountId: string, orderedIds: string[]): Promise<void>;
+
+  // ---- projects ----
+  createProject(input: NewProject): Promise<Project>;
+  getProject(id: string): Promise<Project | null>;
+  listProjectsForOwner(ownerUserId: string): Promise<Project[]>;
+  updateProject(id: string, patch: Partial<NewProject>): Promise<Project | null>;
+  deleteProject(id: string): Promise<void>;
+  listPaymentsForProject(projectId: string): Promise<Payment[]>;
 
   // ---- calc snapshots ----
   saveSnapshot(snapshot: Omit<PlanSnapshot, "id" | "computedAt">): Promise<PlanSnapshot>;

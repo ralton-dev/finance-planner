@@ -103,6 +103,7 @@ const paymentObject = z.object({
   autoRenew: z.boolean().default(true),
   active: z.boolean().default(true),
   notes: z.string().nullish(),
+  projectId: z.string().uuid().nullish(),
 });
 export const createPaymentBody = paymentObject.refine(
   (p) => p.category !== "fixed_point" || !!p.dueDate,
@@ -127,3 +128,12 @@ export const shareAccountBody = z.object({
   householdId: z.string().uuid(),
   permission: z.enum(["view", "edit"]).default("view"),
 });
+
+export const createProjectBody = z.object({
+  name: z.string().min(1),
+  description: z.string().nullish(),
+  color: z.string().nullish(),
+  targetDate: isoDate.nullish(),
+});
+export type CreateProjectBody = z.infer<typeof createProjectBody>;
+export const updateProjectBody = createProjectBody.partial();

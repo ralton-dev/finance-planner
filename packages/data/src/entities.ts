@@ -91,6 +91,19 @@ export interface Payment {
   autoRenew: boolean;
   active: boolean;
   notes: string | null;
+  /** Optional grouping into a cross-account project. */
+  projectId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Project {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  targetDate: string | null;
   createdAt: string;
   updatedAt: string;
 }
