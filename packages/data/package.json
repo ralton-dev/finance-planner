@@ -17,7 +17,7 @@
   "dependencies": {
     "@finance-planner/contracts": "workspace:*",
     "@finance-planner/domain": "workspace:*",
-    "drizzle-orm": "^0.38.3",
+    "drizzle-orm": "^0.45.2",
     "pg": "^8.13.1"
   },
   "devDependencies": {
