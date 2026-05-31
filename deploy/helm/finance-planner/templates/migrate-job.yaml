@@ -6,8 +6,13 @@ metadata:
   labels:
     {{- include "fp.labels" . | nindent 4 }}
 data:
-  0001_init.sql: |
-{{ .Files.Get "files/0001_init.sql" | indent 4 }}
+  # Every SQL file under files/ becomes a ConfigMap entry. Files are named
+  # 000N_*.sql and applied in lexical order by the Job below — drop in new
+  # migrations by adding a file and bumping the prefix.
+  {{- range $path, $_ := .Files.Glob "files/*.sql" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -47,7 +52,12 @@ spec:
           command:
             - sh
             - -c
-            - 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /sql/0001_init.sql'
+            - |
+              set -e
+              for f in $(ls /sql/*.sql | sort); do
+                echo "applying $f"
+                psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+              done
           env:
             - name: DATABASE_URL
               valueFrom:
