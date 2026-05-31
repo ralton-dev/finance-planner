@@ -58,7 +58,12 @@ interface RequiredResult {
 
 /**
  * Required monthly contribution to have a payment funded by its target date.
- * See plan/03-calculation-engine.md for the per-category formulas.
+ * Per-category formulas:
+ *   monthly_recurring → full amount due each month (nothing to "save up")
+ *   fixed_point       → ceilDiv(amount - alreadySaved, monthsUntil(targetDate))
+ *   yearly_recurring  → ceilDiv(remaining, monthsUntil(nextOccurrence))
+ *   custom_recurring  → same, with the user-supplied recurrence cadence
+ * monthsUntil() floors at 1 to avoid divide-by-zero on past / this-month dates.
  */
 export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredResult {
   const alreadySaved = p.alreadySavedMinor ?? 0;
