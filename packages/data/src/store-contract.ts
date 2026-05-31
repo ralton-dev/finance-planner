@@ -52,6 +52,7 @@ export async function exerciseStore(store: Store): Promise<void> {
     autoRenew: true,
     active: true,
     notes: null,
+    projectId: null,
   });
   const p2 = await store.createPayment({
     accountId: account.id,
@@ -66,6 +67,7 @@ export async function exerciseStore(store: Store): Promise<void> {
     autoRenew: true,
     active: true,
     notes: null,
+    projectId: null,
   });
   expect((await store.listPayments(account.id)).length).toBe(2);
 
@@ -139,6 +141,24 @@ export async function exerciseStore(store: Store): Promise<void> {
     detail: { leftoverMinor: 1 },
   });
   expect(snap.id).toBeTruthy();
+
+  // --- projects ---
+  const project = await store.createProject({
+    ownerUserId: user.id,
+    name: "House move 2026",
+    description: null,
+    color: null,
+    targetDate: "2026-09-01",
+  });
+  expect((await store.listProjectsForOwner(user.id)).length).toBe(1);
+  // Assign p1 to the project, then list payments for it.
+  await store.updatePayment(p1.id, { projectId: project.id });
+  const projectMembers = await store.listPaymentsForProject(project.id);
+  expect(projectMembers.map((m) => m.id)).toEqual([p1.id]);
+  // Deleting the project leaves the payment intact but unlinked.
+  await store.deleteProject(project.id);
+  expect(await store.getProject(project.id)).toBeNull();
+  expect((await store.getPayment(p1.id))?.projectId ?? null).toBeNull();
 
   // --- delete cascade ---
   await store.deletePayment(p1.id);
