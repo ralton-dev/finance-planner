@@ -1,4 +1,5 @@
 import fastifyCookie from "@fastify/cookie";
+import fastifyRateLimit from "@fastify/rate-limit";
 import {
   addMemberBody,
   createHouseholdBody,
@@ -31,6 +32,11 @@ export interface AuthDeps {
   store?: Store;
   mailer?: Mailer;
   env?: AuthEnv;
+  /**
+   * Opt out of rate-limiting (default true in prod). Tests pass false so
+   * back-to-back logins don't trip the per-IP throttle.
+   */
+  rateLimit?: boolean;
 }
 
 class HttpError extends Error {
@@ -53,6 +59,11 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
 
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
   app.register(fastifyCookie);
+  // Global rate-limit gate. Per-route configs below tighten the specific
+  // endpoints that are worth brute-forcing.
+  if (deps.rateLimit !== false) {
+    app.register(fastifyRateLimit, { global: false });
+  }
   app.decorate("mailer", mailer);
   app.addHook("onClose", async () => handle.close());
 
@@ -126,8 +137,14 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   );
   app.get("/readyz", async (): Promise<ReadinessResponse> => ({ ready: true, checks: {} }));
 
+  /** Helper: per-route rate-limit config or empty when disabled. The plugin
+   *  is registered with `global: false`, so omitting the config is the same
+   *  as no limit. Returning {} from here keeps test setups simple. */
+  const rl = (max: number) =>
+    deps.rateLimit === false ? {} : { config: { rateLimit: { max, timeWindow: "1 minute" } } };
+
   // ---- register ----
-  app.post("/auth/register", async (req, reply) => {
+  app.post("/auth/register", rl(3), async (req, reply) => {
     const body = registerBody.parse(req.body);
     if (await store.getUserByEmail(body.email)) {
       throw new HttpError(409, "email_taken", "Email already registered");
@@ -160,7 +177,7 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   });
 
   // ---- login ----
-  app.post("/auth/login", async (req, reply) => {
+  app.post("/auth/login", rl(5), async (req, reply) => {
     const body = loginBody.parse(req.body);
     const user = await store.getUserByEmail(body.email);
     if (!user?.passwordHash || !verifyPassword(body.password, user.passwordHash)) {
@@ -174,12 +191,21 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   });
 
   // ---- refresh ----
-  app.post("/auth/refresh", async (req, reply) => {
+  app.post("/auth/refresh", rl(20), async (req, reply) => {
     const refresh = req.cookies[REFRESH_COOKIE];
     if (!refresh) throw new HttpError(401, "unauthorized", "Missing refresh token");
     const session = await store.getSessionByTokenHash(sha256(refresh));
-    if (!session || session.revokedAt || new Date(session.expiresAt) < new Date()) {
-      throw new HttpError(401, "unauthorized", "Invalid refresh token");
+    if (!session) throw new HttpError(401, "unauthorized", "Invalid refresh token");
+    if (new Date(session.expiresAt) < new Date()) {
+      throw new HttpError(401, "unauthorized", "Refresh token expired");
+    }
+    // Reuse detection: if the presented token belongs to an already-revoked
+    // session, an attacker has captured a previously-rotated cookie. Nuke
+    // every active session for this user — they'll have to re-login.
+    if (session.revokedAt) {
+      await store.revokeAllUserSessions(session.userId);
+      reply.clearCookie(REFRESH_COOKIE, { path: env.cookiePath });
+      throw new HttpError(401, "reuse_detected", "Refresh token reused; sessions revoked");
     }
     await store.revokeSession(session.id); // rotation
     const user = await store.getUserById(session.userId);

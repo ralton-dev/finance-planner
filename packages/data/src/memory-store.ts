@@ -85,6 +85,13 @@ export class MemoryStore implements Store {
     if (s) s.revokedAt = now();
   }
 
+  async revokeAllUserSessions(userId: string): Promise<void> {
+    const ts = now();
+    for (const s of this.sessions.values()) {
+      if (s.userId === userId && !s.revokedAt) s.revokedAt = ts;
+    }
+  }
+
   async createEmailVerificationToken(token: EmailVerificationToken): Promise<void> {
     this.verifyTokens.set(token.token, token);
   }

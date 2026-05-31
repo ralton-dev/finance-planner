@@ -1,5 +1,5 @@
 import type { Frequency, PaymentCategory, Recurrence } from "@finance-planner/contracts";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Database } from "./db.js";
 import type {
   Account,
@@ -113,6 +113,13 @@ export class PgStore implements Store {
 
   async revokeSession(id: string): Promise<void> {
     await this.db.update(s.sessions).set({ revokedAt: new Date() }).where(eq(s.sessions.id, id));
+  }
+
+  async revokeAllUserSessions(userId: string): Promise<void> {
+    await this.db
+      .update(s.sessions)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(s.sessions.userId, userId), isNull(s.sessions.revokedAt)));
   }
 
   async createEmailVerificationToken(token: EmailVerificationToken): Promise<void> {

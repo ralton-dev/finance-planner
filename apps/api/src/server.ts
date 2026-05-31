@@ -329,7 +329,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const plans = [];
     for (const a of access) {
       const account = await store.getAccount(a.accountId);
-      if (account) plans.push(await computePlanForAccount(store, account, asOfDate, false));
+      if (account) plans.push(await computePlanForAccount(store, account, asOfDate));
     }
     return computeOverview(plans, asOfDate);
   });

@@ -19,7 +19,8 @@ const register = { email: "user@example.com", password: "password123", displayNa
 function makeApp() {
   const store = new MemoryStore();
   const mailer = new LogMailer();
-  const app = buildServer({ store, mailer, env });
+  // Disable rate-limit in tests so back-to-back logins don't trip the per-IP throttle.
+  const app = buildServer({ store, mailer, env, rateLimit: false });
   return { app, store, mailer };
 }
 
@@ -95,6 +96,41 @@ describe("auth service", () => {
     });
     expect(refreshed.statusCode).toBe(200);
     expect(refreshed.json().accessToken).toBeTruthy();
+  });
+
+  it("detects refresh-token reuse and revokes every active session for the user", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login1 = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const cookie1 = login1.cookies.find((c) => c.name === "fp_refresh")!.value;
+
+    // Second login (e.g. a second device) — another active session is born.
+    const login2 = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const cookie2 = login2.cookies.find((c) => c.name === "fp_refresh")!.value;
+
+    // First refresh rotates cookie1 — the old one is now revoked.
+    const rotated = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: cookie1 },
+    });
+    expect(rotated.statusCode).toBe(200);
+
+    // Replay cookie1 → attacker scenario. Expect 401 with reuse code, and the
+    // *other* session (cookie2) should also be revoked as collateral.
+    const replayed = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: cookie1 },
+    });
+    expect(replayed.statusCode).toBe(401);
+    expect(replayed.json().error.code).toBe("reuse_detected");
+
+    const stillAlive = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: cookie2 },
+    });
+    expect(stillAlive.statusCode).toBe(401);
   });
 
   it("creates and lists households for the authenticated user", async () => {

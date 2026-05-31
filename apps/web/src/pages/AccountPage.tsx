@@ -6,7 +6,13 @@ import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
-import type { AccountDto, AccountPlanDto, IncomeDto, PaymentDto } from "../lib/types.js";
+import type {
+  AccountDto,
+  AccountPlanDto,
+  IncomeDto,
+  PaymentDto,
+  ProjectDto,
+} from "../lib/types.js";
 
 export function AccountPage() {
   const { id = "" } = useParams();
@@ -17,6 +23,8 @@ export function AccountPage() {
   const plan = useAsync<AccountPlanDto>(() => api.getPlan(id), [id]);
   const incomes = useAsync<IncomeDto[]>(() => api.listIncomes(id), [id]);
   const payments = useAsync<PaymentDto[]>(() => api.listPayments(id), [id]);
+  // Project labels for the chips next to payment names. Cheap call; no per-account scope.
+  const projects = useAsync<ProjectDto[]>(() => api.listProjects(), []);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerFocus, setDrawerFocus] = useState<"monthlyBuffer" | undefined>(undefined);
@@ -180,6 +188,20 @@ export function AccountPage() {
                       <em>
                         — {formatMinor(p.amountMinor, currency)} ({p.category.replace(/_/g, " ")})
                       </em>
+                      {p.projectId &&
+                        (() => {
+                          const proj = (projects.data ?? []).find((x) => x.id === p.projectId);
+                          return proj ? (
+                            <Link
+                              to={`/projects/${proj.id}`}
+                              className="shared"
+                              title={`part of project: ${proj.name}`}
+                              style={{ cursor: "pointer" }}
+                            >
+                              ▸ {proj.name}
+                            </Link>
+                          ) : null;
+                        })()}
                     </span>
                     {canEdit && (
                       <span className="row-actions">

@@ -54,6 +54,9 @@ export interface Store {
   createSession(session: Omit<Session, "id" | "createdAt" | "revokedAt">): Promise<Session>;
   getSessionByTokenHash(hash: string): Promise<Session | null>;
   revokeSession(id: string): Promise<void>;
+  /** Revoke every non-revoked session for a user. Drives refresh-token reuse
+   *  detection — if a revoked token is presented again, nuke them all. */
+  revokeAllUserSessions(userId: string): Promise<void>;
 
   createEmailVerificationToken(token: EmailVerificationToken): Promise<void>;
   consumeEmailVerificationToken(token: string): Promise<EmailVerificationToken | null>;
