@@ -9,11 +9,20 @@ import type {
   Income,
   Payment,
   PlanSnapshot,
+  Project,
   Session,
   SharePermission,
   User,
 } from "./entities.js";
-import type { AccountAccess, NewAccount, NewIncome, NewPayment, NewUser, Store } from "./store.js";
+import type {
+  AccountAccess,
+  NewAccount,
+  NewIncome,
+  NewPayment,
+  NewProject,
+  NewUser,
+  Store,
+} from "./store.js";
 
 const now = (): string => new Date().toISOString();
 
@@ -28,6 +37,7 @@ export class MemoryStore implements Store {
   private accounts = new Map<string, Account>();
   private incomes = new Map<string, Income>();
   private payments = new Map<string, Payment>();
+  private projects = new Map<string, Project>();
   private snapshots = new Map<string, PlanSnapshot>();
 
   async createUser(input: NewUser): Promise<User> {
@@ -330,5 +340,45 @@ export class MemoryStore implements Store {
     const full: PlanSnapshot = { ...snapshot, id: randomUUID(), computedAt: now() };
     this.snapshots.set(full.id, full);
     return full;
+  }
+
+  async createProject(input: NewProject): Promise<Project> {
+    const ts = now();
+    const project: Project = {
+      ...input,
+      id: randomUUID(),
+      createdAt: ts,
+      updatedAt: ts,
+    };
+    this.projects.set(project.id, project);
+    return project;
+  }
+
+  async getProject(id: string): Promise<Project | null> {
+    return this.projects.get(id) ?? null;
+  }
+
+  async listProjectsForOwner(ownerUserId: string): Promise<Project[]> {
+    return [...this.projects.values()].filter((p) => p.ownerUserId === ownerUserId);
+  }
+
+  async updateProject(id: string, patch: Partial<NewProject>): Promise<Project | null> {
+    const p = this.projects.get(id);
+    if (!p) return null;
+    const updated: Project = { ...p, ...patch, id: p.id, updatedAt: now() };
+    this.projects.set(id, updated);
+    return updated;
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    // Member payments lose their project link (FK ON DELETE SET NULL in PG).
+    for (const [k, p] of this.payments) {
+      if (p.projectId === id) this.payments.set(k, { ...p, projectId: null, updatedAt: now() });
+    }
+    this.projects.delete(id);
+  }
+
+  async listPaymentsForProject(projectId: string): Promise<Payment[]> {
+    return [...this.payments.values()].filter((p) => p.projectId === projectId);
   }
 }

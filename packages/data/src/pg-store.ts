@@ -11,13 +11,22 @@ import type {
   Income,
   Payment,
   PlanSnapshot,
+  Project,
   Session,
   SharePermission,
   User,
   UserStatus,
 } from "./entities.js";
 import * as s from "./schema.js";
-import type { AccountAccess, NewAccount, NewIncome, NewPayment, NewUser, Store } from "./store.js";
+import type {
+  AccountAccess,
+  NewAccount,
+  NewIncome,
+  NewPayment,
+  NewProject,
+  NewUser,
+  Store,
+} from "./store.js";
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 const rec = (v: unknown): Recurrence | null => (v as Recurrence | null) ?? null;
@@ -431,6 +440,7 @@ export class PgStore implements Store {
         autoRenew: input.autoRenew,
         active: input.active,
         notes: input.notes,
+        projectId: input.projectId,
       })
       .returning();
     return this.mapPayment(row!);
@@ -532,9 +542,69 @@ export class PgStore implements Store {
       autoRenew: r.autoRenew,
       active: r.active,
       notes: r.notes,
+      projectId: r.projectId,
       createdAt: r.createdAt.toISOString(),
       updatedAt: r.updatedAt.toISOString(),
     };
+  }
+
+  private mapProject(r: typeof s.projects.$inferSelect): Project {
+    return {
+      id: r.id,
+      ownerUserId: r.ownerUserId,
+      name: r.name,
+      description: r.description,
+      color: r.color,
+      targetDate: r.targetDate,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+    };
+  }
+
+  async createProject(input: NewProject): Promise<Project> {
+    const [row] = await this.db
+      .insert(s.projects)
+      .values({
+        ownerUserId: input.ownerUserId,
+        name: input.name,
+        description: input.description,
+        color: input.color,
+        targetDate: input.targetDate,
+      })
+      .returning();
+    return this.mapProject(row!);
+  }
+
+  async getProject(id: string): Promise<Project | null> {
+    const [row] = await this.db.select().from(s.projects).where(eq(s.projects.id, id));
+    return row ? this.mapProject(row) : null;
+  }
+
+  async listProjectsForOwner(ownerUserId: string): Promise<Project[]> {
+    const rows = await this.db
+      .select()
+      .from(s.projects)
+      .where(eq(s.projects.ownerUserId, ownerUserId));
+    return rows.map((r) => this.mapProject(r));
+  }
+
+  async updateProject(id: string, patch: Partial<NewProject>): Promise<Project | null> {
+    const [row] = await this.db
+      .update(s.projects)
+      .set({ ...stripUndefined(patch), updatedAt: new Date() })
+      .where(eq(s.projects.id, id))
+      .returning();
+    return row ? this.mapProject(row) : null;
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    // Member payments lose their link via the FK's ON DELETE SET NULL.
+    await this.db.delete(s.projects).where(eq(s.projects.id, id));
+  }
+
+  async listPaymentsForProject(projectId: string): Promise<Payment[]> {
+    const rows = await this.db.select().from(s.payments).where(eq(s.payments.projectId, projectId));
+    return rows.map((r) => this.mapPayment(r));
   }
 }
 

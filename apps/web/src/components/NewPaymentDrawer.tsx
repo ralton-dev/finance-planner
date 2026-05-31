@@ -1,24 +1,41 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api, ApiError } from "../lib/api.js";
-import { toMinor } from "../lib/money.js";
+import { toMajor, toMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
-import type { AccountDto, PaymentCategory } from "../lib/types.js";
+import type { AccountDto, PaymentCategory, ProjectDto } from "../lib/types.js";
 import { Drawer } from "./Drawer.js";
 
 const NO_ACCOUNTS = Object.freeze([]) as readonly AccountDto[];
+const NO_PROJECTS = Object.freeze([]) as readonly ProjectDto[];
 type Unit = "day" | "week" | "month" | "year";
 
+/**
+ * Drawer for both creating a new payment and editing an existing one. Mode is
+ * decided by `state.editingPayment` from the QuickAdd context — when set, the
+ * form pre-fills, the account + category are locked, and submit PATCHes
+ * instead of POSTs.
+ *
+ * Category is locked in edit mode because changing it would invalidate the
+ * recurrence semantics; delete + recreate if you really need to change type.
+ */
 export function NewPaymentDrawer() {
-  const { state, close, notifyCreated } = useQuickAdd();
+  const { state, close, notifyCreated, notifyUpdated } = useQuickAdd();
   const open = state.kind === "payment";
+  const editing = state.editingPayment;
+  const isEdit = !!editing;
 
   const accounts = useAsync<AccountDto[]>(
     () => (open ? api.listAccounts() : Promise.resolve(NO_ACCOUNTS as AccountDto[])),
     [open],
   );
+  const projects = useAsync<ProjectDto[]>(
+    () => (open ? api.listProjects() : Promise.resolve(NO_PROJECTS as ProjectDto[])),
+    [open],
+  );
 
   const [accountId, setAccountId] = useState("");
+  const [projectId, setProjectId] = useState("");
   const [name, setName] = useState("");
   const [category, setCategory] = useState<PaymentCategory>("fixed_point");
   const [amount, setAmount] = useState("");
@@ -27,23 +44,40 @@ export function NewPaymentDrawer() {
   const [unit, setUnit] = useState<Unit>("month");
   const [alreadySaved, setAlreadySaved] = useState("0");
   const [priority, setPriority] = useState("100");
+  const [active, setActive] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setAccountId(state.accountId ?? "");
-    setName("");
-    setCategory("fixed_point");
-    setAmount("");
-    setDueDate(new Date().toISOString().slice(0, 10));
-    setIntervalN("3");
-    setUnit("month");
-    setAlreadySaved("0");
-    setPriority("100");
+    if (editing) {
+      setAccountId(editing.accountId);
+      setProjectId(editing.projectId ?? "");
+      setName(editing.name);
+      setCategory(editing.category);
+      setAmount(toMajor(editing.amountMinor).toFixed(2));
+      setDueDate(editing.dueDate ?? new Date().toISOString().slice(0, 10));
+      setIntervalN(String(editing.recurrence?.interval ?? 3));
+      setUnit((editing.recurrence?.unit as Unit) ?? "month");
+      setAlreadySaved(toMajor(editing.alreadySavedMinor).toFixed(2));
+      setPriority(String(editing.priority));
+      setActive(editing.active);
+    } else {
+      setAccountId(state.accountId ?? "");
+      setProjectId("");
+      setName("");
+      setCategory("fixed_point");
+      setAmount("");
+      setDueDate(new Date().toISOString().slice(0, 10));
+      setIntervalN("3");
+      setUnit("month");
+      setAlreadySaved("0");
+      setPriority("100");
+      setActive(true);
+    }
     setBusy(false);
     setErr(null);
-  }, [open, state.accountId]);
+  }, [open, state.accountId, editing]);
 
   const editable = useMemo(
     () => (accounts.data ?? []).filter((a) => a.owner || a.permission === "edit"),
@@ -51,9 +85,9 @@ export function NewPaymentDrawer() {
   );
 
   useEffect(() => {
-    if (!open || accountId) return;
+    if (!open || accountId || isEdit) return;
     if (editable[0]) setAccountId(editable[0].id);
-  }, [open, accountId, editable]);
+  }, [open, accountId, editable, isEdit]);
 
   if (!open) return null;
 
@@ -75,12 +109,21 @@ export function NewPaymentDrawer() {
         priority: Number(priority),
       };
       if (needsDate) body.dueDate = dueDate;
-      if (isCustom) body.recurrence = { interval: Number(intervalN), unit, anchor: dueDate };
-      await api.createPayment(accountId, body);
-      notifyCreated("payment", accountId);
+      // Always send recurrence: a non-null value for custom; null otherwise so
+      // edits between categories clear stale recurrence rows.
+      body.recurrence = isCustom ? { interval: Number(intervalN), unit, anchor: dueDate } : null;
+      body.projectId = projectId || null;
+      if (editing) {
+        body.active = active;
+        await api.updatePayment(editing.id, body);
+        notifyUpdated("payment", accountId);
+      } else {
+        await api.createPayment(accountId, body);
+        notifyCreated("payment", accountId);
+      }
       close();
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : "could not create payment.");
+      setErr(e instanceof ApiError ? e.message : "could not save payment.");
     } finally {
       setBusy(false);
     }
@@ -90,14 +133,14 @@ export function NewPaymentDrawer() {
     <Drawer
       open
       onClose={close}
-      title="new payment"
+      title={isEdit ? `edit payment · ${editing!.name}` : "new payment"}
       footer={
         <>
           <button type="button" className="ghost" onClick={close} disabled={busy}>
             cancel
           </button>
           <button type="button" onClick={() => submit()} disabled={!canSubmit}>
-            {busy ? "adding…" : "add payment"}
+            {busy ? "saving…" : isEdit ? "save" : "add payment"}
           </button>
         </>
       }
@@ -109,7 +152,7 @@ export function NewPaymentDrawer() {
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}
             required
-            disabled={accounts.loading}
+            disabled={accounts.loading || isEdit}
           >
             <option value="" disabled>
               {accounts.loading ? "loading accounts…" : "select an account…"}
@@ -120,21 +163,35 @@ export function NewPaymentDrawer() {
               </option>
             ))}
           </select>
-          {!accounts.loading && editable.length === 0 && (
+          {!accounts.loading && editable.length === 0 && !isEdit && (
             <span className="field-hint">
               no editable accounts. create one first via <code>new account</code>.
+            </span>
+          )}
+          {isEdit && (
+            <span className="field-hint">
+              account is fixed once created; delete + recreate to move this payment.
             </span>
           )}
         </label>
 
         <label>
           category
-          <select value={category} onChange={(e) => setCategory(e.target.value as PaymentCategory)}>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value as PaymentCategory)}
+            disabled={isEdit}
+          >
             <option value="fixed_point">one-off goal (fixed date)</option>
             <option value="monthly_recurring">monthly bill</option>
             <option value="yearly_recurring">yearly</option>
             <option value="custom_recurring">custom recurring</option>
           </select>
+          {isEdit && (
+            <span className="field-hint">
+              category is locked once created (changing would invalidate recurrence).
+            </span>
+          )}
         </label>
 
         <label>
@@ -202,6 +259,23 @@ export function NewPaymentDrawer() {
         </label>
 
         <label>
+          project (optional)
+          <select
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            disabled={projects.loading}
+          >
+            <option value="">— none —</option>
+            {(projects.data ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <span className="field-hint">group this payment with others toward a shared goal.</span>
+        </label>
+
+        <label>
           priority
           <input
             value={priority}
@@ -213,6 +287,25 @@ export function NewPaymentDrawer() {
             lower number = funded first when income runs short. defaults to 100.
           </span>
         </label>
+
+        {isEdit && (
+          <label
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: "0.55rem",
+              marginTop: "0.25rem",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={active}
+              onChange={(e) => setActive(e.target.checked)}
+              style={{ width: "auto" }}
+            />
+            <span>active (uncheck to pause without deleting)</span>
+          </label>
+        )}
 
         {err && (
           <p className="error" role="alert">

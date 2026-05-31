@@ -11,7 +11,7 @@ import type { AccountDto, AccountPlanDto, IncomeDto, PaymentDto } from "../lib/t
 export function AccountPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
-  const { openIncome, openPayment, lastCreated } = useQuickAdd();
+  const { openIncome, openPayment, openEditIncome, openEditPayment, lastCreated } = useQuickAdd();
 
   const account = useAsync<AccountDto>(() => api.getAccount(id), [id]);
   const plan = useAsync<AccountPlanDto>(() => api.getPlan(id), [id]);
@@ -118,16 +118,26 @@ export function AccountPage() {
                     </em>
                   </span>
                   {canEdit && (
-                    <button
-                      type="button"
-                      className="ghost tiny"
-                      onClick={async () => {
-                        await api.deleteIncome(i.id);
-                        refresh();
-                      }}
-                    >
-                      remove
-                    </button>
+                    <span className="row-actions">
+                      <button
+                        type="button"
+                        className="ghost tiny"
+                        title="edit"
+                        onClick={() => openEditIncome(i)}
+                      >
+                        edit
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost tiny"
+                        onClick={async () => {
+                          await api.deleteIncome(i.id);
+                          refresh();
+                        }}
+                      >
+                        remove
+                      </button>
+                    </span>
                   )}
                 </li>
               ))}
@@ -200,6 +210,14 @@ export function AccountPage() {
                           }}
                         >
                           ↓
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost tiny"
+                          title="edit"
+                          onClick={() => openEditPayment(p)}
+                        >
+                          edit
                         </button>
                         <button
                           type="button"

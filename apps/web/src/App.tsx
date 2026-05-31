@@ -12,6 +12,7 @@ import { HouseholdDetailPage } from "./pages/HouseholdDetailPage.js";
 import { HouseholdsPage } from "./pages/HouseholdsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
 import { OverviewPage } from "./pages/OverviewPage.js";
+import { ProjectDetailPage } from "./pages/ProjectDetailPage.js";
 import { ProjectsPage } from "./pages/ProjectsPage.js";
 import { RegisterPage } from "./pages/RegisterPage.js";
 
@@ -34,6 +35,7 @@ export function App() {
               <Route path="/accounts" element={<AccountsPage />} />
               <Route path="/accounts/:id" element={<AccountPage />} />
               <Route path="/projects" element={<ProjectsPage />} />
+              <Route path="/projects/:id" element={<ProjectDetailPage />} />
               <Route path="/households" element={<HouseholdsPage />} />
               <Route path="/households/:id" element={<HouseholdDetailPage />} />
             </Route>
