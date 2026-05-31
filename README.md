@@ -12,6 +12,8 @@ Helm.
 
 - **Operations / runbook:** [`OPERATIONS.md`](./OPERATIONS.md)
 - **Deferred backlog:** [`BACKLOG.md`](./BACKLOG.md)
+- **Contributing:** [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- **Licence:** [MIT](./LICENSE)
 
 ## Architecture
 
