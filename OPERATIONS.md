@@ -53,7 +53,13 @@ helm upgrade --install finance-planner deploy/helm/finance-planner \
    exercises the store contract end-to-end
 3. **e2e** — Playwright against the built SPA
 4. **helm** — `helm lint` + `helm template` (default + prod values)
-5. **docker** — build all four images (matrix; no push)
+5. **docker** — build all four images (matrix). On pushes to `main`,
+   additionally publishes to
+   `ghcr.io/ralton-dev/finance-planner/<service>` tagged with the commit
+   SHA and `:latest`. PR builds verify-only (no push). Uses
+   `GITHUB_TOKEN` (no PAT required); the chart's `image.registry` points
+   at the same path so a real deploy is just
+   `helm upgrade --install --set image.tag=$SHA`.
 6. **stack-smoke** — `docker compose up -d --build --wait`, then curl
    `/healthz` on api/auth/calc and `/` on web; tears down on success or
    failure. **This is the job that catches runtime regressions a unit test
@@ -63,9 +69,11 @@ helm upgrade --install finance-planner deploy/helm/finance-planner \
 All seven gate merges to `main` via branch protection. CodeQL runs in
 parallel to the rest.
 
-Pushing built images to GHCR + auto-deploying staging/prod are intentionally
-**not** wired — they need cluster credentials that aren't committed. Plug
-that into your CD with provider-specific auth when ready.
+Auto-deploying staging/prod is intentionally **not** wired — it needs
+cluster credentials that aren't committed. Plug into your CD with
+provider-specific auth (kubeconfig secret or OIDC-federated) when ready;
+the chart + images are already in place, so the final step is just
+`helm upgrade --install ... --set image.tag=$SHA`.
 
 ## 3. Operational runbook
 

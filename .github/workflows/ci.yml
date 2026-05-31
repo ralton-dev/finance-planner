@@ -100,19 +100,45 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: build-test
+    # On PRs we build but don't push (verify-only). On pushes to main we
+    # additionally publish to GHCR tagged with the SHA + :latest.
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         service: [web, api, auth, calc]
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
-      - name: Build image (no push)
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/finance-planner/${{ matrix.service }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Build (and push on main)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/${{ matrix.service }}/Dockerfile
-          push: false
-          tags: finance-planner/${{ matrix.service }}:ci
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
 
   # End-to-end stack smoke: build every image via compose, wait for /healthz
   # on the four services, then tear down. Catches runtime regressions that

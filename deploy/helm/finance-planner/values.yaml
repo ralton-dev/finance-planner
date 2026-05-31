@@ -1,6 +1,6 @@
 # Default values. Cloud-agnostic; override per environment with values-*.yaml.
 image:
-  registry: ghcr.io/bralton/finance-planner
+  registry: ghcr.io/ralton-dev/finance-planner
   tag: latest
   pullPolicy: IfNotPresent
 

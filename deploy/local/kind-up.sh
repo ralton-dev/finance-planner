@@ -4,7 +4,7 @@
 set -euo pipefail
 
 CLUSTER="${CLUSTER:-finance-planner}"
-REGISTRY="ghcr.io/bralton/finance-planner"
+REGISTRY="ghcr.io/ralton-dev/finance-planner"
 TAG="dev"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
