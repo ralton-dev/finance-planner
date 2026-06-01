@@ -111,7 +111,11 @@ jobs:
       matrix:
         service: [web, api, auth, calc]
         platform: [linux/amd64, linux/arm64]
-    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    # arm64 builds run on the in-cluster self-hosted runner (homelab-arm64) ONLY
+    # on push-to-main (fork PRs fire pull_request and run the base workflow, so
+    # they never select it); arm64 on PRs falls back to GitHub's hosted arm
+    # runner; amd64 always uses ubuntu-latest.
+    runs-on: ${{ (matrix.platform == 'linux/arm64' && github.event_name == 'push' && github.ref == 'refs/heads/main') && 'homelab-arm64' || (matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest') }}
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
