@@ -5,6 +5,7 @@ import {
   intervalInMonths,
   monthsUntil,
   nextOccurrence,
+  occurrencesInMonth,
   parseISODate,
   toISODate,
 } from "./dates.js";
@@ -54,6 +55,8 @@ interface RequiredResult {
   /** The due/target date used for the computation (ISO date). */
   effectiveDate: string;
   monthsUntilDue: number;
+  /** How many times the payment falls due in the as-of month (>= 1). */
+  occurrencesThisMonth: number;
 }
 
 /**
@@ -62,7 +65,9 @@ interface RequiredResult {
  *   monthly_recurring → full amount due each month (nothing to "save up")
  *   fixed_point       → ceilDiv(amount - alreadySaved, monthsUntil(targetDate))
  *   yearly_recurring  → ceilDiv(remaining, monthsUntil(nextOccurrence))
- *   custom_recurring  → same, with the user-supplied recurrence cadence
+ *   custom_recurring  → if it falls due this month, (occurrences this month) ×
+ *                       amount (a sub-monthly cadence like every-2-weeks can hit
+ *                       2–3 times); otherwise save up toward the next occurrence
  * monthsUntil() floors at 1 to avoid divide-by-zero on past / this-month dates.
  */
 export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredResult {
@@ -71,7 +76,12 @@ export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredR
   // Monthly recurring: the full amount is due every month — nothing to save up.
   if (p.category === "monthly_recurring") {
     const due = p.dueDate ? parseISODate(p.dueDate) : now;
-    return { requiredMinor: p.amountMinor, effectiveDate: toISODate(due), monthsUntilDue: 1 };
+    return {
+      requiredMinor: p.amountMinor,
+      effectiveDate: toISODate(due),
+      monthsUntilDue: 1,
+      occurrencesThisMonth: 1,
+    };
   }
 
   let nextDue: Date;
@@ -82,6 +92,23 @@ export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredR
     const rec = resolveRecurrence(p);
     const anchor = p.dueDate ? parseISODate(p.dueDate) : now;
     nextDue = rec ? nextOccurrence(anchor, rec, now) : anchor;
+
+    // A custom cadence can fall due several times in one calendar month (every
+    // 2 weeks → 2–3 times). Those are paid as they land, like a monthly bill, so
+    // the month's requirement is (occurrences this month) × the per-occurrence
+    // amount — a figure that swings with the calendar. With none this month we
+    // drop through to the save-up path, accumulating toward the next occurrence.
+    if (p.category === "custom_recurring" && rec) {
+      const count = occurrencesInMonth(anchor, rec, now);
+      if (count >= 1) {
+        return {
+          requiredMinor: p.amountMinor * count,
+          effectiveDate: toISODate(nextDue),
+          monthsUntilDue: 1,
+          occurrencesThisMonth: count,
+        };
+      }
+    }
   }
 
   const months = monthsUntil(now, nextDue);
@@ -90,6 +117,7 @@ export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredR
     requiredMinor: ceilDiv(remaining, months),
     effectiveDate: toISODate(nextDue),
     monthsUntilDue: months,
+    occurrencesThisMonth: 1,
   };
 }
 
@@ -151,6 +179,7 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
       requiredMonthlyMinor: req.requiredMinor,
       fundedMonthlyMinor: funded,
       alreadySavedMinor: p.alreadySavedMinor ?? 0,
+      occurrencesThisMonth: req.occurrencesThisMonth,
       onTrack,
       projectedCompletionDate,
     };

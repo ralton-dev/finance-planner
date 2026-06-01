@@ -210,6 +210,46 @@ textarea {
 }
 
 /* ============================================================================
+ * Mobile top bar + burger toggle.
+ * Hidden on desktop; shown at <=720px where the sidebar collapses behind it.
+ * ============================================================================ */
+.mobile-bar {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.7rem 1rem;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+.mobile-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 700;
+  font-size: 13.5px;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.nav-toggle {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0.3rem 0.62rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.nav-toggle:hover {
+  border-color: var(--line-strong);
+  background: var(--card);
+}
+
+/* ============================================================================
  * Main column: status bar + page content.
  * ============================================================================ */
 .main {
@@ -449,6 +489,11 @@ td.dim {
 /* Plan-table compatibility: existing PlanTable component uses these classes. */
 .plan-table tr.at-risk td {
   background: rgba(244, 123, 107, 0.06);
+}
+/* Count hint after save/mo, e.g. "£164.26 (2)" — 2 payments fall due this month. */
+.recurs {
+  color: var(--muted);
+  font-size: 11px;
 }
 .badge {
   padding: 2px 7px;
@@ -779,11 +824,23 @@ button.tiny {
   .app {
     grid-template-columns: 1fr;
   }
+  .mobile-bar {
+    display: flex;
+  }
+  /* Collapsed by default; the burger toggles `.open` to reveal the full nav. */
   .sidebar {
     position: static;
     height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+    display: none;
+  }
+  .sidebar.open {
+    display: flex;
+  }
+  /* The brand already shows in the mobile bar — don't repeat it in the panel. */
+  .sidebar .brand {
+    display: none;
   }
   .main {
     padding: 1rem;

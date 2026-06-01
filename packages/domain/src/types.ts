@@ -50,6 +50,9 @@ export interface PaymentPlanLine {
   requiredMonthlyMinor: number;
   fundedMonthlyMinor: number;
   alreadySavedMinor: number;
+  /** Times this payment falls due within the as-of month. Usually 1; a
+   *  sub-monthly custom cadence (e.g. every 2 weeks) can be 2 or 3. */
+  occurrencesThisMonth: number;
   onTrack: boolean;
   projectedCompletionDate?: string;
 }

@@ -31,7 +31,18 @@ export function PlanTable({ plan }: { plan: AccountPlanDto }) {
             <td className="muted">{CATEGORY_LABEL[line.category]}</td>
             <td className="muted">{line.targetDate}</td>
             <td className="num">{formatMinor(line.amountMinor, plan.currency)}</td>
-            <td className="num">{formatMinor(line.requiredMonthlyMinor, plan.currency)}</td>
+            <td className="num">
+              {formatMinor(line.requiredMonthlyMinor, plan.currency)}
+              {(line.occurrencesThisMonth ?? 1) > 1 && (
+                <span
+                  className="recurs"
+                  title={`${line.occurrencesThisMonth} payments this month`}
+                >
+                  {" "}
+                  ({line.occurrencesThisMonth})
+                </span>
+              )}
+            </td>
             <td>
               {line.onTrack ? (
                 <span className="tag-status ok">on track</span>

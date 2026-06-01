@@ -5,6 +5,7 @@ import {
   intervalInMonths,
   monthsUntil,
   nextOccurrence,
+  occurrencesInMonth,
   parseISODate,
   toISODate,
   wholeMonthsBetween,
@@ -78,6 +79,62 @@ describe("nextOccurrence", () => {
       parseISODate("2026-01-01"),
     );
     expect(toISODate(occ)).toBe("2026-03-01");
+  });
+});
+
+describe("occurrencesInMonth", () => {
+  it("counts a fortnightly cadence that falls twice in the month", () => {
+    // 06-11 and 06-25 land in June; 07-09 does not.
+    expect(
+      occurrencesInMonth(
+        parseISODate("2026-06-11"),
+        { interval: 2, unit: "week", anchor: "2026-06-11" },
+        parseISODate("2026-06-01"),
+      ),
+    ).toBe(2);
+  });
+
+  it("counts three when the dates straddle the whole month", () => {
+    // 07-01, 07-15, 07-29 all land in July.
+    expect(
+      occurrencesInMonth(
+        parseISODate("2026-07-01"),
+        { interval: 2, unit: "week", anchor: "2026-07-01" },
+        parseISODate("2026-07-20"),
+      ),
+    ).toBe(3);
+  });
+
+  it("ignores occurrences before the anchor", () => {
+    // Anchor mid-month → only 06-20 counts in June, not an imagined 06-06.
+    expect(
+      occurrencesInMonth(
+        parseISODate("2026-06-20"),
+        { interval: 2, unit: "week", anchor: "2026-06-20" },
+        parseISODate("2026-06-01"),
+      ),
+    ).toBe(1);
+  });
+
+  it("returns zero when the next occurrence is a future month", () => {
+    expect(
+      occurrencesInMonth(
+        parseISODate("2026-03-01"),
+        { interval: 3, unit: "month", anchor: "2026-03-01" },
+        parseISODate("2026-01-01"),
+      ),
+    ).toBe(0);
+  });
+
+  it("counts a past anchor advanced into the reference month", () => {
+    // Anchor a year back; fortnightly steps still land twice in June 2026.
+    expect(
+      occurrencesInMonth(
+        parseISODate("2025-06-11"),
+        { interval: 2, unit: "week", anchor: "2025-06-11" },
+        parseISODate("2026-06-15"),
+      ),
+    ).toBe(2);
   });
 });
 

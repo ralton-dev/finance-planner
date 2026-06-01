@@ -61,6 +61,37 @@ describe("PlanTable", () => {
     expect(screen.getByText(/no payments yet/i)).toBeInTheDocument();
   });
 
+  it("annotates save/mo with the occurrence count for sub-monthly recurrences", () => {
+    const fortnightly: AccountPlanDto = {
+      ...plan,
+      lines: [
+        {
+          paymentId: "p3",
+          name: "Butternut",
+          category: "custom_recurring",
+          amountMinor: 8_213,
+          dueDate: "2026-06-11",
+          targetDate: "2026-06-11",
+          monthsUntilDue: 1,
+          requiredMonthlyMinor: 16_426,
+          fundedMonthlyMinor: 16_426,
+          alreadySavedMinor: 0,
+          occurrencesThisMonth: 2,
+          onTrack: true,
+        },
+      ],
+    };
+    render(<PlanTable plan={fortnightly} />);
+    expect(screen.getByText("£164.26")).toBeInTheDocument();
+    expect(screen.getByText("(2)")).toBeInTheDocument();
+  });
+
+  it("omits the count when a payment falls due once", () => {
+    render(<PlanTable plan={plan} />);
+    // The single-occurrence Holiday line shows no "(1)" annotation.
+    expect(screen.queryByText("(1)")).not.toBeInTheDocument();
+  });
+
   it("summary shows leftover when there is no shortfall", () => {
     render(<PlanSummary plan={plan} />);
     expect(screen.getByText("left over")).toBeInTheDocument();

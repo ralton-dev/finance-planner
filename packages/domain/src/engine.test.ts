@@ -87,6 +87,7 @@ describe("requiredMonthlyForPayment", () => {
     const r = requiredMonthlyForPayment(p, now);
     expect(r.requiredMinor).toBe(4_500);
     expect(r.monthsUntilDue).toBe(1);
+    expect(r.occurrencesThisMonth).toBe(1);
   });
 
   it("custom_recurring: spreads over months until next occurrence", () => {
@@ -98,8 +99,40 @@ describe("requiredMonthlyForPayment", () => {
       dueDate: "2026-03-01",
       recurrence: { interval: 3, unit: "month", anchor: "2026-03-01" },
     };
-    // next due 2026-03-01, 2 months out → 9000 / 2 = 4500
-    expect(requiredMonthlyForPayment(p, now).requiredMinor).toBe(4_500);
+    // next due 2026-03-01, 2 months out → 9000 / 2 = 4500; nothing falls in Jan.
+    const r = requiredMonthlyForPayment(p, now);
+    expect(r.requiredMinor).toBe(4_500);
+    expect(r.occurrencesThisMonth).toBe(1);
+  });
+
+  it("custom_recurring: charges every occurrence that lands this month", () => {
+    const p: PaymentInput = {
+      id: "p4b",
+      name: "Butternut",
+      category: "custom_recurring",
+      amountMinor: 8_213,
+      dueDate: "2026-01-08",
+      recurrence: { interval: 2, unit: "week", anchor: "2026-01-08" },
+    };
+    // 01-08 and 01-22 both fall in January → 2 × 8213, due this month.
+    const r = requiredMonthlyForPayment(p, now);
+    expect(r.requiredMinor).toBe(16_426);
+    expect(r.monthsUntilDue).toBe(1);
+    expect(r.effectiveDate).toBe("2026-01-08");
+    expect(r.occurrencesThisMonth).toBe(2);
+  });
+
+  it("custom_recurring: counts three occurrences in a straddling month", () => {
+    const p: PaymentInput = {
+      id: "p4c",
+      name: "Fortnightly",
+      category: "custom_recurring",
+      amountMinor: 1_000,
+      dueDate: "2026-01-01",
+      recurrence: { interval: 2, unit: "week", anchor: "2026-01-01" },
+    };
+    // 01-01, 01-15, 01-29 → 3 × 1000.
+    expect(requiredMonthlyForPayment(p, now).requiredMinor).toBe(3_000);
   });
 
   it("target date in the past requires the full remaining now", () => {
@@ -169,6 +202,29 @@ describe("computeAccountPlan", () => {
     expect(low?.fundedMonthlyMinor).toBe(20_000);
     expect(low?.onTrack).toBe(false);
     expect(low?.projectedCompletionDate).toBeDefined();
+  });
+
+  it("counts a sub-monthly custom recurrence multiple times in the month", () => {
+    const account: AccountInput = {
+      accountId: "a4",
+      currency: "GBP",
+      incomes: [{ id: "i1", amountMinor: 100_000, frequency: "monthly", anchorDate: AS_OF }],
+      payments: [
+        {
+          id: "fortnightly",
+          name: "Butternut",
+          category: "custom_recurring",
+          amountMinor: 8_213,
+          dueDate: "2026-01-08",
+          recurrence: { interval: 2, unit: "week", anchor: "2026-01-08" },
+        },
+      ],
+    };
+    const plan = computeAccountPlan(account, AS_OF);
+    // Two occurrences in January → the plan reflects both, not a single payment.
+    expect(plan.lines[0]?.requiredMonthlyMinor).toBe(16_426);
+    expect(plan.lines[0]?.occurrencesThisMonth).toBe(2);
+    expect(plan.totalRequiredMinor).toBe(16_426);
   });
 
   it("totals are summed from the rounded per-payment figures", () => {

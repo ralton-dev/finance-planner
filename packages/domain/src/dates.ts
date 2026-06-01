@@ -83,6 +83,29 @@ export function nextOccurrence(anchor: Date, rec: Recurrence, now: Date): Date {
   return occ;
 }
 
+/**
+ * Count how many occurrences of `rec` (stepping forward from `anchor`) land in
+ * the calendar month containing `ref`. Occurrences before the anchor are not
+ * counted. A sub-monthly cadence such as every-2-weeks falls due 2 or 3 times a
+ * month depending on where the dates sit, so this count is dynamic month to
+ * month rather than a fixed average.
+ */
+export function occurrencesInMonth(anchor: Date, rec: Recurrence, ref: Date): number {
+  if (rec.interval < 1) return 0;
+  const monthStart = new Date(Date.UTC(ref.getUTCFullYear(), ref.getUTCMonth(), 1));
+  const nextMonthStart = new Date(Date.UTC(ref.getUTCFullYear(), ref.getUTCMonth() + 1, 1));
+  // First occurrence on/after the month start (never earlier than the anchor).
+  let occ = nextOccurrence(anchor, rec, monthStart);
+  let count = 0;
+  let guard = 0;
+  while (occ.getTime() < nextMonthStart.getTime() && guard < 1000) {
+    count += 1;
+    occ = addUnit(occ, rec.interval, rec.unit);
+    guard += 1;
+  }
+  return count;
+}
+
 /** Ceiling integer division; returns `a` if the divisor is non-positive. */
 export function ceilDiv(a: number, b: number): number {
   if (b <= 0) return a;

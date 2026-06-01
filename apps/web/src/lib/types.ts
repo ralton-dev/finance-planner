@@ -127,6 +127,8 @@ export interface PlanLineDto {
   requiredMonthlyMinor: number;
   fundedMonthlyMinor: number;
   alreadySavedMinor: number;
+  /** Times the payment falls due this month; >1 for sub-monthly recurrences. */
+  occurrencesThisMonth?: number;
   onTrack: boolean;
   projectedCompletionDate?: string;
 }

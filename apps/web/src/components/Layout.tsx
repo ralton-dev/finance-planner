@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
@@ -7,7 +7,13 @@ import { useChordShortcuts } from "../lib/useChordShortcuts.js";
 export function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const { openPayment, openIncome, openAccount } = useQuickAdd();
+
+  // On mobile the sidebar collapses behind a burger toggle. Following a link
+  // (which changes the route) closes it again so it never covers the content.
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => setNavOpen(false), [location.pathname]);
 
   // Two-key chord shortcuts, mirroring the hints shown next to each item.
   useChordShortcuts({
@@ -26,7 +32,24 @@ export function Layout() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <div className="mobile-bar">
+        <span className="mobile-brand">
+          <span className="brand-dot" />
+          finance-planner
+        </span>
+        <button
+          type="button"
+          className="nav-toggle"
+          aria-label={navOpen ? "close navigation" : "open navigation"}
+          aria-expanded={navOpen}
+          aria-controls="app-sidebar"
+          onClick={() => setNavOpen((open) => !open)}
+        >
+          {navOpen ? "✕" : "☰"}
+        </button>
+      </div>
+
+      <aside id="app-sidebar" className={navOpen ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <span className="brand-dot" />
           finance-planner
@@ -52,15 +75,36 @@ export function Layout() {
         </NavLink>
 
         <div className="nav-section">quick add</div>
-        <button type="button" className="nav-item" onClick={() => openPayment()}>
+        <button
+          type="button"
+          className="nav-item"
+          onClick={() => {
+            openPayment();
+            setNavOpen(false);
+          }}
+        >
           <span className="label">new payment</span>
           <span className="kbd-ish">n p</span>
         </button>
-        <button type="button" className="nav-item" onClick={() => openIncome()}>
+        <button
+          type="button"
+          className="nav-item"
+          onClick={() => {
+            openIncome();
+            setNavOpen(false);
+          }}
+        >
           <span className="label">new income</span>
           <span className="kbd-ish">n i</span>
         </button>
-        <button type="button" className="nav-item" onClick={() => openAccount()}>
+        <button
+          type="button"
+          className="nav-item"
+          onClick={() => {
+            openAccount();
+            setNavOpen(false);
+          }}
+        >
           <span className="label">new account</span>
           <span className="kbd-ish">n a</span>
         </button>
