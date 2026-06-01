@@ -34,10 +34,7 @@ export function PlanTable({ plan }: { plan: AccountPlanDto }) {
             <td className="num">
               {formatMinor(line.requiredMonthlyMinor, plan.currency)}
               {(line.occurrencesThisMonth ?? 1) > 1 && (
-                <span
-                  className="recurs"
-                  title={`${line.occurrencesThisMonth} payments this month`}
-                >
+                <span className="recurs" title={`${line.occurrencesThisMonth} payments this month`}>
                   {" "}
                   ({line.occurrencesThisMonth})
                 </span>
