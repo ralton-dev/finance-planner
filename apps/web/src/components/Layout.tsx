@@ -2,11 +2,27 @@ import { type ReactNode } from "react";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
+import { useChordShortcuts } from "../lib/useChordShortcuts.js";
 
 export function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { openPayment, openIncome, openAccount } = useQuickAdd();
+
+  // Two-key chord shortcuts, mirroring the hints shown next to each item.
+  useChordShortcuts({
+    g: {
+      h: () => navigate("/"),
+      a: () => navigate("/accounts"),
+      p: () => navigate("/projects"),
+      s: () => navigate("/households"),
+    },
+    n: {
+      p: () => openPayment(),
+      i: () => openIncome(),
+      a: () => openAccount(),
+    },
+  });
 
   return (
     <div className="app">
