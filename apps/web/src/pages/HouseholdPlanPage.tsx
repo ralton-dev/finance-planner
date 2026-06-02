@@ -1,13 +1,11 @@
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
-import { HouseholdSankey } from "../components/HouseholdSankey.js";
+import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
 import type { HouseholdDetailDto, HouseholdPlanDto } from "../lib/types.js";
-
-const pct = (bp: number): string => `${(bp / 100).toFixed(bp % 100 === 0 ? 0 : 1)}%`;
 
 export function HouseholdPlanPage() {
   const { id = "" } = useParams();
@@ -45,63 +43,7 @@ export function HouseholdPlanPage() {
         </div>
       </div>
 
-      <div className="kpis">
-        <div className="kpi">
-          <div className="kpi-label">monthly income</div>
-          <div className="kpi-value">{formatMinor(p.monthlyIncomeMinor, c)}</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-label">required / mo</div>
-          <div className="kpi-value">{formatMinor(p.totalRequiredMinor, c)}</div>
-        </div>
-        <div className="kpi ok">
-          <div className="kpi-label">left over</div>
-          <div className="kpi-value">{formatMinor(p.leftoverMinor, c)}</div>
-        </div>
-        <div className={p.shortfallMinor > 0 ? "kpi warn" : "kpi"}>
-          <div className="kpi-label">shortfall</div>
-          <div className="kpi-value">
-            {p.shortfallMinor > 0 ? formatMinor(p.shortfallMinor, c) : "—"}
-          </div>
-        </div>
-      </div>
-
-      <div className="section-head">
-        <h2>money flow</h2>
-        <span className="meta">[income → accounts → transfers → spending]</span>
-      </div>
-      <HouseholdSankey plan={p} />
-
-      <div className="section-head">
-        <h2>per person</h2>
-        <span className="meta">[contribution + funding]</span>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>member</th>
-            <th className="num">share</th>
-            <th className="num">income</th>
-            <th className="num">their costs</th>
-            <th className="num">left over</th>
-            <th className="num">shortfall</th>
-          </tr>
-        </thead>
-        <tbody>
-          {p.members.map((m) => (
-            <tr key={m.userId} className={m.shortfallMinor > 0 ? "at-risk" : ""}>
-              <td className="name">{m.displayName ?? "member"}</td>
-              <td className="num">{pct(m.shareBp)}</td>
-              <td className="num">{formatMinor(m.monthlyIncomeMinor, c)}</td>
-              <td className="num">{formatMinor(m.obligationMinor, c)}</td>
-              <td className="num ok">{formatMinor(m.leftoverMinor, c)}</td>
-              <td className={`num${m.shortfallMinor > 0 ? " warn" : " dim"}`}>
-                {m.shortfallMinor > 0 ? formatMinor(m.shortfallMinor, c) : "—"}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <HouseholdPlanView plan={p} />
 
       <div className="section-head">
         <h2>transfers</h2>
