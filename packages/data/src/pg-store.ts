@@ -1,4 +1,10 @@
-import type { Frequency, PaymentCategory, Recurrence } from "@finance-planner/contracts";
+import type {
+  AccountRole,
+  Frequency,
+  PaymentCategory,
+  PaymentScope,
+  Recurrence,
+} from "@finance-planner/contracts";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Database } from "./db.js";
 import type {
@@ -6,6 +12,7 @@ import type {
   AccountShare,
   EmailVerificationToken,
   Household,
+  HouseholdAccountAssignment,
   HouseholdMembership,
   HouseholdRole,
   Income,
@@ -21,6 +28,7 @@ import * as s from "./schema.js";
 import type {
   AccountAccess,
   NewAccount,
+  NewAccountAssignment,
   NewIncome,
   NewPayment,
   NewProject,
@@ -40,6 +48,31 @@ function mapUser(r: typeof s.users.$inferSelect): User {
     status: r.status as UserStatus,
     emailVerified: r.emailVerified,
     createdAt: r.createdAt.toISOString(),
+  };
+}
+
+function mapMembership(r: typeof s.memberships.$inferSelect): HouseholdMembership {
+  return {
+    id: r.id,
+    householdId: r.householdId,
+    userId: r.userId,
+    role: r.role as HouseholdRole,
+    contributionShareBp: r.contributionShareBp,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+function mapAssignment(
+  r: typeof s.householdAccountAssignments.$inferSelect,
+): HouseholdAccountAssignment {
+  return {
+    id: r.id,
+    householdId: r.householdId,
+    accountId: r.accountId,
+    role: r.role as AccountRole,
+    memberUserId: r.memberUserId,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
   };
 }
 
@@ -165,9 +198,12 @@ export class PgStore implements Store {
   }
 
   async deleteHousehold(id: string): Promise<void> {
-    // account_shares has no FK to households, so wipe them first; memberships
-    // cascade automatically via the schema's ON DELETE CASCADE.
+    // account_shares + assignments live in other schemas with no FK back to
+    // households, so wipe them first; memberships cascade via ON DELETE CASCADE.
     await this.db.delete(s.accountShares).where(eq(s.accountShares.householdId, id));
+    await this.db
+      .delete(s.householdAccountAssignments)
+      .where(eq(s.householdAccountAssignments.householdId, id));
     await this.db.delete(s.households).where(eq(s.households.id, id));
   }
 
@@ -194,13 +230,7 @@ export class PgStore implements Store {
       .insert(s.memberships)
       .values({ householdId, userId, role })
       .returning();
-    return {
-      id: row!.id,
-      householdId: row!.householdId,
-      userId: row!.userId,
-      role: row!.role as HouseholdRole,
-      createdAt: row!.createdAt.toISOString(),
-    };
+    return mapMembership(row!);
   }
 
   async getMembership(householdId: string, userId: string): Promise<HouseholdMembership | null> {
@@ -208,14 +238,7 @@ export class PgStore implements Store {
       .select()
       .from(s.memberships)
       .where(and(eq(s.memberships.householdId, householdId), eq(s.memberships.userId, userId)));
-    if (!row) return null;
-    return {
-      id: row.id,
-      householdId: row.householdId,
-      userId: row.userId,
-      role: row.role as HouseholdRole,
-      createdAt: row.createdAt.toISOString(),
-    };
+    return row ? mapMembership(row) : null;
   }
 
   async listMembersForHousehold(householdId: string): Promise<HouseholdMembership[]> {
@@ -223,13 +246,7 @@ export class PgStore implements Store {
       .select()
       .from(s.memberships)
       .where(eq(s.memberships.householdId, householdId));
-    return rows.map((r) => ({
-      id: r.id,
-      householdId: r.householdId,
-      userId: r.userId,
-      role: r.role as HouseholdRole,
-      createdAt: r.createdAt.toISOString(),
-    }));
+    return rows.map(mapMembership);
   }
 
   async removeMember(householdId: string, userId: string): Promise<void> {
@@ -248,14 +265,77 @@ export class PgStore implements Store {
       .set({ role })
       .where(and(eq(s.memberships.householdId, householdId), eq(s.memberships.userId, userId)))
       .returning();
-    if (!row) return null;
-    return {
-      id: row.id,
-      householdId: row.householdId,
-      userId: row.userId,
-      role: row.role as HouseholdRole,
-      createdAt: row.createdAt.toISOString(),
-    };
+    return row ? mapMembership(row) : null;
+  }
+
+  async updateMembershipShare(
+    householdId: string,
+    userId: string,
+    shareBp: number,
+  ): Promise<HouseholdMembership | null> {
+    const [row] = await this.db
+      .update(s.memberships)
+      .set({ contributionShareBp: shareBp })
+      .where(and(eq(s.memberships.householdId, householdId), eq(s.memberships.userId, userId)))
+      .returning();
+    return row ? mapMembership(row) : null;
+  }
+
+  async upsertAccountAssignment(input: NewAccountAssignment): Promise<HouseholdAccountAssignment> {
+    const existing = await this.getAccountAssignment(input.householdId, input.accountId);
+    if (existing) {
+      const [row] = await this.db
+        .update(s.householdAccountAssignments)
+        .set({ role: input.role, memberUserId: input.memberUserId, updatedAt: new Date() })
+        .where(eq(s.householdAccountAssignments.id, existing.id))
+        .returning();
+      return mapAssignment(row!);
+    }
+    const [row] = await this.db
+      .insert(s.householdAccountAssignments)
+      .values({
+        householdId: input.householdId,
+        accountId: input.accountId,
+        role: input.role,
+        memberUserId: input.memberUserId,
+      })
+      .returning();
+    return mapAssignment(row!);
+  }
+
+  async listAccountAssignments(householdId: string): Promise<HouseholdAccountAssignment[]> {
+    const rows = await this.db
+      .select()
+      .from(s.householdAccountAssignments)
+      .where(eq(s.householdAccountAssignments.householdId, householdId));
+    return rows.map(mapAssignment);
+  }
+
+  async getAccountAssignment(
+    householdId: string,
+    accountId: string,
+  ): Promise<HouseholdAccountAssignment | null> {
+    const [row] = await this.db
+      .select()
+      .from(s.householdAccountAssignments)
+      .where(
+        and(
+          eq(s.householdAccountAssignments.householdId, householdId),
+          eq(s.householdAccountAssignments.accountId, accountId),
+        ),
+      );
+    return row ? mapAssignment(row) : null;
+  }
+
+  async deleteAccountAssignment(householdId: string, accountId: string): Promise<void> {
+    await this.db
+      .delete(s.householdAccountAssignments)
+      .where(
+        and(
+          eq(s.householdAccountAssignments.householdId, householdId),
+          eq(s.householdAccountAssignments.accountId, accountId),
+        ),
+      );
   }
 
   async listSharesForHousehold(householdId: string): Promise<AccountShare[]> {
@@ -389,6 +469,9 @@ export class PgStore implements Store {
     await this.db.delete(s.incomes).where(eq(s.incomes.accountId, id));
     await this.db.delete(s.payments).where(eq(s.payments.accountId, id));
     await this.db.delete(s.accountShares).where(eq(s.accountShares.accountId, id));
+    await this.db
+      .delete(s.householdAccountAssignments)
+      .where(eq(s.householdAccountAssignments.accountId, id));
     await this.db.delete(s.accounts).where(eq(s.accounts.id, id));
   }
 
@@ -448,6 +531,8 @@ export class PgStore implements Store {
         active: input.active,
         notes: input.notes,
         projectId: input.projectId,
+        scope: input.scope,
+        bearerUserId: input.bearerUserId,
       })
       .returning();
     return this.mapPayment(row!);
@@ -550,6 +635,8 @@ export class PgStore implements Store {
       active: r.active,
       notes: r.notes,
       projectId: r.projectId,
+      scope: r.scope as PaymentScope,
+      bearerUserId: r.bearerUserId,
       createdAt: r.createdAt.toISOString(),
       updatedAt: r.updatedAt.toISOString(),
     };

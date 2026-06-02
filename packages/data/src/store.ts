@@ -3,6 +3,7 @@ import type {
   AccountShare,
   EmailVerificationToken,
   Household,
+  HouseholdAccountAssignment,
   HouseholdMembership,
   HouseholdRole,
   Income,
@@ -32,6 +33,10 @@ export interface NewAccount {
 export type NewIncome = Omit<Income, "id" | "createdAt" | "updatedAt">;
 export type NewPayment = Omit<Payment, "id" | "createdAt" | "updatedAt">;
 export type NewProject = Omit<Project, "id" | "createdAt" | "updatedAt">;
+export type NewAccountAssignment = Omit<
+  HouseholdAccountAssignment,
+  "id" | "createdAt" | "updatedAt"
+>;
 
 /** Effective access a user has to an account. */
 export interface AccountAccess {
@@ -80,6 +85,23 @@ export interface Store {
     userId: string,
     role: HouseholdRole,
   ): Promise<HouseholdMembership | null>;
+  /** Set a member's proportional contribution share (basis points). */
+  updateMembershipShare(
+    householdId: string,
+    userId: string,
+    shareBp: number,
+  ): Promise<HouseholdMembership | null>;
+
+  // ---- household account assignments (plan roles) ----
+  /** Create or update the account's role within a household (upsert on the
+   *  (household, account) pair). */
+  upsertAccountAssignment(input: NewAccountAssignment): Promise<HouseholdAccountAssignment>;
+  listAccountAssignments(householdId: string): Promise<HouseholdAccountAssignment[]>;
+  getAccountAssignment(
+    householdId: string,
+    accountId: string,
+  ): Promise<HouseholdAccountAssignment | null>;
+  deleteAccountAssignment(householdId: string, accountId: string): Promise<void>;
 
   createAccountShare(
     accountId: string,

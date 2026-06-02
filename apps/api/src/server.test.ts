@@ -351,4 +351,150 @@ describe("api service", () => {
     expect(after).not.toBeNull();
     expect(after?.projectId ?? null).toBeNull();
   });
+
+  it("passes payment scope + bearer through create", async () => {
+    const { user, auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: "Gym",
+          category: "monthly_recurring",
+          amountMinor: 5000,
+          scope: "personal",
+          bearerUserId: user.id,
+        },
+      })
+    ).json();
+    expect(payment.scope).toBe("personal");
+    expect(payment.bearerUserId).toBe(user.id);
+  });
+
+  it("computes a household plan with proportional shared costs + transfers", async () => {
+    const { user, auth } = await seedUser(store, "alice@example.com");
+    const { user: bob } = await seedUser(store, "bob@example.com");
+    const household = await store.createHousehold("Home", user.id);
+    await store.addMembership(household.id, bob.id, "member");
+    await store.updateMembershipShare(household.id, user.id, 6600);
+    await store.updateMembershipShare(household.id, bob.id, 3400);
+
+    const make = async (name: string, incomeMinor?: number) => {
+      const a = (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+      if (incomeMinor) {
+        await app.inject({
+          method: "POST",
+          url: `/api/accounts/${a.id}/incomes`,
+          headers: auth,
+          payload: {
+            name: "Pay",
+            amountMinor: incomeMinor,
+            frequency: "monthly",
+            anchorDate: "2026-01-01",
+          },
+        });
+      }
+      return a;
+    };
+    const aliceCur = await make("alice-cur", 300000);
+    const bobCur = await make("bob-cur", 200000);
+    const bills = await make("bills");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${bills.id}/payments`,
+      headers: auth,
+      payload: {
+        name: "Rent",
+        category: "monthly_recurring",
+        amountMinor: 100000,
+        scope: "shared",
+      },
+    });
+
+    // Build the household roster.
+    const assign = (accountId: string, payload: object) =>
+      app.inject({
+        method: "PUT",
+        url: `/api/households/${household.id}/accounts/${accountId}`,
+        headers: auth,
+        payload,
+      });
+    expect(
+      (await assign(aliceCur.id, { role: "personal", memberUserId: user.id })).statusCode,
+    ).toBe(200);
+    await assign(bobCur.id, { role: "personal", memberUserId: bob.id });
+    await assign(bills.id, { role: "shared" });
+
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${household.id}/plan?asOf=2026-06-01`,
+        headers: auth,
+      })
+    ).json();
+
+    expect(plan.members).toHaveLength(2);
+    expect(plan.shortfallMinor).toBe(0);
+    const alice = plan.members.find((m: { userId: string }) => m.userId === user.id);
+    const bobPlan = plan.members.find((m: { userId: string }) => m.userId === bob.id);
+    expect(alice.obligationMinor).toBe(66000);
+    expect(bobPlan.obligationMinor).toBe(34000);
+    const t = (from: string, to: string) =>
+      plan.transfers.find(
+        (x: { fromAccountId: string; toAccountId: string }) =>
+          x.fromAccountId === from && x.toAccountId === to,
+      )?.amountMinor;
+    expect(t(aliceCur.id, bills.id)).toBe(66000);
+    expect(t(bobCur.id, bills.id)).toBe(34000);
+  });
+
+  it("hides the household plan from non-members (404)", async () => {
+    const { user } = await seedUser(store, "member@example.com");
+    const { auth: strangerAuth } = await seedUser(store, "stranger@example.com");
+    const household = await store.createHousehold("Home", user.id);
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/households/${household.id}/plan`,
+      headers: strangerAuth,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("only admins can change the household account roster (403 for members)", async () => {
+    const { user } = await seedUser(store, "owner2@example.com");
+    const { user: member, auth: memberAuth } = await seedUser(store, "member2@example.com");
+    const household = await store.createHousehold("Home", user.id);
+    await store.addMembership(household.id, member.id, "member");
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: memberAuth,
+        payload: { name: "Mine", currency: "GBP" },
+      })
+    ).json();
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/households/${household.id}/accounts/${account.id}`,
+      headers: memberAuth,
+      payload: { role: "shared" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
 });

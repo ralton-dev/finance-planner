@@ -1,7 +1,10 @@
 import type {
   AccountDto,
   AccountPlanDto,
+  AccountRole,
+  HouseholdAccountAssignmentDto,
   HouseholdDetailDto,
+  HouseholdPlanDto,
   HouseholdRole,
   IncomeDto,
   OverviewDto,
@@ -21,7 +24,7 @@ export class ApiError extends Error {
   }
 }
 
-type Method = "GET" | "POST" | "PATCH" | "DELETE";
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /** Typed client for the API gateway. Holds the access token in memory and
  * transparently refreshes it once on a 401. */
@@ -216,6 +219,38 @@ export class ApiClient {
   }
   unshareAccount(accountId: string, shareId: string) {
     return this.request<void>("DELETE", `/api/accounts/${accountId}/shares/${shareId}`);
+  }
+  setMemberShare(householdId: string, userId: string, shareBp: number) {
+    return this.request<{ id: string; contributionShareBp: number }>(
+      "PATCH",
+      `/api/auth/households/${householdId}/members/${userId}/share`,
+      { shareBp },
+    );
+  }
+
+  // ---- household plan + account roster ----
+  householdPlan(id: string, asOf?: string) {
+    return this.request<HouseholdPlanDto>(
+      "GET",
+      `/api/households/${id}/plan${asOf ? `?asOf=${asOf}` : ""}`,
+    );
+  }
+  listHouseholdAccounts(id: string) {
+    return this.request<HouseholdAccountAssignmentDto[]>("GET", `/api/households/${id}/accounts`);
+  }
+  assignHouseholdAccount(
+    householdId: string,
+    accountId: string,
+    body: { role: AccountRole; memberUserId?: string | null },
+  ) {
+    return this.request<HouseholdAccountAssignmentDto>(
+      "PUT",
+      `/api/households/${householdId}/accounts/${accountId}`,
+      body,
+    );
+  }
+  unassignHouseholdAccount(householdId: string, accountId: string) {
+    return this.request<void>("DELETE", `/api/households/${householdId}/accounts/${accountId}`);
   }
 
   // ---- projects ----

@@ -8,6 +8,7 @@ import {
   type ReadinessResponse,
   registerBody,
   updateMemberRoleBody,
+  updateMemberShareBody,
 } from "@finance-planner/contracts";
 import { createStore, type Store } from "@finance-planner/data";
 import { type AppAbility, buildAbility, subject } from "@finance-planner/policies";
@@ -293,6 +294,7 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
           membershipId: m.id,
           userId: m.userId,
           role: m.role,
+          shareBp: m.contributionShareBp,
           displayName: user?.displayName ?? "(unknown)",
           email: user?.email ?? "",
           isSelf: m.userId === userId,
@@ -366,6 +368,26 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
       throw new HttpError(403, "forbidden", "Cannot change the owner's role");
     }
     const updated = await store.updateMembershipRole(id, targetUserId, body.role);
+    if (!updated) throw new HttpError(404, "not_found", "Membership not found");
+    return updated;
+  });
+
+  /** Set a member's proportional contribution share (basis points). This drives
+   *  how shared household costs are split, so it's an admin action like other
+   *  member management. */
+  app.patch("/auth/households/:id/members/:userId/share", async (req) => {
+    const callerId = await authenticate(req);
+    const { id, userId: targetUserId } = req.params as { id: string; userId: string };
+    const body = updateMemberShareBody.parse(req.body);
+    const ability = await abilityFor(callerId);
+    const ref = subject("Household", { id });
+    if (!ability.hasAnyAccess(ref)) {
+      throw new HttpError(404, "not_found", "Household not found");
+    }
+    if (!ability.can("manage_members", ref)) {
+      throw new HttpError(403, "forbidden", "Only household admins can set contribution shares");
+    }
+    const updated = await store.updateMembershipShare(id, targetUserId, body.shareBp);
     if (!updated) throw new HttpError(404, "not_found", "Membership not found");
     return updated;
   });

@@ -51,6 +51,7 @@ export const memberships = authSchema.table("household_memberships", {
   householdId: uuid("household_id").notNull(),
   userId: uuid("user_id").notNull(),
   role: text("role").notNull().default("member"),
+  contributionShareBp: integer("contribution_share_bp").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -102,6 +103,23 @@ export const payments = coreSchema.table("payments", {
   active: boolean("active").notNull().default(true),
   notes: text("notes"),
   projectId: uuid("project_id"),
+  scope: text("scope").notNull().default("shared"),
+  bearerUserId: uuid("bearer_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Per-household account role: a shared pot, or personal to one member. Drives
+ * cost attribution + transfer derivation in the household plan engine. Unique
+ * per (household, account).
+ */
+export const householdAccountAssignments = coreSchema.table("household_account_assignments", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  householdId: uuid("household_id").notNull(),
+  accountId: uuid("account_id").notNull(),
+  role: text("role").notNull().default("shared"),
+  memberUserId: uuid("member_user_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

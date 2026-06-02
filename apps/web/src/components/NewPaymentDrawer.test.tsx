@@ -170,6 +170,8 @@ describe("NewPaymentDrawer", () => {
       active: true,
       notes: null,
       projectId: null,
+      scope: "shared",
+      bearerUserId: null,
     };
 
     // Make the PATCH endpoint succeed.

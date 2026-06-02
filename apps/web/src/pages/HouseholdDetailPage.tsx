@@ -1,14 +1,24 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api.js";
 import { useAsync } from "../lib/useAsync.js";
-import type { AccountDto, HouseholdDetailDto } from "../lib/types.js";
+import type {
+  AccountDto,
+  AccountRole,
+  HouseholdAccountAssignmentDto,
+  HouseholdDetailDto,
+  HouseholdMemberDto,
+} from "../lib/types.js";
 
 export function HouseholdDetailPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const household = useAsync<HouseholdDetailDto>(() => api.getHousehold(id), [id]);
   const accounts = useAsync<AccountDto[]>(() => api.listAccounts(), []);
+  const roster = useAsync<HouseholdAccountAssignmentDto[]>(
+    () => api.listHouseholdAccounts(id),
+    [id],
+  );
 
   if (household.error) return <p className="error">household not found.</p>;
   if (household.loading || !household.data) return <p className="muted">loading…</p>;
@@ -31,6 +41,13 @@ export function HouseholdDetailPage() {
               ← back
             </Link>
             your role: <b style={{ color: "var(--ink-2)" }}>{data.yourRole}</b>
+            <Link
+              to={`/households/${id}/plan`}
+              className="action"
+              style={{ marginLeft: "0.75rem" }}
+            >
+              money flow →
+            </Link>
           </div>
         </div>
       </div>
@@ -44,6 +61,7 @@ export function HouseholdDetailPage() {
           <tr>
             <th>name</th>
             <th>email</th>
+            <th className="num">share</th>
             <th>role</th>
             <th></th>
           </tr>
@@ -58,6 +76,14 @@ export function HouseholdDetailPage() {
                 </span>
               </td>
               <td className="muted">{m.email}</td>
+              <td className="num">
+                <ShareCell
+                  member={m}
+                  canEdit={isAdmin}
+                  householdId={id}
+                  onChanged={() => household.refetch()}
+                />
+              </td>
               <td>
                 <RoleCell
                   member={m}
@@ -139,6 +165,16 @@ export function HouseholdDetailPage() {
           no accounts left to share — you've shared all your owned accounts with this household.
         </p>
       )}
+
+      <PlanAccountsSection
+        householdId={id}
+        members={data.members}
+        accounts={accounts.data ?? []}
+        roster={roster.data ?? []}
+        loading={roster.loading}
+        canEdit={isAdmin}
+        onChanged={() => roster.refetch()}
+      />
 
       {isOwner && (
         <DeleteHouseholdZone
@@ -418,6 +454,249 @@ function UnshareButton({
   return (
     <button type="button" className="row-edit" onClick={unshare} disabled={busy}>
       {busy ? "…" : "unshare"}
+    </button>
+  );
+}
+
+function ShareCell({
+  member,
+  canEdit,
+  householdId,
+  onChanged,
+}: {
+  member: HouseholdMemberDto;
+  canEdit: boolean;
+  householdId: string;
+  onChanged: () => void;
+}) {
+  const [value, setValue] = useState((member.shareBp / 100).toString());
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setValue((member.shareBp / 100).toString()), [member.shareBp]);
+
+  if (!canEdit) {
+    return <span>{(member.shareBp / 100).toFixed(member.shareBp % 100 === 0 ? 0 : 1)}%</span>;
+  }
+
+  async function save(): Promise<void> {
+    const bp = Math.round(Number(value) * 100);
+    if (!Number.isFinite(bp) || bp < 0 || bp > 10_000 || bp === member.shareBp) return;
+    setBusy(true);
+    try {
+      await api.setMemberShare(householdId, member.userId, bp);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "0.25rem",
+        justifyContent: "flex-end",
+      }}
+    >
+      <input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+        inputMode="decimal"
+        disabled={busy}
+        aria-label={`${member.displayName}'s contribution share, percent`}
+        style={{ width: "4rem", textAlign: "right" }}
+      />
+      <span className="muted">%</span>
+    </span>
+  );
+}
+
+function PlanAccountsSection({
+  householdId,
+  members,
+  accounts,
+  roster,
+  loading,
+  canEdit,
+  onChanged,
+}: {
+  householdId: string;
+  members: HouseholdMemberDto[];
+  accounts: AccountDto[];
+  roster: HouseholdAccountAssignmentDto[];
+  loading: boolean;
+  canEdit: boolean;
+  onChanged: () => void;
+}) {
+  const memberName = new Map(members.map((m) => [m.userId, m.displayName]));
+  const assigned = new Set(roster.map((r) => r.accountId));
+  const addable = accounts.filter((a) => !assigned.has(a.id));
+
+  return (
+    <>
+      <div className="section-head">
+        <h2>plan accounts</h2>
+        <span className="meta">[{roster.length} in plan]</span>
+      </div>
+      <p className="muted" style={{ fontSize: "12px" }}>
+        roles for the money-flow plan — shared pots are split by contribution share; personal
+        accounts belong to one member. (separate from the view/edit sharing above.)
+      </p>
+      {roster.length === 0 ? (
+        <p className="muted" style={{ fontSize: "12px" }}>
+          no accounts added to the plan yet.
+        </p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>account</th>
+              <th>role</th>
+              <th>member</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {roster.map((r) => (
+              <tr key={r.accountId}>
+                <td className="name">{r.accountName}</td>
+                <td>
+                  <span className={r.role === "shared" ? "tag-status idle" : "shared"}>
+                    {r.role}
+                  </span>
+                </td>
+                <td className="muted">
+                  {r.role === "personal" ? (memberName.get(r.memberUserId ?? "") ?? "—") : "—"}
+                </td>
+                <td className="row-actions-cell">
+                  {canEdit && (
+                    <UnassignAccountButton
+                      householdId={householdId}
+                      accountId={r.accountId}
+                      accountName={r.accountName}
+                      onDone={onChanged}
+                    />
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {canEdit && !loading && addable.length > 0 && (
+        <AssignAccountForm
+          householdId={householdId}
+          accounts={addable}
+          members={members}
+          onDone={onChanged}
+        />
+      )}
+    </>
+  );
+}
+
+function AssignAccountForm({
+  householdId,
+  accounts,
+  members,
+  onDone,
+}: {
+  householdId: string;
+  accounts: AccountDto[];
+  members: HouseholdMemberDto[];
+  onDone: () => void;
+}) {
+  const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
+  const [role, setRole] = useState<AccountRole>("shared");
+  const [memberUserId, setMemberUserId] = useState(members[0]?.userId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    if (!accountId) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.assignHouseholdAccount(householdId, accountId, {
+        role,
+        memberUserId: role === "personal" ? memberUserId : null,
+      });
+      onDone();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "could not add account to the plan.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="inline-form" onSubmit={submit} style={{ marginTop: "1rem" }}>
+      <select value={accountId} onChange={(e) => setAccountId(e.target.value)} aria-label="account">
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.name} · {a.currency}
+          </option>
+        ))}
+      </select>
+      <select
+        value={role}
+        onChange={(e) => setRole(e.target.value as AccountRole)}
+        aria-label="role"
+      >
+        <option value="shared">shared pot</option>
+        <option value="personal">personal</option>
+      </select>
+      {role === "personal" && (
+        <select
+          value={memberUserId}
+          onChange={(e) => setMemberUserId(e.target.value)}
+          aria-label="account owner"
+        >
+          {members.map((m) => (
+            <option key={m.userId} value={m.userId}>
+              {m.displayName}
+            </option>
+          ))}
+        </select>
+      )}
+      <button type="submit" disabled={busy || !accountId}>
+        {busy ? "adding…" : "+ add to plan"}
+      </button>
+      {err && <span className="error">{err}</span>}
+    </form>
+  );
+}
+
+function UnassignAccountButton({
+  householdId,
+  accountId,
+  accountName,
+  onDone,
+}: {
+  householdId: string;
+  accountId: string;
+  accountName: string;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function remove(): Promise<void> {
+    if (!confirm(`remove ${accountName} from the household plan?`)) return;
+    setBusy(true);
+    try {
+      await api.unassignHouseholdAccount(householdId, accountId);
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <button type="button" className="row-edit" onClick={remove} disabled={busy}>
+      {busy ? "…" : "remove"}
     </button>
   );
 }

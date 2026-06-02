@@ -4,6 +4,8 @@ export type PaymentCategory =
   | "yearly_recurring"
   | "custom_recurring"
   | "fixed_point";
+export type PaymentScope = "shared" | "personal";
+export type AccountRole = "shared" | "personal";
 
 export interface Recurrence {
   interval: number;
@@ -30,6 +32,8 @@ export interface HouseholdMemberDto {
   membershipId: string;
   userId: string;
   role: HouseholdRole;
+  /** Proportional contribution to shared costs, in basis points (0–10000). */
+  shareBp: number;
   displayName: string;
   email: string;
   isSelf: boolean;
@@ -89,6 +93,8 @@ export interface PaymentDto {
   active: boolean;
   notes: string | null;
   projectId: string | null;
+  scope: PaymentScope;
+  bearerUserId: string | null;
 }
 
 export interface ProjectDto {
@@ -164,4 +170,85 @@ export interface CurrencyOverviewDto {
 export interface OverviewDto {
   asOfDate: string;
   perCurrency: CurrencyOverviewDto[];
+}
+
+// --- household plan ---------------------------------------------------------
+
+export interface HouseholdAccountAssignmentDto {
+  accountId: string;
+  accountName: string;
+  currency: string;
+  role: AccountRole;
+  memberUserId: string | null;
+}
+
+export interface MemberAllocationDto {
+  userId: string;
+  requiredMinor: number;
+  fundedMinor: number;
+}
+
+export interface HouseholdPlanLineDto {
+  paymentId: string;
+  accountId: string;
+  name: string;
+  category: PaymentCategory;
+  scope: PaymentScope;
+  amountMinor: number;
+  dueDate: string;
+  targetDate: string;
+  priority: number;
+  requiredMonthlyMinor: number;
+  fundedMonthlyMinor: number;
+  occurrencesThisMonth: number;
+  onTrack: boolean;
+  allocations: MemberAllocationDto[];
+}
+
+export interface HouseholdMemberPlanDto {
+  userId: string;
+  displayName?: string;
+  shareBp: number;
+  monthlyIncomeMinor: number;
+  obligationMinor: number;
+  fundedMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+}
+
+export interface HouseholdAccountPlanDto {
+  accountId: string;
+  name?: string;
+  role: AccountRole;
+  memberUserId: string | null;
+  currency: string;
+  monthlyIncomeMinor: number;
+  requiredOutflowMinor: number;
+  fundedOutflowMinor: number;
+  transferInMinor: number;
+  transferOutMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+}
+
+export interface TransferDto {
+  fromAccountId: string;
+  toAccountId: string;
+  memberUserId: string;
+  amountMinor: number;
+}
+
+export interface HouseholdPlanDto {
+  householdId: string;
+  asOfDate: string;
+  currency: string;
+  monthlyIncomeMinor: number;
+  totalRequiredMinor: number;
+  totalFundedMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  members: HouseholdMemberPlanDto[];
+  accounts: HouseholdAccountPlanDto[];
+  lines: HouseholdPlanLineDto[];
+  transfers: TransferDto[];
 }

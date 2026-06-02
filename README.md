@@ -7,8 +7,15 @@ left over — per account and across all accounts.
 
 Multi-user with shared **households**, cross-account **projects**, and a
 **savings engine** that prioritises goals, surfaces shortfalls, and projects
-completion when underfunded. Deployed cloud-agnostically on Kubernetes via
-Helm.
+completion when underfunded.
+
+Households also get a **pooled money-flow plan**: tag each account as a shared
+pot or personal to a member, set each member's proportional contribution share,
+and mark expenses shared or personal. The engine then splits shared costs by
+share, funds across all accounts by priority, and works out the **transfers**
+each person should make into each account — visualised as a Sankey diagram.
+
+Deployed cloud-agnostically on Kubernetes via Helm.
 
 - **Operations / runbook:** [`OPERATIONS.md`](./OPERATIONS.md)
 - **Deferred backlog:** [`BACKLOG.md`](./BACKLOG.md)

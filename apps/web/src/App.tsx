@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./auth/AuthContext.js";
 import { CommandPalette } from "./components/CommandPalette.js";
@@ -15,6 +16,12 @@ import { OverviewPage } from "./pages/OverviewPage.js";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage.js";
 import { ProjectsPage } from "./pages/ProjectsPage.js";
 import { RegisterPage } from "./pages/RegisterPage.js";
+
+// Code-split the plan page: it pulls in the charting library (recharts), which
+// we don't want in the initial bundle for users who never open the money flow.
+const HouseholdPlanPage = lazy(() =>
+  import("./pages/HouseholdPlanPage.js").then((m) => ({ default: m.HouseholdPlanPage })),
+);
 
 export function App() {
   return (
@@ -38,6 +45,14 @@ export function App() {
               <Route path="/projects/:id" element={<ProjectDetailPage />} />
               <Route path="/households" element={<HouseholdsPage />} />
               <Route path="/households/:id" element={<HouseholdDetailPage />} />
+              <Route
+                path="/households/:id/plan"
+                element={
+                  <Suspense fallback={<p className="muted">loading…</p>}>
+                    <HouseholdPlanPage />
+                  </Suspense>
+                }
+              />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

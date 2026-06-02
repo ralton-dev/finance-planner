@@ -53,6 +53,8 @@ export async function exerciseStore(store: Store): Promise<void> {
     active: true,
     notes: null,
     projectId: null,
+    scope: "shared",
+    bearerUserId: null,
   });
   const p2 = await store.createPayment({
     accountId: account.id,
@@ -68,6 +70,8 @@ export async function exerciseStore(store: Store): Promise<void> {
     active: true,
     notes: null,
     projectId: null,
+    scope: "shared",
+    bearerUserId: null,
   });
   expect((await store.listPayments(account.id)).length).toBe(2);
 
@@ -107,6 +111,35 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(promoted?.role).toBe("admin");
   const demoted = await store.updateMembershipRole(household.id, other.id, "member");
   expect(demoted?.role).toBe("member");
+
+  // contribution shares: default 0, then set proportionally.
+  expect((await store.getMembership(household.id, other.id))?.contributionShareBp).toBe(0);
+  const shared = await store.updateMembershipShare(household.id, other.id, 3400);
+  expect(shared?.contributionShareBp).toBe(3400);
+  await store.updateMembershipShare(household.id, user.id, 6600);
+  expect((await store.getMembership(household.id, user.id))?.contributionShareBp).toBe(6600);
+
+  // account assignments: upsert is idempotent on (household, account).
+  const assignment = await store.upsertAccountAssignment({
+    householdId: household.id,
+    accountId: account.id,
+    role: "shared",
+    memberUserId: null,
+  });
+  expect(assignment.role).toBe("shared");
+  const reassigned = await store.upsertAccountAssignment({
+    householdId: household.id,
+    accountId: account.id,
+    role: "personal",
+    memberUserId: user.id,
+  });
+  expect(reassigned.id).toBe(assignment.id); // same row, updated in place
+  expect(reassigned.role).toBe("personal");
+  expect(reassigned.memberUserId).toBe(user.id);
+  expect((await store.listAccountAssignments(household.id)).length).toBe(1);
+  expect((await store.getAccountAssignment(household.id, account.id))?.role).toBe("personal");
+  await store.deleteAccountAssignment(household.id, account.id);
+  expect(await store.getAccountAssignment(household.id, account.id)).toBeNull();
 
   // remove the partner from the household; their access goes away.
   await store.removeMember(household.id, other.id);

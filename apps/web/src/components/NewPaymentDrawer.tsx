@@ -3,7 +3,7 @@ import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api, ApiError } from "../lib/api.js";
 import { toMajor, toMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
-import type { AccountDto, PaymentCategory, ProjectDto } from "../lib/types.js";
+import type { AccountDto, PaymentCategory, PaymentScope, ProjectDto } from "../lib/types.js";
 import { Drawer } from "./Drawer.js";
 
 const NO_ACCOUNTS = Object.freeze([]) as readonly AccountDto[];
@@ -44,6 +44,7 @@ export function NewPaymentDrawer() {
   const [unit, setUnit] = useState<Unit>("month");
   const [alreadySaved, setAlreadySaved] = useState("0");
   const [priority, setPriority] = useState("100");
+  const [scope, setScope] = useState<PaymentScope>("shared");
   const [active, setActive] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -61,6 +62,7 @@ export function NewPaymentDrawer() {
       setUnit((editing.recurrence?.unit as Unit) ?? "month");
       setAlreadySaved(toMajor(editing.alreadySavedMinor).toFixed(2));
       setPriority(String(editing.priority));
+      setScope(editing.scope ?? "shared");
       setActive(editing.active);
     } else {
       setAccountId(state.accountId ?? "");
@@ -73,6 +75,7 @@ export function NewPaymentDrawer() {
       setUnit("month");
       setAlreadySaved("0");
       setPriority("100");
+      setScope("shared");
       setActive(true);
     }
     setBusy(false);
@@ -113,6 +116,7 @@ export function NewPaymentDrawer() {
       // edits between categories clear stale recurrence rows.
       body.recurrence = isCustom ? { interval: Number(intervalN), unit, anchor: dueDate } : null;
       body.projectId = projectId || null;
+      body.scope = scope;
       if (editing) {
         body.active = active;
         await api.updatePayment(editing.id, body);
@@ -273,6 +277,18 @@ export function NewPaymentDrawer() {
             ))}
           </select>
           <span className="field-hint">group this payment with others toward a shared goal.</span>
+        </label>
+
+        <label>
+          cost split
+          <select value={scope} onChange={(e) => setScope(e.target.value as PaymentScope)}>
+            <option value="shared">shared — split by household share</option>
+            <option value="personal">personal — borne by one person</option>
+          </select>
+          <span className="field-hint">
+            in the household plan, shared costs are split by contribution share; personal costs fall
+            entirely to one member.
+          </span>
         </label>
 
         <label>

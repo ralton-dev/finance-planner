@@ -216,6 +216,103 @@ describe("auth service", () => {
     expect(body.shares[0].permission).toBe("edit");
   });
 
+  it("sets a member's contribution share and surfaces it in the household detail", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const ownerLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: register,
+    });
+    const ownerAuth = { authorization: `Bearer ${ownerLogin.json().accessToken}` };
+    const partner = {
+      email: "partner@example.com",
+      password: "password123",
+      displayName: "Partner",
+    };
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: partner });
+
+    const household = (
+      await ctx.app.inject({
+        method: "POST",
+        url: "/auth/households",
+        headers: ownerAuth,
+        payload: { name: "Home" },
+      })
+    ).json();
+    await ctx.app.inject({
+      method: "POST",
+      url: `/auth/households/${household.id}/members`,
+      headers: ownerAuth,
+      payload: { email: partner.email, role: "member" },
+    });
+
+    const partnerUser = await ctx.store.getUserByEmail(partner.email);
+    const set = await ctx.app.inject({
+      method: "PATCH",
+      url: `/auth/households/${household.id}/members/${partnerUser!.id}/share`,
+      headers: ownerAuth,
+      payload: { shareBp: 3400 },
+    });
+    expect(set.statusCode).toBe(200);
+    expect(set.json().contributionShareBp).toBe(3400);
+
+    const detail = (
+      await ctx.app.inject({
+        method: "GET",
+        url: `/auth/households/${household.id}`,
+        headers: ownerAuth,
+      })
+    ).json();
+    const pm = detail.members.find((m: { email: string }) => m.email === partner.email);
+    expect(pm.shareBp).toBe(3400);
+  });
+
+  it("forbids a plain member from setting contribution shares (403)", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const ownerLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: register,
+    });
+    const ownerAuth = { authorization: `Bearer ${ownerLogin.json().accessToken}` };
+    const partner = {
+      email: "partner@example.com",
+      password: "password123",
+      displayName: "Partner",
+    };
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: partner });
+    const partnerLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: partner,
+    });
+    const partnerAuth = { authorization: `Bearer ${partnerLogin.json().accessToken}` };
+
+    const household = (
+      await ctx.app.inject({
+        method: "POST",
+        url: "/auth/households",
+        headers: ownerAuth,
+        payload: { name: "Home" },
+      })
+    ).json();
+    await ctx.app.inject({
+      method: "POST",
+      url: `/auth/households/${household.id}/members`,
+      headers: ownerAuth,
+      payload: { email: partner.email, role: "member" },
+    });
+    const partnerUser = await ctx.store.getUserByEmail(partner.email);
+
+    const res = await ctx.app.inject({
+      method: "PATCH",
+      url: `/auth/households/${household.id}/members/${partnerUser!.id}/share`,
+      headers: partnerAuth,
+      payload: { shareBp: 5000 },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
   it("hides households from non-members (404)", async () => {
     await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
     const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });

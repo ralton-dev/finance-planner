@@ -6,6 +6,24 @@ endorsement.
 
 ## Product
 
+- **Household plan — effective-dated contribution shares.** A member's share is
+  a single current value (`household_memberships.contribution_share_bp`). The
+  planner is forward-looking, so changing 60/40 → 66/34 just updates the split
+  from now on; past splits aren't retained. Storing dated rows + resolving the
+  active one at `asOfDate` would add history (pairs with the share-change audit
+  log below).
+- **Household plan — multi-currency households.** `computeHouseholdPlan` assumes
+  one currency across a household's accounts (it labels output with the first
+  account's currency). Mixed-currency households need the FX work below first.
+- **Household plan — shared-pot income.** Income on a _shared_ account is
+  uncommon and currently accumulates as pot surplus rather than reducing each
+  member's contribution. If joint accounts start receiving income directly,
+  offset it against the pot's funding need before splitting.
+- **Household plan — bearer picker in quick-add.** A personal expense's bearer
+  is settable per-payment in the engine/API (`bearerUserId`), but the quick-add
+  drawer only exposes the shared/personal toggle and defaults a personal expense
+  to the owning member of its account. A member dropdown would cover "personal
+  expense on a shared account, borne by X".
 - **Auto-accumulating contributions ledger.** `Payment.alreadySavedMinor` is a
   manual field today. The intended replacement: a `core.contributions` table
   recording per-month allocations, with `alreadySavedMinor` becoming a derived

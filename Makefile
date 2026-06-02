@@ -48,8 +48,9 @@ logs:
 	docker compose -f deploy/local/docker-compose.yml logs -f
 
 migrate:
-	docker compose -f deploy/local/docker-compose.yml exec -T postgres \
-		psql -U $${POSTGRES_USER:-finance} -d $${POSTGRES_DB:-finance} -f /migrations/0001_init.sql
+	docker compose -f deploy/local/docker-compose.yml exec -T postgres sh -c \
+		'for f in /migrations/*.sql; do echo "applying $$f"; \
+		 psql -v ON_ERROR_STOP=1 -U $${POSTGRES_USER:-finance} -d $${POSTGRES_DB:-finance} -f "$$f"; done'
 
 seed:
 	docker compose -f deploy/local/docker-compose.yml exec -T postgres \

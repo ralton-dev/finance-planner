@@ -4,6 +4,7 @@ import type {
   AccountShare,
   EmailVerificationToken,
   Household,
+  HouseholdAccountAssignment,
   HouseholdMembership,
   HouseholdRole,
   Income,
@@ -17,6 +18,7 @@ import type {
 import type {
   AccountAccess,
   NewAccount,
+  NewAccountAssignment,
   NewIncome,
   NewPayment,
   NewProject,
@@ -34,6 +36,7 @@ export class MemoryStore implements Store {
   private households = new Map<string, Household>();
   private memberships = new Map<string, HouseholdMembership>();
   private shares = new Map<string, AccountShare>();
+  private assignments = new Map<string, HouseholdAccountAssignment>();
   private accounts = new Map<string, Account>();
   private incomes = new Map<string, Income>();
   private payments = new Map<string, Payment>();
@@ -117,6 +120,7 @@ export class MemoryStore implements Store {
   async deleteHousehold(id: string): Promise<void> {
     for (const [k, s] of this.shares) if (s.householdId === id) this.shares.delete(k);
     for (const [k, m] of this.memberships) if (m.householdId === id) this.memberships.delete(k);
+    for (const [k, a] of this.assignments) if (a.householdId === id) this.assignments.delete(k);
     this.households.delete(id);
   }
 
@@ -137,6 +141,7 @@ export class MemoryStore implements Store {
       householdId,
       userId,
       role,
+      contributionShareBp: 0,
       createdAt: now(),
     };
     this.memberships.set(m.id, m);
@@ -172,6 +177,67 @@ export class MemoryStore implements Store {
       }
     }
     return null;
+  }
+
+  async updateMembershipShare(
+    householdId: string,
+    userId: string,
+    shareBp: number,
+  ): Promise<HouseholdMembership | null> {
+    for (const [k, m] of this.memberships) {
+      if (m.householdId === householdId && m.userId === userId) {
+        const updated: HouseholdMembership = { ...m, contributionShareBp: shareBp };
+        this.memberships.set(k, updated);
+        return updated;
+      }
+    }
+    return null;
+  }
+
+  async upsertAccountAssignment(input: NewAccountAssignment): Promise<HouseholdAccountAssignment> {
+    const existing = await this.getAccountAssignment(input.householdId, input.accountId);
+    if (existing) {
+      const updated: HouseholdAccountAssignment = {
+        ...existing,
+        role: input.role,
+        memberUserId: input.memberUserId,
+        updatedAt: now(),
+      };
+      this.assignments.set(existing.id, updated);
+      return updated;
+    }
+    const ts = now();
+    const a: HouseholdAccountAssignment = {
+      id: randomUUID(),
+      householdId: input.householdId,
+      accountId: input.accountId,
+      role: input.role,
+      memberUserId: input.memberUserId,
+      createdAt: ts,
+      updatedAt: ts,
+    };
+    this.assignments.set(a.id, a);
+    return a;
+  }
+
+  async listAccountAssignments(householdId: string): Promise<HouseholdAccountAssignment[]> {
+    return [...this.assignments.values()].filter((a) => a.householdId === householdId);
+  }
+
+  async getAccountAssignment(
+    householdId: string,
+    accountId: string,
+  ): Promise<HouseholdAccountAssignment | null> {
+    for (const a of this.assignments.values()) {
+      if (a.householdId === householdId && a.accountId === accountId) return a;
+    }
+    return null;
+  }
+
+  async deleteAccountAssignment(householdId: string, accountId: string): Promise<void> {
+    for (const [k, a] of this.assignments) {
+      if (a.householdId === householdId && a.accountId === accountId) this.assignments.delete(k);
+    }
   }
 
   async listSharesForHousehold(householdId: string): Promise<AccountShare[]> {
@@ -278,6 +344,7 @@ export class MemoryStore implements Store {
     for (const [k, v] of this.incomes) if (v.accountId === id) this.incomes.delete(k);
     for (const [k, v] of this.payments) if (v.accountId === id) this.payments.delete(k);
     for (const [k, v] of this.shares) if (v.accountId === id) this.shares.delete(k);
+    for (const [k, v] of this.assignments) if (v.accountId === id) this.assignments.delete(k);
   }
 
   async createIncome(input: NewIncome): Promise<Income> {

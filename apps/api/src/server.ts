@@ -1,4 +1,5 @@
 import {
+  assignAccountBody,
   createAccountBody,
   createIncomeBody,
   createPaymentBody,
@@ -19,7 +20,7 @@ import { verifyAccessToken } from "@finance-planner/security";
 import fastifyHttpProxy from "@fastify/http-proxy";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { type ApiEnv, loadEnv } from "./env.js";
-import { computePlanForAccount } from "./plan.js";
+import { computeHouseholdPlanFor, computePlanForAccount } from "./plan.js";
 
 const SERVICE = "api";
 const VERSION = process.env.npm_package_version ?? "0.0.0";
@@ -135,6 +136,23 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const entity = kind === "income" ? await store.getIncome(id) : await store.getPayment(id);
     if (!entity) throw new HttpError(404, "not_found", `${kind} not found`);
     return entity.accountId;
+  };
+
+  /**
+   * Gate a household action on membership. No membership → 404 (existence leak
+   * prevention, mirroring the auth service). When `roles` is given, the caller
+   * must hold one of them (managing the plan roster is owner/admin only).
+   */
+  const requireMembership = async (
+    userId: string,
+    householdId: string,
+    roles?: readonly ("owner" | "admin" | "member")[],
+  ): Promise<void> => {
+    const membership = await store.getMembership(householdId, userId);
+    if (!membership) throw new HttpError(404, "not_found", "Household not found");
+    if (roles && !roles.includes(membership.role)) {
+      throw new HttpError(403, "forbidden", "Household admin access required");
+    }
   };
 
   // ---- health ----
@@ -271,6 +289,8 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       active: body.active,
       notes: body.notes ?? null,
       projectId: body.projectId ?? null,
+      scope: body.scope,
+      bearerUserId: body.bearerUserId ?? null,
     });
     return reply.code(201).send(payment);
   });
@@ -332,6 +352,72 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       if (account) plans.push(await computePlanForAccount(store, account, asOfDate));
     }
     return computeOverview(plans, asOfDate);
+  });
+
+  // ---- household plan + account assignments ----
+  /**
+   * Pooled household plan: proportional shared-cost split, cross-account
+   * priority funding, and derived transfers. Any member can view the joint
+   * plan, regardless of per-account share grants — it is the household's
+   * shared financial picture by design.
+   */
+  app.get("/api/households/:id/plan", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { asOf } = req.query as { asOf?: string };
+    await requireMembership(userId, id);
+    return computeHouseholdPlanFor(store, id, asOf ?? toISODate(new Date()));
+  });
+
+  /** The roster of accounts in this household's plan, with their roles. */
+  app.get("/api/households/:id/accounts", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireMembership(userId, id);
+    const assignments = await store.listAccountAssignments(id);
+    return Promise.all(
+      assignments.map(async (a) => {
+        const account = await store.getAccount(a.accountId);
+        return {
+          accountId: a.accountId,
+          accountName: account?.name ?? "(unknown account)",
+          currency: account?.currency ?? "",
+          role: a.role,
+          memberUserId: a.memberUserId,
+        };
+      }),
+    );
+  });
+
+  /** Assign an account a role in the household plan (shared, or personal to a
+   *  member). Owner/admin only; the caller must be able to see the account. */
+  app.put("/api/households/:id/accounts/:accountId", async (req) => {
+    const userId = await authenticate(req);
+    const { id, accountId } = req.params as { id: string; accountId: string };
+    await requireMembership(userId, id, ["owner", "admin"]);
+    const body = assignAccountBody.parse(req.body);
+    if (!(await store.getAccess(userId, accountId))) {
+      throw new HttpError(404, "not_found", "Account not found");
+    }
+    if (body.role === "personal" && body.memberUserId) {
+      if (!(await store.getMembership(id, body.memberUserId))) {
+        throw new HttpError(422, "validation_error", "memberUserId is not a household member");
+      }
+    }
+    return store.upsertAccountAssignment({
+      householdId: id,
+      accountId,
+      role: body.role,
+      memberUserId: body.memberUserId ?? null,
+    });
+  });
+
+  app.delete("/api/households/:id/accounts/:accountId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id, accountId } = req.params as { id: string; accountId: string };
+    await requireMembership(userId, id, ["owner", "admin"]);
+    await store.deleteAccountAssignment(id, accountId);
+    return reply.code(204).send();
   });
 
   // ---- projects ----

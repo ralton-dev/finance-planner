@@ -1,4 +1,10 @@
-import type { Frequency, PaymentCategory, Recurrence } from "@finance-planner/contracts";
+import type {
+  AccountRole,
+  Frequency,
+  PaymentCategory,
+  PaymentScope,
+  Recurrence,
+} from "@finance-planner/contracts";
 
 export type UserStatus = "active" | "invited" | "disabled";
 export type SharePermission = "view" | "edit";
@@ -41,7 +47,26 @@ export interface HouseholdMembership {
   householdId: string;
   userId: string;
   role: HouseholdRole;
+  /** Proportional contribution to shared costs, in basis points (0–10000).
+   *  Normalised against the household total by the plan engine. */
+  contributionShareBp: number;
   createdAt: string;
+}
+
+/**
+ * Assigns an account a role within a household plan: a shared pot, or personal
+ * to one member. Distinct from `AccountShare` (which grants view/edit access);
+ * this drives cost attribution + transfer computation in the engine.
+ */
+export interface HouseholdAccountAssignment {
+  id: string;
+  householdId: string;
+  accountId: string;
+  role: AccountRole;
+  /** Set when role === "personal": the member who owns this account. */
+  memberUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AccountShare {
@@ -93,6 +118,11 @@ export interface Payment {
   notes: string | null;
   /** Optional grouping into a cross-account project. */
   projectId: string | null;
+  /** Household cost-sharing: "shared" (split by share) or "personal". */
+  scope: PaymentScope;
+  /** When scope === "personal": the member who bears it. Null falls back to the
+   *  owning member of a personal account at compute time. */
+  bearerUserId: string | null;
   createdAt: string;
   updatedAt: string;
 }

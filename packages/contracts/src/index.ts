@@ -25,6 +25,18 @@ export const paymentCategory = z.enum([
 ]);
 export type PaymentCategory = z.infer<typeof paymentCategory>;
 
+/**
+ * Who bears an expense within a household plan.
+ *   shared   → split across members by their contribution share
+ *   personal → borne entirely by one member (the bearer)
+ */
+export const paymentScope = z.enum(["shared", "personal"]);
+export type PaymentScope = z.infer<typeof paymentScope>;
+
+/** Whether a household account is a shared pot or assigned to one member. */
+export const accountRole = z.enum(["shared", "personal"]);
+export type AccountRole = z.infer<typeof accountRole>;
+
 export const frequency = z.enum(["monthly", "yearly", "custom", "one_off"]);
 export type Frequency = z.infer<typeof frequency>;
 
@@ -104,6 +116,11 @@ const paymentObject = z.object({
   active: z.boolean().default(true),
   notes: z.string().nullish(),
   projectId: z.string().uuid().nullish(),
+  /** Household cost-sharing: shared (split by share) or personal (one bearer). */
+  scope: paymentScope.default("shared"),
+  /** When scope === "personal": the member who bears it. Defaults at compute
+   *  time to the owning member of a personal account. */
+  bearerUserId: z.string().uuid().nullish(),
 });
 export const createPaymentBody = paymentObject.refine(
   (p) => p.category !== "fixed_point" || !!p.dueDate,
@@ -128,6 +145,30 @@ export const shareAccountBody = z.object({
   householdId: z.string().uuid(),
   permission: z.enum(["view", "edit"]).default("view"),
 });
+
+/**
+ * A member's proportional contribution to the household's shared costs, in
+ * basis points (0–10000, i.e. hundredths of a percent). The engine normalises
+ * each member's value by the household total, so the absolute scale is free —
+ * 6600/3400 and 66/34 produce the same split.
+ */
+export const updateMemberShareBody = z.object({
+  shareBp: z.number().int().min(0).max(10_000),
+});
+export type UpdateMemberShareBody = z.infer<typeof updateMemberShareBody>;
+
+/** Assign an account a role within a household plan: a shared pot, or personal
+ *  to one member. `memberUserId` is required when role is "personal". */
+export const assignAccountBody = z
+  .object({
+    role: accountRole,
+    memberUserId: z.string().uuid().nullish(),
+  })
+  .refine((a) => a.role !== "personal" || !!a.memberUserId, {
+    message: "personal accounts require a memberUserId",
+    path: ["memberUserId"],
+  });
+export type AssignAccountBody = z.infer<typeof assignAccountBody>;
 
 export const createProjectBody = z.object({
   name: z.string().min(1),
