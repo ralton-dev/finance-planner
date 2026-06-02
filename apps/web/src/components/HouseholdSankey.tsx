@@ -31,6 +31,12 @@ interface SankeyLinkDatum {
   target: number;
   value: number;
   kind: LinkKind;
+  /** Self-contained endpoint labels so the tooltip never has to dig into
+   *  Recharts' post-layout node objects. */
+  fromName: string;
+  toName: string;
+  /** For transfers: the member whose money moves. */
+  note?: string;
 }
 
 export function buildGraph(plan: HouseholdPlanDto): {
@@ -40,6 +46,8 @@ export function buildGraph(plan: HouseholdPlanDto): {
   const nodes: SankeyNodeDatum[] = [];
   const links: SankeyLinkDatum[] = [];
   const accountNode = new Map<string, number>();
+  const accountName = new Map(plan.accounts.map((a) => [a.accountId, a.name ?? "account"]));
+  const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName ?? "member"]));
 
   const addNode = (name: string, isAccount: boolean): number => {
     nodes.push({ name, isAccount });
@@ -53,12 +61,15 @@ export function buildGraph(plan: HouseholdPlanDto): {
 
   for (const a of plan.accounts) {
     const idx = accountNode.get(a.accountId)!;
+    const name = a.name ?? "account";
     if (a.monthlyIncomeMinor > 0) {
       links.push({
         source: addNode("income", false),
         target: idx,
         value: a.monthlyIncomeMinor,
         kind: "income",
+        fromName: "income",
+        toName: name,
       });
     }
     if (a.fundedOutflowMinor > 0) {
@@ -67,6 +78,8 @@ export function buildGraph(plan: HouseholdPlanDto): {
         target: addNode("spending", false),
         value: a.fundedOutflowMinor,
         kind: "spending",
+        fromName: name,
+        toName: "spending",
       });
     }
     if (a.leftoverMinor > 0) {
@@ -75,6 +88,8 @@ export function buildGraph(plan: HouseholdPlanDto): {
         target: addNode("left over", false),
         value: a.leftoverMinor,
         kind: "leftover",
+        fromName: name,
+        toName: "left over",
       });
     }
   }
@@ -83,7 +98,15 @@ export function buildGraph(plan: HouseholdPlanDto): {
     const from = accountNode.get(t.fromAccountId);
     const to = accountNode.get(t.toAccountId);
     if (from === undefined || to === undefined || t.amountMinor <= 0) continue;
-    links.push({ source: from, target: to, value: t.amountMinor, kind: "transfer" });
+    links.push({
+      source: from,
+      target: to,
+      value: t.amountMinor,
+      kind: "transfer",
+      fromName: accountName.get(t.fromAccountId) ?? "account",
+      toName: accountName.get(t.toAccountId) ?? "account",
+      note: memberName.get(t.memberUserId),
+    });
   }
 
   return { nodes, links };
@@ -172,6 +195,55 @@ function FlowLink({
   );
 }
 
+interface TipDatum {
+  name?: string;
+  value?: number;
+  fromName?: string;
+  toName?: string;
+  note?: string;
+}
+interface TipEntry {
+  name?: string;
+  value?: number;
+  payload?: TipDatum;
+}
+
+// Recharts clones this with { active, payload } at hover time. A flow (link)
+// carries fromName/toName; a node carries just its name.
+function FlowTooltip({
+  active,
+  payload,
+  currency = "GBP",
+}: {
+  active?: boolean;
+  payload?: TipEntry[];
+  currency?: string;
+}) {
+  if (!active || !payload?.length) return null;
+  const entry = payload[0]!;
+  const d = entry.payload ?? {};
+  const value = Number(entry.value ?? d.value ?? 0);
+  const isFlow = !!(d.fromName && d.toName);
+  const label = isFlow ? `${d.fromName} → ${d.toName}` : (d.name ?? entry.name ?? "");
+  return (
+    <div
+      style={{
+        background: "#181818",
+        border: "1px solid #2e2e2c",
+        borderRadius: 3,
+        padding: "6px 9px",
+        fontSize: 12,
+        lineHeight: 1.5,
+        boxShadow: "0 4px 14px rgba(0, 0, 0, 0.45)",
+      }}
+    >
+      <div style={{ color: "#a09b91", fontSize: 11 }}>{label}</div>
+      <div style={{ color: "#e8e6e0", fontWeight: 600 }}>{formatMinor(value, currency)}</div>
+      {d.note ? <div style={{ color: "#a09b91", fontSize: 11 }}>via {d.note}</div> : null}
+    </div>
+  );
+}
+
 export function HouseholdSankey({ plan }: { plan: HouseholdPlanDto }) {
   const data = buildGraph(plan);
   if (data.links.length === 0) {
@@ -193,13 +265,8 @@ export function HouseholdSankey({ plan }: { plan: HouseholdPlanDto }) {
           link={<FlowLink />}
         >
           <Tooltip
-            formatter={(value) => formatMinor(Number(value), plan.currency)}
-            contentStyle={{
-              background: "#181818",
-              border: "1px solid #2e2e2c",
-              borderRadius: 3,
-              fontSize: 12,
-            }}
+            content={<FlowTooltip currency={plan.currency} />}
+            cursor={{ fill: "#e8e6e0", fillOpacity: 0.06 }}
           />
         </Sankey>
       </ResponsiveContainer>
