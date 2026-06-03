@@ -84,8 +84,10 @@ export function NewIncomeDrawer() {
         active,
       };
       if (editing) {
-        await api.updateIncome(editing.id, body);
-        notifyUpdated("income", accountId);
+        // accountId may differ from the original → moves the income there.
+        await api.updateIncome(editing.id, { ...body, accountId });
+        // Refresh the source account page so a moved income drops off it.
+        notifyUpdated("income", editing.accountId);
       } else {
         await api.createIncome(accountId, body);
         notifyCreated("income", accountId);
@@ -123,7 +125,7 @@ export function NewIncomeDrawer() {
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}
             required
-            disabled={accounts.loading || isEdit}
+            disabled={accounts.loading}
           >
             <option value="" disabled>
               {accounts.loading ? "loading accounts…" : "select an account…"}
@@ -141,7 +143,8 @@ export function NewIncomeDrawer() {
           )}
           {isEdit && (
             <span className="field-hint">
-              account is fixed once created; delete + recreate if you need to move this income.
+              changing this moves the income to another account — and into that account's household
+              plan. you need edit access to both.
             </span>
           )}
         </label>

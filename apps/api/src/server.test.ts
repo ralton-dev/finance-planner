@@ -437,6 +437,56 @@ describe("api service", () => {
     expect((await store.getPayment(payment.id))?.accountId).toBe(a.id);
   });
 
+  it("moves an income to another account the caller can edit", async () => {
+    const { auth } = await seedUser(store);
+    const mk = async (name: string) =>
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+    const a = await mk("A");
+    const b = await mk("B");
+    const income = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${a.id}/incomes`,
+        headers: auth,
+        payload: {
+          name: "Salary",
+          amountMinor: 300000,
+          frequency: "monthly",
+          anchorDate: "2026-01-25",
+        },
+      })
+    ).json();
+
+    const moved = await app.inject({
+      method: "PATCH",
+      url: `/api/incomes/${income.id}`,
+      headers: auth,
+      payload: { accountId: b.id },
+    });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json().accountId).toBe(b.id);
+
+    const onA = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${a.id}/incomes`,
+      headers: auth,
+    });
+    const onB = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${b.id}/incomes`,
+      headers: auth,
+    });
+    expect(onA.json()).toHaveLength(0);
+    expect(onB.json().map((i: { id: string }) => i.id)).toContain(income.id);
+  });
+
   it("passes payment scope + bearer through create", async () => {
     const { user, auth } = await seedUser(store);
     const account = (

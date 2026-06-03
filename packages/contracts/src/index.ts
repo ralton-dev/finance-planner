@@ -101,7 +101,11 @@ export const createIncomeBody = z.object({
   active: z.boolean().default(true),
 });
 export type CreateIncomeBody = z.infer<typeof createIncomeBody>;
-export const updateIncomeBody = createIncomeBody.partial();
+/** Updates may also move the income to another account via `accountId`
+ *  (requires edit access to both the source and destination accounts). */
+export const updateIncomeBody = createIncomeBody.partial().extend({
+  accountId: z.string().uuid().optional(),
+});
 
 const paymentObject = z.object({
   name: z.string().min(1),
