@@ -298,8 +298,13 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.patch("/api/payments/:paymentId", async (req) => {
     const userId = await authenticate(req);
     const { paymentId } = req.params as { paymentId: string };
-    await requireAccess(userId, await accountIdOf("payment", paymentId), "edit");
+    const sourceAccountId = await accountIdOf("payment", paymentId);
+    await requireAccess(userId, sourceAccountId, "edit");
     const body = updatePaymentBody.parse(req.body);
+    // Moving to another account requires edit access to the destination too.
+    if (body.accountId && body.accountId !== sourceAccountId) {
+      await requireAccess(userId, body.accountId, "edit");
+    }
     return store.updatePayment(paymentId, defined(body));
   });
 

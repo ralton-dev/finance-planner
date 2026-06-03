@@ -127,7 +127,11 @@ export const createPaymentBody = paymentObject.refine(
   { message: "fixed_point payments require a dueDate", path: ["dueDate"] },
 );
 export type CreatePaymentBody = z.infer<typeof createPaymentBody>;
-export const updatePaymentBody = paymentObject.partial();
+/** Updates may also move the payment to another account via `accountId`
+ *  (requires edit access to both the source and destination accounts). */
+export const updatePaymentBody = paymentObject.partial().extend({
+  accountId: z.string().uuid().optional(),
+});
 
 export const reorderPaymentsBody = z.object({
   orderedPaymentIds: z.array(z.string().uuid()),

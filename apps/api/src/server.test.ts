@@ -352,6 +352,91 @@ describe("api service", () => {
     expect(after?.projectId ?? null).toBeNull();
   });
 
+  it("moves a payment to another account the caller can edit", async () => {
+    const { auth } = await seedUser(store);
+    const mk = async (name: string) =>
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+    const a = await mk("A");
+    const b = await mk("B");
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${a.id}/payments`,
+        headers: auth,
+        payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
+      })
+    ).json();
+
+    const moved = await app.inject({
+      method: "PATCH",
+      url: `/api/payments/${payment.id}`,
+      headers: auth,
+      payload: { accountId: b.id },
+    });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json().accountId).toBe(b.id);
+
+    const onA = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${a.id}/payments`,
+      headers: auth,
+    });
+    const onB = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${b.id}/payments`,
+      headers: auth,
+    });
+    expect(onA.json()).toHaveLength(0);
+    expect(onB.json().map((p: { id: string }) => p.id)).toContain(payment.id);
+  });
+
+  it("refuses to move a payment into an account the caller can't edit (404)", async () => {
+    const { auth } = await seedUser(store, "mover@example.com");
+    const a = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${a.id}/payments`,
+        headers: auth,
+        payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
+      })
+    ).json();
+
+    const { auth: otherAuth } = await seedUser(store, "other@example.com");
+    const foreign = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: otherAuth,
+        payload: { name: "Foreign", currency: "GBP" },
+      })
+    ).json();
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/payments/${payment.id}`,
+      headers: auth,
+      payload: { accountId: foreign.id },
+    });
+    expect(res.statusCode).toBe(404);
+    // The payment didn't move.
+    expect((await store.getPayment(payment.id))?.accountId).toBe(a.id);
+  });
+
   it("passes payment scope + bearer through create", async () => {
     const { user, auth } = await seedUser(store);
     const account = (

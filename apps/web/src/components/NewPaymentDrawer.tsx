@@ -119,8 +119,11 @@ export function NewPaymentDrawer() {
       body.scope = scope;
       if (editing) {
         body.active = active;
+        body.accountId = accountId; // may move the payment to a different account
         await api.updatePayment(editing.id, body);
-        notifyUpdated("payment", accountId);
+        // Refresh the page the edit came from (the source account) so a moved
+        // payment drops off it; destination + overview reload on next view.
+        notifyUpdated("payment", editing.accountId);
       } else {
         await api.createPayment(accountId, body);
         notifyCreated("payment", accountId);
@@ -156,7 +159,7 @@ export function NewPaymentDrawer() {
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}
             required
-            disabled={accounts.loading || isEdit}
+            disabled={accounts.loading}
           >
             <option value="" disabled>
               {accounts.loading ? "loading accounts…" : "select an account…"}
@@ -174,7 +177,8 @@ export function NewPaymentDrawer() {
           )}
           {isEdit && (
             <span className="field-hint">
-              account is fixed once created; delete + recreate to move this payment.
+              changing this moves the payment to another account — and into that account's household
+              plan. you need edit access to both.
             </span>
           )}
         </label>

@@ -205,8 +205,8 @@ describe("NewPaymentDrawer", () => {
     expect(screen.getByDisplayValue("50")).toBeInTheDocument(); // priority
     expect(screen.getByDisplayValue("2026-09-01")).toBeInTheDocument();
 
-    // Account + category locked
-    expect(screen.getByLabelText(/account/i)).toBeDisabled();
+    // Category stays locked; the account is now movable (edit + recreate is gone).
+    expect(screen.getByLabelText(/account/i)).not.toBeDisabled();
     expect(screen.getByLabelText(/category/i)).toBeDisabled();
 
     // Rename and save
@@ -233,6 +233,7 @@ describe("NewPaymentDrawer", () => {
       dueDate: "2026-09-01",
       projectId: null,
       active: true,
+      accountId: "acc-1", // sent so a move (if the account changed) takes effect
     });
   });
 });
