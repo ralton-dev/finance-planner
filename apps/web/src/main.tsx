@@ -13,3 +13,12 @@ createRoot(rootElement).render(
     <App />
   </StrictMode>,
 );
+
+// Offline shell. Dev is excluded so the SW never caches Vite's HMR modules.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js").catch(() => {
+      /* Registration is best-effort; the app works fine without it. */
+    });
+  });
+}
