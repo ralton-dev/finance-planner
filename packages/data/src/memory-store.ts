@@ -2,31 +2,46 @@ import { randomUUID } from "node:crypto";
 import type {
   Account,
   AccountShare,
+  BalanceSnapshot,
+  Contribution,
   EmailVerificationToken,
   Household,
   HouseholdAccountAssignment,
   HouseholdMembership,
   HouseholdRole,
   Income,
+  MonthClose,
   Payment,
   PlanSnapshot,
   Project,
   Session,
   SharePermission,
+  TransferConfirmation,
   User,
 } from "./entities.js";
 import type {
   AccountAccess,
+  ContributionTotal,
+  MonthCloseScope,
   NewAccount,
   NewAccountAssignment,
+  NewBalanceSnapshot,
+  NewContribution,
   NewIncome,
+  NewMonthClose,
   NewPayment,
   NewProject,
+  NewTransferConfirmation,
   NewUser,
   Store,
 } from "./store.js";
 
 const now = (): string => new Date().toISOString();
+
+/** Oldest first. Rows written in the same millisecond keep insertion order —
+ *  returning 0 on a tie leaves the (stable) sort alone. */
+const byCreatedAt = (a: { createdAt: string }, b: { createdAt: string }): number =>
+  a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? -1 : 1;
 
 /** In-memory Store for tests and DB-less local dev. Not for production. */
 export class MemoryStore implements Store {
@@ -42,6 +57,10 @@ export class MemoryStore implements Store {
   private payments = new Map<string, Payment>();
   private projects = new Map<string, Project>();
   private snapshots = new Map<string, PlanSnapshot>();
+  private contributions = new Map<string, Contribution>();
+  private balanceSnapshots = new Map<string, BalanceSnapshot>();
+  private transferConfirmations = new Map<string, TransferConfirmation>();
+  private monthCloses = new Map<string, MonthClose>();
 
   async createUser(input: NewUser): Promise<User> {
     const user: User = {
@@ -121,6 +140,10 @@ export class MemoryStore implements Store {
     for (const [k, s] of this.shares) if (s.householdId === id) this.shares.delete(k);
     for (const [k, m] of this.memberships) if (m.householdId === id) this.memberships.delete(k);
     for (const [k, a] of this.assignments) if (a.householdId === id) this.assignments.delete(k);
+    for (const [k, t] of this.transferConfirmations) {
+      if (t.householdId === id) await this.deleteTransferConfirmation(k);
+    }
+    for (const [k, c] of this.monthCloses) if (c.householdId === id) this.monthCloses.delete(k);
     this.households.delete(id);
   }
 
@@ -345,6 +368,14 @@ export class MemoryStore implements Store {
     for (const [k, v] of this.payments) if (v.accountId === id) this.payments.delete(k);
     for (const [k, v] of this.shares) if (v.accountId === id) this.shares.delete(k);
     for (const [k, v] of this.assignments) if (v.accountId === id) this.assignments.delete(k);
+    for (const [k, v] of this.contributions) if (v.accountId === id) this.contributions.delete(k);
+    for (const [k, v] of this.balanceSnapshots) {
+      if (v.accountId === id) this.balanceSnapshots.delete(k);
+    }
+    for (const [k, v] of this.transferConfirmations) {
+      if (v.fromAccountId === id || v.toAccountId === id) this.transferConfirmations.delete(k);
+    }
+    for (const [k, v] of this.monthCloses) if (v.accountId === id) this.monthCloses.delete(k);
   }
 
   async createIncome(input: NewIncome): Promise<Income> {
@@ -399,6 +430,7 @@ export class MemoryStore implements Store {
 
   async deletePayment(id: string): Promise<void> {
     this.payments.delete(id);
+    for (const [k, c] of this.contributions) if (c.paymentId === id) this.contributions.delete(k);
   }
 
   async reorderPayments(accountId: string, orderedIds: string[]): Promise<void> {
@@ -414,6 +446,130 @@ export class MemoryStore implements Store {
     const full: PlanSnapshot = { ...snapshot, id: randomUUID(), computedAt: now() };
     this.snapshots.set(full.id, full);
     return full;
+  }
+
+  async createContribution(input: NewContribution): Promise<Contribution> {
+    const c: Contribution = { ...input, id: randomUUID(), createdAt: now() };
+    this.contributions.set(c.id, c);
+    return c;
+  }
+
+  async getContribution(id: string): Promise<Contribution | null> {
+    return this.contributions.get(id) ?? null;
+  }
+
+  async listContributionsForAccount(accountId: string, month?: string): Promise<Contribution[]> {
+    return [...this.contributions.values()]
+      .filter((c) => c.accountId === accountId && (!month || c.month === month))
+      .sort(byCreatedAt);
+  }
+
+  async sumContributionsByPayment(accountId: string): Promise<ContributionTotal[]> {
+    const totals = new Map<string, number>();
+    for (const c of this.contributions.values()) {
+      if (c.accountId !== accountId) continue;
+      totals.set(c.paymentId, (totals.get(c.paymentId) ?? 0) + c.amountMinor);
+    }
+    return [...totals.entries()].map(([paymentId, totalMinor]) => ({ paymentId, totalMinor }));
+  }
+
+  async deleteContribution(id: string): Promise<void> {
+    this.contributions.delete(id);
+  }
+
+  async upsertBalanceSnapshot(input: NewBalanceSnapshot): Promise<BalanceSnapshot> {
+    for (const [k, b] of this.balanceSnapshots) {
+      if (b.accountId === input.accountId && b.asOfDate === input.asOfDate) {
+        const updated: BalanceSnapshot = { ...b, balanceMinor: input.balanceMinor };
+        this.balanceSnapshots.set(k, updated);
+        return updated;
+      }
+    }
+    const snap: BalanceSnapshot = { ...input, id: randomUUID(), createdAt: now() };
+    this.balanceSnapshots.set(snap.id, snap);
+    return snap;
+  }
+
+  async listBalanceSnapshots(accountId: string): Promise<BalanceSnapshot[]> {
+    return [...this.balanceSnapshots.values()]
+      .filter((b) => b.accountId === accountId)
+      .sort((a, b) => (a.asOfDate < b.asOfDate ? -1 : 1));
+  }
+
+  async createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation> {
+    for (const t of this.transferConfirmations.values()) {
+      if (
+        t.householdId === input.householdId &&
+        t.month === input.month &&
+        t.fromAccountId === input.fromAccountId &&
+        t.toAccountId === input.toAccountId &&
+        t.memberUserId === input.memberUserId
+      ) {
+        throw new Error("transfer already confirmed");
+      }
+    }
+    const t: TransferConfirmation = { ...input, id: randomUUID(), createdAt: now() };
+    this.transferConfirmations.set(t.id, t);
+    return t;
+  }
+
+  async getTransferConfirmation(id: string): Promise<TransferConfirmation | null> {
+    return this.transferConfirmations.get(id) ?? null;
+  }
+
+  async listTransferConfirmations(
+    householdId: string,
+    month: string,
+  ): Promise<TransferConfirmation[]> {
+    return [...this.transferConfirmations.values()]
+      .filter((t) => t.householdId === householdId && t.month === month)
+      .sort(byCreatedAt);
+  }
+
+  async deleteTransferConfirmation(id: string): Promise<void> {
+    this.transferConfirmations.delete(id);
+    for (const [k, c] of this.contributions) {
+      if (c.transferConfirmationId === id) this.contributions.delete(k);
+    }
+  }
+
+  async createMonthClose(input: NewMonthClose): Promise<MonthClose> {
+    const scope: MonthCloseScope = input.householdId
+      ? { householdId: input.householdId }
+      : { accountId: input.accountId! };
+    if (await this.getMonthClose(scope, input.month)) {
+      throw new Error("month already closed");
+    }
+    const c: MonthClose = { ...input, id: randomUUID(), closedAt: now() };
+    this.monthCloses.set(c.id, c);
+    return c;
+  }
+
+  async getMonthCloseById(id: string): Promise<MonthClose | null> {
+    return this.monthCloses.get(id) ?? null;
+  }
+
+  async getMonthClose(scope: MonthCloseScope, month: string): Promise<MonthClose | null> {
+    for (const c of this.monthCloses.values()) {
+      if (c.month !== month) continue;
+      if ("householdId" in scope ? c.householdId === scope.householdId : false) return c;
+      if ("accountId" in scope ? c.accountId === scope.accountId : false) return c;
+    }
+    return null;
+  }
+
+  async listMonthCloses(scope: MonthCloseScope): Promise<MonthClose[]> {
+    return [...this.monthCloses.values()]
+      .filter((c) =>
+        "householdId" in scope
+          ? c.householdId === scope.householdId
+          : c.accountId === scope.accountId,
+      )
+      .sort((a, b) => (a.month > b.month ? -1 : 1));
+  }
+
+  async deleteMonthClose(id: string): Promise<void> {
+    this.monthCloses.delete(id);
   }
 
   async createProject(input: NewProject): Promise<Project> {

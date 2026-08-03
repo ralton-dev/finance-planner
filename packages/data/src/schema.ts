@@ -135,6 +135,49 @@ export const projects = coreSchema.table("projects", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const transferConfirmations = coreSchema.table("transfer_confirmations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  householdId: uuid("household_id").notNull(),
+  month: date("month").notNull(),
+  fromAccountId: uuid("from_account_id").notNull(),
+  toAccountId: uuid("to_account_id").notNull(),
+  memberUserId: uuid("member_user_id").notNull(),
+  amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const contributions = coreSchema.table("contributions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  paymentId: uuid("payment_id").notNull(),
+  accountId: uuid("account_id").notNull(),
+  userId: uuid("user_id"),
+  month: date("month").notNull(),
+  amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+  note: text("note"),
+  transferConfirmationId: uuid("transfer_confirmation_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const balanceSnapshots = coreSchema.table("balance_snapshots", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  accountId: uuid("account_id").notNull(),
+  asOfDate: date("as_of_date").notNull(),
+  balanceMinor: bigint("balance_minor", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const monthCloses = coreSchema.table("month_closes", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  householdId: uuid("household_id"),
+  accountId: uuid("account_id"),
+  month: date("month").notNull(),
+  incomeMinor: bigint("income_minor", { mode: "number" }).notNull(),
+  plannedMinor: bigint("planned_minor", { mode: "number" }).notNull(),
+  contributedMinor: bigint("contributed_minor", { mode: "number" }).notNull(),
+  closedBy: uuid("closed_by"),
+  closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const planSnapshots = calcSchema.table("plan_snapshots", {
   id: uuid("id").defaultRandom().primaryKey(),
   accountId: uuid("account_id").notNull(),

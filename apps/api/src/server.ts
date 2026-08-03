@@ -1,6 +1,9 @@
 import {
   assignAccountBody,
+  closeMonthBody,
+  confirmTransferBody,
   createAccountBody,
+  createContributionBody,
   createIncomeBody,
   createPaymentBody,
   createProjectBody,
@@ -12,6 +15,7 @@ import {
   updateIncomeBody,
   updatePaymentBody,
   updateProjectBody,
+  upsertBalanceBody,
 } from "@finance-planner/contracts";
 import { type Account, type AccountAccess, createStore, type Store } from "@finance-planner/data";
 import { computeOverview, toISODate } from "@finance-planner/domain";
@@ -45,6 +49,30 @@ class HttpError extends Error {
 
 function defined<T extends object>(obj: T): Partial<T> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
+/** Today's ISO date. The domain engine never reads the clock — the API feeds it
+ *  an explicit as-of date, defaulting to today. */
+const today = (): string => toISODate(new Date());
+
+/** Months are stored as the ISO date of their first day ("2026-08" → "2026-08-01"). */
+const monthToFirstDay = (month: string): string => `${month}-01`;
+
+/** The "YYYY-MM" month an ISO date falls in. */
+const monthOf = (date: string): string => date.slice(0, 7);
+
+/**
+ * As-of date for closing a month: today when closing the month still running,
+ * otherwise that month's last day, so a past month is scored on the plan it
+ * actually had. Months that haven't started can't be closed.
+ */
+function closeAsOfDate(month: string): string {
+  const now = today();
+  const current = monthOf(now);
+  if (month > current) throw new HttpError(422, "future_month", "Cannot close a future month");
+  if (month === current) return now;
+  const [year, mon] = month.split("-").map(Number);
+  return toISODate(new Date(Date.UTC(year!, mon!, 0))); // day 0 of the next month
 }
 
 export function buildServer(deps: ApiDeps = {}): FastifyInstance {
@@ -213,12 +241,150 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return reply.code(204).send();
   });
 
+  /**
+   * The account's plan, plus the reality alongside it: what was contributed
+   * this month, what is reserved in total, and the last real balance check-in.
+   * Bundled onto the plan so the UI can show plan-vs-reality in one round trip.
+   */
   app.get("/api/accounts/:id/plan", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
     const { asOf } = req.query as { asOf?: string };
     const { account } = await requireAccess(userId, id, "view");
-    return computePlanForAccount(store, account, asOf ?? toISODate(new Date()));
+    const asOfDate = asOf ?? today();
+    const [plan, monthContributions, balances] = await Promise.all([
+      computePlanForAccount(store, account, asOfDate),
+      store.listContributionsForAccount(id, monthToFirstDay(monthOf(asOfDate))),
+      store.listBalanceSnapshots(id),
+    ]);
+    const mtd = new Map<string, number>();
+    for (const c of monthContributions) {
+      mtd.set(c.paymentId, (mtd.get(c.paymentId) ?? 0) + c.amountMinor);
+    }
+    const latest = balances.at(-1);
+    return {
+      ...plan,
+      contributionsMTD: [...mtd.entries()].map(([paymentId, amountMinor]) => ({
+        paymentId,
+        amountMinor,
+      })),
+      latestBalance: latest
+        ? { asOfDate: latest.asOfDate, balanceMinor: latest.balanceMinor }
+        : null,
+      reservedMinor: plan.lines.reduce((sum, l) => sum + l.alreadySavedMinor, 0),
+    };
+  });
+
+  // ---- contributions (the money-set-aside ledger) ----
+  /**
+   * Record money set aside toward a payment. The plan derives each payment's
+   * already-saved from its manual base plus these, so recording a contribution
+   * moves the plan without editing the payment.
+   */
+  app.post("/api/payments/:paymentId/contributions", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { paymentId } = req.params as { paymentId: string };
+    const accountId = await accountIdOf("payment", paymentId);
+    await requireAccess(userId, accountId, "edit");
+    const body = createContributionBody.parse(req.body);
+    const contribution = await store.createContribution({
+      paymentId,
+      accountId,
+      userId,
+      month: monthToFirstDay(body.month ?? monthOf(today())),
+      amountMinor: body.amountMinor,
+      note: body.note ?? null,
+      transferConfirmationId: null,
+    });
+    return reply.code(201).send(contribution);
+  });
+
+  app.get("/api/accounts/:id/contributions", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { month } = req.query as { month?: string };
+    await requireAccess(userId, id, "view");
+    return store.listContributionsForAccount(id, month ? monthToFirstDay(month) : undefined);
+  });
+
+  app.delete("/api/contributions/:contributionId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { contributionId } = req.params as { contributionId: string };
+    const contribution = await store.getContribution(contributionId);
+    if (!contribution) throw new HttpError(404, "not_found", "Contribution not found");
+    await requireAccess(userId, contribution.accountId, "edit");
+    await store.deleteContribution(contributionId);
+    return reply.code(204).send();
+  });
+
+  // ---- balance check-ins ----
+  /** Anchor the plan to real money. One snapshot per account per day; restating
+   *  a day overwrites it. */
+  app.put("/api/accounts/:id/balance", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireAccess(userId, id, "edit");
+    const body = upsertBalanceBody.parse(req.body);
+    return store.upsertBalanceSnapshot({
+      accountId: id,
+      asOfDate: body.asOfDate ?? today(),
+      balanceMinor: body.balanceMinor,
+    });
+  });
+
+  app.get("/api/accounts/:id/balances", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireAccess(userId, id, "view");
+    return store.listBalanceSnapshots(id);
+  });
+
+  // ---- month closes for a standalone account ----
+  /** Freeze the month's scorecard: what the plan asked for vs what was actually
+   *  contributed. The household equivalent lives under /api/households. */
+  app.post("/api/accounts/:id/close", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { account } = await requireAccess(userId, id, "edit");
+    const body = closeMonthBody.parse(req.body);
+    const asOfDate = closeAsOfDate(body.month);
+    const month = monthToFirstDay(body.month);
+    if (await store.getMonthClose({ accountId: id }, month)) {
+      throw new HttpError(409, "already_closed", "Month already closed");
+    }
+    const [plan, contributions] = await Promise.all([
+      computePlanForAccount(store, account, asOfDate),
+      store.listContributionsForAccount(id, month),
+    ]);
+    const close = await store.createMonthClose({
+      householdId: null,
+      accountId: id,
+      month,
+      incomeMinor: plan.monthlyIncomeMinor,
+      plannedMinor: plan.totalRequiredMinor,
+      contributedMinor: contributions.reduce((sum, c) => sum + c.amountMinor, 0),
+      closedBy: userId,
+    });
+    return reply.code(201).send(close);
+  });
+
+  app.get("/api/accounts/:id/closes", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireAccess(userId, id, "view");
+    return store.listMonthCloses({ accountId: id });
+  });
+
+  app.delete("/api/accounts/:id/closes/:closeId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id, closeId } = req.params as { id: string; closeId: string };
+    await requireAccess(userId, id, "edit");
+    const close = await store.getMonthCloseById(closeId);
+    if (!close || close.accountId !== id) {
+      throw new HttpError(404, "not_found", "Month close not found");
+    }
+    await store.deleteMonthClose(closeId);
+    return reply.code(204).send();
   });
 
   // ---- incomes ----
@@ -354,7 +520,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.get("/api/overview", async (req) => {
     const userId = await authenticate(req);
     const { asOf } = req.query as { asOf?: string };
-    const asOfDate = asOf ?? toISODate(new Date());
+    const asOfDate = asOf ?? today();
     const access = await store.listAccessibleAccounts(userId);
     const plans = [];
     for (const a of access) {
@@ -376,7 +542,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { id } = req.params as { id: string };
     const { asOf } = req.query as { asOf?: string };
     await requireMembership(userId, id);
-    return computeHouseholdPlanFor(store, id, asOf ?? toISODate(new Date()));
+    return computeHouseholdPlanFor(store, id, asOf ?? today());
   });
 
   /** The roster of accounts in this household's plan, with their roles. */
@@ -427,6 +593,156 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { id, accountId } = req.params as { id: string; accountId: string };
     await requireMembership(userId, id, ["owner", "admin"]);
     await store.deleteAccountAssignment(id, accountId);
+    return reply.code(204).send();
+  });
+
+  // ---- transfer confirmations ("I moved the money") ----
+  /**
+   * Confirm one of the transfers the household plan derived. The confirmation
+   * credits the receiving account's payments with the member's funded slice, so
+   * the plan reflects money that has actually moved. Members confirm their own
+   * transfers; owners/admins may confirm on anyone's behalf.
+   */
+  app.post("/api/households/:id/transfers/confirm", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireMembership(userId, id);
+    const body = confirmTransferBody.parse(req.body);
+    if (body.memberUserId !== userId) {
+      await requireMembership(userId, id, ["owner", "admin"]);
+    }
+    const month = monthToFirstDay(body.month ?? monthOf(today()));
+
+    // Idempotency guard first: once confirmed, stay confirmed even if the plan
+    // has since moved on and no longer derives that transfer.
+    const confirmed = await store.listTransferConfirmations(id, month);
+    const duplicate = confirmed.some(
+      (c) =>
+        c.fromAccountId === body.fromAccountId &&
+        c.toAccountId === body.toAccountId &&
+        c.memberUserId === body.memberUserId,
+    );
+    if (duplicate) {
+      throw new HttpError(409, "already_confirmed", "Transfer already confirmed this month");
+    }
+
+    const plan = await computeHouseholdPlanFor(store, id, today());
+    const transfer = plan.transfers.find(
+      (t) =>
+        t.fromAccountId === body.fromAccountId &&
+        t.toAccountId === body.toAccountId &&
+        t.memberUserId === body.memberUserId,
+    );
+    if (!transfer) {
+      throw new HttpError(422, "no_planned_transfer", "No matching planned transfer");
+    }
+
+    const confirmation = await store.createTransferConfirmation({
+      householdId: id,
+      month,
+      fromAccountId: body.fromAccountId,
+      toAccountId: body.toAccountId,
+      memberUserId: body.memberUserId,
+      amountMinor: transfer.amountMinor,
+    });
+    // The transfer funds this member's share of every bill in the destination
+    // account; book each slice against its payment so un-confirming can undo it.
+    const contributions = [];
+    for (const line of plan.lines) {
+      if (line.accountId !== body.toAccountId) continue;
+      const funded = line.allocations.find((a) => a.userId === body.memberUserId)?.fundedMinor ?? 0;
+      if (funded <= 0) continue;
+      contributions.push(
+        await store.createContribution({
+          paymentId: line.paymentId,
+          accountId: body.toAccountId,
+          userId: body.memberUserId,
+          month,
+          amountMinor: funded,
+          note: null,
+          transferConfirmationId: confirmation.id,
+        }),
+      );
+    }
+    return reply.code(201).send({ confirmation, contributions });
+  });
+
+  app.get("/api/households/:id/transfers/confirmations", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { month } = req.query as { month?: string };
+    await requireMembership(userId, id);
+    return store.listTransferConfirmations(id, monthToFirstDay(month ?? monthOf(today())));
+  });
+
+  /** Un-confirm: drops the confirmation and the contributions it created. */
+  app.delete("/api/households/:id/transfers/confirmations/:confId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id, confId } = req.params as { id: string; confId: string };
+    await requireMembership(userId, id);
+    const confirmation = await store.getTransferConfirmation(confId);
+    if (!confirmation || confirmation.householdId !== id) {
+      throw new HttpError(404, "not_found", "Confirmation not found");
+    }
+    if (confirmation.memberUserId !== userId) {
+      await requireMembership(userId, id, ["owner", "admin"]);
+    }
+    await store.deleteTransferConfirmation(confId);
+    return reply.code(204).send();
+  });
+
+  // ---- household month closes ----
+  /**
+   * Freeze the household's month: the plan's income and requirement against
+   * what members actually contributed across the household's accounts.
+   */
+  app.post("/api/households/:id/close", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireMembership(userId, id, ["owner", "admin"]);
+    const body = closeMonthBody.parse(req.body);
+    const asOfDate = closeAsOfDate(body.month);
+    const month = monthToFirstDay(body.month);
+    if (await store.getMonthClose({ householdId: id }, month)) {
+      throw new HttpError(409, "already_closed", "Month already closed");
+    }
+    const [plan, assignments] = await Promise.all([
+      computeHouseholdPlanFor(store, id, asOfDate),
+      store.listAccountAssignments(id),
+    ]);
+    let contributedMinor = 0;
+    for (const assignment of assignments) {
+      const contributions = await store.listContributionsForAccount(assignment.accountId, month);
+      contributedMinor += contributions.reduce((sum, c) => sum + c.amountMinor, 0);
+    }
+    const close = await store.createMonthClose({
+      householdId: id,
+      accountId: null,
+      month,
+      incomeMinor: plan.monthlyIncomeMinor,
+      plannedMinor: plan.totalRequiredMinor,
+      contributedMinor,
+      closedBy: userId,
+    });
+    return reply.code(201).send(close);
+  });
+
+  app.get("/api/households/:id/closes", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireMembership(userId, id);
+    return store.listMonthCloses({ householdId: id });
+  });
+
+  app.delete("/api/households/:id/closes/:closeId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id, closeId } = req.params as { id: string; closeId: string };
+    await requireMembership(userId, id, ["owner", "admin"]);
+    const close = await store.getMonthCloseById(closeId);
+    if (!close || close.householdId !== id) {
+      throw new HttpError(404, "not_found", "Month close not found");
+    }
+    await store.deleteMonthClose(closeId);
     return reply.code(204).send();
   });
 

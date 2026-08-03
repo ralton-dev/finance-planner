@@ -1,17 +1,21 @@
 import type {
   Account,
   AccountShare,
+  BalanceSnapshot,
+  Contribution,
   EmailVerificationToken,
   Household,
   HouseholdAccountAssignment,
   HouseholdMembership,
   HouseholdRole,
   Income,
+  MonthClose,
   Payment,
   PlanSnapshot,
   Project,
   Session,
   SharePermission,
+  TransferConfirmation,
   User,
 } from "./entities.js";
 
@@ -37,6 +41,19 @@ export type NewAccountAssignment = Omit<
   HouseholdAccountAssignment,
   "id" | "createdAt" | "updatedAt"
 >;
+export type NewContribution = Omit<Contribution, "id" | "createdAt">;
+export type NewBalanceSnapshot = Omit<BalanceSnapshot, "id" | "createdAt">;
+export type NewTransferConfirmation = Omit<TransferConfirmation, "id" | "createdAt">;
+export type NewMonthClose = Omit<MonthClose, "id" | "closedAt">;
+
+/** Per-payment all-time contribution total for one account. */
+export interface ContributionTotal {
+  paymentId: string;
+  totalMinor: number;
+}
+
+/** Identifies whose scorecard a month close belongs to. */
+export type MonthCloseScope = { householdId: string } | { accountId: string };
 
 /** Effective access a user has to an account. */
 export interface AccountAccess {
@@ -145,6 +162,38 @@ export interface Store {
   updateProject(id: string, patch: Partial<NewProject>): Promise<Project | null>;
   deleteProject(id: string): Promise<void>;
   listPaymentsForProject(projectId: string): Promise<Payment[]>;
+
+  // ---- contributions (dated money-set-aside ledger) ----
+  createContribution(input: NewContribution): Promise<Contribution>;
+  getContribution(id: string): Promise<Contribution | null>;
+  /** Contributions on an account, optionally narrowed to one month
+   *  (`month` = ISO date of the month's first day). Ordered oldest first. */
+  listContributionsForAccount(accountId: string, month?: string): Promise<Contribution[]>;
+  /** All-time contribution totals per payment for one account. */
+  sumContributionsByPayment(accountId: string): Promise<ContributionTotal[]>;
+  deleteContribution(id: string): Promise<void>;
+
+  // ---- balance snapshots (manual check-ins) ----
+  /** Insert or overwrite the snapshot for (account, asOfDate). */
+  upsertBalanceSnapshot(input: NewBalanceSnapshot): Promise<BalanceSnapshot>;
+  /** Snapshots for an account, ordered by asOfDate ascending. */
+  listBalanceSnapshots(accountId: string): Promise<BalanceSnapshot[]>;
+
+  // ---- transfer confirmations ----
+  createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation>;
+  getTransferConfirmation(id: string): Promise<TransferConfirmation | null>;
+  /** Confirmations for a household in one month (ISO first-of-month date). */
+  listTransferConfirmations(householdId: string, month: string): Promise<TransferConfirmation[]>;
+  /** Deleting a confirmation also removes the contributions it created. */
+  deleteTransferConfirmation(id: string): Promise<void>;
+
+  // ---- month closes (frozen scorecards) ----
+  createMonthClose(input: NewMonthClose): Promise<MonthClose>;
+  getMonthCloseById(id: string): Promise<MonthClose | null>;
+  getMonthClose(scope: MonthCloseScope, month: string): Promise<MonthClose | null>;
+  /** Closes for a scope, newest month first. */
+  listMonthCloses(scope: MonthCloseScope): Promise<MonthClose[]>;
+  deleteMonthClose(id: string): Promise<void>;
 
   // ---- calc snapshots ----
   saveSnapshot(snapshot: Omit<PlanSnapshot, "id" | "computedAt">): Promise<PlanSnapshot>;

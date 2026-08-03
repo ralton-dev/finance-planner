@@ -146,3 +146,62 @@ export interface PlanSnapshot {
   inputsHash: string;
   detail: unknown;
 }
+
+/**
+ * A dated record of money set aside toward a payment. A payment's effective
+ * already-saved = its manual base (`Payment.alreadySavedMinor`) + the sum of
+ * its contributions.
+ */
+export interface Contribution {
+  id: string;
+  paymentId: string;
+  accountId: string;
+  /** Whose money / who recorded it. Null for single-user flows. */
+  userId: string | null;
+  /** ISO date of the first day of the month this belongs to. */
+  month: string;
+  amountMinor: number;
+  note: string | null;
+  /** Set when created by confirming a household transfer; deleting the
+   *  confirmation cascades to these rows. */
+  transferConfirmationId: string | null;
+  createdAt: string;
+}
+
+/** A manual balance check-in. One per account per day; newest day wins. */
+export interface BalanceSnapshot {
+  id: string;
+  accountId: string;
+  asOfDate: string;
+  /** May be negative (overdraft). */
+  balanceMinor: number;
+  createdAt: string;
+}
+
+/** A member's confirmation that a planned monthly transfer was made. */
+export interface TransferConfirmation {
+  id: string;
+  householdId: string;
+  /** ISO date of the first day of the month. */
+  month: string;
+  fromAccountId: string;
+  toAccountId: string;
+  memberUserId: string;
+  amountMinor: number;
+  createdAt: string;
+}
+
+/** A frozen month scorecard for a household or a standalone account. */
+export interface MonthClose {
+  id: string;
+  /** Exactly one of householdId / accountId is set. */
+  householdId: string | null;
+  accountId: string | null;
+  /** ISO date of the first day of the closed month. */
+  month: string;
+  incomeMinor: number;
+  plannedMinor: number;
+  contributedMinor: number;
+  closedBy: string | null;
+  closedAt: string;
+}

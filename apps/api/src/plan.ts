@@ -9,6 +9,16 @@ import {
 import type { Account, Store } from "@finance-planner/data";
 
 /**
+ * A payment's effective already-saved: its manual base plus every contribution
+ * recorded against it. Contributions are the ledger of money actually set
+ * aside, so the plan tracks reality without the payment being edited.
+ */
+async function savedByPayment(store: Store, accountId: string): Promise<Map<string, number>> {
+  const totals = await store.sumContributionsByPayment(accountId);
+  return new Map(totals.map((t) => [t.paymentId, t.totalMinor]));
+}
+
+/**
  * Load an account's incomes + payments and compute its savings plan.
  *
  * Snapshot persistence is intentionally NOT performed here. The plan endpoint
@@ -22,9 +32,10 @@ export async function computePlanForAccount(
   account: Account,
   asOfDate: string,
 ): Promise<AccountPlan> {
-  const [incomes, payments] = await Promise.all([
+  const [incomes, payments, saved] = await Promise.all([
     store.listIncomes(account.id),
     store.listPayments(account.id),
+    savedByPayment(store, account.id),
   ]);
 
   const input: AccountInput = {
@@ -48,7 +59,7 @@ export async function computePlanForAccount(
       recurrence: p.recurrence,
       targetDate: p.targetDate,
       priority: p.priority,
-      alreadySavedMinor: p.alreadySavedMinor,
+      alreadySavedMinor: p.alreadySavedMinor + (saved.get(p.id) ?? 0),
       autoRenew: p.autoRenew,
       active: p.active,
     })),
@@ -85,9 +96,10 @@ export async function computeHouseholdPlanFor(
   for (const asg of assignments) {
     const account = await store.getAccount(asg.accountId);
     if (!account) continue;
-    const [incomes, payments] = await Promise.all([
+    const [incomes, payments, saved] = await Promise.all([
       store.listIncomes(account.id),
       store.listPayments(account.id),
+      savedByPayment(store, account.id),
     ]);
     accounts.push({
       accountId: account.id,
@@ -113,7 +125,7 @@ export async function computeHouseholdPlanFor(
         recurrence: p.recurrence,
         targetDate: p.targetDate,
         priority: p.priority,
-        alreadySavedMinor: p.alreadySavedMinor,
+        alreadySavedMinor: p.alreadySavedMinor + (saved.get(p.id) ?? 0),
         autoRenew: p.autoRenew,
         active: p.active,
         scope: p.scope,

@@ -17,6 +17,83 @@ async function seedUser(store: Store, email = "owner@example.com") {
   return { user, auth: { authorization: `Bearer ${token}` } };
 }
 
+/** The current month, the way the reality-loop routes default it. */
+const thisMonth = (): string => new Date().toISOString().slice(0, 7);
+
+/**
+ * A two-member household for the reality-loop tests: alice + bob on a 66/34
+ * share, each with a personal current account, plus a shared bills pot holding
+ * a monthly bill and a savings goal. Both members' plans therefore derive a
+ * transfer into the pot each month.
+ */
+async function seedHousehold(store: Store, app: ReturnType<typeof buildServer>) {
+  const { user: alice, auth } = await seedUser(store, "alice@example.com");
+  const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
+  const household = await store.createHousehold("Home", alice.id);
+  await store.addMembership(household.id, bob.id, "member");
+  await store.updateMembershipShare(household.id, alice.id, 6600);
+  await store.updateMembershipShare(household.id, bob.id, 3400);
+
+  const make = async (name: string, incomeMinor?: number) => {
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name, currency: "GBP" },
+      })
+    ).json();
+    if (incomeMinor) {
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/incomes`,
+        headers: auth,
+        payload: {
+          name: "Pay",
+          amountMinor: incomeMinor,
+          frequency: "monthly",
+          anchorDate: "2026-01-01",
+        },
+      });
+    }
+    return account;
+  };
+  const aliceCur = await make("alice-cur", 300000);
+  const bobCur = await make("bob-cur", 200000);
+  const bills = await make("bills");
+
+  for (const payload of [
+    { name: "Rent", category: "monthly_recurring", amountMinor: 100000, scope: "shared" },
+    {
+      name: "Holiday",
+      category: "fixed_point",
+      amountMinor: 120000,
+      dueDate: "2027-08-01",
+      scope: "shared",
+    },
+  ]) {
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${bills.id}/payments`,
+      headers: auth,
+      payload,
+    });
+  }
+
+  const assign = (accountId: string, payload: object) =>
+    app.inject({
+      method: "PUT",
+      url: `/api/households/${household.id}/accounts/${accountId}`,
+      headers: auth,
+      payload,
+    });
+  await assign(aliceCur.id, { role: "personal", memberUserId: alice.id });
+  await assign(bobCur.id, { role: "personal", memberUserId: bob.id });
+  await assign(bills.id, { role: "shared" });
+
+  return { alice, bob, auth, bobAuth, household, aliceCur, bobCur, bills };
+}
+
 describe("api service", () => {
   let store: MemoryStore;
   let app: ReturnType<typeof buildServer>;
@@ -631,5 +708,484 @@ describe("api service", () => {
       payload: { role: "shared" },
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  it("derives a payment's already-saved from its contributions", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-25",
+      },
+    });
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: "Holiday",
+          category: "fixed_point",
+          amountMinor: 120000,
+          dueDate: "2026-09-01",
+        },
+      })
+    ).json();
+
+    const before = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan?asOf=2026-01-01`,
+        headers: auth,
+      })
+    ).json();
+    expect(before.lines[0].requiredMonthlyMinor).toBe(15000); // 120000 over 8 months
+    expect(before.reservedMinor).toBe(0);
+    expect(before.latestBalance).toBeNull();
+
+    const recorded = await app.inject({
+      method: "POST",
+      url: `/api/payments/${payment.id}/contributions`,
+      headers: auth,
+      payload: { amountMinor: 40000, month: "2026-01", note: "January transfer" },
+    });
+    expect(recorded.statusCode).toBe(201);
+    expect(recorded.json().month).toBe("2026-01-01"); // stored as the month's first day
+
+    const after = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan?asOf=2026-01-01`,
+        headers: auth,
+      })
+    ).json();
+    expect(after.lines[0].alreadySavedMinor).toBe(40000);
+    expect(after.lines[0].requiredMonthlyMinor).toBe(10000); // (120000 - 40000) over 8
+    expect(after.reservedMinor).toBe(40000);
+    expect(after.contributionsMTD).toEqual([{ paymentId: payment.id, amountMinor: 40000 }]);
+  });
+
+  it("lists contributions by month and deletes them", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
+      })
+    ).json();
+    const record = (month: string, amountMinor: number) =>
+      app.inject({
+        method: "POST",
+        url: `/api/payments/${payment.id}/contributions`,
+        headers: auth,
+        payload: { amountMinor, month },
+      });
+    const january = (await record("2026-01", 100000)).json();
+    await record("2026-02", 50000);
+
+    const all = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/contributions`,
+      headers: auth,
+    });
+    expect(all.json()).toHaveLength(2);
+    const february = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/contributions?month=2026-02`,
+      headers: auth,
+    });
+    expect(february.json()).toHaveLength(1);
+    expect(february.json()[0].amountMinor).toBe(50000);
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/contributions/${january.id}`,
+      headers: auth,
+    });
+    expect(deleted.statusCode).toBe(204);
+    const remaining = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/contributions`,
+      headers: auth,
+    });
+    expect(remaining.json()).toHaveLength(1);
+
+    const missing = await app.inject({
+      method: "DELETE",
+      url: "/api/contributions/00000000-0000-0000-0000-000000000000",
+      headers: auth,
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+
+  it("refuses contributions from a view-only member (403) but lets them read the ledger", async () => {
+    const { user, auth } = await seedUser(store, "owner@example.com");
+    const { user: partner, auth: partnerAuth } = await seedUser(store, "partner@example.com");
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Joint", currency: "GBP" },
+      })
+    ).json();
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
+      })
+    ).json();
+    const household = await store.createHousehold("Home", user.id);
+    await store.addMembership(household.id, partner.id, "member");
+    await store.createAccountShare(account.id, household.id, "view");
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/payments/${payment.id}/contributions`,
+      headers: partnerAuth,
+      payload: { amountMinor: 10000 },
+    });
+    expect(blocked.statusCode).toBe(403);
+
+    const readable = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/contributions`,
+      headers: partnerAuth,
+    });
+    expect(readable.statusCode).toBe(200);
+    expect(readable.json()).toHaveLength(0);
+  });
+
+  it("upserts one balance check-in per day and surfaces the latest on the plan", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    const put = (asOfDate: string, balanceMinor: number) =>
+      app.inject({
+        method: "PUT",
+        url: `/api/accounts/${account.id}/balance`,
+        headers: auth,
+        payload: { asOfDate, balanceMinor },
+      });
+
+    const first = await put("2026-01-15", 125000);
+    expect(first.statusCode).toBe(200);
+    const restated = await put("2026-01-15", 130000);
+    expect(restated.json().id).toBe(first.json().id); // same day overwrites
+    await put("2026-01-01", -2500); // overdrafts are legal
+
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/balances`,
+      headers: auth,
+    });
+    expect(list.json().map((b: { asOfDate: string }) => b.asOfDate)).toEqual([
+      "2026-01-01",
+      "2026-01-15",
+    ]);
+    expect(list.json()[1].balanceMinor).toBe(130000);
+
+    const plan = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/plan?asOf=2026-01-20`,
+      headers: auth,
+    });
+    expect(plan.json().latestBalance).toEqual({ asOfDate: "2026-01-15", balanceMinor: 130000 });
+  });
+
+  it("confirms a planned transfer, books its contributions, and un-confirms them", async () => {
+    const h = await seedHousehold(store, app);
+    const planUrl = `/api/households/${h.household.id}/plan`;
+    const before = (await app.inject({ method: "GET", url: planUrl, headers: h.auth })).json();
+    const planned = before.transfers.find(
+      (t: { fromAccountId: string; toAccountId: string; memberUserId: string }) =>
+        t.fromAccountId === h.aliceCur.id &&
+        t.toAccountId === h.bills.id &&
+        t.memberUserId === h.alice.id,
+    );
+    expect(planned).toBeTruthy();
+    const holidayBefore = before.lines.find(
+      (l: { name: string }) => l.name === "Holiday",
+    ).requiredMonthlyMinor;
+
+    const confirm = () =>
+      app.inject({
+        method: "POST",
+        url: `/api/households/${h.household.id}/transfers/confirm`,
+        headers: h.auth,
+        payload: {
+          fromAccountId: h.aliceCur.id,
+          toAccountId: h.bills.id,
+          memberUserId: h.alice.id,
+        },
+      });
+
+    const res = await confirm();
+    expect(res.statusCode).toBe(201);
+    const { confirmation, contributions } = res.json();
+    expect(confirmation.amountMinor).toBe(planned.amountMinor);
+    expect(confirmation.month).toBe(`${thisMonth()}-01`);
+    // One contribution per bill the transfer funds (rent + the holiday goal).
+    expect(contributions).toHaveLength(2);
+    expect(
+      contributions.every(
+        (c: { transferConfirmationId: string; accountId: string }) =>
+          c.transferConfirmationId === confirmation.id && c.accountId === h.bills.id,
+      ),
+    ).toBe(true);
+
+    // Confirming again is refused rather than double-counted.
+    expect((await confirm()).statusCode).toBe(409);
+    expect((await confirm()).json().error.code).toBe("already_confirmed");
+
+    // The money that moved is now reflected in the household plan.
+    const after = (await app.inject({ method: "GET", url: planUrl, headers: h.auth })).json();
+    const holidayAfter = after.lines.find(
+      (l: { name: string }) => l.name === "Holiday",
+    ).requiredMonthlyMinor;
+    expect(holidayAfter).toBeLessThan(holidayBefore);
+
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/households/${h.household.id}/transfers/confirmations`,
+      headers: h.auth,
+    });
+    expect(listed.json()).toHaveLength(1);
+
+    // Un-confirming takes the contributions it created with it.
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/households/${h.household.id}/transfers/confirmations/${confirmation.id}`,
+      headers: h.auth,
+    });
+    expect(removed.statusCode).toBe(204);
+    const ledger = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${h.bills.id}/contributions`,
+      headers: h.auth,
+    });
+    expect(ledger.json()).toHaveLength(0);
+  });
+
+  it("rejects a confirmation with no matching planned transfer (422)", async () => {
+    const h = await seedHousehold(store, app);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/households/${h.household.id}/transfers/confirm`,
+      headers: h.auth,
+      payload: {
+        fromAccountId: h.bills.id, // the plan never moves money this way
+        toAccountId: h.aliceCur.id,
+        memberUserId: h.alice.id,
+      },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("no_planned_transfer");
+  });
+
+  it("stops a plain member confirming someone else's transfer (403)", async () => {
+    const h = await seedHousehold(store, app);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/households/${h.household.id}/transfers/confirm`,
+      headers: h.bobAuth,
+      payload: {
+        fromAccountId: h.aliceCur.id,
+        toAccountId: h.bills.id,
+        memberUserId: h.alice.id,
+      },
+    });
+    expect(res.statusCode).toBe(403);
+
+    // Their own transfer is fine, though.
+    const own = await app.inject({
+      method: "POST",
+      url: `/api/households/${h.household.id}/transfers/confirm`,
+      headers: h.bobAuth,
+      payload: {
+        fromAccountId: h.bobCur.id,
+        toAccountId: h.bills.id,
+        memberUserId: h.bob.id,
+      },
+    });
+    expect(own.statusCode).toBe(201);
+  });
+
+  it("closes a household month once, scoring plan against contributions", async () => {
+    const h = await seedHousehold(store, app);
+    const month = thisMonth();
+    const confirmed = (
+      await app.inject({
+        method: "POST",
+        url: `/api/households/${h.household.id}/transfers/confirm`,
+        headers: h.auth,
+        payload: {
+          fromAccountId: h.aliceCur.id,
+          toAccountId: h.bills.id,
+          memberUserId: h.alice.id,
+        },
+      })
+    ).json();
+    const contributed = confirmed.contributions.reduce(
+      (sum: number, c: { amountMinor: number }) => sum + c.amountMinor,
+      0,
+    );
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${h.household.id}/plan`,
+        headers: h.auth,
+      })
+    ).json();
+
+    const closed = await app.inject({
+      method: "POST",
+      url: `/api/households/${h.household.id}/close`,
+      headers: h.auth,
+      payload: { month },
+    });
+    expect(closed.statusCode).toBe(201);
+    expect(closed.json().month).toBe(`${month}-01`);
+    expect(closed.json().incomeMinor).toBe(500000);
+    expect(closed.json().plannedMinor).toBe(plan.totalRequiredMinor);
+    expect(closed.json().contributedMinor).toBe(contributed);
+
+    const duplicate = await app.inject({
+      method: "POST",
+      url: `/api/households/${h.household.id}/close`,
+      headers: h.auth,
+      payload: { month },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json().error.code).toBe("already_closed");
+
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/households/${h.household.id}/closes`,
+      headers: h.auth,
+    });
+    expect(listed.json()).toHaveLength(1);
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/households/${h.household.id}/closes/${closed.json().id}`,
+      headers: h.auth,
+    });
+    expect(removed.statusCode).toBe(204);
+  });
+
+  it("restricts household closes to owners/admins and to months that have started", async () => {
+    const h = await seedHousehold(store, app);
+    const asMember = await app.inject({
+      method: "POST",
+      url: `/api/households/${h.household.id}/close`,
+      headers: h.bobAuth,
+      payload: { month: thisMonth() },
+    });
+    expect(asMember.statusCode).toBe(403);
+
+    const future = await app.inject({
+      method: "POST",
+      url: `/api/households/${h.household.id}/close`,
+      headers: h.auth,
+      payload: { month: `${new Date().getUTCFullYear() + 1}-01` },
+    });
+    expect(future.statusCode).toBe(422);
+    expect(future.json().error.code).toBe("future_month");
+  });
+
+  it("closes a standalone account's month", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
+      })
+    ).json();
+    // No month given — defaults to the month being closed.
+    await app.inject({
+      method: "POST",
+      url: `/api/payments/${payment.id}/contributions`,
+      headers: auth,
+      payload: { amountMinor: 25000 },
+    });
+
+    const closed = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/close`,
+      headers: auth,
+      payload: { month: thisMonth() },
+    });
+    expect(closed.statusCode).toBe(201);
+    expect(closed.json().accountId).toBe(account.id);
+    expect(closed.json().incomeMinor).toBe(300000);
+    expect(closed.json().plannedMinor).toBe(100000);
+    expect(closed.json().contributedMinor).toBe(25000);
+
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/closes`,
+      headers: auth,
+    });
+    expect(listed.json()).toHaveLength(1);
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/accounts/${account.id}/closes/${closed.json().id}`,
+      headers: auth,
+    });
+    expect(removed.statusCode).toBe(204);
   });
 });

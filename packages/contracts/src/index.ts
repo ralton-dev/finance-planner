@@ -17,6 +17,9 @@ export const amountMinor = z.number().int().nonnegative();
 /** ISO date string (date-only), e.g. "2026-08-01". */
 export const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
 
+/** Calendar month, e.g. "2026-08". Stored as the month's first day. */
+export const monthString = z.string().regex(/^\d{4}-\d{2}$/, "expected YYYY-MM");
+
 export const paymentCategory = z.enum([
   "monthly_recurring",
   "yearly_recurring",
@@ -177,6 +180,42 @@ export const assignAccountBody = z
     path: ["memberUserId"],
   });
 export type AssignAccountBody = z.infer<typeof assignAccountBody>;
+
+/**
+ * Money actually set aside toward a payment. A payment's effective already-saved
+ * is its manual base plus the sum of its contributions, so recording one moves
+ * the plan without editing the payment. Defaults to the current month.
+ */
+export const createContributionBody = z.object({
+  amountMinor: z.number().int().positive(),
+  month: monthString.optional(),
+  note: z.string().nullish(),
+});
+export type CreateContributionBody = z.infer<typeof createContributionBody>;
+
+/** A manual balance check-in. Negative balances are allowed (overdraft). One
+ *  per account per day; re-stating a day overwrites it. Defaults to today. */
+export const upsertBalanceBody = z.object({
+  balanceMinor: z.number().int(),
+  asOfDate: isoDate.optional(),
+});
+export type UpsertBalanceBody = z.infer<typeof upsertBalanceBody>;
+
+/** "I made this month's planned transfer." Identifies one of the transfers the
+ *  household plan derived. Defaults to the current month. */
+export const confirmTransferBody = z.object({
+  fromAccountId: z.string().uuid(),
+  toAccountId: z.string().uuid(),
+  memberUserId: z.string().uuid(),
+  month: monthString.optional(),
+});
+export type ConfirmTransferBody = z.infer<typeof confirmTransferBody>;
+
+/** Freeze a month's scorecard: planned vs contributed. */
+export const closeMonthBody = z.object({
+  month: monthString,
+});
+export type CloseMonthBody = z.infer<typeof closeMonthBody>;
 
 export const createProjectBody = z.object({
   name: z.string().min(1),

@@ -5,33 +5,43 @@ import type {
   PaymentScope,
   Recurrence,
 } from "@finance-planner/contracts";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
 import type { Database } from "./db.js";
 import type {
   Account,
   AccountShare,
+  BalanceSnapshot,
+  Contribution,
   EmailVerificationToken,
   Household,
   HouseholdAccountAssignment,
   HouseholdMembership,
   HouseholdRole,
   Income,
+  MonthClose,
   Payment,
   PlanSnapshot,
   Project,
   Session,
   SharePermission,
+  TransferConfirmation,
   User,
   UserStatus,
 } from "./entities.js";
 import * as s from "./schema.js";
 import type {
   AccountAccess,
+  ContributionTotal,
+  MonthCloseScope,
   NewAccount,
   NewAccountAssignment,
+  NewBalanceSnapshot,
+  NewContribution,
   NewIncome,
+  NewMonthClose,
   NewPayment,
   NewProject,
+  NewTransferConfirmation,
   NewUser,
   Store,
 } from "./store.js";
@@ -204,6 +214,14 @@ export class PgStore implements Store {
     await this.db
       .delete(s.householdAccountAssignments)
       .where(eq(s.householdAccountAssignments.householdId, id));
+    // Confirmations (and their linked contributions, via FK cascade) + closes
+    // have no FK to households either.
+    const confs = await this.db
+      .select({ id: s.transferConfirmations.id })
+      .from(s.transferConfirmations)
+      .where(eq(s.transferConfirmations.householdId, id));
+    for (const c of confs) await this.deleteTransferConfirmation(c.id);
+    await this.db.delete(s.monthCloses).where(eq(s.monthCloses.householdId, id));
     await this.db.delete(s.households).where(eq(s.households.id, id));
   }
 
@@ -466,6 +484,17 @@ export class PgStore implements Store {
   }
 
   async deleteAccount(id: string): Promise<void> {
+    await this.db.delete(s.contributions).where(eq(s.contributions.accountId, id));
+    await this.db.delete(s.balanceSnapshots).where(eq(s.balanceSnapshots.accountId, id));
+    await this.db
+      .delete(s.transferConfirmations)
+      .where(
+        or(
+          eq(s.transferConfirmations.fromAccountId, id),
+          eq(s.transferConfirmations.toAccountId, id),
+        ),
+      );
+    await this.db.delete(s.monthCloses).where(eq(s.monthCloses.accountId, id));
     await this.db.delete(s.incomes).where(eq(s.incomes.accountId, id));
     await this.db.delete(s.payments).where(eq(s.payments.accountId, id));
     await this.db.delete(s.accountShares).where(eq(s.accountShares.accountId, id));
@@ -558,6 +587,8 @@ export class PgStore implements Store {
   }
 
   async deletePayment(id: string): Promise<void> {
+    // contributions cascade via their FK, but stay explicit like the rest.
+    await this.db.delete(s.contributions).where(eq(s.contributions.paymentId, id));
     await this.db.delete(s.payments).where(eq(s.payments.id, id));
   }
 
@@ -588,6 +619,178 @@ export class PgStore implements Store {
       inputsHash: row!.inputsHash,
       detail: row!.detail,
     };
+  }
+
+  async createContribution(input: NewContribution): Promise<Contribution> {
+    const [row] = await this.db
+      .insert(s.contributions)
+      .values({
+        paymentId: input.paymentId,
+        accountId: input.accountId,
+        userId: input.userId,
+        month: input.month,
+        amountMinor: input.amountMinor,
+        note: input.note,
+        transferConfirmationId: input.transferConfirmationId,
+      })
+      .returning();
+    return mapContribution(row!);
+  }
+
+  async getContribution(id: string): Promise<Contribution | null> {
+    const [row] = await this.db.select().from(s.contributions).where(eq(s.contributions.id, id));
+    return row ? mapContribution(row) : null;
+  }
+
+  async listContributionsForAccount(accountId: string, month?: string): Promise<Contribution[]> {
+    const rows = await this.db
+      .select()
+      .from(s.contributions)
+      .where(
+        month
+          ? and(eq(s.contributions.accountId, accountId), eq(s.contributions.month, month))
+          : eq(s.contributions.accountId, accountId),
+      )
+      .orderBy(asc(s.contributions.createdAt));
+    return rows.map(mapContribution);
+  }
+
+  async sumContributionsByPayment(accountId: string): Promise<ContributionTotal[]> {
+    const rows = await this.db
+      .select({
+        paymentId: s.contributions.paymentId,
+        total: sql<string>`coalesce(sum(${s.contributions.amountMinor}), 0)`,
+      })
+      .from(s.contributions)
+      .where(eq(s.contributions.accountId, accountId))
+      .groupBy(s.contributions.paymentId);
+    return rows.map((r) => ({ paymentId: r.paymentId, totalMinor: Number(r.total) }));
+  }
+
+  async deleteContribution(id: string): Promise<void> {
+    await this.db.delete(s.contributions).where(eq(s.contributions.id, id));
+  }
+
+  async upsertBalanceSnapshot(input: NewBalanceSnapshot): Promise<BalanceSnapshot> {
+    const [row] = await this.db
+      .insert(s.balanceSnapshots)
+      .values({
+        accountId: input.accountId,
+        asOfDate: input.asOfDate,
+        balanceMinor: input.balanceMinor,
+      })
+      .onConflictDoUpdate({
+        target: [s.balanceSnapshots.accountId, s.balanceSnapshots.asOfDate],
+        set: { balanceMinor: input.balanceMinor },
+      })
+      .returning();
+    return mapBalanceSnapshot(row!);
+  }
+
+  async listBalanceSnapshots(accountId: string): Promise<BalanceSnapshot[]> {
+    const rows = await this.db
+      .select()
+      .from(s.balanceSnapshots)
+      .where(eq(s.balanceSnapshots.accountId, accountId))
+      .orderBy(asc(s.balanceSnapshots.asOfDate));
+    return rows.map(mapBalanceSnapshot);
+  }
+
+  async createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation> {
+    const [row] = await this.db
+      .insert(s.transferConfirmations)
+      .values({
+        householdId: input.householdId,
+        month: input.month,
+        fromAccountId: input.fromAccountId,
+        toAccountId: input.toAccountId,
+        memberUserId: input.memberUserId,
+        amountMinor: input.amountMinor,
+      })
+      .returning();
+    return mapTransferConfirmation(row!);
+  }
+
+  async getTransferConfirmation(id: string): Promise<TransferConfirmation | null> {
+    const [row] = await this.db
+      .select()
+      .from(s.transferConfirmations)
+      .where(eq(s.transferConfirmations.id, id));
+    return row ? mapTransferConfirmation(row) : null;
+  }
+
+  async listTransferConfirmations(
+    householdId: string,
+    month: string,
+  ): Promise<TransferConfirmation[]> {
+    const rows = await this.db
+      .select()
+      .from(s.transferConfirmations)
+      .where(
+        and(
+          eq(s.transferConfirmations.householdId, householdId),
+          eq(s.transferConfirmations.month, month),
+        ),
+      )
+      .orderBy(asc(s.transferConfirmations.createdAt));
+    return rows.map(mapTransferConfirmation);
+  }
+
+  async deleteTransferConfirmation(id: string): Promise<void> {
+    // Linked contributions cascade via FK; stay explicit for parity with
+    // MemoryStore semantics.
+    await this.db.delete(s.contributions).where(eq(s.contributions.transferConfirmationId, id));
+    await this.db.delete(s.transferConfirmations).where(eq(s.transferConfirmations.id, id));
+  }
+
+  async createMonthClose(input: NewMonthClose): Promise<MonthClose> {
+    const [row] = await this.db
+      .insert(s.monthCloses)
+      .values({
+        householdId: input.householdId,
+        accountId: input.accountId,
+        month: input.month,
+        incomeMinor: input.incomeMinor,
+        plannedMinor: input.plannedMinor,
+        contributedMinor: input.contributedMinor,
+        closedBy: input.closedBy,
+      })
+      .returning();
+    return mapMonthClose(row!);
+  }
+
+  async getMonthCloseById(id: string): Promise<MonthClose | null> {
+    const [row] = await this.db.select().from(s.monthCloses).where(eq(s.monthCloses.id, id));
+    return row ? mapMonthClose(row) : null;
+  }
+
+  async getMonthClose(scope: MonthCloseScope, month: string): Promise<MonthClose | null> {
+    const scopeCond =
+      "householdId" in scope
+        ? eq(s.monthCloses.householdId, scope.householdId)
+        : eq(s.monthCloses.accountId, scope.accountId);
+    const [row] = await this.db
+      .select()
+      .from(s.monthCloses)
+      .where(and(scopeCond, eq(s.monthCloses.month, month)));
+    return row ? mapMonthClose(row) : null;
+  }
+
+  async listMonthCloses(scope: MonthCloseScope): Promise<MonthClose[]> {
+    const scopeCond =
+      "householdId" in scope
+        ? eq(s.monthCloses.householdId, scope.householdId)
+        : eq(s.monthCloses.accountId, scope.accountId);
+    const rows = await this.db
+      .select()
+      .from(s.monthCloses)
+      .where(scopeCond)
+      .orderBy(desc(s.monthCloses.month));
+    return rows.map(mapMonthClose);
+  }
+
+  async deleteMonthClose(id: string): Promise<void> {
+    await this.db.delete(s.monthCloses).where(eq(s.monthCloses.id, id));
   }
 
   private mapAccount(r: typeof s.accounts.$inferSelect): Account {
@@ -704,4 +907,57 @@ export class PgStore implements Store {
 
 function stripUndefined<T extends object>(obj: T): Partial<T> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
+function mapContribution(r: typeof s.contributions.$inferSelect): Contribution {
+  return {
+    id: r.id,
+    paymentId: r.paymentId,
+    accountId: r.accountId,
+    userId: r.userId,
+    month: r.month,
+    amountMinor: r.amountMinor,
+    note: r.note,
+    transferConfirmationId: r.transferConfirmationId,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+function mapBalanceSnapshot(r: typeof s.balanceSnapshots.$inferSelect): BalanceSnapshot {
+  return {
+    id: r.id,
+    accountId: r.accountId,
+    asOfDate: r.asOfDate,
+    balanceMinor: r.balanceMinor,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+function mapTransferConfirmation(
+  r: typeof s.transferConfirmations.$inferSelect,
+): TransferConfirmation {
+  return {
+    id: r.id,
+    householdId: r.householdId,
+    month: r.month,
+    fromAccountId: r.fromAccountId,
+    toAccountId: r.toAccountId,
+    memberUserId: r.memberUserId,
+    amountMinor: r.amountMinor,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+function mapMonthClose(r: typeof s.monthCloses.$inferSelect): MonthClose {
+  return {
+    id: r.id,
+    householdId: r.householdId,
+    accountId: r.accountId,
+    month: r.month,
+    incomeMinor: r.incomeMinor,
+    plannedMinor: r.plannedMinor,
+    contributedMinor: r.contributedMinor,
+    closedBy: r.closedBy,
+    closedAt: r.closedAt.toISOString(),
+  };
 }

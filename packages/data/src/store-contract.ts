@@ -193,7 +193,273 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(await store.getProject(project.id)).toBeNull();
   expect((await store.getPayment(p1.id))?.projectId ?? null).toBeNull();
 
+  // --- contributions ---
+  const c1 = await store.createContribution({
+    paymentId: p1.id,
+    accountId: account.id,
+    userId: user.id,
+    month: "2026-07-01",
+    amountMinor: 20_000,
+    note: "July",
+    transferConfirmationId: null,
+  });
+  const c2 = await store.createContribution({
+    paymentId: p1.id,
+    accountId: account.id,
+    userId: user.id,
+    month: "2026-08-01",
+    amountMinor: 30_000,
+    note: null,
+    transferConfirmationId: null,
+  });
+  const c3 = await store.createContribution({
+    paymentId: p2.id,
+    accountId: account.id,
+    userId: null,
+    month: "2026-08-01",
+    amountMinor: 4_500,
+    note: null,
+    transferConfirmationId: null,
+  });
+  expect((await store.getContribution(c1.id))?.amountMinor).toBe(20_000);
+  expect((await store.getContribution(c1.id))?.note).toBe("July");
+  // Oldest first, and the month filter narrows to one month.
+  expect((await store.listContributionsForAccount(account.id)).map((c) => c.id)).toEqual([
+    c1.id,
+    c2.id,
+    c3.id,
+  ]);
+  expect(
+    (await store.listContributionsForAccount(account.id, "2026-08-01")).map((c) => c.id),
+  ).toEqual([c2.id, c3.id]);
+  expect((await store.listContributionsForAccount(account.id, "2026-09-01")).length).toBe(0);
+
+  // All-time totals per payment drive the derived already-saved.
+  const totals = new Map(
+    (await store.sumContributionsByPayment(account.id)).map((t) => [t.paymentId, t.totalMinor]),
+  );
+  expect(totals.get(p1.id)).toBe(50_000);
+  expect(totals.get(p2.id)).toBe(4_500);
+
+  await store.deleteContribution(c2.id);
+  expect(await store.getContribution(c2.id)).toBeNull();
+  const afterDelete = new Map(
+    (await store.sumContributionsByPayment(account.id)).map((t) => [t.paymentId, t.totalMinor]),
+  );
+  expect(afterDelete.get(p1.id)).toBe(20_000);
+
+  // --- balance snapshots ---
+  const b1 = await store.upsertBalanceSnapshot({
+    accountId: account.id,
+    asOfDate: "2026-08-01",
+    balanceMinor: 125_000,
+  });
+  await store.upsertBalanceSnapshot({
+    accountId: account.id,
+    asOfDate: "2026-07-01",
+    balanceMinor: -2_500, // overdrafts are legal
+  });
+  // Re-stating a day overwrites that day's row rather than stacking another.
+  const restated = await store.upsertBalanceSnapshot({
+    accountId: account.id,
+    asOfDate: "2026-08-01",
+    balanceMinor: 130_000,
+  });
+  expect(restated.id).toBe(b1.id);
+  const balances = await store.listBalanceSnapshots(account.id);
+  expect(balances.map((b) => b.asOfDate)).toEqual(["2026-07-01", "2026-08-01"]);
+  expect(balances.map((b) => b.balanceMinor)).toEqual([-2_500, 130_000]);
+
+  // --- transfer confirmations ---
+  const currentAccount = await store.createAccount({
+    ownerUserId: user.id,
+    name: "Current",
+    currency: "GBP",
+  });
+  const confirmationInput = {
+    householdId: household.id,
+    month: "2026-08-01",
+    fromAccountId: currentAccount.id,
+    toAccountId: account.id,
+    memberUserId: user.id,
+    amountMinor: 66_000,
+  };
+  const confirmation = await store.createTransferConfirmation(confirmationInput);
+  expect((await store.getTransferConfirmation(confirmation.id))?.amountMinor).toBe(66_000);
+  expect(
+    (await store.listTransferConfirmations(household.id, "2026-08-01")).map((t) => t.id),
+  ).toEqual([confirmation.id]);
+  expect((await store.listTransferConfirmations(household.id, "2026-09-01")).length).toBe(0);
+  // The same transfer can only be confirmed once per month.
+  await expect(store.createTransferConfirmation(confirmationInput)).rejects.toThrow();
+
+  // Contributions a confirmation created die with it.
+  const linked = await store.createContribution({
+    paymentId: p2.id,
+    accountId: account.id,
+    userId: user.id,
+    month: "2026-08-01",
+    amountMinor: 66_000,
+    note: null,
+    transferConfirmationId: confirmation.id,
+  });
+  await store.deleteTransferConfirmation(confirmation.id);
+  expect(await store.getTransferConfirmation(confirmation.id)).toBeNull();
+  expect(await store.getContribution(linked.id)).toBeNull();
+  expect(await store.getContribution(c3.id)).not.toBeNull(); // unlinked ones survive
+
+  // --- month closes ---
+  const julyClose = await store.createMonthClose({
+    householdId: household.id,
+    accountId: null,
+    month: "2026-07-01",
+    incomeMinor: 500_000,
+    plannedMinor: 120_000,
+    contributedMinor: 100_000,
+    closedBy: user.id,
+  });
+  expect((await store.getMonthCloseById(julyClose.id))?.contributedMinor).toBe(100_000);
+  expect((await store.getMonthClose({ householdId: household.id }, "2026-07-01"))?.id).toBe(
+    julyClose.id,
+  );
+  expect(await store.getMonthClose({ householdId: household.id }, "2026-06-01")).toBeNull();
+  await store.createMonthClose({
+    householdId: household.id,
+    accountId: null,
+    month: "2026-08-01",
+    incomeMinor: 500_000,
+    plannedMinor: 130_000,
+    contributedMinor: 130_000,
+    closedBy: user.id,
+  });
+  // Newest month first.
+  expect((await store.listMonthCloses({ householdId: household.id })).map((c) => c.month)).toEqual([
+    "2026-08-01",
+    "2026-07-01",
+  ]);
+  // A month can only be closed once per scope.
+  await expect(
+    store.createMonthClose({
+      householdId: household.id,
+      accountId: null,
+      month: "2026-07-01",
+      incomeMinor: 1,
+      plannedMinor: 1,
+      contributedMinor: 1,
+      closedBy: user.id,
+    }),
+  ).rejects.toThrow();
+  // Account-scoped closes are tracked separately from household ones.
+  const accountClose = await store.createMonthClose({
+    householdId: null,
+    accountId: account.id,
+    month: "2026-07-01",
+    incomeMinor: 320_000,
+    plannedMinor: 15_000,
+    contributedMinor: 20_000,
+    closedBy: user.id,
+  });
+  expect((await store.listMonthCloses({ accountId: account.id })).map((c) => c.id)).toEqual([
+    accountClose.id,
+  ]);
+  await store.deleteMonthClose(accountClose.id);
+  expect(await store.getMonthCloseById(accountClose.id)).toBeNull();
+
+  // --- deleting an account clears everything hanging off it ---
+  const doomedAccount = await store.createAccount({
+    ownerUserId: user.id,
+    name: "Doomed",
+    currency: "GBP",
+  });
+  const doomedPayment = await store.createPayment({
+    accountId: doomedAccount.id,
+    name: "Gym",
+    category: "monthly_recurring",
+    amountMinor: 3_000,
+    dueDate: null,
+    recurrence: null,
+    targetDate: null,
+    priority: 20,
+    alreadySavedMinor: 0,
+    autoRenew: true,
+    active: true,
+    notes: null,
+    projectId: null,
+    scope: "personal",
+    bearerUserId: user.id,
+  });
+  const doomedContribution = await store.createContribution({
+    paymentId: doomedPayment.id,
+    accountId: doomedAccount.id,
+    userId: user.id,
+    month: "2026-08-01",
+    amountMinor: 3_000,
+    note: null,
+    transferConfirmationId: null,
+  });
+  await store.upsertBalanceSnapshot({
+    accountId: doomedAccount.id,
+    asOfDate: "2026-08-01",
+    balanceMinor: 5_000,
+  });
+  const doomedConfirmation = await store.createTransferConfirmation({
+    householdId: household.id,
+    month: "2026-08-01",
+    fromAccountId: doomedAccount.id,
+    toAccountId: account.id,
+    memberUserId: user.id,
+    amountMinor: 3_000,
+  });
+  const doomedClose = await store.createMonthClose({
+    householdId: null,
+    accountId: doomedAccount.id,
+    month: "2026-06-01",
+    incomeMinor: 0,
+    plannedMinor: 3_000,
+    contributedMinor: 3_000,
+    closedBy: user.id,
+  });
+  await store.deleteAccount(doomedAccount.id);
+  expect(await store.getContribution(doomedContribution.id)).toBeNull();
+  expect((await store.listBalanceSnapshots(doomedAccount.id)).length).toBe(0);
+  expect(await store.getTransferConfirmation(doomedConfirmation.id)).toBeNull();
+  expect(await store.getMonthCloseById(doomedClose.id)).toBeNull();
+
+  // --- deleting a household clears its confirmations (and their contributions) ---
+  const doomedHousehold = await store.createHousehold("Doomed", user.id);
+  const householdConfirmation = await store.createTransferConfirmation({
+    householdId: doomedHousehold.id,
+    month: "2026-08-01",
+    fromAccountId: currentAccount.id,
+    toAccountId: account.id,
+    memberUserId: user.id,
+    amountMinor: 12_000,
+  });
+  const householdContribution = await store.createContribution({
+    paymentId: p2.id,
+    accountId: account.id,
+    userId: user.id,
+    month: "2026-08-01",
+    amountMinor: 12_000,
+    note: null,
+    transferConfirmationId: householdConfirmation.id,
+  });
+  const householdClose = await store.createMonthClose({
+    householdId: doomedHousehold.id,
+    accountId: null,
+    month: "2026-08-01",
+    incomeMinor: 12_000,
+    plannedMinor: 12_000,
+    contributedMinor: 12_000,
+    closedBy: user.id,
+  });
+  await store.deleteHousehold(doomedHousehold.id);
+  expect(await store.getTransferConfirmation(householdConfirmation.id)).toBeNull();
+  expect(await store.getContribution(householdContribution.id)).toBeNull();
+  expect(await store.getMonthCloseById(householdClose.id)).toBeNull();
+
   // --- delete cascade ---
   await store.deletePayment(p1.id);
   expect((await store.listPayments(account.id)).length).toBe(1);
+  expect(await store.getContribution(c1.id)).toBeNull(); // its contributions go too
 }
