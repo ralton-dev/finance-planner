@@ -22,11 +22,13 @@ import { RegisterPage } from "./pages/RegisterPage.js";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 
-// Code-split the plan page: it pulls in the charting library (recharts), which
-// we don't want in the initial bundle for users who never open the money flow.
+// Code-split the pages that draw money flow: they pull in the charting library
+// (recharts), which we don't want in the initial bundle for users who never
+// open a diagram.
 const HouseholdPlanPage = lazy(() =>
   import("./pages/HouseholdPlanPage.js").then((m) => ({ default: m.HouseholdPlanPage })),
 );
+const FlowPage = lazy(() => import("./pages/FlowPage.js").then((m) => ({ default: m.FlowPage })));
 
 export function App() {
   return (
@@ -58,6 +60,16 @@ export function App() {
                   <Route path="/households" element={<HouseholdsPage />} />
                   <Route path="/households/:id" element={<HouseholdDetailPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
+                  {/* The diagram, over any set of accounts. Not nested under a
+                      household: a household is one preset over that set. */}
+                  <Route
+                    path="/flow"
+                    element={
+                      <Suspense fallback={<p className="muted">loading…</p>}>
+                        <FlowPage />
+                      </Suspense>
+                    }
+                  />
                   <Route
                     path="/households/:id/plan"
                     element={

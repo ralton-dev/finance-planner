@@ -26,6 +26,7 @@ export function Layout() {
       a: () => navigate("/accounts"),
       p: () => navigate("/projects"),
       s: () => navigate("/households"),
+      f: () => navigate("/flow"),
       ",": () => navigate("/settings"),
     },
     n: {
@@ -87,6 +88,10 @@ export function Layout() {
         <NavLink to="/households" className={navClass}>
           <span className="label">households</span>
           <span className="kbd-ish">g s</span>
+        </NavLink>
+        <NavLink to="/flow" className={navClass}>
+          <span className="label">money flow</span>
+          <span className="kbd-ish">g f</span>
         </NavLink>
         <NavLink to="/settings" className={navClass}>
           <span className="label">settings</span>
@@ -279,6 +284,10 @@ function scopeFromPath(pathname: string): string {
   if (pathname === "/") return "all-accounts";
   if (pathname.startsWith("/accounts/")) return "account";
   if (pathname === "/accounts") return "accounts";
+  // A diagram's scope is a set of accounts the reader chose, which the status
+  // bar cannot name in a word — and must not call a household, because it very
+  // often is not one.
+  if (pathname === "/flow") return "account-set";
   if (pathname === "/projects") return "projects";
   if (pathname.startsWith("/projects/")) return "project";
   if (pathname === "/households") return "households";

@@ -111,6 +111,17 @@ export function CommandPalette() {
         },
       },
       {
+        id: "nav-flow",
+        label: "go to money flow",
+        hint: "/flow",
+        group: "navigate",
+        keywords: "sankey diagram chart scope where money goes",
+        action: () => {
+          navigate("/flow");
+          close_();
+        },
+      },
+      {
         id: "add-account",
         label: "new account",
         group: "quick add",
@@ -191,7 +202,9 @@ export function CommandPalette() {
       }
     }
 
-    // Per-household jump commands.
+    // Per-household jump commands, and the household as a diagram preset —
+    // which is a *scope*, not a place, so it navigates to the flow page with
+    // the household named rather than into the household itself.
     for (const h of (me.data?.households ?? []) as HouseholdDto[]) {
       list.push({
         id: `open-household-${h.id}`,
@@ -200,6 +213,16 @@ export function CommandPalette() {
         keywords: "go view",
         action: () => {
           navigate(`/households/${h.id}`);
+          close_();
+        },
+      });
+      list.push({
+        id: `flow-household-${h.id}`,
+        label: `draw money flow for ${h.name}`,
+        group: "households",
+        keywords: "sankey diagram chart scope",
+        action: () => {
+          navigate(`/flow?household=${h.id}`);
           close_();
         },
       });

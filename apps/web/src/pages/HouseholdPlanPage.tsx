@@ -98,7 +98,12 @@ export function HouseholdPlanPage() {
               ← back
             </Link>
             pooled across {p.accounts.length} {p.accounts.length === 1 ? "account" : "accounts"} ·{" "}
-            {p.members.length} {p.members.length === 1 ? "member" : "members"}
+            {p.members.length} {p.members.length === 1 ? "member" : "members"} ·{" "}
+            {/* The same diagram, where it can be widened past this household —
+                which is the point of a preset. */}
+            <Link to={`/flow?household=${id}`} className="action">
+              draw this alongside other accounts →
+            </Link>
           </div>
         </div>
       </div>
