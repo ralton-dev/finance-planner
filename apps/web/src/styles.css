@@ -1528,6 +1528,144 @@ td.row-actions-cell .row-edit:hover {
   margin-left: 0.35rem;
 }
 
+/* ============================================================================
+ * The fold — the top of a planning screen.
+ *
+ * One figure (red when money is missing, green when it isn't), the sentence
+ * that explains it, and the list of things still waiting on a human. It sits
+ * above every section, so nothing here may be taller than it has to be: the
+ * list rows are two dense lines, the same rhythm as the tables below them.
+ * ========================================================================== */
+.fold {
+  margin: 0 0 1.75rem;
+}
+.fold-headline {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--rule-2);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem 1.1rem;
+}
+.fold-headline.shortfall {
+  border-left-color: var(--alert);
+}
+.fold-headline.leftover {
+  border-left-color: var(--funded);
+}
+.fold-label {
+  font-size: 10px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 0.35rem;
+}
+/* The one number the month turns on — the largest type in the app. */
+.fold-figure {
+  display: block;
+  font-size: clamp(26px, 5vw, 34px);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.fold-headline.shortfall .fold-figure {
+  color: var(--alert);
+}
+.fold-headline.leftover .fold-figure {
+  color: var(--funded);
+}
+.fold-sentence {
+  margin: 0.55rem 0 0;
+  max-width: 62ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.fold .section-head {
+  margin: 1.1rem 0 0.5rem;
+}
+
+.needs-you-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.needs-you-row {
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--rule);
+}
+.needs-you-row:last-child {
+  border-bottom: 0;
+}
+.needs-you-row:hover {
+  background: var(--panel-2);
+}
+.needs-you-main {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 12.5px;
+}
+.needs-you-main .spacer {
+  flex: 1;
+}
+.needs-you-kind {
+  padding: 2px 7px;
+  border-radius: 2px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.needs-you-kind.shortfall {
+  background: color-mix(in srgb, var(--alert) 12%, transparent);
+  color: var(--alert);
+}
+.needs-you-kind.transfer,
+.needs-you-kind.record {
+  background: color-mix(in srgb, var(--needs-you) 12%, transparent);
+  color: var(--needs-you);
+}
+.needs-you-kind.checkin {
+  background: var(--ground-2);
+  border: 1px solid var(--rule);
+  color: var(--ink-3);
+}
+.needs-you-figure {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.needs-you-figure .dim {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+.needs-you-meta {
+  margin-top: 0.2rem;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.needs-you-do {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+/* The check-in control is RealityStrip's; it just has less room in here. */
+.needs-you-do .reality-update input {
+  width: 6.5rem;
+}
+.needs-you-error {
+  margin: 0.3rem 0 0;
+  font-size: 10.5px;
+}
+/* Dealt with, this session: still listed so the undo stays within reach. */
+.needs-you-row.done .name {
+  color: var(--ink-3);
+}
+
 /* Household transfer checklist. */
 .checklist-cell {
   display: inline-flex;
