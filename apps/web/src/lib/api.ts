@@ -74,6 +74,8 @@ function query(params: Record<string, string | number | undefined>): string {
  * transparently refreshes it once on a 401. */
 export class ApiClient {
   private accessToken: string | null = null;
+  /** The refresh currently in flight, if any. See tryRefresh(). */
+  private refreshInflight: Promise<boolean> | null = null;
 
   constructor(private readonly baseUrl = "") {}
 
@@ -125,7 +127,26 @@ export class ApiClient {
     return res;
   }
 
-  async tryRefresh(): Promise<boolean> {
+  /**
+   * Swap the refresh cookie for a fresh access token, at most once at a time.
+   *
+   * Single-flight is not an optimisation, it is the whole point: the server
+   * rotates the cookie on every refresh and reads a second presentation of a
+   * rotated token as theft. Two refreshes racing on one cookie would therefore
+   * sign the user out of every device. A page that fires several requests at
+   * once 401s on all of them the moment the access token expires, so the race
+   * is the common case — every caller waits on the one request instead. The
+   * promise is dropped as soon as it settles, so a later refresh still runs
+   * and a failed one poisons nothing.
+   */
+  tryRefresh(): Promise<boolean> {
+    this.refreshInflight ??= this.refreshOnce().finally(() => {
+      this.refreshInflight = null;
+    });
+    return this.refreshInflight;
+  }
+
+  private async refreshOnce(): Promise<boolean> {
     try {
       const res = await fetch(this.baseUrl + "/api/auth/refresh", {
         method: "POST",
