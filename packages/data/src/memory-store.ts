@@ -10,6 +10,7 @@ import type {
   HouseholdMembership,
   HouseholdRole,
   Income,
+  Inflow,
   MonthClose,
   PasswordResetToken,
   Payment,
@@ -21,21 +22,24 @@ import type {
   TransferConfirmation,
   User,
 } from "./entities.js";
-import type {
-  AccountAccess,
-  ContributionTotal,
-  MonthCloseScope,
-  NewAccount,
-  NewAccountAssignment,
-  NewBalanceSnapshot,
-  NewContribution,
-  NewIncome,
-  NewMonthClose,
-  NewPayment,
-  NewProject,
-  NewTransferConfirmation,
-  NewUser,
-  Store,
+import {
+  type AccountAccess,
+  assertInflowShape,
+  type ContributionTotal,
+  type MonthCloseScope,
+  type NewAccount,
+  type NewAccountAssignment,
+  type NewBalanceSnapshot,
+  type NewContribution,
+  type NewIncome,
+  type NewInflow,
+  type NewMonthClose,
+  type NewPayment,
+  type NewProject,
+  type NewTransferConfirmation,
+  type NewUser,
+  type Store,
+  toIncome,
 } from "./store.js";
 
 const now = (): string => new Date().toISOString();
@@ -44,6 +48,10 @@ const now = (): string => new Date().toISOString();
  *  returning 0 on a tie leaves the (stable) sort alone. */
 const byCreatedAt = (a: { createdAt: string }, b: { createdAt: string }): number =>
   a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? -1 : 1;
+
+/** Inflow order: the priority the sending account serves them in, oldest first
+ *  within a rank. Mirrors PgStore's ORDER BY so both agree row for row. */
+const byPriority = (a: Inflow, b: Inflow): number => a.priority - b.priority || byCreatedAt(a, b);
 
 /** In-memory Store for tests and DB-less local dev. Not for production. */
 export class MemoryStore implements Store {
@@ -57,7 +65,7 @@ export class MemoryStore implements Store {
   private shares = new Map<string, AccountShare>();
   private assignments = new Map<string, HouseholdAccountAssignment>();
   private accounts = new Map<string, Account>();
-  private incomes = new Map<string, Income>();
+  private inflows = new Map<string, Inflow>();
   private payments = new Map<string, Payment>();
   private projects = new Map<string, Project>();
   private snapshots = new Map<string, PlanSnapshot>();
@@ -463,7 +471,11 @@ export class MemoryStore implements Store {
 
   async deleteAccount(id: string): Promise<void> {
     this.accounts.delete(id);
-    for (const [k, v] of this.incomes) if (v.accountId === id) this.incomes.delete(k);
+    // Both faces: what arrived here, and what this account was sending
+    // elsewhere. The PG side gets the same from the two ON DELETE CASCADE FKs.
+    for (const [k, v] of this.inflows) {
+      if (v.accountId === id || v.sourceAccountId === id) this.inflows.delete(k);
+    }
     for (const [k, v] of this.payments) if (v.accountId === id) this.payments.delete(k);
     for (const [k, v] of this.shares) if (v.accountId === id) this.shares.delete(k);
     for (const [k, v] of this.assignments) if (v.accountId === id) this.assignments.delete(k);
@@ -477,31 +489,73 @@ export class MemoryStore implements Store {
     for (const [k, v] of this.monthCloses) if (v.accountId === id) this.monthCloses.delete(k);
   }
 
-  async createIncome(input: NewIncome): Promise<Income> {
+  async createInflow(input: NewInflow): Promise<Inflow> {
+    assertInflowShape(input);
     const ts = now();
-    const income: Income = { ...input, id: randomUUID(), createdAt: ts, updatedAt: ts };
-    this.incomes.set(income.id, income);
-    return income;
+    const inflow: Inflow = { ...input, id: randomUUID(), createdAt: ts, updatedAt: ts };
+    this.inflows.set(inflow.id, inflow);
+    return inflow;
   }
 
-  async getIncome(id: string): Promise<Income | null> {
-    return this.incomes.get(id) ?? null;
+  async getInflow(id: string): Promise<Inflow | null> {
+    return this.inflows.get(id) ?? null;
   }
 
-  async listIncomes(accountId: string): Promise<Income[]> {
-    return [...this.incomes.values()].filter((i) => i.accountId === accountId);
+  async listInflows(accountId: string): Promise<Inflow[]> {
+    return [...this.inflows.values()].filter((i) => i.accountId === accountId).sort(byPriority);
   }
 
-  async updateIncome(id: string, patch: Partial<NewIncome>): Promise<Income | null> {
-    const i = this.incomes.get(id);
+  async listOutboundInflows(accountId: string): Promise<Inflow[]> {
+    return [...this.inflows.values()]
+      .filter((i) => i.sourceAccountId === accountId)
+      .sort(byPriority);
+  }
+
+  async updateInflow(id: string, patch: Partial<NewInflow>): Promise<Inflow | null> {
+    const i = this.inflows.get(id);
     if (!i) return null;
-    const updated: Income = { ...i, ...patch, id: i.id, updatedAt: now() };
-    this.incomes.set(id, updated);
+    const updated: Inflow = { ...i, ...patch, id: i.id, updatedAt: now() };
+    // The whole row is checked, not the patch: flipping `source` alone must not
+    // be able to leave behind a shape createInflow would have refused.
+    assertInflowShape(updated);
+    this.inflows.set(id, updated);
     return updated;
   }
 
+  async deleteInflow(id: string): Promise<void> {
+    this.inflows.delete(id);
+  }
+
+  async createIncome(input: NewIncome): Promise<Income> {
+    return toIncome(
+      await this.createInflow({
+        ...input,
+        source: "external",
+        sourceAccountId: null,
+        priority: 100,
+      }),
+    );
+  }
+
+  async getIncome(id: string): Promise<Income | null> {
+    const i = this.inflows.get(id);
+    return i && i.source === "external" ? toIncome(i) : null;
+  }
+
+  async listIncomes(accountId: string): Promise<Income[]> {
+    return (await this.listInflows(accountId))
+      .filter((i) => i.source === "external")
+      .map((i) => toIncome(i));
+  }
+
+  async updateIncome(id: string, patch: Partial<NewIncome>): Promise<Income | null> {
+    if (!(await this.getIncome(id))) return null;
+    const updated = await this.updateInflow(id, patch);
+    return updated ? toIncome(updated) : null;
+  }
+
   async deleteIncome(id: string): Promise<void> {
-    this.incomes.delete(id);
+    if (await this.getIncome(id)) this.inflows.delete(id);
   }
 
   async createPayment(input: NewPayment): Promise<Payment> {

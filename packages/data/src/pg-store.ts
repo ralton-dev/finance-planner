@@ -18,6 +18,8 @@ import type {
   HouseholdMembership,
   HouseholdRole,
   Income,
+  Inflow,
+  InflowSourceKind,
   MonthClose,
   PasswordResetToken,
   Payment,
@@ -31,21 +33,24 @@ import type {
   UserStatus,
 } from "./entities.js";
 import * as s from "./schema.js";
-import type {
-  AccountAccess,
-  ContributionTotal,
-  MonthCloseScope,
-  NewAccount,
-  NewAccountAssignment,
-  NewBalanceSnapshot,
-  NewContribution,
-  NewIncome,
-  NewMonthClose,
-  NewPayment,
-  NewProject,
-  NewTransferConfirmation,
-  NewUser,
-  Store,
+import {
+  type AccountAccess,
+  assertInflowShape,
+  type ContributionTotal,
+  type MonthCloseScope,
+  type NewAccount,
+  type NewAccountAssignment,
+  type NewBalanceSnapshot,
+  type NewContribution,
+  type NewIncome,
+  type NewInflow,
+  type NewMonthClose,
+  type NewPayment,
+  type NewProject,
+  type NewTransferConfirmation,
+  type NewUser,
+  type Store,
+  toIncome,
 } from "./store.js";
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
@@ -619,7 +624,11 @@ export class PgStore implements Store {
         ),
       );
     await this.db.delete(s.monthCloses).where(eq(s.monthCloses.accountId, id));
-    await this.db.delete(s.incomes).where(eq(s.incomes.accountId, id));
+    // Both faces of an inflow: what arrived here, and what this account sent
+    // elsewhere. Either FK would cascade; stay explicit like the rest.
+    await this.db
+      .delete(s.inflows)
+      .where(or(eq(s.inflows.accountId, id), eq(s.inflows.sourceAccountId, id)));
     await this.db.delete(s.payments).where(eq(s.payments.accountId, id));
     await this.db.delete(s.accountShares).where(eq(s.accountShares.accountId, id));
     await this.db
@@ -628,43 +637,108 @@ export class PgStore implements Store {
     await this.db.delete(s.accounts).where(eq(s.accounts.id, id));
   }
 
-  async createIncome(input: NewIncome): Promise<Income> {
+  async createInflow(input: NewInflow): Promise<Inflow> {
+    // Checked here as well as by the table's CHECKs, so both stores refuse the
+    // same rows with the same error rather than one of them raising a driver
+    // exception the caller cannot read.
+    assertInflowShape(input);
     const [row] = await this.db
-      .insert(s.incomes)
+      .insert(s.inflows)
       .values({
         accountId: input.accountId,
         name: input.name,
+        source: input.source,
+        sourceAccountId: input.sourceAccountId,
         amountMinor: input.amountMinor,
         frequency: input.frequency,
         recurrence: input.recurrence,
         anchorDate: input.anchorDate,
+        priority: input.priority,
         active: input.active,
       })
       .returning();
-    return this.mapIncome(row!);
+    return this.mapInflow(row!);
+  }
+
+  async getInflow(id: string): Promise<Inflow | null> {
+    const [row] = await this.db.select().from(s.inflows).where(eq(s.inflows.id, id));
+    return row ? this.mapInflow(row) : null;
+  }
+
+  async listInflows(accountId: string): Promise<Inflow[]> {
+    const rows = await this.db
+      .select()
+      .from(s.inflows)
+      .where(eq(s.inflows.accountId, accountId))
+      .orderBy(asc(s.inflows.priority), asc(s.inflows.createdAt));
+    return rows.map((r) => this.mapInflow(r));
+  }
+
+  async listOutboundInflows(accountId: string): Promise<Inflow[]> {
+    const rows = await this.db
+      .select()
+      .from(s.inflows)
+      .where(eq(s.inflows.sourceAccountId, accountId))
+      .orderBy(asc(s.inflows.priority), asc(s.inflows.createdAt));
+    return rows.map((r) => this.mapInflow(r));
+  }
+
+  async updateInflow(id: string, patch: Partial<NewInflow>): Promise<Inflow | null> {
+    const current = await this.getInflow(id);
+    if (!current) return null;
+    // Validate the row the patch produces, not the patch: the CHECKs constrain
+    // `source` and `source_account_id` together, so neither can be judged alone.
+    assertInflowShape({ ...current, ...stripUndefined(patch) });
+    const [row] = await this.db
+      .update(s.inflows)
+      .set({ ...stripUndefined(patch), updatedAt: new Date() })
+      .where(eq(s.inflows.id, id))
+      .returning();
+    return row ? this.mapInflow(row) : null;
+  }
+
+  async deleteInflow(id: string): Promise<void> {
+    await this.db.delete(s.inflows).where(eq(s.inflows.id, id));
+  }
+
+  async createIncome(input: NewIncome): Promise<Income> {
+    return toIncome(
+      await this.createInflow({
+        ...input,
+        source: "external",
+        sourceAccountId: null,
+        priority: 100,
+      }),
+    );
   }
 
   async getIncome(id: string): Promise<Income | null> {
-    const [row] = await this.db.select().from(s.incomes).where(eq(s.incomes.id, id));
-    return row ? this.mapIncome(row) : null;
+    const [row] = await this.db
+      .select()
+      .from(s.inflows)
+      .where(and(eq(s.inflows.id, id), eq(s.inflows.source, "external")));
+    return row ? toIncome(this.mapInflow(row)) : null;
   }
 
   async listIncomes(accountId: string): Promise<Income[]> {
-    const rows = await this.db.select().from(s.incomes).where(eq(s.incomes.accountId, accountId));
-    return rows.map((r) => this.mapIncome(r));
+    const rows = await this.db
+      .select()
+      .from(s.inflows)
+      .where(and(eq(s.inflows.accountId, accountId), eq(s.inflows.source, "external")))
+      .orderBy(asc(s.inflows.priority), asc(s.inflows.createdAt));
+    return rows.map((r) => toIncome(this.mapInflow(r)));
   }
 
   async updateIncome(id: string, patch: Partial<NewIncome>): Promise<Income | null> {
-    const [row] = await this.db
-      .update(s.incomes)
-      .set({ ...stripUndefined(patch), updatedAt: new Date() })
-      .where(eq(s.incomes.id, id))
-      .returning();
-    return row ? this.mapIncome(row) : null;
+    if (!(await this.getIncome(id))) return null;
+    const updated = await this.updateInflow(id, patch);
+    return updated ? toIncome(updated) : null;
   }
 
   async deleteIncome(id: string): Promise<void> {
-    await this.db.delete(s.incomes).where(eq(s.incomes.id, id));
+    await this.db
+      .delete(s.inflows)
+      .where(and(eq(s.inflows.id, id), eq(s.inflows.source, "external")));
   }
 
   async createPayment(input: NewPayment): Promise<Payment> {
@@ -946,15 +1020,18 @@ export class PgStore implements Store {
     };
   }
 
-  private mapIncome(r: typeof s.incomes.$inferSelect): Income {
+  private mapInflow(r: typeof s.inflows.$inferSelect): Inflow {
     return {
       id: r.id,
       accountId: r.accountId,
       name: r.name,
+      source: r.source as InflowSourceKind,
+      sourceAccountId: r.sourceAccountId,
       amountMinor: r.amountMinor,
       frequency: r.frequency as Frequency,
       recurrence: rec(r.recurrence),
       anchorDate: r.anchorDate,
+      priority: r.priority,
       active: r.active,
       createdAt: r.createdAt.toISOString(),
       updatedAt: r.updatedAt.toISOString(),

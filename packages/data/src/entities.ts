@@ -112,6 +112,54 @@ export interface Account {
   updatedAt: string;
 }
 
+/**
+ * Where money arriving into an account comes from.
+ *
+ * `external` is the old `Income`: salary, gift, interest — money entering the
+ * estate. `account` is another account the same person owns, which is not income
+ * at all but redistribution of money already counted once. Only `external` adds
+ * to the total money in.
+ */
+export type InflowSourceKind = "external" | "account";
+
+/**
+ * Money arriving into an account, authored by the user and symmetric with a
+ * payment.
+ *
+ * An `account`-sourced inflow is **one row with two faces**: it arrives on
+ * `accountId` and leaves `sourceAccountId`. It is never two records — two could
+ * drift, one cannot.
+ */
+export interface Inflow {
+  id: string;
+  /** The account the money arrives into. */
+  accountId: string;
+  name: string;
+  source: InflowSourceKind;
+  /** The account the money leaves. Set exactly when `source === "account"`,
+   *  null otherwise; never equal to `accountId`. */
+  sourceAccountId: string | null;
+  amountMinor: number;
+  frequency: Frequency;
+  recurrence: Recurrence | null;
+  anchorDate: string;
+  /** Rank among the *sending* account's outbound inflows, lower first. Carried
+   *  for every row but only meaningful when `source === "account"` — nothing
+   *  sends an external inflow. */
+  priority: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * An external inflow, in the shape the income API has always spoken.
+ *
+ * There is no `core.incomes` behind this any more: an income *is* an
+ * `Inflow` with `source: "external"`, and the store projects one onto the
+ * other. Kept as its own type because the HTTP contract, the export format and
+ * the web client all still call it an income.
+ */
 export interface Income {
   id: string;
   accountId: string;

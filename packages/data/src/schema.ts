@@ -94,6 +94,11 @@ export const accounts = coreSchema.table("accounts", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Legacy. Superseded by `inflows` (source = 'external'), which 0008 backfilled
+ * from here under the same ids. Nothing reads or writes it any more; the table
+ * and this definition stay until a deliberate migration drops it.
+ */
 export const incomes = coreSchema.table("incomes", {
   id: uuid("id").defaultRandom().primaryKey(),
   accountId: uuid("account_id").notNull(),
@@ -102,6 +107,29 @@ export const incomes = coreSchema.table("incomes", {
   frequency: text("frequency").notNull(),
   recurrence: jsonb("recurrence"),
   anchorDate: date("anchor_date").notNull(),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Money arriving into an account, with a source. `source = 'external'` is the
+ * old `incomes` row; `source = 'account'` is one row read from both ends —
+ * arriving on `account_id`, leaving on `source_account_id`. The migration's
+ * CHECKs enforce that `source_account_id` is set exactly when the source is an
+ * account, and never equals `account_id`.
+ */
+export const inflows = coreSchema.table("inflows", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  accountId: uuid("account_id").notNull(),
+  name: text("name").notNull(),
+  source: text("source").notNull().default("external"),
+  sourceAccountId: uuid("source_account_id"),
+  amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+  frequency: text("frequency").notNull(),
+  recurrence: jsonb("recurrence"),
+  anchorDate: date("anchor_date").notNull(),
+  priority: integer("priority").notNull().default(100),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

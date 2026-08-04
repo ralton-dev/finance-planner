@@ -117,6 +117,103 @@ export async function exerciseStore(store: Store): Promise<void> {
   const updatedIncome = await store.updateIncome(income.id, { amountMinor: 320_000 });
   expect(updatedIncome?.amountMinor).toBe(320_000);
 
+  // --- inflows: money arriving, with a source ---
+  // An income *is* an external inflow. Same row, same id, seen two ways —
+  // there is no second table behind the income API.
+  const asInflow = await store.getInflow(income.id);
+  expect(asInflow?.source).toBe("external");
+  expect(asInflow?.sourceAccountId).toBeNull();
+  expect(asInflow?.amountMinor).toBe(320_000);
+  expect((await store.listInflows(account.id)).map((i) => i.id)).toEqual([income.id]);
+
+  const pot = await store.createAccount({
+    ownerUserId: user.id,
+    name: "Bills pot",
+    currency: "GBP",
+  });
+  const topUp = await store.createInflow({
+    accountId: pot.id,
+    name: "Monthly top-up",
+    source: "account",
+    sourceAccountId: account.id,
+    amountMinor: 50_000,
+    frequency: "monthly",
+    recurrence: null,
+    anchorDate: "2026-01-28",
+    priority: 50,
+    active: true,
+  });
+  // One authored row, read from both ends: arriving on the pot, leaving the
+  // account that sends it. Never two records that could drift apart.
+  expect((await store.listInflows(pot.id)).map((i) => i.id)).toEqual([topUp.id]);
+  expect((await store.listOutboundInflows(account.id)).map((i) => i.id)).toEqual([topUp.id]);
+  expect((await store.listOutboundInflows(pot.id)).length).toBe(0);
+  // The sending account is not also a receiving one.
+  expect((await store.listInflows(account.id)).map((i) => i.id)).toEqual([income.id]);
+
+  // The income API cannot reach it. Money out of another account you own is not
+  // income, so nothing that speaks income may read, edit or delete one.
+  expect(await store.getIncome(topUp.id)).toBeNull();
+  expect(await store.updateIncome(topUp.id, { amountMinor: 1 })).toBeNull();
+  await store.deleteIncome(topUp.id);
+  expect(await store.getInflow(topUp.id)).not.toBeNull();
+  expect((await store.listIncomes(pot.id)).length).toBe(0);
+
+  // Outbound order is the sending account's service order: priority, oldest first.
+  const isaTopUp = await store.createInflow({
+    accountId: pot.id,
+    name: "ISA sweep",
+    source: "account",
+    sourceAccountId: account.id,
+    amountMinor: 10_000,
+    frequency: "monthly",
+    recurrence: null,
+    anchorDate: "2026-01-28",
+    priority: 10,
+    active: true,
+  });
+  expect((await store.listOutboundInflows(account.id)).map((i) => i.id)).toEqual([
+    isaTopUp.id,
+    topUp.id,
+  ]);
+
+  // The three rules the table's CHECK constraints enforce, enforced by the
+  // store too, so both implementations refuse identically.
+  const wellFormed = {
+    accountId: pot.id,
+    name: "Bad",
+    amountMinor: 1_000,
+    frequency: "monthly" as const,
+    recurrence: null,
+    anchorDate: "2026-01-28",
+    priority: 100,
+    active: true,
+  };
+  // source = 'account' with nothing to source from
+  await expect(
+    store.createInflow({ ...wellFormed, source: "account", sourceAccountId: null }),
+  ).rejects.toThrow();
+  // source = 'external' carrying a source account anyway
+  await expect(
+    store.createInflow({ ...wellFormed, source: "external", sourceAccountId: account.id }),
+  ).rejects.toThrow();
+  // an account funding itself — money arriving out of nowhere
+  await expect(
+    store.createInflow({ ...wellFormed, source: "account", sourceAccountId: pot.id }),
+  ).rejects.toThrow();
+  // A patch is judged on the row it produces, not on itself: flipping `source`
+  // alone would strand a source account on an external inflow.
+  await expect(store.updateInflow(topUp.id, { source: "external" })).rejects.toThrow();
+  expect((await store.getInflow(topUp.id))?.source).toBe("account");
+
+  const repriced = await store.updateInflow(topUp.id, { amountMinor: 60_000 });
+  expect(repriced?.amountMinor).toBe(60_000);
+  expect(
+    await store.updateInflow("00000000-0000-0000-0000-000000000000", { amountMinor: 1 }),
+  ).toBeNull();
+  await store.deleteInflow(isaTopUp.id);
+  expect(await store.getInflow(isaTopUp.id)).toBeNull();
+
   const p1 = await store.createPayment({
     accountId: account.id,
     name: "Holiday",
@@ -520,11 +617,28 @@ export async function exerciseStore(store: Store): Promise<void> {
     contributedMinor: 3_000,
     closedBy: user.id,
   });
+  // An inflow arriving elsewhere *out of* the doomed account: it must die with
+  // it. A movement cannot outlive the account it comes out of, and the
+  // receiving account must not be left planning money nothing sends.
+  const doomedOutbound = await store.createInflow({
+    accountId: pot.id,
+    name: "From the doomed account",
+    source: "account",
+    sourceAccountId: doomedAccount.id,
+    amountMinor: 7_000,
+    frequency: "monthly",
+    recurrence: null,
+    anchorDate: "2026-08-01",
+    priority: 100,
+    active: true,
+  });
   await store.deleteAccount(doomedAccount.id);
   expect(await store.getContribution(doomedContribution.id)).toBeNull();
   expect((await store.listBalanceSnapshots(doomedAccount.id)).length).toBe(0);
   expect(await store.getTransferConfirmation(doomedConfirmation.id)).toBeNull();
   expect(await store.getMonthCloseById(doomedClose.id)).toBeNull();
+  expect(await store.getInflow(doomedOutbound.id)).toBeNull();
+  expect((await store.listInflows(pot.id)).map((i) => i.id)).toEqual([topUp.id]);
 
   // --- deleting a household clears its confirmations (and their contributions) ---
   const doomedHousehold = await store.createHousehold("Doomed", user.id);

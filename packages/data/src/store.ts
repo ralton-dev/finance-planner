@@ -9,6 +9,8 @@ import type {
   HouseholdMembership,
   HouseholdRole,
   Income,
+  Inflow,
+  InflowSourceKind,
   MonthClose,
   PasswordResetToken,
   Payment,
@@ -38,6 +40,43 @@ export interface NewAccount {
 }
 
 export type NewIncome = Omit<Income, "id" | "createdAt" | "updatedAt">;
+export type NewInflow = Omit<Inflow, "id" | "createdAt" | "updatedAt">;
+
+/**
+ * An inflow whose source and `sourceAccountId` disagree, or which funds itself.
+ *
+ * The database refuses both with CHECK constraints, but a store must not depend
+ * on which implementation it is: MemoryStore has no constraints and PgStore's
+ * would surface as an opaque driver error. Both raise this instead, so the rule
+ * reads the same either side of the boundary and the contract test can pin it.
+ */
+export class InvalidInflowError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidInflowError";
+  }
+}
+
+/**
+ * Enforce, in code, exactly what `core.inflows`' CHECK constraints enforce in
+ * the database. Throws `InvalidInflowError`; returns nothing when the row is
+ * well-formed.
+ */
+export function assertInflowShape(row: {
+  accountId: string;
+  source: InflowSourceKind;
+  sourceAccountId: string | null;
+}): void {
+  if (row.source === "account" && !row.sourceAccountId) {
+    throw new InvalidInflowError("An account-sourced inflow needs a sourceAccountId");
+  }
+  if (row.source !== "account" && row.sourceAccountId) {
+    throw new InvalidInflowError("Only an account-sourced inflow may carry a sourceAccountId");
+  }
+  if (row.sourceAccountId && row.sourceAccountId === row.accountId) {
+    throw new InvalidInflowError("An inflow cannot be sourced from the account it arrives in");
+  }
+}
 export type NewPayment = Omit<Payment, "id" | "createdAt" | "updatedAt">;
 export type NewProject = Omit<Project, "id" | "createdAt" | "updatedAt">;
 export type NewAccountAssignment = Omit<
@@ -48,6 +87,26 @@ export type NewContribution = Omit<Contribution, "id" | "createdAt">;
 export type NewBalanceSnapshot = Omit<BalanceSnapshot, "id" | "createdAt">;
 export type NewTransferConfirmation = Omit<TransferConfirmation, "id" | "createdAt">;
 export type NewMonthClose = Omit<MonthClose, "id" | "closedAt">;
+
+/**
+ * An external inflow seen through the income API's eyes — the same row, minus
+ * the fields only a movement between accounts has. Callers filter to
+ * `source === "external"` first; an account-sourced inflow has no income face.
+ */
+export function toIncome(i: Inflow): Income {
+  return {
+    id: i.id,
+    accountId: i.accountId,
+    name: i.name,
+    amountMinor: i.amountMinor,
+    frequency: i.frequency,
+    recurrence: i.recurrence,
+    anchorDate: i.anchorDate,
+    active: i.active,
+    createdAt: i.createdAt,
+    updatedAt: i.updatedAt,
+  };
+}
 
 /** Per-payment all-time contribution total for one account. */
 export interface ContributionTotal {
@@ -176,7 +235,29 @@ export interface Store {
   updateAccount(id: string, patch: Partial<NewAccount>): Promise<Account | null>;
   deleteAccount(id: string): Promise<void>;
 
-  // ---- incomes ----
+  // ---- inflows (money arriving, whatever its source) ----
+  /** Rejects a malformed row with `InvalidInflowError` — see
+   *  `assertInflowShape` for the three rules, which mirror the DB CHECKs. */
+  createInflow(input: NewInflow): Promise<Inflow>;
+  getInflow(id: string): Promise<Inflow | null>;
+  /** Inflows **arriving into** an account — external and account-sourced alike.
+   *  Ordered by priority, then creation, so a plan is deterministic. */
+  listInflows(accountId: string): Promise<Inflow[]>;
+  /**
+   * Inflows **leaving** an account: the same rows `listInflows` returns to the
+   * receiving account, read from the sending end. One authored row, two sides —
+   * so a movement can never be half-recorded.
+   */
+  listOutboundInflows(accountId: string): Promise<Inflow[]>;
+  /** Patches are validated as a whole, so a patch cannot leave the row in a
+   *  shape `createInflow` would have refused. */
+  updateInflow(id: string, patch: Partial<NewInflow>): Promise<Inflow | null>;
+  deleteInflow(id: string): Promise<void>;
+
+  // ---- incomes (external inflows, in the shape the income API speaks) ----
+  // These are a projection of `inflows` where source = 'external'; there is no
+  // separate income storage. An account-sourced inflow is invisible here on
+  // purpose — the income API must not be able to reach one.
   createIncome(input: NewIncome): Promise<Income>;
   getIncome(id: string): Promise<Income | null>;
   listIncomes(accountId: string): Promise<Income[]>;
