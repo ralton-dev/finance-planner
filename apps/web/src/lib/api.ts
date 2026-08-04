@@ -6,14 +6,17 @@ import type {
   BalanceSnapshotDto,
   ConfirmTransferResultDto,
   ContributionDto,
+  DemoSeedCountsDto,
   HouseholdAccountAssignmentDto,
   HouseholdDetailDto,
   HouseholdPlanDto,
   HouseholdProjectionDto,
   HouseholdRole,
+  ImportCountsDto,
   IncomeDto,
   LoginResultDto,
   LoginSessionDto,
+  MetaDto,
   MonthCloseDto,
   OidcMetaDto,
   OverviewDto,
@@ -40,6 +43,22 @@ export class ApiError extends Error {
 }
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+/** A failed response as an ApiError, reading the API's `{error:{code,message}}`
+ *  envelope when there is one. Shared by the JSON and raw paths so an error
+ *  means the same thing whichever one asked. */
+async function toApiError(res: Response): Promise<ApiError> {
+  let code = "error";
+  let message = res.statusText;
+  try {
+    const json = (await res.json()) as { error?: { code?: string; message?: string } };
+    code = json.error?.code ?? code;
+    message = json.error?.message ?? message;
+  } catch {
+    /* non-JSON error */
+  }
+  return new ApiError(res.status, code, message);
+}
 
 /** Query string from the params that are actually set — never "?months=&asOf=". */
 function query(params: Record<string, string | number | undefined>): string {
@@ -81,21 +100,29 @@ export class ApiClient {
       return this.request<T>(method, path, body, false);
     }
 
-    if (!res.ok) {
-      let code = "error";
-      let message = res.statusText;
-      try {
-        const json = (await res.json()) as { error?: { code?: string; message?: string } };
-        code = json.error?.code ?? code;
-        message = json.error?.message ?? message;
-      } catch {
-        /* non-JSON error */
-      }
-      throw new ApiError(res.status, code, message);
-    }
+    if (!res.ok) throw await toApiError(res);
 
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
+  }
+
+  /**
+   * The same auth and one-shot refresh as request(), handing back the Response
+   * itself. For the endpoints whose *headers and bytes* are the payload (the
+   * export download) rather than a parsed JSON body.
+   */
+  private async requestRaw(method: Method, path: string, retry = true): Promise<Response> {
+    const res = await fetch(this.baseUrl + path, {
+      method,
+      headers: { ...(this.accessToken ? { authorization: `Bearer ${this.accessToken}` } : {}) },
+      credentials: "include",
+    });
+
+    if (res.status === 401 && retry && (await this.tryRefresh())) {
+      return this.requestRaw(method, path, false);
+    }
+    if (!res.ok) throw await toApiError(res);
+    return res;
   }
 
   async tryRefresh(): Promise<boolean> {
@@ -111,6 +138,12 @@ export class ApiClient {
     } catch {
       return false;
     }
+  }
+
+  // ---- deployment meta ----
+  /** What this deployment has switched on. Public — no session needed. */
+  meta() {
+    return this.request<MetaDto>("GET", "/api/meta");
   }
 
   // ---- auth ----
@@ -148,6 +181,23 @@ export class ApiClient {
 
   me() {
     return this.request<UserDto>("GET", "/api/auth/me");
+  }
+
+  /** Change a setting on your own account; answers with the whole profile. */
+  updateMe(body: { notifyEmail: boolean }) {
+    return this.request<UserDto>("PATCH", "/api/auth/me", body);
+  }
+
+  /**
+   * Erase the account and everything that is yours alone. No undo.
+   *
+   * 403 `invalid_credentials` when the password is wrong. An SSO-only account
+   * has no local password to check and is erased on the strength of the token
+   * instead — the field is ignored there, but the schema still requires it to
+   * be non-empty, so send a placeholder rather than "".
+   */
+  deleteMe(body: { password: string }) {
+    return this.request<void>("DELETE", "/api/auth/me", body);
   }
 
   // ---- two-factor auth (TOTP) ----
@@ -442,6 +492,33 @@ export class ApiClient {
   }
   deleteProject(id: string) {
     return this.request<void>("DELETE", `/api/projects/${id}`);
+  }
+
+  // ---- export / import ----
+  /**
+   * Everything you own, as one JSON document.
+   *
+   * Returns the raw Response rather than a parsed body, because the download
+   * needs both halves of it: `await res.blob()` for the bytes and
+   * `content-disposition` for the server's filename. (This is also why a plain
+   * `<a href="/api/export">` can't do the job — the browser would send no
+   * Authorization header.) See lib/files.ts for the save side.
+   */
+  exportData(): Promise<Response> {
+    return this.requestRaw("GET", "/api/export");
+  }
+
+  /** Restore an export under this account, with fresh ids. Additive — nothing
+   *  existing is touched. `body` is a parsed export file; 422 when it isn't. */
+  importData(body: unknown) {
+    return this.request<ImportCountsDto>("POST", "/api/import", body);
+  }
+
+  // ---- demo data ----
+  /** Plant the worked example. 404 when the deployment has it switched off,
+   *  409 `demo_not_empty` when the caller already has accounts. */
+  seedDemo() {
+    return this.request<DemoSeedCountsDto>("POST", "/api/demo/seed");
   }
 }
 

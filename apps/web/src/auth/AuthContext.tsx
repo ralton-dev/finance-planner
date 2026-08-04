@@ -74,7 +74,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus("authed");
     },
     async logout() {
-      await api.logout();
+      // Ending the session locally must not hinge on the server call. The token
+      // is often already dead by the time we get here — an expired session, or
+      // an account that has just deleted itself — and staying "logged in" in
+      // front of a dead token would be worse than a missed revocation.
+      // api.logout() drops the access token in its own `finally` either way.
+      try {
+        await api.logout();
+      } catch {
+        /* already gone server-side */
+      }
       setUser(null);
       setStatus("anon");
     },

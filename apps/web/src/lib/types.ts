@@ -22,7 +22,15 @@ export interface UserDto {
    *  older API (or a test fixture) still satisfies the type — absent reads as
    *  "not enabled". */
   totpEnabled?: boolean;
+  /** Opt-in to the daily digest email. Optional for the same reason as
+   *  totpEnabled — absent reads as "off". */
+  notifyEmail?: boolean;
   households?: HouseholdDto[];
+}
+
+/** What this deployment has switched on. Public: asked before logging in. */
+export interface MetaDto {
+  demoSeedEnabled: boolean;
 }
 
 // --- auth: second factor, password reset, SSO --------------------------------
@@ -495,4 +503,28 @@ export interface MonthCloseDto {
 export interface ConfirmTransferResultDto {
   confirmation: TransferConfirmationDto;
   contributions: ContributionDto[];
+}
+
+// --- portability + demo data ------------------------------------------------
+
+/** Rows an import created. Import is additive, so these are always creations,
+ *  never updates. */
+export interface ImportCountsDto {
+  accounts: number;
+  incomes: number;
+  payments: number;
+  contributions: number;
+  balanceSnapshots: number;
+  closes: number;
+  projects: number;
+}
+
+/** Rows the demo seed planted. No projects or month closes in the worked
+ *  example, so it is a narrower shape than an import. */
+export interface DemoSeedCountsDto {
+  accounts: number;
+  incomes: number;
+  payments: number;
+  contributions: number;
+  balanceSnapshots: number;
 }

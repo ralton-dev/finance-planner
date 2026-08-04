@@ -9,6 +9,8 @@
  * capability check that simply reports failure instead of throwing.
  */
 
+import { saveBlob } from "./files.js";
+
 /** Matches --bg; the exported PNG should look like the app, not like a
  *  transparent cut-out that turns black in a chat client. */
 const APP_BG = "#0c0c0c";
@@ -87,18 +89,6 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 
 function toBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), "image/png"));
-}
-
-function saveBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.rel = "noopener";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
 }
 
 /**

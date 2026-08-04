@@ -1,10 +1,10 @@
-import { lazy, Suspense, useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChartFrame } from "../components/ChartFrame.js";
 import { DownloadButton } from "../components/DownloadButton.js";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
 import { UpcomingDigest } from "../components/UpcomingDigest.js";
-import { api } from "../lib/api.js";
+import { api, ApiError } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
 import { buildNetWorthSeries, type AccountBalanceHistory } from "../lib/networth.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -68,14 +68,20 @@ export function OverviewPage() {
     [accountKey],
   );
 
-  // Any quick-add creation can affect what the Overview shows.
-  useEffect(() => {
-    if (!lastCreated) return;
+  /** Everything on the page, re-read: for anything that can create data behind
+   *  the Overview's back (a quick-add drawer, the demo seed). */
+  function refetchAll(): void {
     overview.refetch();
     accounts.refetch();
     plans.refetch();
     reality.refetch();
     upcoming.refetch();
+  }
+
+  // Any quick-add creation can affect what the Overview shows.
+  useEffect(() => {
+    if (!lastCreated) return;
+    refetchAll();
   }, [lastCreated]);
 
   if (me.loading || overview.loading || accounts.loading) return <p className="muted">loading…</p>;
@@ -119,16 +125,7 @@ export function OverviewPage() {
       )}
 
       {totalAccounts === 0 ? (
-        <div className="empty-state">
-          <h3>no accounts yet</h3>
-          <p>
-            Add your first account to start planning. Each account holds incomes and payments and
-            generates its own savings plan.
-          </p>
-          <Link to="/accounts">
-            <button type="button">+ create account</button>
-          </Link>
-        </div>
+        <NoAccounts onSeeded={refetchAll} />
       ) : households.length > 0 ? (
         <>
           {plans.loading ? (
@@ -170,6 +167,86 @@ export function OverviewPage() {
       {totalAccounts > 0 && <NetWorth reality={reality.data ?? []} loading={reality.loading} />}
     </section>
   );
+}
+
+/**
+ * First run: nothing to plan with yet. Offers the worked example alongside the
+ * real thing, on the deployments that have it switched on.
+ */
+function NoAccounts({ onSeeded }: { onSeeded: () => void }) {
+  const demoSeedEnabled = useDemoSeedEnabled();
+  const [seeding, setSeeding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadDemo(): Promise<void> {
+    setSeeding(true);
+    setError(null);
+    try {
+      await api.seedDemo();
+    } catch (err) {
+      // demo_not_empty: there is data after all (another tab, another device).
+      // Showing it is exactly the right response, so it isn't an error here.
+      if (!(err instanceof ApiError && err.code === "demo_not_empty")) {
+        setError("could not load the demo data.");
+        setSeeding(false);
+        return;
+      }
+    }
+    onSeeded();
+    setSeeding(false);
+  }
+
+  return (
+    <div className="empty-state">
+      <h3>no accounts yet</h3>
+      <p>
+        Add your first account to start planning. Each account holds incomes and payments and
+        generates its own savings plan.
+      </p>
+      <div className="empty-state-actions">
+        <Link to="/accounts">
+          <button type="button">+ create account</button>
+        </Link>
+        {demoSeedEnabled && (
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => void loadDemo()}
+            disabled={seeding}
+          >
+            {seeding ? "loading…" : "load demo data"}
+          </button>
+        )}
+      </div>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Asks the API once whether this deployment offers demo data. A failed probe
+ *  reads as "off": the button stays hidden rather than dead-ending the user,
+ *  the same way the login screen probes for SSO. */
+function useDemoSeedEnabled(): boolean {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .meta()
+      .then((meta) => {
+        if (!cancelled) setEnabled(meta.demoSeedEnabled);
+      })
+      .catch(() => {
+        /* no meta — leave the button hidden */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return enabled;
 }
 
 /** Net worth over time, from manual balance check-ins. */

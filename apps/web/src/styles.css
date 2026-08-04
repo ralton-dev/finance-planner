@@ -920,6 +920,16 @@ button.tiny {
   color: var(--ink-2);
   font-size: 11.5px;
 }
+/* Side by side on a wide screen, stacked when there isn't room. */
+.empty-state-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.empty-state .error {
+  margin-top: 0.85rem;
+}
 
 @media (max-width: 720px) {
   .app {
@@ -1696,6 +1706,69 @@ td.row-actions-cell .row-edit:hover {
 .settings-panel .auth-hint {
   margin: 0.6rem 0 0;
   max-width: 56ch;
+}
+
+/* A switch and its label on one line — a setting, not a form field, so it
+ * opts out of the column layout every other label gets. */
+.toggle-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink);
+  cursor: pointer;
+  width: fit-content;
+}
+.toggle-row input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--good);
+  cursor: pointer;
+}
+
+/* Export above, import below, with air between them. */
+.data-divider {
+  border-top: 1px solid var(--line);
+  margin: 1rem 0;
+}
+.file-picker {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-bottom: 0;
+  max-width: 26rem;
+}
+.file-picker input[type="file"] {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  padding: 0.4rem;
+  cursor: pointer;
+}
+.import-confirm {
+  border-left: 2px solid var(--warn-amber);
+  padding-left: 0.75rem;
+  margin-top: 0.85rem;
+}
+.import-confirm .auth-hint {
+  margin-top: 0;
+}
+.import-file {
+  color: var(--ink);
+  font-size: 12px;
+  margin-bottom: 0.3rem;
+  word-break: break-all;
+}
+.import-result {
+  color: var(--good);
+  font-size: 12px;
+  margin-top: 0.85rem;
+}
+
+/* The account-deletion zone sits outside the panels, so it needs their width. */
+.settings-danger {
+  max-width: 620px;
 }
 
 /* Enrolment / disable steps, separated from the status line above them. */

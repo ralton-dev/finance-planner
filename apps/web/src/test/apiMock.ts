@@ -4,6 +4,8 @@ export interface Reply {
   /** Defaults to 200. Use 204 for the empty-body endpoints. */
   status?: number;
   body?: unknown;
+  /** Response headers, lower-cased keys. Only the download endpoints read any. */
+  headers?: Record<string, string>;
 }
 
 /** Keyed `"METHOD /path"`. A function is re-evaluated per call, so a route can
@@ -45,11 +47,17 @@ export function stubApiFetch(initial: Routes): FetchStub {
           : entry;
     const status = reply.status ?? 200;
 
+    const headers = reply.headers ?? {};
+
     return {
       ok: status >= 200 && status < 300,
       status,
       statusText: "",
       json: async () => reply.body,
+      // Enough Response for the endpoints served as a file rather than as JSON.
+      headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
+      blob: async () =>
+        new Blob([JSON.stringify(reply.body ?? null)], { type: "application/json" }),
     };
   });
 
