@@ -15,6 +15,7 @@ import type {
   IncomeInput,
   PaymentInput,
   PaymentPlanLine,
+  PaymentPlanStatus,
 } from "./types.js";
 
 const DEFAULT_PRIORITY = 100;
@@ -166,9 +167,15 @@ export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredR
  * Compute the full savings plan for an account as of `asOfDate`.
  *
  * Funding rule (confirmed in discovery): prioritise + show shortfall. Payments
- * are funded in priority order from available income; whatever cannot be funded
+ * are funded in priority order from the month's money; whatever cannot be funded
  * is surfaced as a shortfall and the affected goals are flagged off-track with a
  * projected completion date.
+ *
+ * The month's money is the account's own income plus any allocated inflow — the
+ * slice a household has earmarked for it. Own income is spent first, so the
+ * per-line own/inflow split falls straight out of the priority order rather than
+ * needing a second pass. Requirements never depend on income, only funding does,
+ * so there is no circularity in a household filling this in.
  */
 export function computeAccountPlan(account: AccountInput, asOfDate: string): AccountPlan {
   const now = parseISODate(asOfDate);
@@ -176,6 +183,13 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
   const monthlyIncome = account.incomes.reduce(
     (sum, income) => sum + monthlyIncomeMinor(income, now),
     0,
+  );
+
+  // Clamped defensively: a caller cannot have confirmed more than it allocated.
+  const allocatedInflow = Math.max(0, account.inflow?.allocatedMinor ?? 0);
+  const confirmedInflow = Math.min(
+    allocatedInflow,
+    Math.max(0, account.inflow?.confirmedMinor ?? 0),
   );
 
   const sorted = account.payments
@@ -190,18 +204,39 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
     });
 
   const buffer = Math.max(0, account.monthlyBufferMinor ?? 0);
-  let remainingBudget = Math.max(0, monthlyIncome - buffer);
+  // The buffer comes off the account's *own* income only. Allocated inflow
+  // arrives earmarked — a shared pot's buffer is already funded as an obligation
+  // in the household plan — so taking it off the inflow too would reserve the
+  // same money twice. It also keeps the own/inflow split honest when own income
+  // is smaller than the buffer.
+  let remainingOwn = Math.max(0, monthlyIncome - buffer);
+  let remainingInflow = allocatedInflow;
+  // How much of the inflow earlier lines have already spent. Confirmed money is
+  // spent before merely promised money, so a line leaned on an unconfirmed
+  // transfer exactly when its slice of the inflow runs past the confirmed mark.
+  let inflowUsed = 0;
   let totalRequired = 0;
   let totalFunded = 0;
 
   const lines: PaymentPlanLine[] = sorted.map((p) => {
     const req = requiredMonthlyForPayment(p, now);
-    const funded = Math.max(0, Math.min(req.requiredMinor, remainingBudget));
-    remainingBudget -= funded;
+    const need = Math.max(0, req.requiredMinor);
+    const fromOwn = Math.min(need, remainingOwn);
+    const fromInflow = Math.min(need - fromOwn, remainingInflow);
+    const funded = fromOwn + fromInflow;
+    remainingOwn -= fromOwn;
+    remainingInflow -= fromInflow;
+    const drewOnUnconfirmed = fromInflow > 0 && inflowUsed + fromInflow > confirmedInflow;
+    inflowUsed += fromInflow;
     totalRequired += req.requiredMinor;
     totalFunded += funded;
 
     const onTrack = funded >= req.requiredMinor;
+    const status: PaymentPlanStatus = !onTrack
+      ? "at_risk"
+      : drewOnUnconfirmed
+        ? "awaiting_transfer"
+        : "funded";
     const remaining = Math.max(0, p.amountMinor - (p.alreadySavedMinor ?? 0));
     let projectedCompletionDate: string | undefined;
     if (!onTrack) {
@@ -230,9 +265,12 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
       monthsUntilDue: req.monthsUntilDue,
       requiredMonthlyMinor: req.requiredMinor,
       fundedMonthlyMinor: funded,
+      fundedFromOwnMinor: fromOwn,
+      fundedFromInflowMinor: fromInflow,
       alreadySavedMinor: p.alreadySavedMinor ?? 0,
       occurrencesThisMonth: req.occurrencesThisMonth,
       onTrack,
+      status,
       projectedCompletionDate,
       fixedMonthlyMinor: p.fixedMonthlyMinor ?? null,
       tag: p.tag ?? null,
@@ -244,10 +282,14 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
     asOfDate,
     currency: account.currency,
     monthlyIncomeMinor: monthlyIncome,
+    allocatedInflowMinor: allocatedInflow,
+    confirmedInflowMinor: confirmedInflow,
     bufferMinor: buffer,
     totalRequiredMinor: totalRequired,
     totalFundedMinor: totalFunded,
-    leftoverMinor: Math.max(0, remainingBudget),
+    // Own income only — see the field's comment for why unspent inflow is not
+    // this account's surplus to claim.
+    leftoverMinor: Math.max(0, remainingOwn),
     shortfallMinor: Math.max(0, totalRequired - totalFunded),
     lines,
   };

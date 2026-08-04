@@ -38,6 +38,26 @@ export interface PaymentInput {
   tag?: string | null;
 }
 
+/**
+ * Money arriving into the account from outside it this month — today, the slice
+ * a household plan has allocated to it (`HouseholdAccountPlan.transferInMinor`).
+ *
+ * It exists because an account is not always funded by its own income: a bills
+ * pot has none, and planning it from its own incomes alone reports every line at
+ * risk while the household plan says the same bills are covered. Optional, so a
+ * standalone account is planned exactly as before.
+ */
+export interface AllocatedInflow {
+  /** Total allocated into this account for the month (>= 0). */
+  allocatedMinor: number;
+  /**
+   * How much of `allocatedMinor` has actually been moved. The rest is planned
+   * but unconfirmed: it funds the arithmetic (decision #1) while marking the
+   * lines that lean on it `awaiting_transfer`. Clamped to `allocatedMinor`.
+   */
+  confirmedMinor: number;
+}
+
 export interface AccountInput {
   accountId: string;
   currency: string;
@@ -45,7 +65,20 @@ export interface AccountInput {
   monthlyBufferMinor?: number;
   incomes: IncomeInput[];
   payments: PaymentInput[];
+  /** What the household has allocated into this account. Absent for a
+   *  standalone account, which is funded entirely by its own income. */
+  inflow?: AllocatedInflow | null;
 }
+
+/**
+ * Why a line is where it is — the axis `onTrack` cannot express.
+ *
+ * `onTrack` answers "does the plan cover this?"; it cannot separate *the plan
+ * cannot fund this* (cut something, or raise a share) from *the plan funds this,
+ * you have not moved the money yet* (make the transfer). Two different problems
+ * with two different remedies, so they get two different statuses.
+ */
+export type PaymentPlanStatus = "funded" | "awaiting_transfer" | "at_risk";
 
 /** Computed plan line for a single payment. */
 export interface PaymentPlanLine {
@@ -70,11 +103,23 @@ export interface PaymentPlanLine {
   monthsUntilDue: number;
   requiredMonthlyMinor: number;
   fundedMonthlyMinor: number;
+  /** Of `fundedMonthlyMinor`, the part paid for by the account's own income.
+   *  Sums with `fundedFromInflowMinor` to `fundedMonthlyMinor` exactly. */
+  fundedFromOwnMinor: number;
+  /** Of `fundedMonthlyMinor`, the part paid for by allocated inflow. */
+  fundedFromInflowMinor: number;
   alreadySavedMinor: number;
   /** Times this payment falls due within the as-of month. Usually 1; a
    *  sub-monthly custom cadence (e.g. every 2 weeks) can be 2 or 3. */
   occurrencesThisMonth: number;
   onTrack: boolean;
+  /**
+   * `at_risk` when `!onTrack`; `awaiting_transfer` when the plan covers the line
+   * but part of what covers it is inflow nobody has moved yet; `funded`
+   * otherwise. `onTrack` keeps its meaning — an `awaiting_transfer` line is
+   * `onTrack: true`.
+   */
+  status: PaymentPlanStatus;
   /**
    * When the goal actually finishes, if that is worth saying: the pace-derived
    * date for an underfunded line, or — for a contribution-capped goal with a
@@ -93,14 +138,33 @@ export interface AccountPlan {
   accountId: string;
   asOfDate: string;
   currency: string;
+  /** The account's **own** income only — never the allocated inflow. Folding
+   *  the two together would double-count the same money in any figure that sums
+   *  income across accounts, because the paying account still reports it too. */
   monthlyIncomeMinor: number;
+  /** What the household allocated into this account this month (>= 0). */
+  allocatedInflowMinor: number;
+  /** How much of `allocatedInflowMinor` has actually been moved (>= 0). */
+  confirmedInflowMinor: number;
   /** Monthly amount reserved before funding goals (>= 0). */
   bufferMinor: number;
   totalRequiredMinor: number;
+  /** Funded from own income *and* allocated inflow, so this can exceed
+   *  `monthlyIncomeMinor - bufferMinor`. */
   totalFundedMinor: number;
-  /** Surplus available after funding all goals (>= 0). */
+  /**
+   * Surplus of the account's **own** income after funding all goals (>= 0).
+   *
+   * Allocated inflow that was never needed is deliberately **not** counted here.
+   * The account that sent it has no idea it left — its own plan still reports
+   * that money as its leftover — so counting it at both ends would double it in
+   * every figure that sums leftover across accounts (`computeOverview`). Unspent
+   * inflow is still recoverable: `allocatedInflowMinor` minus the sum of
+   * `fundedFromInflowMinor` over the lines.
+   */
   leftoverMinor: number;
-  /** Unfunded gap when income is insufficient (>= 0). */
+  /** Gap the month's money — own income plus allocated inflow — cannot cover
+   *  (>= 0). Inflow that covers the gap takes this to 0. */
   shortfallMinor: number;
   lines: PaymentPlanLine[];
 }
