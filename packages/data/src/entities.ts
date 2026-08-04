@@ -17,7 +17,28 @@ export interface User {
   displayName: string;
   status: UserStatus;
   emailVerified: boolean;
+  /** Base32 TOTP shared secret. Set at enrolment; cleared when 2FA is removed. */
+  totpSecret: string | null;
+  /** When two-factor became mandatory for this user. Null while a secret is
+   *  merely staged (setup started but the first code hasn't been proven). */
+  totpEnabledAt: string | null;
   createdAt: string;
+}
+
+/** A single-use fallback for when the authenticator app is gone. Stored hashed. */
+export interface RecoveryCode {
+  id: string;
+  userId: string;
+  codeHash: string;
+  usedAt: string | null;
+  createdAt: string;
+}
+
+/** Short-lived "set a new password" ticket, mailed as a link. */
+export interface PasswordResetToken {
+  token: string;
+  userId: string;
+  expiresAt: string;
 }
 
 export interface Session {

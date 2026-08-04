@@ -11,9 +11,11 @@ import type {
   HouseholdRole,
   Income,
   MonthClose,
+  PasswordResetToken,
   Payment,
   PlanSnapshot,
   Project,
+  RecoveryCode,
   Session,
   SharePermission,
   TransferConfirmation,
@@ -48,6 +50,8 @@ export class MemoryStore implements Store {
   private users = new Map<string, User>();
   private sessions = new Map<string, Session>();
   private verifyTokens = new Map<string, EmailVerificationToken>();
+  private resetTokens = new Map<string, PasswordResetToken>();
+  private recoveryCodes = new Map<string, RecoveryCode>();
   private households = new Map<string, Household>();
   private memberships = new Map<string, HouseholdMembership>();
   private shares = new Map<string, AccountShare>();
@@ -70,6 +74,8 @@ export class MemoryStore implements Store {
       displayName: input.displayName,
       status: "active",
       emailVerified: false,
+      totpSecret: null,
+      totpEnabledAt: null,
       createdAt: now(),
     };
     this.users.set(user.id, user);
@@ -89,6 +95,55 @@ export class MemoryStore implements Store {
   async setUserVerified(id: string): Promise<void> {
     const u = this.users.get(id);
     if (u) u.emailVerified = true;
+  }
+
+  async updateUserPassword(userId: string, passwordHash: string): Promise<void> {
+    const u = this.users.get(userId);
+    if (u) u.passwordHash = passwordHash;
+  }
+
+  async setUserTotpSecret(userId: string, secret: string | null): Promise<void> {
+    const u = this.users.get(userId);
+    if (!u) return;
+    u.totpSecret = secret;
+    // Clearing the secret must also clear the flag: no secret, no second factor.
+    if (secret === null) u.totpEnabledAt = null;
+  }
+
+  async enableUserTotp(userId: string): Promise<void> {
+    const u = this.users.get(userId);
+    if (u) u.totpEnabledAt = now();
+  }
+
+  async replaceRecoveryCodes(userId: string, codeHashes: string[]): Promise<void> {
+    for (const [k, c] of this.recoveryCodes) {
+      if (c.userId === userId) this.recoveryCodes.delete(k);
+    }
+    for (const codeHash of codeHashes) {
+      const code: RecoveryCode = {
+        id: randomUUID(),
+        userId,
+        codeHash,
+        usedAt: null,
+        createdAt: now(),
+      };
+      this.recoveryCodes.set(code.id, code);
+    }
+  }
+
+  async listUnusedRecoveryCodes(userId: string): Promise<RecoveryCode[]> {
+    return [...this.recoveryCodes.values()]
+      .filter((c) => c.userId === userId && !c.usedAt)
+      .sort(byCreatedAt);
+  }
+
+  async consumeRecoveryCode(userId: string, codeHash: string): Promise<boolean> {
+    for (const c of this.recoveryCodes.values()) {
+      if (c.userId !== userId || c.codeHash !== codeHash || c.usedAt) continue;
+      c.usedAt = now();
+      return true;
+    }
+    return false;
   }
 
   async createSession(session: Omit<Session, "id" | "createdAt" | "revokedAt">): Promise<Session> {
@@ -122,6 +177,17 @@ export class MemoryStore implements Store {
     const t = this.verifyTokens.get(token);
     if (!t) return null;
     this.verifyTokens.delete(token);
+    return t;
+  }
+
+  async createPasswordResetToken(token: PasswordResetToken): Promise<void> {
+    this.resetTokens.set(token.token, token);
+  }
+
+  async consumePasswordResetToken(token: string): Promise<PasswordResetToken | null> {
+    const t = this.resetTokens.get(token);
+    if (!t) return null;
+    this.resetTokens.delete(token);
     return t;
   }
 

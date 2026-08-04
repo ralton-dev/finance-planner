@@ -16,6 +16,68 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(await store.getUserByEmail("owner@example.com")).not.toBeNull();
   await store.setUserVerified(user.id);
   expect((await store.getUserById(user.id))?.emailVerified).toBe(true);
+  // Identity-provider accounts carry no local password.
+  const federated = await store.createUser({
+    email: "sso@example.com",
+    passwordHash: null,
+    displayName: "SSO",
+  });
+  expect(federated.passwordHash).toBeNull();
+
+  // --- passwords ---
+  await store.updateUserPassword(user.id, "hash-2");
+  expect((await store.getUserById(user.id))?.passwordHash).toBe("hash-2");
+
+  // --- two-factor: staged secret, then enabled, then torn down ---
+  expect(user.totpSecret).toBeNull();
+  expect(user.totpEnabledAt).toBeNull();
+  await store.setUserTotpSecret(user.id, "JBSWY3DPEHPK3PXP");
+  const staged = await store.getUserById(user.id);
+  expect(staged?.totpSecret).toBe("JBSWY3DPEHPK3PXP");
+  expect(staged?.totpEnabledAt).toBeNull(); // staging alone doesn't turn 2FA on
+  await store.enableUserTotp(user.id);
+  expect((await store.getUserById(user.id))?.totpEnabledAt).toBeTruthy();
+
+  // Recovery codes: replace wholesale, spend once, never twice.
+  await store.replaceRecoveryCodes(user.id, ["hash-a", "hash-b"]);
+  await store.replaceRecoveryCodes(user.id, ["hash-c", "hash-d"]); // replaces, not appends
+  expect((await store.listUnusedRecoveryCodes(user.id)).map((c) => c.codeHash)).toEqual([
+    "hash-c",
+    "hash-d",
+  ]);
+  expect(await store.consumeRecoveryCode(user.id, "hash-c")).toBe(true);
+  expect(await store.consumeRecoveryCode(user.id, "hash-c")).toBe(false); // already spent
+  expect(await store.consumeRecoveryCode(user.id, "hash-a")).toBe(false); // never issued
+  expect(await store.consumeRecoveryCode(federated.id, "hash-d")).toBe(false); // not their code
+  expect((await store.listUnusedRecoveryCodes(user.id)).map((c) => c.codeHash)).toEqual(["hash-d"]);
+  await store.replaceRecoveryCodes(user.id, []);
+  expect(await store.listUnusedRecoveryCodes(user.id)).toEqual([]);
+
+  // Clearing the secret disables 2FA in the same stroke.
+  await store.setUserTotpSecret(user.id, null);
+  const disabled = await store.getUserById(user.id);
+  expect(disabled?.totpSecret).toBeNull();
+  expect(disabled?.totpEnabledAt).toBeNull();
+
+  // --- password reset tokens: single-use, expiry passed through ---
+  await store.createPasswordResetToken({
+    token: "reset-token",
+    userId: user.id,
+    expiresAt: "2030-01-01T00:00:00.000Z",
+  });
+  const consumed = await store.consumePasswordResetToken("reset-token");
+  expect(consumed?.userId).toBe(user.id);
+  expect(new Date(consumed!.expiresAt).getTime()).toBe(Date.parse("2030-01-01T00:00:00.000Z"));
+  expect(await store.consumePasswordResetToken("reset-token")).toBeNull(); // one shot
+  expect(await store.consumePasswordResetToken("never-issued")).toBeNull();
+  // Expired tokens still round-trip — the caller decides, like email verification.
+  await store.createPasswordResetToken({
+    token: "stale-token",
+    userId: user.id,
+    expiresAt: "2020-01-01T00:00:00.000Z",
+  });
+  const stale = await store.consumePasswordResetToken("stale-token");
+  expect(new Date(stale!.expiresAt) < new Date()).toBe(true);
 
   // --- account + income + payment ---
   const account = await store.createAccount({

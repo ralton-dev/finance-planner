@@ -19,9 +19,11 @@ import type {
   HouseholdRole,
   Income,
   MonthClose,
+  PasswordResetToken,
   Payment,
   PlanSnapshot,
   Project,
+  RecoveryCode,
   Session,
   SharePermission,
   TransferConfirmation,
@@ -57,6 +59,18 @@ function mapUser(r: typeof s.users.$inferSelect): User {
     displayName: r.displayName,
     status: r.status as UserStatus,
     emailVerified: r.emailVerified,
+    totpSecret: r.totpSecret ?? null,
+    totpEnabledAt: iso(r.totpEnabledAt),
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+function mapRecoveryCode(r: typeof s.recoveryCodes.$inferSelect): RecoveryCode {
+  return {
+    id: r.id,
+    userId: r.userId,
+    codeHash: r.codeHash,
+    usedAt: iso(r.usedAt),
     createdAt: r.createdAt.toISOString(),
   };
 }
@@ -117,6 +131,55 @@ export class PgStore implements Store {
 
   async setUserVerified(id: string): Promise<void> {
     await this.db.update(s.users).set({ emailVerified: true }).where(eq(s.users.id, id));
+  }
+
+  async updateUserPassword(userId: string, passwordHash: string): Promise<void> {
+    await this.db.update(s.users).set({ passwordHash }).where(eq(s.users.id, userId));
+  }
+
+  async setUserTotpSecret(userId: string, secret: string | null): Promise<void> {
+    // Clearing the secret must also clear the flag: no secret, no second factor.
+    await this.db
+      .update(s.users)
+      .set(secret === null ? { totpSecret: null, totpEnabledAt: null } : { totpSecret: secret })
+      .where(eq(s.users.id, userId));
+  }
+
+  async enableUserTotp(userId: string): Promise<void> {
+    await this.db.update(s.users).set({ totpEnabledAt: new Date() }).where(eq(s.users.id, userId));
+  }
+
+  async replaceRecoveryCodes(userId: string, codeHashes: string[]): Promise<void> {
+    await this.db.delete(s.recoveryCodes).where(eq(s.recoveryCodes.userId, userId));
+    if (codeHashes.length === 0) return;
+    await this.db
+      .insert(s.recoveryCodes)
+      .values(codeHashes.map((codeHash) => ({ userId, codeHash })));
+  }
+
+  async listUnusedRecoveryCodes(userId: string): Promise<RecoveryCode[]> {
+    const rows = await this.db
+      .select()
+      .from(s.recoveryCodes)
+      .where(and(eq(s.recoveryCodes.userId, userId), isNull(s.recoveryCodes.usedAt)))
+      .orderBy(asc(s.recoveryCodes.createdAt));
+    return rows.map(mapRecoveryCode);
+  }
+
+  async consumeRecoveryCode(userId: string, codeHash: string): Promise<boolean> {
+    // The WHERE clause is the guard: a spent code updates zero rows.
+    const rows = await this.db
+      .update(s.recoveryCodes)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(s.recoveryCodes.userId, userId),
+          eq(s.recoveryCodes.codeHash, codeHash),
+          isNull(s.recoveryCodes.usedAt),
+        ),
+      )
+      .returning({ id: s.recoveryCodes.id });
+    return rows.length > 0;
   }
 
   async createSession(session: Omit<Session, "id" | "createdAt" | "revokedAt">): Promise<Session> {
@@ -182,6 +245,24 @@ export class PgStore implements Store {
     await this.db
       .delete(s.emailVerificationTokens)
       .where(eq(s.emailVerificationTokens.token, token));
+    return { token: row.token, userId: row.userId, expiresAt: row.expiresAt.toISOString() };
+  }
+
+  async createPasswordResetToken(token: PasswordResetToken): Promise<void> {
+    await this.db.insert(s.passwordResetTokens).values({
+      token: token.token,
+      userId: token.userId,
+      expiresAt: new Date(token.expiresAt),
+    });
+  }
+
+  async consumePasswordResetToken(token: string): Promise<PasswordResetToken | null> {
+    // Delete-and-return keeps it single-use even under concurrent redemption.
+    const [row] = await this.db
+      .delete(s.passwordResetTokens)
+      .where(eq(s.passwordResetTokens.token, token))
+      .returning();
+    if (!row) return null;
     return { token: row.token, userId: row.userId, expiresAt: row.expiresAt.toISOString() };
   }
 

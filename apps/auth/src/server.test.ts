@@ -1,7 +1,9 @@
 import { MemoryStore } from "@finance-planner/data";
+import { totpCode } from "@finance-planner/security";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AuthEnv } from "./env.js";
 import { LogMailer } from "./mailer.js";
+import type { OidcClient, OidcDiscovery, OidcIdTokenClaims } from "./oidc.js";
 import { buildServer } from "./server.js";
 
 const env: AuthEnv = {
@@ -12,6 +14,18 @@ const env: AuthEnv = {
   refreshTtlDays: 30,
   cookieSecure: false,
   cookiePath: "/api/auth",
+  publicWebUrl: "http://localhost:5173",
+  mailFrom: "Finance Planner <no-reply@test.local>",
+};
+
+const oidcEnv: AuthEnv = {
+  ...env,
+  oidc: {
+    issuer: "https://idp.example.com",
+    clientId: "finance-planner",
+    clientSecret: "shhh",
+    redirectUri: "http://localhost:4001/auth/oidc/callback",
+  },
 };
 
 const register = { email: "user@example.com", password: "password123", displayName: "User" };
@@ -22,6 +36,58 @@ function makeApp() {
   // Disable rate-limit in tests so back-to-back logins don't trip the per-IP throttle.
   const app = buildServer({ store, mailer, env, rateLimit: false });
   return { app, store, mailer };
+}
+
+/** Stands in for a real identity provider: no network, scriptable claims. */
+class FakeOidcClient implements OidcClient {
+  public exchanged: { code: string; verifier: string }[] = [];
+  constructor(private claims: OidcIdTokenClaims) {}
+
+  async discover(): Promise<OidcDiscovery> {
+    return {
+      issuer: "https://idp.example.com",
+      authorizationEndpoint: "https://idp.example.com/authorize",
+      tokenEndpoint: "https://idp.example.com/token",
+      jwksUri: "https://idp.example.com/jwks",
+    };
+  }
+
+  async exchangeCode(code: string, verifier: string): Promise<{ idToken: string }> {
+    this.exchanged.push({ code, verifier });
+    return { idToken: "fake.id.token" };
+  }
+
+  async verifyIdToken(): Promise<OidcIdTokenClaims> {
+    return this.claims;
+  }
+}
+
+function makeOidcApp(claims: OidcIdTokenClaims) {
+  const store = new MemoryStore();
+  const mailer = new LogMailer();
+  const oidcClient = new FakeOidcClient(claims);
+  const app = buildServer({ store, mailer, env: oidcEnv, oidcClient, rateLimit: false });
+  return { app, store, mailer, oidcClient };
+}
+
+/** Register + log in, returning the bearer header the authed routes want. */
+async function registerAndLogin(app: ReturnType<typeof makeApp>["app"]) {
+  await app.inject({ method: "POST", url: "/auth/register", payload: register });
+  const login = await app.inject({ method: "POST", url: "/auth/login", payload: register });
+  return { authorization: `Bearer ${login.json().accessToken as string}` };
+}
+
+/** Walk a user all the way through TOTP enrolment; hand back secret + codes. */
+async function enrolTotp(app: ReturnType<typeof makeApp>["app"], auth: { authorization: string }) {
+  const setup = await app.inject({ method: "POST", url: "/auth/totp/setup", headers: auth });
+  const secret = setup.json().secret as string;
+  const enable = await app.inject({
+    method: "POST",
+    url: "/auth/totp/enable",
+    headers: auth,
+    payload: { code: totpCode(secret, Date.now()) },
+  });
+  return { secret, enable, recoveryCodes: enable.json().recoveryCodes as string[] };
 }
 
 describe("auth service", () => {
@@ -491,5 +557,546 @@ describe("auth service", () => {
     });
     expect(ownerDelete.statusCode).toBe(204);
     expect(await ctx.store.getHousehold(household.id)).toBeNull();
+  });
+});
+
+describe("two-factor authentication", () => {
+  let ctx: ReturnType<typeof makeApp>;
+  beforeEach(() => {
+    ctx = makeApp();
+  });
+
+  it("enrols: setup stages a secret, a wrong code is refused, a right one arms it", async () => {
+    const auth = await registerAndLogin(ctx.app);
+
+    const setup = await ctx.app.inject({ method: "POST", url: "/auth/totp/setup", headers: auth });
+    expect(setup.statusCode).toBe(200);
+    const secret = setup.json().secret as string;
+    expect(secret).toMatch(/^[A-Z2-7]{32}$/);
+    expect(setup.json().otpauthUri).toContain(
+      "otpauth://totp/Finance%20Planner:user%40example.com",
+    );
+    expect(setup.json().otpauthUri).toContain(`secret=${secret}`);
+
+    // Staged only: two-factor is not live yet, so login still works outright.
+    const user = await ctx.store.getUserByEmail(register.email);
+    expect(user?.totpEnabledAt).toBeNull();
+    const stagedLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: register,
+    });
+    expect(stagedLogin.json().accessToken).toBeTruthy();
+
+    const wrong = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/totp/enable",
+      headers: auth,
+      payload: { code: "000000" },
+    });
+    expect(wrong.statusCode).toBe(422);
+    expect(wrong.json().error.code).toBe("invalid_code");
+    expect((await ctx.store.getUserByEmail(register.email))?.totpEnabledAt).toBeNull();
+
+    const enable = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/totp/enable",
+      headers: auth,
+      payload: { code: totpCode(secret, Date.now()) },
+    });
+    expect(enable.statusCode).toBe(200);
+    const codes = enable.json().recoveryCodes as string[];
+    expect(codes).toHaveLength(8);
+    for (const code of codes) expect(code).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    expect(new Set(codes).size).toBe(8);
+    // Codes are stored hashed, never in the clear.
+    const stored = await ctx.store.listUnusedRecoveryCodes(
+      (await ctx.store.getUserByEmail(register.email))!.id,
+    );
+    expect(stored).toHaveLength(8);
+    for (const row of stored) expect(codes).not.toContain(row.codeHash);
+
+    // Re-running setup once armed would silently rotate the secret — refuse.
+    const again = await ctx.app.inject({ method: "POST", url: "/auth/totp/setup", headers: auth });
+    expect(again.statusCode).toBe(409);
+  });
+
+  it("stops login at the password step and finishes it with a code", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const { secret } = await enrolTotp(ctx.app, auth);
+
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    expect(login.statusCode).toBe(200);
+    expect(login.json().totpRequired).toBe(true);
+    expect(login.json().accessToken).toBeUndefined();
+    // Crucially: no session yet, so no refresh cookie.
+    expect(login.cookies.find((c) => c.name === "fp_refresh")).toBeUndefined();
+    const pendingToken = login.json().pendingToken as string;
+
+    // A pending ticket is not a bearer token, anywhere.
+    const meWithPending = await ctx.app.inject({
+      method: "GET",
+      url: "/auth/me",
+      headers: { authorization: `Bearer ${pendingToken}` },
+    });
+    expect(meWithPending.statusCode).toBe(401);
+    const householdsWithPending = await ctx.app.inject({
+      method: "GET",
+      url: "/auth/households",
+      headers: { authorization: `Bearer ${pendingToken}` },
+    });
+    expect(householdsWithPending.statusCode).toBe(401);
+
+    const wrong = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login/totp",
+      payload: { pendingToken, code: "000000" },
+    });
+    expect(wrong.statusCode).toBe(401);
+    expect(wrong.json().error.code).toBe("invalid_code");
+
+    // Neither a code nor a recovery code → validation failure, not a 401.
+    const empty = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login/totp",
+      payload: { pendingToken },
+    });
+    expect(empty.statusCode).toBe(422);
+
+    // A garbage ticket is rejected before any code is even looked at.
+    const badTicket = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login/totp",
+      payload: { pendingToken: "not-a-jwt", code: totpCode(secret, Date.now()) },
+    });
+    expect(badTicket.statusCode).toBe(401);
+    expect(badTicket.json().error.code).toBe("invalid_pending_token");
+
+    const done = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login/totp",
+      payload: { pendingToken, code: totpCode(secret, Date.now()) },
+    });
+    expect(done.statusCode).toBe(200);
+    expect(done.json().accessToken).toBeTruthy();
+    expect(done.json().user.email).toBe(register.email);
+    const refresh = done.cookies.find((c) => c.name === "fp_refresh");
+    expect(refresh).toBeDefined();
+
+    // The session behaves exactly like a password-only one.
+    const me = await ctx.app.inject({
+      method: "GET",
+      url: "/auth/me",
+      headers: { authorization: `Bearer ${done.json().accessToken}` },
+    });
+    expect(me.json().email).toBe(register.email);
+    expect(me.json().totpEnabled).toBe(true);
+    const refreshed = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: refresh!.value },
+    });
+    expect(refreshed.statusCode).toBe(200);
+  });
+
+  it("accepts a recovery code once and never again", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const { recoveryCodes } = await enrolTotp(ctx.app, auth);
+    const code = recoveryCodes[0]!;
+
+    const login = async () =>
+      (await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register })).json()
+        .pendingToken as string;
+
+    const first = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login/totp",
+      payload: { pendingToken: await login(), recoveryCode: code.toLowerCase() },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().accessToken).toBeTruthy();
+
+    const replay = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login/totp",
+      payload: { pendingToken: await login(), recoveryCode: code },
+    });
+    expect(replay.statusCode).toBe(401);
+
+    // The other seven still work.
+    const second = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login/totp",
+      payload: { pendingToken: await login(), recoveryCode: recoveryCodes[1]! },
+    });
+    expect(second.statusCode).toBe(200);
+  });
+
+  it("disables two-factor with a recovery code and clears the stored secret", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const { recoveryCodes } = await enrolTotp(ctx.app, auth);
+
+    const wrong = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/totp/disable",
+      headers: auth,
+      payload: { code: "000000" },
+    });
+    expect(wrong.statusCode).toBe(422);
+
+    const disabled = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/totp/disable",
+      headers: auth,
+      payload: { code: recoveryCodes[7]! },
+    });
+    expect(disabled.statusCode).toBe(200);
+
+    const user = await ctx.store.getUserByEmail(register.email);
+    expect(user?.totpSecret).toBeNull();
+    expect(user?.totpEnabledAt).toBeNull();
+    expect(await ctx.store.listUnusedRecoveryCodes(user!.id)).toHaveLength(0);
+
+    // Back to a one-step login.
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    expect(login.json().accessToken).toBeTruthy();
+    expect(login.json().totpRequired).toBeUndefined();
+
+    // Nothing left to disable.
+    const twice = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/totp/disable",
+      headers: auth,
+      payload: { code: recoveryCodes[6]! },
+    });
+    expect(twice.statusCode).toBe(409);
+  });
+
+  it("disables two-factor with a live authenticator code", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const { secret } = await enrolTotp(ctx.app, auth);
+
+    const disabled = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/totp/disable",
+      headers: auth,
+      payload: { code: totpCode(secret, Date.now()) },
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect((await ctx.store.getUserByEmail(register.email))?.totpEnabledAt).toBeNull();
+  });
+
+  it("refuses enable before setup, and every 2FA route without a bearer token", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const premature = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/totp/enable",
+      headers: auth,
+      payload: { code: "123456" },
+    });
+    expect(premature.statusCode).toBe(409);
+    expect(premature.json().error.code).toBe("totp_not_started");
+
+    for (const url of ["/auth/totp/setup", "/auth/totp/enable", "/auth/totp/disable"]) {
+      const res = await ctx.app.inject({ method: "POST", url, payload: { code: "123456" } });
+      expect(res.statusCode).toBe(401);
+    }
+  });
+});
+
+describe("password reset", () => {
+  let ctx: ReturnType<typeof makeApp>;
+  beforeEach(() => {
+    ctx = makeApp();
+  });
+
+  const tokenFromLink = (link: string) => new URL(link).searchParams.get("token")!;
+
+  it("says nothing about unknown addresses", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const res = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/password/forgot",
+      payload: { email: "nobody@example.com" },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(ctx.mailer.passwordResets).toHaveLength(0);
+
+    // …and the answer is byte-identical for an address that does exist.
+    const known = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/password/forgot",
+      payload: { email: register.email },
+    });
+    expect(known.statusCode).toBe(204);
+    expect(known.body).toBe(res.body);
+    expect(ctx.mailer.passwordResets).toHaveLength(1);
+  });
+
+  it("resets the password, kills existing sessions, and burns the token", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const oldLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: register,
+    });
+    const oldCookie = oldLogin.cookies.find((c) => c.name === "fp_refresh")!.value;
+
+    await ctx.app.inject({
+      method: "POST",
+      url: "/auth/password/forgot",
+      payload: { email: register.email.toUpperCase() },
+    });
+    const sent = ctx.mailer.passwordResets[0]!;
+    expect(sent.to).toBe(register.email);
+    expect(sent.link).toContain("http://localhost:5173/reset?token=");
+
+    const token = tokenFromLink(sent.link);
+    const reset = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/password/reset",
+      payload: { token, password: "brand-new-password" },
+    });
+    expect(reset.statusCode).toBe(200);
+
+    // Old password is dead, new one works.
+    const stale = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    expect(stale.statusCode).toBe(401);
+    const fresh = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { email: register.email, password: "brand-new-password" },
+    });
+    expect(fresh.statusCode).toBe(200);
+
+    // Sessions minted before the reset are gone.
+    const refreshed = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: oldCookie },
+    });
+    expect(refreshed.statusCode).toBe(401);
+
+    // Single use.
+    const replay = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/password/reset",
+      payload: { token, password: "another-password" },
+    });
+    expect(replay.statusCode).toBe(422);
+    expect(replay.json().error.code).toBe("invalid_token");
+  });
+
+  it("rejects expired, unknown and too-short resets", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const user = await ctx.store.getUserByEmail(register.email);
+    await ctx.store.createPasswordResetToken({
+      token: "stale-token",
+      userId: user!.id,
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    const expired = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/password/reset",
+      payload: { token: "stale-token", password: "brand-new-password" },
+    });
+    expect(expired.statusCode).toBe(422);
+    expect(expired.json().error.code).toBe("invalid_token");
+
+    const unknown = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/password/reset",
+      payload: { token: "never-issued", password: "brand-new-password" },
+    });
+    expect(unknown.statusCode).toBe(422);
+
+    const short = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/password/reset",
+      payload: { token: "whatever", password: "short" },
+    });
+    expect(short.statusCode).toBe(422);
+
+    // The original password still works — none of that changed anything.
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    expect(login.statusCode).toBe(200);
+  });
+});
+
+describe("oidc sign-in", () => {
+  const claims = { sub: "idp-user-1", email: "Sso@Example.com", name: "SSO Person" };
+
+  it("is off by default and the routes 404 with it", async () => {
+    const ctx = makeApp();
+    const meta = await ctx.app.inject({ method: "GET", url: "/auth/oidc/meta" });
+    expect(meta.statusCode).toBe(200);
+    expect(meta.json()).toEqual({ enabled: false }); // nothing else leaks
+
+    for (const url of ["/auth/oidc/login", "/auth/oidc/callback?code=x&state=y"]) {
+      const res = await ctx.app.inject({ method: "GET", url });
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error.code).toBe("oidc_disabled");
+    }
+  });
+
+  it("advertises the provider once configured", async () => {
+    const ctx = makeOidcApp(claims);
+    const meta = await ctx.app.inject({ method: "GET", url: "/auth/oidc/meta" });
+    expect(meta.json()).toEqual({ enabled: true, issuer: "https://idp.example.com" });
+  });
+
+  it("redirects to the provider with state + PKCE and stashes both in cookies", async () => {
+    const ctx = makeOidcApp(claims);
+    const res = await ctx.app.inject({ method: "GET", url: "/auth/oidc/login" });
+    expect(res.statusCode).toBe(302);
+
+    const target = new URL(res.headers.location as string);
+    expect(target.origin + target.pathname).toBe("https://idp.example.com/authorize");
+    expect(target.searchParams.get("response_type")).toBe("code");
+    expect(target.searchParams.get("client_id")).toBe("finance-planner");
+    expect(target.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(target.searchParams.get("code_challenge")).toBeTruthy();
+    expect(target.searchParams.get("scope")).toContain("openid");
+    const state = target.searchParams.get("state")!;
+
+    const stateCookie = res.cookies.find((c) => c.name === "fp_oidc_state")!;
+    const verifierCookie = res.cookies.find((c) => c.name === "fp_oidc_verifier")!;
+    expect(stateCookie.httpOnly).toBe(true);
+    expect(verifierCookie.httpOnly).toBe(true);
+    // Signed, so the value on the wire is not the bare state.
+    expect(stateCookie.value).not.toBe(state);
+    expect(stateCookie.value).toContain(state);
+  });
+
+  it("creates an account on first sign-in and issues a refresh cookie", async () => {
+    const ctx = makeOidcApp(claims);
+    const start = await ctx.app.inject({ method: "GET", url: "/auth/oidc/login" });
+    const state = new URL(start.headers.location as string).searchParams.get("state")!;
+    const cookies = Object.fromEntries(start.cookies.map((c) => [c.name, c.value]));
+
+    const res = await ctx.app.inject({
+      method: "GET",
+      url: `/auth/oidc/callback?code=auth-code&state=${state}`,
+      cookies,
+    });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe("http://localhost:5173");
+    expect(res.cookies.find((c) => c.name === "fp_refresh")).toBeDefined();
+
+    // The code was exchanged with the PKCE verifier we minted, not the challenge.
+    expect(ctx.oidcClient.exchanged).toHaveLength(1);
+    expect(ctx.oidcClient.exchanged[0]!.code).toBe("auth-code");
+    expect(ctx.oidcClient.exchanged[0]!.verifier).toBeTruthy();
+
+    const user = await ctx.store.getUserByEmail("sso@example.com");
+    expect(user).not.toBeNull();
+    expect(user!.passwordHash).toBeNull(); // no local password for IdP accounts
+    expect(user!.displayName).toBe("SSO Person");
+    expect(user!.emailVerified).toBe(true);
+
+    // The handshake cookies are spent.
+    const stateCookie = res.cookies.find((c) => c.name === "fp_oidc_state");
+    expect(stateCookie?.value).toBe("");
+
+    // The refresh cookie is a normal session.
+    const refresh = res.cookies.find((c) => c.name === "fp_refresh")!;
+    const refreshed = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: refresh.value },
+    });
+    expect(refreshed.statusCode).toBe(200);
+  });
+
+  it("links to the existing local account with the same email", async () => {
+    const ctx = makeOidcApp({ ...claims, email: register.email });
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const before = await ctx.store.getUserByEmail(register.email);
+
+    const start = await ctx.app.inject({ method: "GET", url: "/auth/oidc/login" });
+    const state = new URL(start.headers.location as string).searchParams.get("state")!;
+    const res = await ctx.app.inject({
+      method: "GET",
+      url: `/auth/oidc/callback?code=auth-code&state=${state}`,
+      cookies: Object.fromEntries(start.cookies.map((c) => [c.name, c.value])),
+    });
+    expect(res.statusCode).toBe(302);
+
+    const after = await ctx.store.getUserByEmail(register.email);
+    expect(after!.id).toBe(before!.id); // linked, not duplicated
+    expect(after!.passwordHash).toBe(before!.passwordHash); // local password untouched
+    expect(after!.displayName).toBe("User"); // the IdP doesn't rename people
+  });
+
+  it("skips our TOTP step-up — the identity provider owns MFA", async () => {
+    const ctx = makeOidcApp({ ...claims, email: register.email });
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const auth = { authorization: `Bearer ${login.json().accessToken}` };
+    await enrolTotp(ctx.app, auth);
+
+    const start = await ctx.app.inject({ method: "GET", url: "/auth/oidc/login" });
+    const state = new URL(start.headers.location as string).searchParams.get("state")!;
+    const res = await ctx.app.inject({
+      method: "GET",
+      url: `/auth/oidc/callback?code=auth-code&state=${state}`,
+      cookies: Object.fromEntries(start.cookies.map((c) => [c.name, c.value])),
+    });
+    // Straight to the app with a session, no second factor asked for.
+    expect(res.statusCode).toBe(302);
+    expect(res.cookies.find((c) => c.name === "fp_refresh")).toBeDefined();
+    // Password logins are unaffected: still stepped up.
+    const passwordLogin = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: register,
+    });
+    expect(passwordLogin.json().totpRequired).toBe(true);
+  });
+
+  it("rejects a mismatched, missing or unsigned state (403) without creating anyone", async () => {
+    const ctx = makeOidcApp(claims);
+    const start = await ctx.app.inject({ method: "GET", url: "/auth/oidc/login" });
+    const cookies = Object.fromEntries(start.cookies.map((c) => [c.name, c.value]));
+
+    const mismatch = await ctx.app.inject({
+      method: "GET",
+      url: "/auth/oidc/callback?code=auth-code&state=someone-elses-state",
+      cookies,
+    });
+    expect(mismatch.statusCode).toBe(403);
+    expect(mismatch.json().error.code).toBe("invalid_state");
+
+    const state = new URL(start.headers.location as string).searchParams.get("state")!;
+    const noCookies = await ctx.app.inject({
+      method: "GET",
+      url: `/auth/oidc/callback?code=auth-code&state=${state}`,
+    });
+    expect(noCookies.statusCode).toBe(403);
+
+    // A forged (unsigned) state cookie doesn't pass either.
+    const forged = await ctx.app.inject({
+      method: "GET",
+      url: "/auth/oidc/callback?code=auth-code&state=forged",
+      cookies: { fp_oidc_state: "forged", fp_oidc_verifier: cookies.fp_oidc_verifier! },
+    });
+    expect(forged.statusCode).toBe(403);
+
+    expect(await ctx.store.getUserByEmail("sso@example.com")).toBeNull();
+    expect(ctx.oidcClient.exchanged).toHaveLength(0);
+  });
+
+  it("refuses a provider that won't share an email (403)", async () => {
+    const ctx = makeOidcApp({ sub: "idp-user-2" });
+    const start = await ctx.app.inject({ method: "GET", url: "/auth/oidc/login" });
+    const state = new URL(start.headers.location as string).searchParams.get("state")!;
+    const res = await ctx.app.inject({
+      method: "GET",
+      url: `/auth/oidc/callback?code=auth-code&state=${state}`,
+      cookies: Object.fromEntries(start.cookies.map((c) => [c.name, c.value])),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("email_required");
   });
 });

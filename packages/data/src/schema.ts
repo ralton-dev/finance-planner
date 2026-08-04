@@ -21,7 +21,25 @@ export const users = authSchema.table("users", {
   displayName: text("display_name").notNull(),
   status: text("status").notNull().default("active"),
   emailVerified: boolean("email_verified").notNull().default(false),
+  totpSecret: text("totp_secret"),
+  totpEnabledAt: timestamp("totp_enabled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Hashed single-use two-factor fallbacks. Rows are kept after use (used_at
+ *  set) so a replayed code is recognisably spent rather than merely unknown. */
+export const recoveryCodes = authSchema.table("recovery_codes", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull(),
+  codeHash: text("code_hash").notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const passwordResetTokens = authSchema.table("password_reset_tokens", {
+  token: text("token").primaryKey(),
+  userId: uuid("user_id").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
 
 export const sessions = authSchema.table("sessions", {

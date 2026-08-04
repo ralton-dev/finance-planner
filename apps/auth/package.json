@@ -19,10 +19,12 @@
     "@finance-planner/policies": "workspace:*",
     "@finance-planner/security": "workspace:*",
     "fastify": "^5.2.1",
+    "nodemailer": "^9.0.3",
     "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "@types/nodemailer": "^8.0.1",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

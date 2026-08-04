@@ -10,9 +10,11 @@ import type {
   HouseholdRole,
   Income,
   MonthClose,
+  PasswordResetToken,
   Payment,
   PlanSnapshot,
   Project,
+  RecoveryCode,
   Session,
   SharePermission,
   TransferConfirmation,
@@ -21,7 +23,8 @@ import type {
 
 export interface NewUser {
   email: string;
-  passwordHash: string;
+  /** Null for identity-provider (OIDC) accounts, which have no local password. */
+  passwordHash: string | null;
   displayName: string;
 }
 
@@ -72,6 +75,22 @@ export interface Store {
   getUserById(id: string): Promise<User | null>;
   getUserByEmail(email: string): Promise<User | null>;
   setUserVerified(id: string): Promise<void>;
+  /** Replace the user's local password hash (reset flow). */
+  updateUserPassword(userId: string, passwordHash: string): Promise<void>;
+
+  // ---- two-factor ----
+  /** Stage (or clear) the TOTP secret. Passing null also clears totpEnabledAt,
+   *  so abandoning setup can never leave 2FA half-on. */
+  setUserTotpSecret(userId: string, secret: string | null): Promise<void>;
+  /** Mark two-factor live for the user (first valid code proven). */
+  enableUserTotp(userId: string): Promise<void>;
+  /** Swap the user's recovery codes for a fresh set. An empty array clears them. */
+  replaceRecoveryCodes(userId: string, codeHashes: string[]): Promise<void>;
+  /** Unused recovery codes for a user; the caller verifies a presented code
+   *  against each hash (they are salted, so lookup-by-hash is impossible). */
+  listUnusedRecoveryCodes(userId: string): Promise<RecoveryCode[]>;
+  /** Burn one recovery code. False when it is unknown or already spent. */
+  consumeRecoveryCode(userId: string, codeHash: string): Promise<boolean>;
 
   createSession(session: Omit<Session, "id" | "createdAt" | "revokedAt">): Promise<Session>;
   getSessionByTokenHash(hash: string): Promise<Session | null>;
@@ -82,6 +101,11 @@ export interface Store {
 
   createEmailVerificationToken(token: EmailVerificationToken): Promise<void>;
   consumeEmailVerificationToken(token: string): Promise<EmailVerificationToken | null>;
+
+  createPasswordResetToken(token: PasswordResetToken): Promise<void>;
+  /** Single-use: the row is removed on read. Expiry is passed through for the
+   *  caller to judge (mirrors consumeEmailVerificationToken). */
+  consumePasswordResetToken(token: string): Promise<PasswordResetToken | null>;
 
   // ---- households / sharing ----
   createHousehold(name: string, createdBy: string): Promise<Household>;

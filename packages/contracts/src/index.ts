@@ -85,6 +85,43 @@ export const loginBody = z.object({
 });
 export type LoginBody = z.infer<typeof loginBody>;
 
+/** A six-digit authenticator code. Spacing and dashes are tolerated. */
+const totpCodeString = z.string().min(6).max(10);
+
+/** Prove the staged TOTP secret works before it becomes binding. */
+export const totpEnableBody = z.object({ code: totpCodeString });
+export type TotpEnableBody = z.infer<typeof totpEnableBody>;
+
+/** Turning 2FA off accepts either a live code or an unused recovery code. */
+export const totpDisableBody = z.object({ code: z.string().min(6).max(32) });
+export type TotpDisableBody = z.infer<typeof totpDisableBody>;
+
+/**
+ * Second leg of a two-factor login. `pendingToken` comes from the 200 the
+ * password step returned; exactly one of `code` / `recoveryCode` is required.
+ */
+export const loginTotpBody = z
+  .object({
+    pendingToken: z.string().min(1),
+    code: totpCodeString.optional(),
+    recoveryCode: z.string().min(6).max(32).optional(),
+  })
+  .refine((b) => !!b.code !== !!b.recoveryCode, {
+    message: "provide either code or recoveryCode",
+    path: ["code"],
+  });
+export type LoginTotpBody = z.infer<typeof loginTotpBody>;
+
+/** Kicks off a password reset. Always answered identically (no enumeration). */
+export const forgotPasswordBody = z.object({ email: z.string().email() });
+export type ForgotPasswordBody = z.infer<typeof forgotPasswordBody>;
+
+export const resetPasswordBody = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8),
+});
+export type ResetPasswordBody = z.infer<typeof resetPasswordBody>;
+
 export const createAccountBody = z.object({
   name: z.string().min(1),
   description: z.string().nullish(),
