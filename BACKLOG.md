@@ -108,15 +108,19 @@ endorsement.
   since (contributions, check-ins, transfer confirmations, 2FA enrolment,
   import/export) have browser-level coverage; they're tested at the unit and
   service level only.
-- **Wide tables overflow the page at phone width.** Found by WP-8's screenshot
-  pass, and pre-existing: at a 390px viewport the account page's eight-column
-  `.plan-table` measures 676px, so the whole document scrolls sideways rather
-  than the table scrolling inside itself. The projection grid already solves
-  this properly — `.grid-scroll` wraps it in an `overflow-x: auto` container
-  with a sticky first column — so the fix is to give the plan table (and the
-  accounts index's) the same wrapper, not a new mechanism. Deliberately not
-  bundled into the contrast pass: it is a layout change with a sticky-column
-  interaction of its own.
+- **Three tables still overflow the page at phone width.** The plan tables are
+  done: `.table-scroll` wraps them in an `overflow-x: auto` container with a
+  sticky payment column and edge fades, and on a phone the plan table sheds
+  type/due/amount into a sub-line under the name. Measured in Chrome, the
+  account page is now exactly 390px wide at a 390px viewport (it was 675px).
+  Three tables were outside that change's remit and still drag the document
+  sideways: the accounts index (`AccountsPage.tsx`, 454px, document 467px) and
+  the household plan's per-account and per-person tables
+  (`HouseholdPlanView.tsx`, 576px and 402px, document 589px). The mechanism is
+  built and generic — wrap the `<table>` in `<div className="table-scroll">`
+  and put `sticky-col` on the first column's `th` and `td`. Whether those three
+  should also drop columns at phone width is a per-table judgement; the plan
+  table needed it, a five-column table may not.
 - **Inline edit affordance for amounts.** Today changing an income/payment
   amount opens the full drawer; a click-to-edit on the row would be slicker.
   Same for moving a payment to a project or another account — both work in the
