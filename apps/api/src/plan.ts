@@ -7,6 +7,7 @@ import {
   computeHouseholdPlan,
   type ConfirmedArrival,
   type EstatePlan,
+  type FlowAllocation,
   type HouseholdAccountInput,
   type HouseholdInput,
   type HouseholdPlan,
@@ -492,6 +493,57 @@ export async function computePlanForAccount(
 ): Promise<AccountPlan> {
   const estate = await computeEstateFor(store, [account], asOfDate, ctx);
   return estate.plans.find((p) => p.accountId === account.id)!;
+}
+
+/**
+ * Who is sending the money each of `accounts` has arriving from a household.
+ *
+ * The two derivations of money crossing an account boundary are disjoint: the
+ * ordered pass settles movements the user *authored*, and a household plan
+ * settles what each *member* must move. A diagram over a set of accounts needs
+ * both, or a shared pot fills up out of nowhere while the account paying for it
+ * shows the money still sitting there.
+ *
+ * This adds nothing to either. `HouseholdPlan.transfers` is already the answer;
+ * all that happens here is looking it up per account and pairing it with the
+ * account it lands in. The household plan is the one the account's own inflow
+ * resolution already computed — same memo, same request, no second pass.
+ *
+ * **Names are gated, amounts are not**, the same rule the plan endpoint's
+ * `inflowSources` applies: an account can be shared with someone outside the
+ * household funding it, and how much arrives is a fact about the account while
+ * who sent it is a fact about a household they may not be in.
+ */
+export async function householdAllocations(
+  store: Store,
+  userId: string,
+  accounts: readonly Account[],
+  asOfDate: string,
+  ctx: PlanContext = createPlanContext(),
+): Promise<FlowAllocation[]> {
+  const allocations: FlowAllocation[] = [];
+  for (const account of accounts) {
+    const inflow = await resolveAccountInflow(store, account, asOfDate, ctx);
+    if (!inflow) continue;
+    const [plan, membership] = await Promise.all([
+      memo(ctx.householdPlans, `${inflow.householdId}@${asOfDate}`, () =>
+        computeHouseholdPlanFor(store, inflow.householdId, asOfDate),
+      ),
+      store.getMembership(inflow.householdId, userId),
+    ]);
+    for (const transfer of plan.transfers) {
+      if (transfer.toAccountId !== account.id) continue;
+      const name = plan.members.find((m) => m.userId === transfer.memberUserId)?.displayName;
+      allocations.push({
+        toAccountId: account.id,
+        fromAccountId: transfer.fromAccountId,
+        memberUserId: transfer.memberUserId,
+        ...(membership && name !== undefined ? { memberName: name } : {}),
+        amountMinor: transfer.amountMinor,
+      });
+    }
+  }
+  return allocations;
 }
 
 /**
