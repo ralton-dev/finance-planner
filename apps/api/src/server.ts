@@ -1527,14 +1527,29 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return reply.code(201).send({ confirmation, contributions });
   });
 
-  /** Movements touching this account this month, from both sides: what arrived
-   *  here and what left here. No household needed to ask. */
+  /**
+   * Movements touching this account this month, from both sides: what arrived
+   * here and what left here. No household needed to ask.
+   *
+   * Both shapes a household-free movement comes in — the authored one, which
+   * names its `inflowId`, and the one the pass derived, which names neither a
+   * household nor an inflow because nobody wrote it down. They are two different
+   * movements between the same two accounts, each confirmed on its own, and a
+   * caller that could see only the first had no way to un-confirm the second.
+   */
   app.get("/api/accounts/:id/transfers/confirmations", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
     const { month } = req.query as { month?: string };
     await requireAccess(userId, id, "view");
-    return store.listTransferConfirmationsForAccount(id, monthQuery(month));
+    const asked = monthQuery(month);
+    const [authored, derived] = await Promise.all([
+      store.listTransferConfirmationsForAccount(id, asked),
+      store.listDerivedTransferConfirmationsForAccount(id, asked),
+    ]);
+    return [...authored, ...derived].sort((a, b) =>
+      a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
+    );
   });
 
   /**

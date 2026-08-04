@@ -1436,7 +1436,27 @@ describe("api service", () => {
       headers: auth,
     });
     expect(ledger.json()).toEqual([]);
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${pot.id}/transfers/confirmations`,
+      headers: auth,
+    });
+    expect(listed.json()).toEqual([]);
     expect((await confirm()).statusCode).toBe(201);
+    // Readable from both ends, and distinguishable from an authored movement by
+    // carrying neither a household nor an inflow.
+    for (const accountId of [pot.id, current.id]) {
+      const rows = (
+        await app.inject({
+          method: "GET",
+          url: `/api/accounts/${accountId}/transfers/confirmations`,
+          headers: auth,
+        })
+      ).json();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].householdId).toBeNull();
+      expect(rows[0].inflowId).toBeNull();
+    }
   });
 
   it("refuses a derived confirmation nothing in the plan asks for", async () => {
