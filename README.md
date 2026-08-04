@@ -5,6 +5,13 @@ your payments (with due dates and recurrence) and the app tells you how much to
 set aside each month per goal to hit its target date, and how much you have
 left over — per account and across all accounts.
 
+**The unit of planning is the user, not the account.** An account is a location
+money sits in, not a planning universe: a bills pot fed by your current account
+is funded out of that account's surplus, so the two cannot be planned
+independently. One dependency-ordered pass covers everything you own. Money
+arriving from outside is income; money you move between two of your own accounts
+is not — it is your own money, moved.
+
 Multi-user with shared **households**, cross-account **projects**, and a
 **savings engine** that prioritises goals, surfaces shortfalls, and projects
 completion when underfunded.
@@ -13,7 +20,10 @@ Households also get a **pooled money-flow plan**: tag each account as a shared
 pot or personal to a member, set each member's proportional contribution share,
 and mark expenses shared or personal. The engine then splits shared costs by
 share, funds across all accounts by priority, and works out the **transfers**
-each person should make into each account — visualised as a Sankey diagram.
+each person should make into each account. A household is an **attribution
+layer** — whose money this is, who bears a cost, how a shared cost splits —
+never a boundary on which accounts take part in the plan. "Not in a household"
+means "no sharing rules apply".
 
 The plan is grounded in reality by a **contributions ledger**: record what you
 actually set aside, check in your real balance, tick off transfers, and close
@@ -25,6 +35,8 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 - **Operations / runbook:** [`OPERATIONS.md`](./OPERATIONS.md)
 - **Deferred backlog:** [`BACKLOG.md`](./BACKLOG.md)
 - **UI redesign plan (delivered, WP-0…WP-8):** [`REDESIGN.md`](./REDESIGN.md)
+- **Inflows plan (delivered):** [`INFLOWS.md`](./INFLOWS.md), which supersedes
+  [`HOUSEHOLD-CONTEXT.md`](./HOUSEHOLD-CONTEXT.md)
 - **Contributing:** [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - **Licence:** [MIT](./LICENSE)
 
@@ -32,9 +44,32 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 
 **Planning**
 
-- Accounts with incomes and payments — monthly, yearly, custom-cadence, or a
+- Accounts with inflows and payments — monthly, yearly, custom-cadence, or a
   one-off `fixed_point` goal. Each payment carries a priority; the engine funds
   in priority order and reports shortfalls.
+- **Inflows know where they came from.** `source: external` is what an income
+  always was — a salary, a gift, interest. `source: account` is you moving your
+  own money: one row authored once and read from both ends, arriving on one
+  account and leaving the other. Total money in comes only from the external
+  ones, so a current → pot → ISA chain reports one salary rather than three;
+  everything else is redistribution of money already counted.
+- **Movements are authored from the account page** — what arrives here, what
+  leaves here, and a drawer to add, change or call one off from either end.
+  Authoring takes edit on _both_ accounts (a view grant says you may see my
+  money, not that you may spend it); removing takes edit on either, because
+  releasing a claim can harm neither end. The picker offers same-currency
+  accounts only and the API refuses a cross-currency movement outright — there
+  is no exchange rate anywhere in this system.
+- **Expenses before movements.** An account's own payments are all funded before
+  anything it sends onward, whatever the priority numbers say, so a pot can
+  never starve a bill. Money cannot be spent twice at any depth either: a £300
+  movement out of an account with £120 left after its bills moves £120, and says
+  so.
+- **Funding loops are detected, not refused.** A → B → C → A is a property of
+  the estate rather than of whichever row happened to be saved last, so it is
+  found when the plan is computed, reported with the accounts in the order money
+  travels, and broken at one edge so everything else still plans. Never refused
+  at authoring time, never a hang.
 - Goals work two ways: **paced by date** (required monthly = remaining ÷ months
   left) or **contribution-first** — set a fixed monthly amount and the finish
   date becomes a consequence of the pace. A contribution-first goal needs no
@@ -48,6 +83,10 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 
 **Household**
 
+- An account inside a household is planned _with what arrives_. The household's
+  allocation is resolved once, at the point every read shares, so the plan
+  endpoint, the projection, the what-if preview, the upcoming feed, the overview
+  and the digest all see the same figure rather than six that can drift.
 - Shared-pot vs personal accounts, per-member contribution shares, and
   shared vs personal expenses. Shared costs split by share; personal costs land
   on their bearer. Each share is rounded **up** to the penny, so a pot ends the
@@ -64,8 +103,17 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   plan reflects what you really did.
 - **Balance check-ins** (one per account per day) with a **drift warning** when
   the plan has reserved more than the account actually holds.
+- **Three statuses, not two.** A plan line is `funded`, `awaiting_transfer` —
+  the plan covers it and nobody has moved the money yet, amber — or `at_risk` —
+  the plan cannot cover it, red. Red means only the second. Two different
+  problems with two different remedies, no longer the same colour.
 - **Transfer confirmations**: tick a planned transfer off and it writes the
   matching contributions into the destination account. Monthly, not per-payday.
+- **"I moved the money" works with nobody else involved.** A movement between
+  two accounts you own is a row you can tick, on the Overview and in the digest,
+  with no household anywhere. What gets booked is what actually arrived rather
+  than what the row asks for, so a sender that could only spare £120 of an
+  authored £300 records £120.
 - **Month closes** freeze income / planned / saved for a month, and the
   **savings scorecard** shows the resulting savings rate per month.
 - **Net-worth chart** built from balance check-ins, one line per currency,
@@ -74,19 +122,33 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 **Forecasting**
 
 - **12-month projection** (selectable 6/12/24) for an account or a whole
-  household: re-plans every month against evolving state. Renders as a chart
-  plus a payments × months grid marking the months each payment falls due.
-  The projected-balance line needs at least one balance check-in.
+  household: re-plans the estate every month against evolving state, because
+  what arrives in month seven is another account's month-seven surplus after
+  month-seven's bills. Renders as a chart plus a payments × months grid marking
+  the months each payment falls due. The projected-balance line needs at least
+  one balance check-in.
 - **Upcoming payments** feed (default 14 days) on the Overview, and an opt-in
-  **daily email digest** covering the next 7 days of bills and transfers.
+  **daily email digest** covering the next 7 days of bills, plus the money this
+  month funds and nobody has said they moved — household transfers with their
+  payday, your own movements without one.
 
 **Insight**
 
 - Tag **bar list** ("where the month goes") — one row per tag, ranked biggest
   first, colour carrying the ranking — and per-member **stacked bars** ("who
   carries what").
-- Household **Sankey** — income → accounts → transfers → spending/left over —
-  with a **£ / %** toggle.
+- **Flow diagrams over any set of accounts.** `/flow` draws income → accounts →
+  movements → spending / left over for whatever scope you pick — everything you
+  own, two households and a standalone pot, one pair — with a **£ / %** toggle.
+  A household is one _preset_ over that scope rather than the mechanism, and the
+  household plan page links across to the same picture where it can be widened
+  past the household.
+- **Hiding is presentation; scope is arithmetic.** An account taken out of the
+  picture keeps its row and every one of its figures — nothing is recomputed and
+  the server is not asked. Which accounts the diagram is computed over, which
+  are hidden, and any household preset all travel in the URL, so every picture
+  is bookmarkable and shareable. Naming a scope is a local convenience, stored
+  in the browser beside the theme; a scope you want to keep is one to bookmark.
 - **PNG export** on every chart.
 - **Light and dark themes.** A new install follows your OS; the sidebar toggle
   (or `t t`) walks system → light → dark, and an explicit choice is remembered
@@ -106,7 +168,10 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   a replayed one revokes every session for that user.
 - **TOTP 2FA** with step-up at login and eight single-use recovery codes
   (hashed at rest). **Password reset** by email.
-- **JSON export / import** of your own data, and **account erasure**.
+- **JSON export / import** of your own data — movements between your own
+  accounts travel too, with the source named rather than referenced by an id
+  that would be minted fresh, and so do the standalone confirmations against
+  them — and **account erasure**.
 - **Installable PWA** — offline app shell, self-hosted JetBrains Mono, no CDN
   calls. `/api` is never cached.
 - **Demo seed** plants a worked example into an empty account, gated behind
@@ -115,9 +180,10 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 ## Architecture
 
 ```
-Browser ──/api──▶ api (gateway/BFF) ──┬─ core domain (accounts, incomes,
+Browser ──/api──▶ api (gateway/BFF) ──┬─ core domain (accounts, inflows,
                                        │   payments, projects, contributions,
-                                       │   plan, projection, upcoming, overview)
+                                       │   plan, projection, flow, upcoming,
+                                       │   overview)
                                        ├─ /api/auth/* ─proxy─▶ auth service
                                        └─ computes plans via @finance-planner/domain
                                        │
@@ -134,6 +200,14 @@ Browser ──/api──▶ api (gateway/BFF) ──┬─ core domain (accounts
 - **Calculation engine** is a pure library (`packages/domain`) — takes an
   explicit `asOfDate`, never reads the wall clock, exhaustively unit-tested
   (≥95% lines / ≥80% branches, gated in CI).
+- **One pass over the estate, not one per account.** `computeEstatePlan`
+  (`packages/domain/src/estate.ts`) sorts the accounts a person owns into
+  dependency order, senders first, and carries what each can actually afford
+  down to the next; `computePlanForAccount` is a view onto that pass rather than
+  a calculation of its own. Traversal is iterative, so a deep chain is a long
+  estate and not a stack overflow. Inflow is resolved once at
+  `buildAccountInput` — the choke point every read shares — which is the only
+  way six call sites cannot drift apart.
 - **Persistence** behind a `Store` interface (`packages/data`) with two
   implementations: `PgStore` (Drizzle + Postgres) and `MemoryStore` (tests
   and DB-less local dev). Services pick `PgStore` when `DATABASE_URL` is set.
@@ -156,7 +230,7 @@ packages/
   policies  per-request authorisation rules (action + subject)
   security  scrypt password hashing, HS256 JWT (jose), TOTP
   mailer    Mailer interface + SmtpMailer (nodemailer) / LogMailer fallback
-db/          SQL migrations (0001_init.sql … 0007_platform.sql) + seed
+db/          SQL migrations (0001_init.sql … 0009_standalone_confirmations.sql) + seed
 deploy/
   local/     docker-compose stack, compose nginx, kind helper
   helm/      cloud-agnostic chart (services, ingress, migrate Job, HPA, PDB, …)

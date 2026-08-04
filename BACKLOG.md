@@ -6,6 +6,77 @@ endorsement.
 
 ## Product
 
+- **SHIP-BLOCKING — a household plan cannot see money leaving the household, and
+  overstates what its accounts hold.** `HouseholdAccountInput`
+  (`packages/domain/src/household.ts:38`) carries `incomes` and `payments` and
+  has no word for inflows; `buildHouseholdInput` (`apps/api/src/plan.ts:694`)
+  fills it with `externalOf(inflows)`, so an authored movement _out_ of a
+  household account into an account outside the household is invisible to the
+  household engine. Measured in a browser on the same account: **left over
+  £2,793** on the household plan page against **£2,093** on the flow diagram —
+  the difference is exactly the movements the household plan has never heard of.
+  Four things make this urgent rather than a nit:
+  - **The error runs in the dangerous direction.** The household page overstates
+    the money in an account. An understatement is a nuisance; an overstatement
+    is a household spending money that is already committed.
+  - **This work created the exposure.** Account-sourced inflows did not exist
+    before it, so a household plan could not be wrong about them. The
+    source-account picker offers any account the caller can edit, household-
+    assigned ones included, so authoring one movement out of a household account
+    is enough to trigger it. Reachable through the UI, not theoretical.
+  - **It is the original defect with the arrow reversed.**
+    `HOUSEHOLD-CONTEXT.md` opens with "an account assigned to a household is
+    planned twice, by two engines that never speak". This work fixed household →
+    account, the pot that could not see its funding, and left account →
+    household. The remedy is the same class: fix it in the plan, never in
+    presentation (`INFLOWS.md` decision 2 — two sources of truth is the defect
+    being avoided).
+  - **There was an early warning.** WP-B reported that
+    `packages/domain/src/household.ts:420` computes a second, structurally
+    different `leftoverMinor` — `income + tin - tout - fout` — from the engine's,
+    and judged it pre-existing and out of scope. It was, and the judgement was
+    right at the time; it stopped being harmless the moment movements became
+    authorable. That line is where the reconciliation has to start.
+
+  Fixing it needs a decision about what a household plan _means_ once its
+  accounts can send money outside it — is an outbound movement an obligation of
+  the household, or of the member who authored it? **A new plan is being written
+  for this.** It is not loose work to be picked up piecemeal.
+
+- **The household projection is blind the same way.**
+  `computeHouseholdProjection` (`packages/domain/src/projection.ts:584`) takes
+  the same `HouseholdInput`, so every simulated month inherits the entry above:
+  the household forecast ignores every authored movement, while
+  `computeEstateProjection` beside it re-plans them each month. Two forecasts of
+  the same accounts therefore disagree for the same reason the two plans do.
+  Fix the input shape and this follows.
+- **An account in two households is planned by whichever assigned it first.**
+  `householdPlanningAccount` (`apps/api/src/plan.ts:203`) looks from the account
+  outwards — the households its owner belongs to, then the households it is
+  shared into — and takes the first that has actually assigned it a role. That
+  is deterministic but arbitrary: an account genuinely assigned in two
+  households gets one of them, and the other's allocation never reaches its
+  plan. `GET /api/flow` inherits it through `householdAllocations`
+  (`apps/api/src/plan.ts:517`). Fixing it means deciding what two allocations
+  into one account add up to — a product question, not a lookup bug.
+- **Saved flow scopes are browser-local.** `apps/web/src/lib/scopes.ts` keeps
+  named scopes in `localStorage` beside the theme and the privacy toggle,
+  because a scope decides how you are looking rather than anything about
+  anyone's money. Server persistence — a `0010_` migration, a `flow_scopes`
+  entity with Memory + Pg + contract parity, CRUD routes, export/import coverage
+  — was deliberately not built: the scope already survives in the URL, so this
+  buys cross-device sync and nothing else. The honest consequence today is that
+  a scope you want to keep is one to bookmark.
+- **Imported confirmations lose the tie to their contributions.**
+  `apps/api/src/portability.ts` imports a transfer confirmation, and the
+  contributions it once created arrive separately under the payments they were
+  booked against with `transferConfirmationId: null`, as every imported
+  contribution does. Both facts survive the trip; the link between them does
+  not, so un-confirming an imported movement leaves its imported contributions
+  where they are rather than taking them with it. The import site says so in a
+  comment. Relinking needs the import to match contributions back to the
+  confirmation that produced them, and nothing in the file identifies that
+  today.
 - **Household plan — effective-dated contribution shares.** A member's share is
   a single current value (`household_memberships.contribution_share_bp`). The
   planner is forward-looking, so changing 60/40 → 66/34 just updates the split
@@ -33,7 +104,11 @@ endorsement.
   a whole planned transfer for the month; the payday schedule underneath it is
   display-only, so you can't tick off "the first half, paid on the 15th".
   Per-slice confirmations would need the schedule to be stable enough to
-  reference — today it is derived fresh on every read.
+  reference — today it is derived fresh on every read. A movement between two
+  accounts you own is monthly for a different and deliberate reason: it carries
+  no date at all (`apps/api/src/notify.ts:47`), because it says only that it
+  happens each month and inventing a day would be a fact the plan does not hold.
+  Any per-slice design has to answer both cases, not just the household one.
 - **Upcoming feed skips undated recurring bills.** `packages/domain/src/upcoming.ts`
   needs a calendar day to pin a row to, so a `monthly_recurring` (or yearly, or
   custom) payment with no `dueDate` never appears in the digest or the Overview
@@ -47,8 +122,12 @@ endorsement.
   (`apps/auth/src/server.ts` checks the password hash and nothing else).
 - **Multi-currency FX.** Accounts are single-currency; overview groups per
   currency without conversion, and the net-worth chart draws one line per
-  currency rather than a total. Adding FX = a rates source + a per-user
-  display-currency preference.
+  currency rather than a total. There is no rate anywhere in the system, so
+  everything that would need one is now refused rather than guessed: a movement
+  between two accounts in different currencies is a 422 naming the pair (and the
+  source picker never offers one), and a flow diagram spanning currencies is a
+  422 too. Adding FX = a rates source + a per-user display-currency preference,
+  and those three refusals become the places it plugs in.
 - **Audit history UI.** No surface for "who changed this share / role / amount".
 - **Project breakdown on the Overview page.** Projects render on `/projects`
   only; the Overview never aggregates them.
@@ -106,8 +185,40 @@ endorsement.
 - **E2E coverage is one smoke test.** `apps/web/e2e/smoke.spec.ts` loads the SPA
   and checks it renders — that's the whole suite. None of the flows shipped
   since (contributions, check-ins, transfer confirmations, 2FA enrolment,
-  import/export) have browser-level coverage; they're tested at the unit and
-  service level only.
+  import/export, authoring a movement, the flow diagram and its scopes) have
+  browser-level coverage; they're tested at the unit and service level only.
+  Several of those were driven by hand against a real API in Chromium at 1280
+  and 390 while they were built, which is exactly the evidence a spec file would
+  have kept.
+- **`TransferChecklist` is household-shaped in three independent ways.**
+  `apps/web/src/components/TransferChecklist.tsx:43` renders a **who** column
+  keyed on household members, detects orphan confirmations with a
+  `fromAccountId|toAccountId|memberUserId` key, and ends in a `PaydayPlan`
+  section that has no standalone analogue at all — a movement carries no date,
+  decided deliberately at `apps/api/src/notify.ts:47`. Two packages
+  independently judged generalising it _not contained_ and routed around it
+  instead, so the Overview derives its standalone movement rows separately.
+  Booking it means answering two design questions rather than doing a
+  refactor: what the "who" column says for a movement between two accounts one
+  person owns, and what replaces the payday breakdown when there is no payday to
+  anchor to.
+- **`listAccountConfirmations` has no consumers.** `apps/web/src/lib/api.ts:437`
+  wraps `GET /api/accounts/:id/transfers/confirmations` — the read that answers
+  "what moved into or out of this account", household or not, and which the API
+  tests exercise — and nothing in the app calls it.
+  `apps/web/src/pages/HouseholdPlanPage.tsx:34` still reads confirmations with
+  `listTransferConfirmations(householdId, month)`, which can only ever describe
+  movement inside one household. Either wire the account-scoped read up or
+  delete the method; a typed, unused client method is a claim the app does not
+  make.
+- **`packages/domain/src/projection.ts` is invisible to `grep` and `rg`.** It
+  contains a literal NUL byte at offset 22393 — a deliberate key separator in
+  the template literal at `lineKey()`, line 571 — so `grep` skips the file
+  silently (exit 1, no output at all) and `rg` prints `binary file matches`
+  instead of the lines. Searching it needs `grep -a` / `rg --text`, and nothing
+  tells you that until you notice the projection engine never appears in any
+  result. It has already cost one contributor time. Swapping the separator for
+  an ordinary character removes the trap.
 - **Inline edit affordance for amounts.** Today changing an income/payment
   amount opens the full drawer; a click-to-edit on the row would be slicker.
   Same for moving a payment to a project or another account — both work in the
