@@ -18,16 +18,75 @@ The runbook. How to configure, deploy, and operate Finance Planner. See
 | `LOG_LEVEL`                        | all             | `info`                          | Pino level.                                                                   |
 | `API_PORT`/`AUTH_PORT`/`CALC_PORT` | resp.           | 4000/4001/4002                  |                                                                               |
 
-In Kubernetes these come from the chart's ConfigMap (`config:`) and Secret
-(`secrets:`) — see `deploy/helm/finance-planner/values.yaml`.
+### Mail
+
+| Var              | Services  | Default                                            | Notes                                                                                                                                        |
+| ---------------- | --------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SMTP_URL`       | api, auth | _(unset → mail is logged, not sent)_               | nodemailer transport URL, e.g. `smtps://user:pass@smtp.example.com:465`. Carries credentials — keep it a secret.                             |
+| `MAIL_FROM`      | api, auth | `Finance Planner <no-reply@finance-planner.local>` | `From:` header on outbound mail.                                                                                                             |
+| `PUBLIC_WEB_URL` | auth      | `http://localhost:5173`                            | Public origin of the SPA. Builds emailed password-reset links and is where a successful SSO round-trip lands. Trailing slashes are stripped. |
+
+Without `SMTP_URL` both services fall back to a `LogMailer`: verification
+tokens, reset links, and digests are written to the normal log stream instead
+of being sent. That is the intended local-dev behaviour — the reset link is in
+`make logs`. An empty string counts as unset.
+
+### Notifications (api)
+
+| Var              | Default | Notes                                                                                                            |
+| ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `NOTIFY_ENABLED` | `false` | Runs the daily digest sender in-process. Must be the literal string `true`.                                      |
+| `NOTIFY_HOUR`    | `8`     | Local hour (0–23) from which the day's digests may go out. Anything unparseable or out of range falls back to 8. |
+
+### Demo seed (api)
+
+| Var                | Default | Notes                                                                                                                         |
+| ------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `ENABLE_DEMO_SEED` | `false` | Exposes `POST /api/demo/seed`. The route 404s while this is false; `GET /api/meta` reports `{"demoSeedEnabled": …}` publicly. |
+
+### OIDC single sign-on (auth)
+
+| Var                  | Default | Notes                                                                            |
+| -------------------- | ------- | -------------------------------------------------------------------------------- |
+| `OIDC_ISSUER`        | _unset_ | Provider base URL. Discovery is `$OIDC_ISSUER/.well-known/openid-configuration`. |
+| `OIDC_CLIENT_ID`     | _unset_ | Client registered with the provider.                                             |
+| `OIDC_CLIENT_SECRET` | _unset_ | Keep it a secret. Sent in the token-exchange body.                               |
+| `OIDC_REDIRECT_URI`  | _unset_ | **Must be the gateway path**: `<public origin>/api/auth/oidc/callback`.          |
+
+All four must be set or SSO stays off — a half-configured provider is treated
+as absent rather than half-on. `GET /api/auth/oidc/meta` reports
+`{"enabled": false}` and the login/callback routes 404 `oidc_disabled`.
+
+The redirect URI is not negotiable in shape: the handshake cookies
+(`fp_oidc_state`, `fp_oidc_verifier`, signed, `SameSite=Lax`, 10-minute TTL)
+are scoped to `COOKIE_PATH`, which defaults to `/api/auth`. A callback
+delivered straight to the auth service port arrives without them and fails
+`403 invalid_state`. Register the gateway path with the provider and set the
+same value here — it is sent verbatim in both the authorize request and the
+token exchange, so the three must match exactly. The flow uses PKCE (S256);
+state and verifier live in those cookies, not in server-side storage.
+
+In Kubernetes these come from the chart's ConfigMap (`config:`), Secret
+(`secrets:`), and the per-service `serviceEnv:` map — see
+`deploy/helm/finance-planner/values.yaml`. `serviceEnv` renders as `env:` on a
+single Deployment and **omits empty values**, so a setting left blank arrives
+unset rather than as `""` (which `PUBLIC_WEB_URL` would otherwise accept as
+real configuration). Put `SMTP_URL` and `OIDC_CLIENT_SECRET` in `secrets:`;
+everything else in this section is non-secret and belongs in `serviceEnv`.
 
 ## 2. Deployment (Helm)
 
 The chart lives at `deploy/helm/finance-planner` and renders Deployments +
 Services for each of the four apps, an Ingress (`/api` → api, `/` → web),
 optional in-cluster Postgres/Redis, a **migration Job** (post-install /
-post-upgrade hook that loops every `db/migrations/*.sql` in lexical order),
-HPA, and PodDisruptionBudgets per service.
+post-upgrade hook that globs the chart's own `files/*.sql` mirror of
+`db/migrations/` into a ConfigMap and applies each in lexical order), HPA, and
+PodDisruptionBudgets per service.
+
+Env reaches the pods three ways: `config:` → a ConfigMap and `secrets:` → a
+Secret, both `envFrom`'d by every service; and `serviceEnv.<service>` → an
+`env:` block on that one Deployment, for settings only one service reads
+(`NOTIFY_*`/`ENABLE_DEMO_SEED` on api, `PUBLIC_WEB_URL`/`OIDC_*` on auth).
 
 Per environment:
 
@@ -88,10 +147,27 @@ Plain numbered SQL under `db/migrations/`. Applied:
 - Manually via `make migrate` (only applies `0001_init.sql`; extend if you
   add migrations and need to apply them to an existing dev volume).
 
+The set, in order:
+
+| File                           | Adds                                                                                                |
+| ------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `0001_init.sql`                | auth/core/calc schemas: users, sessions, households, accounts, incomes, payments.                   |
+| `0002_projects.sql`            | Cross-account projects.                                                                             |
+| `0003_household_shares.sql`    | Contribution shares, shared/personal account + payment scope.                                       |
+| `0004_reality_loop.sql`        | `core.contributions`, `core.balance_snapshots`, `core.transfer_confirmations`, `core.month_closes`. |
+| `0005_auth_hardening.sql`      | `auth.users.totp_secret`/`totp_enabled_at`, `auth.recovery_codes`, `auth.password_reset_tokens`.    |
+| `0006_goal_modes_and_tags.sql` | `core.payments.fixed_monthly_minor` and `core.payments.tag`.                                        |
+| `0007_platform.sql`            | `auth.users.notify_email` opt-in and `core.notification_log` (unique `(user_id, date, kind)`).      |
+
+All of them are idempotent (`IF NOT EXISTS` throughout), so re-running the Job
+against an already-migrated database is a no-op.
+
 Drift watch: the chart copies SQL files into
-`deploy/helm/finance-planner/files/`. Keep that mirror in sync with
-`db/migrations/`. Adopting `drizzle-kit` for generated migrations is on the
-backlog.
+`deploy/helm/finance-planner/files/`. **Keep that mirror in sync with
+`db/migrations/` — adding a migration and forgetting the copy ships a chart
+that silently under-migrates** (0004–0007 were missing until they were
+copied in). `diff -rq db/migrations deploy/helm/finance-planner/files` should
+be empty. Adopting `drizzle-kit` for generated migrations is on the backlog.
 
 ### Secrets
 
@@ -113,13 +189,85 @@ PodDisruptionBudget with `minAvailable: 1`.
 
 ### Auth-specific
 
-- Per-route rate-limit (`@fastify/rate-limit`): register 3/min, login 5/min,
-  refresh 20/min per IP.
+- Per-route rate-limit (`@fastify/rate-limit`), per IP: register 3/min, login
+  5/min, TOTP step-up 10/min, TOTP setup/enable/disable 10/min, forgot-password
+  3/min, reset 5/min, account deletion 3/min, refresh 20/min.
 - Refresh tokens rotate on use. A presented-but-revoked token triggers
   **reuse detection**: every active session for the user is revoked and the
   client must re-login. Surfaced as `401 reuse_detected`.
 - Account access uses a 404-not-403 leak rule: no access at all returns 404
   (preserves existence privacy), insufficient permission returns 403.
+- TOTP is optional per user. Enrolment issues single-use recovery codes;
+  step-up is required at login once enabled. OIDC logins deliberately skip the
+  step-up — the provider owns that factor.
+- Password-reset tokens are valid for one hour and are consumed on use.
+
+### Notifications
+
+The daily digest ("due in the next 7 days" + "transfers for the next 7 days")
+is sent by the **api** service to users who opted in with
+`PATCH /api/auth/me {"notifyEmail": true}` — off by default, nobody is mailed
+who didn't ask.
+
+- **In-process, not a CronJob.** `NOTIFY_ENABLED=true` starts a **15-minute
+  ticker** inside the api process (`apps/api/src/notify.ts`). It is unref'd, so
+  it never holds the process open, and it's torn down on Fastify `onClose`.
+- **Hour gate.** A tick does nothing until the process's **local** hour has
+  reached `NOTIFY_HOUR`. It's a lower bound, not a target time — the first tick
+  at or after the hour sends, and a process started at 23:00 still sends that
+  day. Containers set no `TZ`, so local is UTC unless you set one; the digest
+  is keyed by UTC date, so the two only agree when the container is UTC.
+- **Dedupe.** Before building a digest the sender claims a row in
+  `core.notification_log` with `INSERT … ON CONFLICT DO NOTHING` on the unique
+  key **`(user_id, date, kind)`** (kind is `daily_digest`) and only mails if it
+  won the row. Restarts, redeploys, and slow ticks therefore can't double-send.
+  A claimed-then-crashed run loses that day's digest rather than repeating it.
+- **Single-replica assumption.** The ticker runs in **every** api replica that
+  has the flag on, and there is no distributed lock — the unique key is the only
+  cross-process safety. Enable `NOTIFY_ENABLED` on exactly one replica; the
+  chart's `serviceEnv.api` sets it for the whole Deployment, so scaling api out
+  with it on means N replicas racing on the same INSERT. Harmless, but wasteful.
+- A user with nothing due and no transfers gets no mail (the slot is still
+  claimed).
+
+### Demo seed
+
+`ENABLE_DEMO_SEED=true` exposes `POST /api/demo/seed`, which plants a worked
+example into an **empty** account so a fresh install has something to look at:
+one current account, a salary, four bills (one of each recurrence shape), a
+contribution, and a balance snapshot, all dated relative to today.
+
+- Requires a bearer token — an unauthenticated caller gets 401, not 404.
+- 404s while the flag is off, deliberately rather than 403, so an install
+  without it doesn't advertise the route.
+- 409 `demo_not_empty` if the caller already owns any account.
+- `GET /api/meta` is public and returns `{"demoSeedEnabled": bool}`; the SPA
+  uses it to decide whether to offer the button on an empty Overview.
+
+Leave it off outside demo installs.
+
+### Data portability and erasure
+
+- `GET /api/export` streams a JSON document (`version: 1`) as a file
+  attachment: **owned accounts only**, with their incomes, payments (each with
+  its contributions), balance snapshots and month closes, plus owned projects.
+  Accounts merely shared _with_ the caller are excluded on purpose — they
+  belong to their owner, and exporting them would hand one household member a
+  copy of another's finances. Household memberships, shares, and transfer
+  confirmations are likewise not in the document.
+- `POST /api/import` takes that same schema and is **additive**: every row is
+  created fresh under the importing user. Nothing is matched, overwritten, or
+  deleted, so importing the same file twice gives two copies. Project and
+  bearer references are dropped (the document doesn't carry those ids), and
+  duplicate months in a hand-edited file are skipped rather than erroring. A
+  file that doesn't match the schema is a 422.
+- `DELETE /api/auth/me` erases the account: **owned** accounts (and everything
+  under them), owned projects, households the user founded, their memberships
+  of other people's households, sessions, tokens, recovery codes, and
+  notification-log rows — then the user row. Accounts and households owned by
+  _other_ people survive. Rate limited to 3/min. The current password is
+  required unless the user has none (SSO-only), where the access token is the
+  proof. Refresh cookie is cleared; responds 204.
 
 ### Logs
 

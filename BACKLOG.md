@@ -1,7 +1,7 @@
 # Backlog
 
-Things we intentionally didn't build in v1. Not a roadmap — just an honest list
-of acknowledged gaps so a future contributor doesn't think the silence is
+Things we intentionally didn't build. Not a roadmap — just an honest list of
+acknowledged gaps so a future contributor doesn't think the silence is
 endorsement.
 
 ## Product
@@ -24,39 +24,48 @@ endorsement.
   drawer only exposes the shared/personal toggle and defaults a personal expense
   to the owning member of its account. A member dropdown would cover "personal
   expense on a shared account, borne by X".
-- **Auto-accumulating contributions ledger.** `Payment.alreadySavedMinor` is a
-  manual field today. The intended replacement: a `core.contributions` table
-  recording per-month allocations, with `alreadySavedMinor` becoming a derived
-  view. Affects `packages/domain/src/engine.ts` (would consume a derived value
-  instead of a raw one).
-- **Notifications.** Goal-at-risk, payment-due. No transport, no scheduler.
-- **Real SMTP mailer.** Only `LogMailer` is wired — registration emails go to
-  stdout. The `Mailer` interface in `apps/auth/src/mailer.ts` is shaped for a
-  drop-in `SmtpMailer`.
-- **Email verification enforcement.** Tokens are issued on register and the
-  verify endpoint works, but login doesn't block unverified users.
-- **Password reset flow.** Not implemented; piggy-backs on the SMTP mailer.
-- **OIDC / social sign-in.** Schema already allows `password_hash` to be null,
-  so the data layer is ready.
-- **Multi-currency FX.** Accounts are single-currency; overview groups per
-  currency without conversion. Adding FX = a rates source + a per-user
-  display-currency preference.
-- **"What-if" simulation.** Add a hypothetical payment and preview the impact
-  without persisting.
+- **What-if preview for households.** `POST /api/accounts/:id/plan/preview`
+  overlays hypothetical payments/incomes on one account. There is no household
+  equivalent: a household overlay has to say which account each hypothetical
+  lands in and who bears it, then re-derive the transfers — a design question of
+  its own rather than a second call site for the account version.
+- **Transfer confirmations are monthly, not per-payday.** A confirmation covers
+  a whole planned transfer for the month; the payday schedule underneath it is
+  display-only, so you can't tick off "the first half, paid on the 15th".
+  Per-slice confirmations would need the schedule to be stable enough to
+  reference — today it is derived fresh on every read.
+- **Upcoming feed skips undated recurring bills.** `packages/domain/src/upcoming.ts`
+  needs a calendar day to pin a row to, so a `monthly_recurring` (or yearly, or
+  custom) payment with no `dueDate` never appears in the digest or the Overview
+  card. It still counts in the plan as a monthly cost. Inferring a day (from
+  first contribution? account payday?) is the obvious fix and deliberately not
+  guessed at.
 - **Lump-sum / windfall allocation.** Split a one-off inflow across goals by
-  priority.
-- **Data export / import + GDPR erasure flows.** Schema uses cascading deletes
-  so erasure is feasible; the UI + retention policy aren't built.
+  priority. Not built — contributions are recorded one payment at a time.
+- **Email verification enforcement.** Tokens are issued on register and
+  `POST /auth/verify-email` works, but login doesn't block unverified users
+  (`apps/auth/src/server.ts` checks the password hash and nothing else).
+- **Multi-currency FX.** Accounts are single-currency; overview groups per
+  currency without conversion, and the net-worth chart draws one line per
+  currency rather than a total. Adding FX = a rates source + a per-user
+  display-currency preference.
 - **Audit history UI.** No surface for "who changed this share / role / amount".
-- **Move existing payment to a project.** Today projectId is set-at-create;
-  no row-level "move to project" action on the Account detail page.
 - **Project breakdown on the Overview page.** Projects render on `/projects`
   only; the Overview never aggregates them.
-- **"What's due today" digest on Overview.** Payments coming up in the next
-  N days aren't surfaced.
 
 ## Platform / ops
 
+- **QR code for TOTP enrolment.** `POST /auth/totp/setup` returns the secret and
+  an `otpauth://` URI, and Settings renders both as copyable text. Nothing on
+  screen is actually scannable — enrolment means pasting the URI or typing the
+  secret. Rendering the URI as a QR needs a generator dependency (or a
+  hand-rolled encoder) that hasn't been taken on.
+- **Notification scheduler assumes a single api replica.** The digest sender is
+  a 15-minute `setInterval` inside the api process, not a CronJob or a queue.
+  There is no leader election or distributed lock — the unique
+  `(user_id, date, kind)` key on `core.notification_log` is the only thing
+  stopping a double-send, and it is a constraint, not a lock. Scaling api out
+  with `NOTIFY_ENABLED=true` means N replicas racing on the same INSERT.
 - **Redis caching + nightly recompute CronJob.** Redis is provisioned but the
   caching/queue path isn't required yet (plans recompute on read).
 - **Observability stack.** Prometheus + Grafana + Loki + OpenTelemetry — none
@@ -71,8 +80,11 @@ endorsement.
   can reach auth and calc directly today.
 - **Image scanning + SBOM + signing.** No Trivy, no syft, no cosign. CI
   builds images but doesn't scan or sign them.
-- **drizzle-kit migrations.** SQL is hand-written and applied in lexical order.
-  Adopting `drizzle-kit generate` would let the schema drive the SQL.
+- **drizzle-kit migrations.** SQL is hand-written and applied in lexical order,
+  and the chart carries its own copy under `deploy/helm/finance-planner/files/`
+  that has to be kept in sync by hand (it has drifted before). Adopting
+  `drizzle-kit generate` would let the schema drive the SQL; templating the
+  ConfigMap from `db/migrations/` directly would remove the mirror.
 - **Helm migration Job runs as `post-install`/`post-upgrade`.** App pods start
   before migrations succeed and flap readiness for a few seconds. Switching to
   `pre-install`/`pre-upgrade` would gate the rollout properly.
@@ -80,8 +92,15 @@ endorsement.
 
 ## Internal / code quality
 
+- **E2E coverage is one smoke test.** `apps/web/e2e/smoke.spec.ts` loads the SPA
+  and checks it renders — that's the whole suite. None of the flows shipped
+  since (contributions, check-ins, transfer confirmations, 2FA enrolment,
+  import/export) have browser-level coverage; they're tested at the unit and
+  service level only.
 - **Inline edit affordance for amounts.** Today changing an income/payment
   amount opens the full drawer; a click-to-edit on the row would be slicker.
+  Same for moving a payment to a project or another account — both work in the
+  edit drawer, neither has a row-level action on the Account page.
 - **CASL.** The `packages/policies` module mimics the can/cannot shape; if
   the rules get more conditional (status-based, ownership-based across new
   subjects) we'd swap to `@casl/ability`.

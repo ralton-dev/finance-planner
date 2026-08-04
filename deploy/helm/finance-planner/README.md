@@ -31,6 +31,15 @@ helm upgrade --install finance-planner deploy/helm/finance-planner \
   the drift-watch note on keeping `files/` in sync with `db/migrations/`).
 - Horizontal Pod Autoscaler (CPU) and PodDisruptionBudget per service.
 
+## Configuration
+
+`config:` and `secrets:` are shared by every service (ConfigMap + Secret,
+consumed via `envFrom`). `serviceEnv.<service>` adds an `env:` block to one
+Deployment only — that's where mail, digest, demo-seed, and OIDC settings go.
+Empty values are omitted from the render, so leaving one blank means unset
+rather than `""`. Full table in
+[`../../../OPERATIONS.md`](../../../OPERATIONS.md) §1.
+
 ## Secrets
 
 `values.yaml` ships placeholder secrets for local use only. Override via

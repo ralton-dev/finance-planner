@@ -38,6 +38,34 @@ config:
   AUTH_URL: http://finance-planner-auth:4001
   COOKIE_SECURE: "true"
 
+# Non-secret settings only one service needs, layered on top of the shared
+# ConfigMap as `env:` on that Deployment. An empty value is omitted entirely
+# rather than rendered as "" — the services treat "" as configuration in a
+# couple of places, so unset has to mean unset. All optional; defaults are off.
+serviceEnv:
+  api:
+    # From: header for the daily digest. Falls back to a no-reply address.
+    MAIL_FROM: ""
+    # Daily digest sender. Runs in-process on a 15-minute tick from NOTIFY_HOUR
+    # local time. Enable it on exactly one replica — see OPERATIONS.md §3.
+    NOTIFY_ENABLED: "false"
+    NOTIFY_HOUR: "8"
+    # Exposes POST /api/demo/seed. Leave off outside demo installs.
+    ENABLE_DEMO_SEED: "false"
+  auth:
+    # From: header for verification + password-reset mail.
+    MAIL_FROM: ""
+    # Public origin of the SPA: emailed links and the post-SSO landing spot.
+    # Set this to the ingress host once you have a real hostname.
+    PUBLIC_WEB_URL: ""
+    # OIDC single sign-on. These three plus secrets.OIDC_CLIENT_SECRET must all
+    # be set or SSO stays off. The redirect URI must be the *gateway* callback
+    # path — https://<ingress.host>/api/auth/oidc/callback — because the
+    # handshake cookies are scoped to COOKIE_PATH.
+    OIDC_ISSUER: ""
+    OIDC_CLIENT_ID: ""
+    OIDC_REDIRECT_URI: ""
+
 # DB migration Job (Helm pre-install/pre-upgrade hook).
 migrations:
   enabled: true
@@ -55,6 +83,11 @@ autoscaling:
 secrets:
   DATABASE_URL: postgres://finance:finance@finance-planner-postgres:5432/finance
   JWT_SIGNING_KEY: "change-me-in-real-environments"
+  # nodemailer transport URL (it carries credentials, hence a Secret). Unset →
+  # api and auth log messages instead of sending them.
+  SMTP_URL: ""
+  # Client secret for the OIDC provider configured in serviceEnv.auth.
+  OIDC_CLIENT_SECRET: ""
 
 # In-cluster Postgres/Redis for non-prod. In prod, disable these and point
 # config/secrets at managed instances.

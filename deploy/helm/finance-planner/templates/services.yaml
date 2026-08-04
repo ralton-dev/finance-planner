@@ -1,4 +1,10 @@
 {{- range $name, $svc := .Values.services }}
+{{- /* Per-service env from .Values.serviceEnv, skipping empty values so an
+       unset setting stays unset rather than arriving as an empty string. */}}
+{{- $extraEnv := dict }}
+{{- range $k, $v := (index ($.Values.serviceEnv | default dict) $name | default dict) }}
+{{- if $v }}{{- $_ := set $extraEnv $k $v }}{{- end }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -47,6 +53,13 @@ spec:
                 name: {{ $.Release.Name }}-config
             - secretRef:
                 name: {{ $.Release.Name }}-secrets
+          {{- if $extraEnv }}
+          env:
+            {{- range $k, $v := $extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
           resources:
             {{- toYaml $.Values.resources | nindent 12 }}
 ---

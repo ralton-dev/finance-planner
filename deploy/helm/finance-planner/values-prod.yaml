@@ -20,4 +20,9 @@ ingress:
   host: finance.example.com
 
 # config.REDIS_URL and secrets.DATABASE_URL are expected to be overridden by the
-# deployment pipeline / external secrets to reference managed instances.
+# deployment pipeline / external secrets to reference managed instances. Mail
+# and SSO are likewise environment-specific: set secrets.SMTP_URL,
+# secrets.OIDC_CLIENT_SECRET and the matching serviceEnv entries there too.
+serviceEnv:
+  auth:
+    PUBLIC_WEB_URL: https://finance.example.com

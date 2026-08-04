@@ -71,6 +71,12 @@ services:
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-}
       PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://localhost:8080}
+      # OIDC single sign-on. All four must be set or SSO stays off; the redirect
+      # URI has to be the gateway path (/api/auth/oidc/callback).
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "4001:4001"
