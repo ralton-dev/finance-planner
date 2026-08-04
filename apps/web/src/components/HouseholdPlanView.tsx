@@ -1,6 +1,7 @@
 import { lazy, Suspense, useRef } from "react";
 import { formatMinor } from "../lib/money.js";
 import type { HouseholdPlanDto } from "../lib/types.js";
+import { Amount } from "./Amount.js";
 import { ChartFrame } from "./ChartFrame.js";
 import { DownloadButton } from "./DownloadButton.js";
 
@@ -67,79 +68,113 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
         <h2>per account</h2>
         <span className="meta">[transfers + reconciled balances]</span>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>account</th>
-            <th>role</th>
-            <th className="num">income</th>
-            <th className="num">transfer in</th>
-            <th className="num">transfer out</th>
-            <th className="num">left over</th>
-            <th className="num">shortfall</th>
-          </tr>
-        </thead>
-        <tbody>
-          {plan.accounts.map((a) => (
-            <tr key={a.accountId} className={a.shortfallMinor > 0 ? "at-risk" : ""}>
-              <td className="name">{a.name ?? "account"}</td>
-              <td>
-                {a.role === "shared" ? (
-                  <span className="tag-status idle">shared</span>
-                ) : (
-                  <span className="shared">
-                    {memberName.get(a.memberUserId ?? "") ?? "personal"}
-                  </span>
-                )}
-              </td>
-              <td className="num">
-                {a.monthlyIncomeMinor > 0 ? formatMinor(a.monthlyIncomeMinor, c) : "—"}
-              </td>
-              <td className="num">
-                {a.transferInMinor > 0 ? formatMinor(a.transferInMinor, c) : "—"}
-              </td>
-              <td className="num">
-                {a.transferOutMinor > 0 ? formatMinor(a.transferOutMinor, c) : "—"}
-              </td>
-              <td className="num ok">{formatMinor(a.leftoverMinor, c)}</td>
-              <td className={`num${a.shortfallMinor > 0 ? " warn" : " dim"}`}>
-                {a.shortfallMinor > 0 ? formatMinor(a.shortfallMinor, c) : "—"}
-              </td>
+      {/* Seven columns is more than a phone holds, so on one the two that
+          describe the account rather than move its money — whose it is, and
+          whether income lands in it — fold into a sub-line under the name. What
+          is left is the section's own promise: what comes in, what goes out,
+          and whether it covers the bills. The wrapper scrolls the remainder. */}
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th className="sticky-col">account</th>
+              <th className="wide-only">role</th>
+              <th className="num wide-only">income</th>
+              <th className="num">transfer in</th>
+              <th className="num">transfer out</th>
+              <th className="num">left over</th>
+              <th className="num">shortfall</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {plan.accounts.map((a) => (
+              <tr key={a.accountId} className={a.shortfallMinor > 0 ? "at-risk" : ""}>
+                <td className="name sticky-col">
+                  <span>{a.name ?? "account"}</span>
+                  {/* What the two dropped columns say, once they are gone.
+                      Written flat rather than as copies of their cells: the
+                      sub-line is already quiet, and a chip inside it would
+                      shout. The income goes through <Amount> so privacy mode
+                      still reaches it. */}
+                  <span className="row-sub">
+                    {a.role === "shared"
+                      ? "shared pot"
+                      : (memberName.get(a.memberUserId ?? "") ?? "personal")}
+                    {a.monthlyIncomeMinor > 0 && (
+                      <>
+                        {" · income "}
+                        <Amount minor={a.monthlyIncomeMinor} currency={c} />
+                      </>
+                    )}
+                  </span>
+                </td>
+                <td className="wide-only">
+                  {a.role === "shared" ? (
+                    <span className="tag-status idle">shared</span>
+                  ) : (
+                    <span className="shared">
+                      {memberName.get(a.memberUserId ?? "") ?? "personal"}
+                    </span>
+                  )}
+                </td>
+                <td className="num wide-only">
+                  {a.monthlyIncomeMinor > 0 ? formatMinor(a.monthlyIncomeMinor, c) : "—"}
+                </td>
+                <td className="num">
+                  {a.transferInMinor > 0 ? formatMinor(a.transferInMinor, c) : "—"}
+                </td>
+                <td className="num">
+                  {a.transferOutMinor > 0 ? formatMinor(a.transferOutMinor, c) : "—"}
+                </td>
+                <td className="num ok">{formatMinor(a.leftoverMinor, c)}</td>
+                <td className={`num${a.shortfallMinor > 0 ? " warn" : " dim"}`}>
+                  {a.shortfallMinor > 0 ? formatMinor(a.shortfallMinor, c) : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       <div className="section-head">
         <h2>per person</h2>
         <span className="meta">[contribution + funding]</span>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>member</th>
-            <th className="num">share</th>
-            <th className="num">income</th>
-            <th className="num">their costs</th>
-            <th className="num">left over</th>
-            <th className="num">shortfall</th>
-          </tr>
-        </thead>
-        <tbody>
-          {plan.members.map((m) => (
-            <tr key={m.userId} className={m.shortfallMinor > 0 ? "at-risk" : ""}>
-              <td className="name">{m.displayName ?? "member"}</td>
-              <td className="num">{pct(m.shareBp)}</td>
-              <td className="num">{formatMinor(m.monthlyIncomeMinor, c)}</td>
-              <td className="num">{formatMinor(m.obligationMinor, c)}</td>
-              <td className="num ok">{formatMinor(m.leftoverMinor, c)}</td>
-              <td className={`num${m.shortfallMinor > 0 ? " warn" : " dim"}`}>
-                {m.shortfallMinor > 0 ? formatMinor(m.shortfallMinor, c) : "—"}
-              </td>
+      {/* Six columns, and one of them — the share — is a standing fact about
+          the person rather than anything this month did. It folds into the
+          sub-line on a phone, which leaves the same five as the table above:
+          who, what comes in, what it owes, and how that lands. */}
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th className="sticky-col">member</th>
+              <th className="num wide-only">share</th>
+              <th className="num">income</th>
+              <th className="num">their costs</th>
+              <th className="num">left over</th>
+              <th className="num">shortfall</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {plan.members.map((m) => (
+              <tr key={m.userId} className={m.shortfallMinor > 0 ? "at-risk" : ""}>
+                <td className="name sticky-col">
+                  <span>{m.displayName ?? "member"}</span>
+                  <span className="row-sub">{pct(m.shareBp)} share</span>
+                </td>
+                <td className="num wide-only">{pct(m.shareBp)}</td>
+                <td className="num">{formatMinor(m.monthlyIncomeMinor, c)}</td>
+                <td className="num">{formatMinor(m.obligationMinor, c)}</td>
+                <td className="num ok">{formatMinor(m.leftoverMinor, c)}</td>
+                <td className={`num${m.shortfallMinor > 0 ? " warn" : " dim"}`}>
+                  {m.shortfallMinor > 0 ? formatMinor(m.shortfallMinor, c) : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

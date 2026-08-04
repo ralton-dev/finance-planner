@@ -350,6 +350,43 @@ describe("HouseholdDetailPage — one account table", () => {
   });
 });
 
+// What jsdom can see of the narrow layout. Whether the document stops scrolling
+// sideways at 390px is a measurement, not an assertion.
+describe("HouseholdDetailPage — the tables on a phone", () => {
+  it("scrolls both tables inside a wrapper, first column pinned", async () => {
+    const { container } = renderPage();
+    await rowFor("Bills joint");
+
+    for (const table of container.querySelectorAll("table")) {
+      expect(table.parentElement).toHaveClass("table-scroll");
+      expect(table.querySelector("thead th")).toHaveClass("sticky-col");
+      for (const row of table.querySelectorAll("tbody tr")) {
+        expect(row.firstElementChild).toHaveClass("sticky-col");
+      }
+    }
+  });
+
+  it("folds the member's email under their name, and drops nothing else", async () => {
+    const { container } = renderPage();
+    await rowFor("Bills joint");
+
+    const [members, accounts] = [...container.querySelectorAll("table")];
+    const dropped = [...members!.querySelectorAll("thead th.wide-only")];
+    expect(dropped.map((th) => th.textContent)).toEqual(["email"]);
+    expect([...members!.querySelectorAll("tbody .row-sub")].map((s) => s.textContent)).toEqual([
+      "ben@example.com",
+      "alex@example.com",
+    ]);
+    for (const row of members!.querySelectorAll("tbody tr")) {
+      expect(row.querySelectorAll("td.wide-only")).toHaveLength(1);
+    }
+
+    // The account rows already carry their currency and grant in sub-lines, so
+    // the wrapper alone is enough for them.
+    expect(accounts!.querySelectorAll(".wide-only")).toHaveLength(0);
+  });
+});
+
 describe("HouseholdDetailPage — the shares block", () => {
   it("spells out what the split does with the plan's shared costs", async () => {
     renderPage();

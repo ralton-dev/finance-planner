@@ -173,48 +173,55 @@ export function HouseholdDetailPage() {
         <h2>members</h2>
         <span className="meta">[{data.members.length} active]</span>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>name</th>
-            <th>email</th>
-            <th>role</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.members.map((m) => (
-            <tr key={m.membershipId}>
-              <td>
-                <span className="name">
-                  {m.displayName}
-                  {m.isSelf && <span className="shared">you</span>}
-                </span>
-              </td>
-              <td className="muted">{m.email}</td>
-              <td>
-                <RoleCell
-                  member={m}
-                  canEditRole={isOwner}
-                  householdId={id}
-                  onChanged={() => household.refetch()}
-                />
-              </td>
-              <td className="row-actions-cell">
-                <RemoveMemberButton
-                  householdId={id}
-                  userId={m.userId}
-                  displayName={m.displayName}
-                  isSelf={m.isSelf}
-                  isOwner={m.role === "owner"}
-                  canAdmin={isAdmin}
-                  onRemoved={() => household.refetch()}
-                />
-              </td>
+      {/* The email column is what makes this table too wide for a phone, and it
+          is the one column that describes the person rather than what they can
+          do here — so on a phone it folds under the name and the rest scrolls
+          inside the wrapper. */}
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th className="sticky-col">name</th>
+              <th className="wide-only">email</th>
+              <th>role</th>
+              <th></th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data.members.map((m) => (
+              <tr key={m.membershipId}>
+                <td className="sticky-col">
+                  <span className="name">
+                    {m.displayName}
+                    {m.isSelf && <span className="shared">you</span>}
+                  </span>
+                  <span className="row-sub">{m.email}</span>
+                </td>
+                <td className="muted wide-only">{m.email}</td>
+                <td>
+                  <RoleCell
+                    member={m}
+                    canEditRole={isOwner}
+                    householdId={id}
+                    onChanged={() => household.refetch()}
+                  />
+                </td>
+                <td className="row-actions-cell">
+                  <RemoveMemberButton
+                    householdId={id}
+                    userId={m.userId}
+                    displayName={m.displayName}
+                    isSelf={m.isSelf}
+                    isOwner={m.role === "owner"}
+                    canAdmin={isAdmin}
+                    onRemoved={() => household.refetch()}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {isAdmin && <InviteMemberForm householdId={id} onAdded={() => household.refetch()} />}
 
@@ -537,98 +544,108 @@ function AccountsSection({
           no accounts here yet — add one to the plan, or share one of yours with the household.
         </p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>account</th>
-              <th>role in plan</th>
-              <th>your access</th>
-              <th className="num">balance</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const open = managing === row.accountId;
-              // Sharing is the owner's call; the plan role is the household's.
-              const manageable = canEdit || row.account?.owner === true;
-              return (
-                <Fragment key={row.accountId}>
-                  <tr>
-                    <td>
-                      <span className={`member-dot ${memberTone(row)}`} aria-hidden="true" />
-                      {row.account ? (
-                        <Link to={`/accounts/${row.accountId}`} className="name">
-                          {row.name}
-                        </Link>
-                      ) : (
-                        <span className="name">{row.name}</span>
-                      )}
-                      <div className="muted" style={SUB}>
-                        {row.currency}
-                        {(row.state?.monthlyIncomeMinor ?? 0) > 0 && " · salary lands here"}
-                      </div>
-                    </td>
-                    <td>
-                      {row.assignment ? (
-                        <span className="tag-status idle">
-                          {row.assignment.role === "shared"
-                            ? "shared pot"
-                            : `personal · ${memberName.get(row.assignment.memberUserId ?? "") ?? "unassigned"}`}
-                        </span>
-                      ) : (
-                        <span className="muted">not in the plan</span>
-                      )}
-                    </td>
-                    <td>
-                      {row.account ? (
-                        ownershipPhrase(row.account)
-                      ) : (
-                        <span className="muted">not shared with you</span>
-                      )}
-                      {row.share && (
-                        <div className="muted" style={SUB}>
-                          the household can {row.share.permission} it
-                        </div>
-                      )}
-                    </td>
-                    <td className="num">
-                      <BalanceCell state={row.state} currency={row.currency} asOfDate={asOfDate} />
-                    </td>
-                    <td className="row-actions-cell">
-                      {manageable && (
-                        <button
-                          type="button"
-                          className="row-edit"
-                          aria-expanded={open}
-                          aria-label={`manage ${row.name}`}
-                          onClick={() => setManaging(open ? null : row.accountId)}
-                        >
-                          {open ? "close" : "manage"}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                  {open && (
+        // The wrapper is enough here: the row's own sub-lines already carry the
+        // currency and the grant, so five columns overrun a phone by a little
+        // and nothing on the row is a passenger. The account name stays pinned
+        // while the role and the access scroll past it.
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th className="sticky-col">account</th>
+                <th>role in plan</th>
+                <th>your access</th>
+                <th className="num">balance</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const open = managing === row.accountId;
+                // Sharing is the owner's call; the plan role is the household's.
+                const manageable = canEdit || row.account?.owner === true;
+                return (
+                  <Fragment key={row.accountId}>
                     <tr>
-                      <td colSpan={5}>
-                        {canEdit && (
-                          <RoleForm
-                            householdId={householdId}
-                            row={row}
-                            members={members}
-                            onChanged={onChanged}
-                          />
+                      <td className="sticky-col">
+                        <span className={`member-dot ${memberTone(row)}`} aria-hidden="true" />
+                        {row.account ? (
+                          <Link to={`/accounts/${row.accountId}`} className="name">
+                            {row.name}
+                          </Link>
+                        ) : (
+                          <span className="name">{row.name}</span>
                         )}
-                        <AccessForm householdId={householdId} row={row} onChanged={onChanged} />
+                        <div className="muted" style={SUB}>
+                          {row.currency}
+                          {(row.state?.monthlyIncomeMinor ?? 0) > 0 && " · salary lands here"}
+                        </div>
+                      </td>
+                      <td>
+                        {row.assignment ? (
+                          <span className="tag-status idle">
+                            {row.assignment.role === "shared"
+                              ? "shared pot"
+                              : `personal · ${memberName.get(row.assignment.memberUserId ?? "") ?? "unassigned"}`}
+                          </span>
+                        ) : (
+                          <span className="muted">not in the plan</span>
+                        )}
+                      </td>
+                      <td>
+                        {row.account ? (
+                          ownershipPhrase(row.account)
+                        ) : (
+                          <span className="muted">not shared with you</span>
+                        )}
+                        {row.share && (
+                          <div className="muted" style={SUB}>
+                            the household can {row.share.permission} it
+                          </div>
+                        )}
+                      </td>
+                      <td className="num">
+                        <BalanceCell
+                          state={row.state}
+                          currency={row.currency}
+                          asOfDate={asOfDate}
+                        />
+                      </td>
+                      <td className="row-actions-cell">
+                        {manageable && (
+                          <button
+                            type="button"
+                            className="row-edit"
+                            aria-expanded={open}
+                            aria-label={`manage ${row.name}`}
+                            onClick={() => setManaging(open ? null : row.accountId)}
+                          >
+                            {open ? "close" : "manage"}
+                          </button>
+                        )}
                       </td>
                     </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+                    {open && (
+                      <tr>
+                        <td colSpan={5}>
+                          {canEdit && (
+                            <RoleForm
+                              householdId={householdId}
+                              row={row}
+                              members={members}
+                              onChanged={onChanged}
+                            />
+                          )}
+                          <AccessForm householdId={householdId} row={row} onChanged={onChanged} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </>
   );

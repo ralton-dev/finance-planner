@@ -263,70 +263,77 @@ export function AccountsPage() {
           </button>
         </div>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>account</th>
-              <th className="num">balance</th>
-              <th className="num">left over / mo</th>
-              <th>attention</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {accounts.data?.map((a) => {
-              const s = state.get(a.id);
-              return (
-                <tr
-                  key={a.id}
-                  style={{ cursor: "pointer" }}
-                  // The whole row is the doorway; the "open" link is its visible
-                  // affordance and its keyboard route. Clicks on the row's own
-                  // controls stay with them.
-                  onClick={(e) => {
-                    if ((e.target as HTMLElement).closest("button, a")) return;
-                    navigate(`/accounts/${a.id}`);
-                  }}
-                >
-                  <td>
-                    <AccountCell account={a} state={s} />
-                  </td>
-                  <td className="num">
-                    <BalanceCell state={s} currency={a.currency} asOfDate={asOfDate} />
-                  </td>
-                  <td className="num">
-                    {s ? (
-                      <Amount minor={s.leftoverMinor} currency={a.currency} />
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td>
-                    <AttentionCell state={s} currency={a.currency} asOfDate={asOfDate} />
-                  </td>
-                  <td className="row-actions-cell">
-                    <button
-                      type="button"
-                      className="row-edit"
-                      onClick={() => setEditing(a)}
-                      aria-label={`edit ${a.name}`}
-                    >
-                      edit
-                    </button>
-                    <Link
-                      to={`/accounts/${a.id}`}
-                      className="action"
-                      style={{ marginLeft: "0.5rem" }}
-                      aria-label={`open ${a.name}`}
-                    >
-                      open →
-                    </Link>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        // Five columns overrun a phone, so the wrapper scrolls them rather than
+        // the document, with the account pinned to the left. Nothing folds:
+        // four of the five are the four questions in the comment at the top of
+        // this file, and the fifth is the row's own actions. The sub-line under
+        // the name is already doing the folding this table would ask of it.
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th className="sticky-col">account</th>
+                <th className="num">balance</th>
+                <th className="num">left over / mo</th>
+                <th>attention</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.data?.map((a) => {
+                const s = state.get(a.id);
+                return (
+                  <tr
+                    key={a.id}
+                    style={{ cursor: "pointer" }}
+                    // The whole row is the doorway; the "open" link is its visible
+                    // affordance and its keyboard route. Clicks on the row's own
+                    // controls stay with them.
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest("button, a")) return;
+                      navigate(`/accounts/${a.id}`);
+                    }}
+                  >
+                    <td className="sticky-col">
+                      <AccountCell account={a} state={s} />
+                    </td>
+                    <td className="num">
+                      <BalanceCell state={s} currency={a.currency} asOfDate={asOfDate} />
+                    </td>
+                    <td className="num">
+                      {s ? (
+                        <Amount minor={s.leftoverMinor} currency={a.currency} />
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td>
+                      <AttentionCell state={s} currency={a.currency} asOfDate={asOfDate} />
+                    </td>
+                    <td className="row-actions-cell">
+                      <button
+                        type="button"
+                        className="row-edit"
+                        onClick={() => setEditing(a)}
+                        aria-label={`edit ${a.name}`}
+                      >
+                        edit
+                      </button>
+                      <Link
+                        to={`/accounts/${a.id}`}
+                        className="action"
+                        style={{ marginLeft: "0.5rem" }}
+                        aria-label={`open ${a.name}`}
+                      >
+                        open →
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <AccountSettingsDrawer

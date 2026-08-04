@@ -834,34 +834,38 @@ td.dim {
 .plan-table tr.at-risk td.sticky-col {
   background: color-mix(in srgb, var(--alert) 6%, var(--panel));
 }
-/* The phone sub-line: off until the columns it stands in for are dropped. */
-.plan-table .row-sub {
+/* The phone sub-line: off until the columns it stands in for are dropped. Any
+ * wrapped table may use it — the plan table was first, not special. */
+.table-scroll .row-sub {
   display: none;
   color: var(--ink-3);
   font-size: 11px;
   font-weight: 400;
 }
-/* Phones. Eight columns is more than 390px can carry honestly, so three of them
- * — type, due date, and the payment's own amount — fold into a sub-line under
- * the name, the convention the accounts index already uses. What is left is
- * what the page is for: what to put aside each month, what is aside, whether
- * that is enough, and this month's move. The wrapper scrolls the remainder. */
+/* Phones. A table that needs more columns than 390px can carry honestly folds
+ * the ones that describe the row rather than answer the page's question — a
+ * payment's type and due date, an account's role, a member's email — into a
+ * sub-line under its name, the convention the accounts index already uses.
+ * What is left is what the page is for; the wrapper scrolls the remainder.
+ *
+ * Which columns those are is each table's own judgement, made in its markup by
+ * the `wide-only` class. This block only says what `wide-only` means. */
 @media (max-width: 560px) {
-  .plan-table .wide-only {
+  .table-scroll .wide-only {
     display: none;
   }
-  .plan-table .row-sub {
+  .table-scroll .row-sub {
     display: block;
   }
   /* Wide enough that the sub-line does not wrap to a paragraph, narrow enough
    * that a sticky column does not eat the viewport it is pinned over. */
-  .plan-table th.sticky-col,
-  .plan-table td.name {
+  .table-scroll th.sticky-col,
+  .table-scroll td.sticky-col {
     min-width: 8.5rem;
     max-width: 11rem;
   }
-  .plan-table th,
-  .plan-table td {
+  .table-scroll th,
+  .table-scroll td {
     padding-left: 0.5rem;
     padding-right: 0.5rem;
   }

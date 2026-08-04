@@ -82,96 +82,102 @@ export function TransferChecklist({ plan, confirmations, onConfirm, onUndo, mont
   return (
     <>
       <ChecklistHead done={doneCount} total={plan.transfers.length} month={month} />
-      <table>
-        <thead>
-          <tr>
-            <th>who</th>
-            <th>from</th>
-            <th>to</th>
-            <th className="num">amount / mo</th>
-            <th>status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {plan.transfers.map((t) => {
-            const key = keyOf(t);
-            const done = confirmedBy.get(key);
-            const error = errors[key];
-            return (
-              <tr key={key}>
-                <td className="name">{memberName.get(t.memberUserId) ?? "member"}</td>
-                <td className="muted">{accountName.get(t.fromAccountId) ?? "account"}</td>
-                <td>{accountName.get(t.toAccountId) ?? "account"}</td>
-                <td className="num">{formatMinor(t.amountMinor, c)}</td>
-                <td>
-                  {done ? (
-                    <span className="checklist-cell">
-                      <span className="tag-status ok">
-                        done · <span className="amount">{formatMinor(done.amountMinor, c)}</span>
+      {/* Five columns overrun a phone by a little rather than a lot, so the
+          wrapper scrolls them and nothing folds: every column here is part of
+          one instruction — who moves what, from where, to where — and a
+          sub-line would only re-wrap the sentence the row already is. */}
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th className="sticky-col">who</th>
+              <th>from</th>
+              <th>to</th>
+              <th className="num">amount / mo</th>
+              <th>status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {plan.transfers.map((t) => {
+              const key = keyOf(t);
+              const done = confirmedBy.get(key);
+              const error = errors[key];
+              return (
+                <tr key={key}>
+                  <td className="name sticky-col">{memberName.get(t.memberUserId) ?? "member"}</td>
+                  <td className="muted">{accountName.get(t.fromAccountId) ?? "account"}</td>
+                  <td>{accountName.get(t.toAccountId) ?? "account"}</td>
+                  <td className="num">{formatMinor(t.amountMinor, c)}</td>
+                  <td>
+                    {done ? (
+                      <span className="checklist-cell">
+                        <span className="tag-status ok">
+                          done · <span className="amount">{formatMinor(done.amountMinor, c)}</span>
+                        </span>
+                        <button
+                          type="button"
+                          className="action muted"
+                          disabled={busyKey === key}
+                          onClick={() => void run(key, () => onUndo(done.id))}
+                        >
+                          undo
+                        </button>
                       </span>
+                    ) : (
+                      <span className="checklist-cell">
+                        <button
+                          type="button"
+                          className="ghost tiny"
+                          disabled={busyKey === key}
+                          onClick={() => void run(key, () => onConfirm(t))}
+                        >
+                          {busyKey === key ? "…" : "mark done"}
+                        </button>
+                      </span>
+                    )}
+                    {error && (
+                      <span className="error checklist-error" role="alert">
+                        {error}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+
+            {orphans.map((x) => {
+              const key = keyOf(x);
+              const error = errors[key];
+              return (
+                <tr key={key} className="dim">
+                  <td className="muted sticky-col">{memberName.get(x.memberUserId) ?? "member"}</td>
+                  <td className="muted">{accountName.get(x.fromAccountId) ?? "account"}</td>
+                  <td className="muted">{accountName.get(x.toAccountId) ?? "account"}</td>
+                  <td className="num dim">{formatMinor(x.amountMinor, c)}</td>
+                  <td>
+                    <span className="checklist-cell">
+                      <span className="tag-status idle">no longer planned</span>
                       <button
                         type="button"
                         className="action muted"
                         disabled={busyKey === key}
-                        onClick={() => void run(key, () => onUndo(done.id))}
+                        onClick={() => void run(key, () => onUndo(x.id))}
                       >
                         undo
                       </button>
                     </span>
-                  ) : (
-                    <span className="checklist-cell">
-                      <button
-                        type="button"
-                        className="ghost tiny"
-                        disabled={busyKey === key}
-                        onClick={() => void run(key, () => onConfirm(t))}
-                      >
-                        {busyKey === key ? "…" : "mark done"}
-                      </button>
-                    </span>
-                  )}
-                  {error && (
-                    <span className="error checklist-error" role="alert">
-                      {error}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-
-          {orphans.map((x) => {
-            const key = keyOf(x);
-            const error = errors[key];
-            return (
-              <tr key={key} className="dim">
-                <td className="muted">{memberName.get(x.memberUserId) ?? "member"}</td>
-                <td className="muted">{accountName.get(x.fromAccountId) ?? "account"}</td>
-                <td className="muted">{accountName.get(x.toAccountId) ?? "account"}</td>
-                <td className="num dim">{formatMinor(x.amountMinor, c)}</td>
-                <td>
-                  <span className="checklist-cell">
-                    <span className="tag-status idle">no longer planned</span>
-                    <button
-                      type="button"
-                      className="action muted"
-                      disabled={busyKey === key}
-                      onClick={() => void run(key, () => onUndo(x.id))}
-                    >
-                      undo
-                    </button>
-                  </span>
-                  {error && (
-                    <span className="error checklist-error" role="alert">
-                      {error}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                    {error && (
+                      <span className="error checklist-error" role="alert">
+                        {error}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
       <PaydayPlan
         schedule={plan.paydaySchedule ?? []}

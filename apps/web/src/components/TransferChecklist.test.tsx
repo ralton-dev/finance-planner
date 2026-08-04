@@ -235,6 +235,29 @@ describe("TransferChecklist", () => {
     render(<TransferChecklist plan={plan} confirmations={[]} onConfirm={noop} onUndo={noop} />);
     expect(screen.queryByText("payday plan")).toBeNull();
   });
+
+  // What jsdom can see of the narrow layout. Whether the document stops
+  // scrolling sideways at 390px is a measurement, not an assertion.
+  it("scrolls inside a wrapper with the member pinned, and drops no column", () => {
+    const orphan: TransferConfirmationDto = {
+      ...adaConfirmed,
+      id: "conf-9",
+      fromAccountId: "acc-bo",
+    };
+    const { container } = render(
+      <TransferChecklist plan={plan} confirmations={[orphan]} onConfirm={noop} onUndo={noop} />,
+    );
+
+    const table = container.querySelector("table")!;
+    expect(table.parentElement).toHaveClass("table-scroll");
+    expect(table.querySelector("thead th")).toHaveClass("sticky-col");
+    // Including the orphan row, which is a different branch of the same table.
+    for (const row of table.querySelectorAll("tbody tr")) {
+      expect(row.firstElementChild).toHaveClass("sticky-col");
+    }
+    // Every column is part of one instruction; none of them is a passenger.
+    expect(table.querySelectorAll(".wide-only")).toHaveLength(0);
+  });
 });
 
 // --- payday plan ------------------------------------------------------------

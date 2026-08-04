@@ -244,4 +244,19 @@ describe("AccountsPage — the table", () => {
     );
     expect(screen.getByText(/as of 2026-08-04/)).toBeInTheDocument();
   });
+
+  // What jsdom can see of the narrow layout. Whether the document stops
+  // scrolling sideways at 390px is a measurement, not an assertion.
+  it("scrolls inside a wrapper, with the account pinned and nothing dropped", async () => {
+    renderAccounts([account({ id: "a1", name: "Ben current" })], [summary({ accountId: "a1" })]);
+
+    const row = await rowFor("Ben current");
+    const table = row.closest("table");
+    expect(table?.parentElement).toHaveClass("table-scroll");
+    expect(table?.querySelector("thead th")).toHaveClass("sticky-col");
+    expect(row.firstElementChild).toHaveClass("sticky-col");
+    // All four questions the page answers stay on screen at every width; the
+    // row's own sub-line was already carrying what this table dropped.
+    expect(table?.querySelectorAll(".wide-only")).toHaveLength(0);
+  });
 });
