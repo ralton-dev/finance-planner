@@ -1,8 +1,19 @@
 import type { PaymentCategory, Recurrence } from "@finance-planner/contracts";
 import { addUnit, occurrencesInMonth, parseISODate, toISODate } from "./dates.js";
-import { computeAccountPlan, contributionCapMinor } from "./engine.js";
+import {
+  computeAccountPlan,
+  computeOverview,
+  contributionCapMinor,
+  type CurrencyOverview,
+} from "./engine.js";
+import {
+  computeEstatePlan,
+  type EstateCycle,
+  type EstateMovement,
+  type EstatePlan,
+} from "./estate.js";
 import { computeHouseholdPlan, type HouseholdInput } from "./household.js";
-import type { AccountInput, PaymentInput } from "./types.js";
+import type { AccountInput, AccountPlan, AllocatedInflow, PaymentInput } from "./types.js";
 
 const DEFAULT_MONTHS = 12;
 const MIN_MONTHS = 1;
@@ -21,6 +32,14 @@ export interface ProjectionOptions {
    * than a fabricated one.
    */
   startingBalanceMinor?: number | null;
+}
+
+export interface EstateProjectionOptions {
+  /** Months to simulate, including the as-of month. Clamped to 1..24 (default 12). */
+  months?: number;
+  /** Opening balances by account id. A missing or null entry means "unknown",
+   *  and that account reports a null balance in every month. */
+  startingBalancesMinor?: Record<string, number | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,11 +67,35 @@ export interface ProjectionLine {
 export interface MonthProjection {
   /** Calendar month as "YYYY-MM". */
   month: string;
+  /** The account's **own** income this month — never the arriving inflow, for
+   *  the same reason `AccountPlan.monthlyIncomeMinor` is not. */
   monthlyIncomeMinor: number;
+  /**
+   * Money arriving into the account this month from outside it: a household's
+   * allocation plus whatever the accounts feeding it could afford to send.
+   *
+   * Without it a projected month cannot explain itself — `totalFundedMinor` can
+   * exceed `monthlyIncomeMinor - bufferMinor` with nothing on the wire saying
+   * why, which reads as an arithmetic error rather than as a funded pot.
+   */
+  allocatedInflowMinor: number;
+  /**
+   * Of `allocatedInflowMinor`, what somebody has said actually moved. **Zero in
+   * every month after the first**: a confirmation is a statement about the
+   * as-of month, and nobody has moved next March's money yet.
+   */
+  confirmedInflowMinor: number;
   bufferMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /**
+   * Money leaving for other accounts this month, funded from what the payments
+   * left. Not subtracted from `leftoverMinor`, which keeps the engine's meaning
+   * — see `AccountPlan.outboundInflowMinor`. It is here so a month that sends
+   * its surplus on cannot look like a month that kept it.
+   */
+  outboundInflowMinor: number;
   shortfallMinor: number;
   /** Total set aside across every payment at the end of the month. */
   reservedEndMinor: number;
@@ -66,6 +109,39 @@ export interface AccountProjection {
   currency: string;
   asOfDate: string;
   months: MonthProjection[];
+}
+
+/** One simulated month of the whole estate, across every account in the pass. */
+export interface EstateMonthProjection {
+  /** Calendar month as "YYYY-MM". */
+  month: string;
+  /**
+   * The rollup over every account planned this month, grouped by currency and
+   * **netted the way `computeOverview` nets it**.
+   *
+   * Netting is the whole reason this is not a hand-rolled sum: money moving
+   * between two of your own accounts is counted at both ends, once per hop, so
+   * a twelve-month aggregate would inflate the estate's future income twelve
+   * times over. `monthlyIncomeMinor` here is external money and nothing else,
+   * in every month of the horizon.
+   */
+  perCurrency: CurrencyOverview[];
+  /** Every account-sourced movement this month, as the pass resolved it —
+   *  including the ones the senders could not afford. */
+  movements: EstateMovement[];
+}
+
+export interface EstateProjection {
+  asOfDate: string;
+  /** The dependency order the pass planned in, from the as-of month. */
+  order: string[];
+  /** One projection per account, in `order`. */
+  accounts: AccountProjection[];
+  /** The estate as a whole, month by month. */
+  months: EstateMonthProjection[];
+  /** Funding loops as of the as-of month; empty in the normal case. A loop is
+   *  broken the same way in every simulated month, so it is reported once. */
+  cycles: EstateCycle[];
 }
 
 export interface HouseholdProjectionLine extends ProjectionLine {
@@ -214,22 +290,163 @@ function totalReserved(states: Iterable<PaymentState>): number {
   return total;
 }
 
+/**
+ * The same arriving money with nothing confirmed.
+ *
+ * A confirmation says "I moved it", which is a fact about the month it was
+ * made in and about no other. Carrying it forward would have every future month
+ * of a standing transfer read as already settled — the projection would be
+ * asserting that you have already made twelve transfers you have not made.
+ */
+function unconfirmed(inflow: AllocatedInflow | null | undefined): AllocatedInflow | null {
+  if (!inflow) return null;
+  return {
+    ...inflow,
+    confirmedMinor: 0,
+    sources: inflow.sources?.map((s) => ({ ...s, confirmedMinor: 0 })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// One account's walk through the simulation
+// ---------------------------------------------------------------------------
+
+/** Everything that evolves as one account is walked forward. */
+interface AccountSim {
+  account: AccountInput;
+  byId: Map<string, PaymentInput>;
+  states: Map<string, PaymentState>;
+  balance: number | null;
+  months: MonthProjection[];
+}
+
+function newSim(account: AccountInput, startingBalanceMinor: number | null): AccountSim {
+  return {
+    account,
+    byId: new Map(account.payments.map((p) => [p.id, p] as const)),
+    states: new Map(account.payments.map((p) => [p.id, initialState(p)] as const)),
+    balance: startingBalanceMinor,
+    months: [],
+  };
+}
+
+/**
+ * The account as it should be planned for one simulated month: the savings
+ * state built up so far overlaid on it, and — after the first month — nothing
+ * confirmed. Inputs are never mutated; this is always a copy.
+ */
+function workingInput(sim: AccountSim, firstMonth: boolean): AccountInput {
+  const payments = sim.account.payments.map((p) => withState(p, sim.states.get(p.id)!));
+  if (firstMonth) return { ...sim.account, payments };
+  return {
+    ...sim.account,
+    payments,
+    inflow: unconfirmed(sim.account.inflow),
+    confirmedArrivals: [],
+  };
+}
+
+/**
+ * Advance one account past one simulated month: each payment takes its
+ * contribution and pays out whatever fell due, then the month is recorded.
+ *
+ * Balance premise, unchanged: only money that is *set aside* moves the balance.
+ * Arriving inflow is spent on the same month's obligations exactly as income is,
+ * and money sent on to another account leaves like any other spending — both are
+ * balance-neutral here for the same reason a monthly bill is.
+ */
+function advance(sim: AccountSim, plan: AccountPlan, refDate: Date, monthKey: string): void {
+  let setAside = 0;
+  let paidOut = 0;
+  const lines: ProjectionLine[] = plan.lines.map((line) => {
+    const payment = sim.byId.get(line.paymentId)!;
+    const state = sim.states.get(line.paymentId)!;
+    const due = evolvePayment(payment, state, line.fundedMonthlyMinor, refDate, monthKey);
+    if (payment.category !== "monthly_recurring") {
+      setAside += line.fundedMonthlyMinor;
+      paidOut += due.dueAmountMinor;
+    }
+    return {
+      paymentId: line.paymentId,
+      name: line.name,
+      category: line.category,
+      requiredMonthlyMinor: line.requiredMonthlyMinor,
+      fundedMonthlyMinor: line.fundedMonthlyMinor,
+      alreadySavedEndMinor: state.alreadySavedMinor,
+      dueThisMonth: due.dueThisMonth,
+      dueAmountMinor: due.dueAmountMinor,
+    };
+  });
+
+  if (sim.balance !== null) sim.balance += setAside - paidOut;
+
+  sim.months.push({
+    month: monthKey,
+    monthlyIncomeMinor: plan.monthlyIncomeMinor,
+    allocatedInflowMinor: plan.allocatedInflowMinor,
+    confirmedInflowMinor: plan.confirmedInflowMinor,
+    bufferMinor: plan.bufferMinor,
+    totalRequiredMinor: plan.totalRequiredMinor,
+    totalFundedMinor: plan.totalFundedMinor,
+    leftoverMinor: plan.leftoverMinor,
+    outboundInflowMinor: plan.outboundInflowMinor,
+    shortfallMinor: plan.shortfallMinor,
+    reservedEndMinor: totalReserved(sim.states.values()),
+    projectedBalanceMinor: sim.balance,
+    lines,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Account projection
 // ---------------------------------------------------------------------------
 
 /**
- * Simulate an account's plan month by month, re-running `computeAccountPlan`
+ * Simulate one account's plan month by month, re-running `computeAccountPlan`
  * against the savings state built up so far.
  *
- * Balance premise: only money that is *set aside* moves the balance. Each month
- * the balance grows by what was funded into non-monthly goals and falls by the
- * full amount of any non-monthly bill that fell due — the plan's premise is that
- * the bill gets paid, so an under-reserved bill can drive the balance negative
- * and make the crunch visible. Monthly bills, the buffer and the leftover are
- * assumed paid or spent out of the same month's income and are balance-neutral.
- * A dateless contribution-capped goal never falls due, so completing it takes
- * nothing back out: the balance keeps the money it accumulated.
+ * ## Arriving money recurs
+ *
+ * A movement into an account is a **standing instruction**, not a one-off: the
+ * user authored "£300 a month into the bills pot", the same way they authored a
+ * salary. So it is projected every month, and a pot funded from elsewhere holds
+ * a stable or rising reserve instead of draining to nothing — which is the whole
+ * defect this exists to fix. The alternative reading, "money arrived once", is
+ * not a thing anyone authors; a genuinely one-off movement says so in its
+ * frequency, and the estate walk below honours that.
+ *
+ * ## What this function cannot know, said out loud
+ *
+ * `account.inflow` is what the ordered pass settled for the **as-of month**, and
+ * it is held flat across the horizon. That is right whenever the sending
+ * account's month is the same shape every month — which is the normal case, a
+ * salary and standing bills — and it is an approximation otherwise:
+ *
+ *  - a movement whose own cadence expires (a `one_off` transfer) keeps arriving;
+ *  - a sender whose goal completes mid-horizon never passes on the money it
+ *    frees;
+ *  - a sender whose income falls away keeps sending what it could afford in
+ *    month 0.
+ *
+ * The reason is structural, not an omission: what arrives in month 7 is month
+ * 7's surplus of another account, and one account's input does not contain the
+ * other account. **`computeEstateProjection` is the correct answer** and walks
+ * every account forward together; this function is the single-account view, and
+ * keeps its exact behaviour for an account nothing moves into.
+ *
+ * Confirmations are the one thing not held flat — see `unconfirmed`.
+ *
+ * ## Balance premise
+ *
+ * Only money that is *set aside* moves the balance. Each month the balance grows
+ * by what was funded into non-monthly goals and falls by the full amount of any
+ * non-monthly bill that fell due — the plan's premise is that the bill gets
+ * paid, so an under-reserved bill can drive the balance negative and make the
+ * crunch visible. Monthly bills, the buffer, the leftover and money sent on to
+ * another account are assumed paid or spent out of the same month's money and
+ * are balance-neutral. A dateless contribution-capped goal never falls due, so
+ * completing it takes nothing back out: the balance keeps the money it
+ * accumulated.
  *
  * Inputs are never mutated: the evolving payment state is held separately and
  * overlaid onto copies.
@@ -240,66 +457,108 @@ export function computeAccountProjection(
   opts: ProjectionOptions = {},
 ): AccountProjection {
   const refs = monthReferences(asOfDate, clampMonths(opts.months));
-  const states = new Map<string, PaymentState>(
-    account.payments.map((p) => [p.id, initialState(p)] as const),
-  );
-  const byId = new Map(account.payments.map((p) => [p.id, p] as const));
+  const sim = newSim(account, opts.startingBalanceMinor ?? null);
 
-  let balance = opts.startingBalanceMinor ?? null;
-  const months: MonthProjection[] = [];
-
-  for (const ref of refs) {
-    const refDate = parseISODate(ref);
-    const monthKey = ref.slice(0, 7);
-    const working: AccountInput = {
-      ...account,
-      payments: account.payments.map((p) => withState(p, states.get(p.id)!)),
-    };
-    const plan = computeAccountPlan(working, ref);
-
-    let setAside = 0;
-    let paidOut = 0;
-    const lines: ProjectionLine[] = plan.lines.map((line) => {
-      const payment = byId.get(line.paymentId)!;
-      const state = states.get(line.paymentId)!;
-      const due = evolvePayment(payment, state, line.fundedMonthlyMinor, refDate, monthKey);
-      if (payment.category !== "monthly_recurring") {
-        setAside += line.fundedMonthlyMinor;
-        paidOut += due.dueAmountMinor;
-      }
-      return {
-        paymentId: line.paymentId,
-        name: line.name,
-        category: line.category,
-        requiredMonthlyMinor: line.requiredMonthlyMinor,
-        fundedMonthlyMinor: line.fundedMonthlyMinor,
-        alreadySavedEndMinor: state.alreadySavedMinor,
-        dueThisMonth: due.dueThisMonth,
-        dueAmountMinor: due.dueAmountMinor,
-      };
-    });
-
-    if (balance !== null) balance += setAside - paidOut;
-
-    months.push({
-      month: monthKey,
-      monthlyIncomeMinor: plan.monthlyIncomeMinor,
-      bufferMinor: plan.bufferMinor,
-      totalRequiredMinor: plan.totalRequiredMinor,
-      totalFundedMinor: plan.totalFundedMinor,
-      leftoverMinor: plan.leftoverMinor,
-      shortfallMinor: plan.shortfallMinor,
-      reservedEndMinor: totalReserved(states.values()),
-      projectedBalanceMinor: balance,
-      lines,
-    });
+  for (const [index, ref] of refs.entries()) {
+    advance(
+      sim,
+      computeAccountPlan(workingInput(sim, index === 0), ref),
+      parseISODate(ref),
+      ref.slice(0, 7),
+    );
   }
 
   return {
     accountId: account.accountId,
     currency: account.currency,
     asOfDate,
+    months: sim.months,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Estate projection
+// ---------------------------------------------------------------------------
+
+/**
+ * Simulate a whole estate month by month: one `computeEstatePlan` per simulated
+ * month, over every account, in dependency order.
+ *
+ * This is the projection a general funding graph actually requires. Walking one
+ * account forward while its funding is another account's *future* surplus is not
+ * a computation one account's input can perform — the money arriving in month 7
+ * is what the sender can spare in month 7, after month 7's bills, out of month
+ * 7's income. Re-planning the estate each month gets all of that for free,
+ * because every one of those figures is already a function of the reference
+ * date and the savings state:
+ *
+ *  - a goal that completes upstream stops consuming, and the money it was
+ *    eating flows on down the chain from the month it retires;
+ *  - a sender whose income falls away sends less, and the movement is reported
+ *    `short` or `unfunded` rather than silently still delivering;
+ *  - a movement with a `one_off` cadence stops when its anchor passes;
+ *  - a funding loop is broken at the same edge in every month, deterministically
+ *    (`computeEstatePlan` orders by priority, destination and id, none of which
+ *    move with the calendar), so `cycles` is reported once.
+ *
+ * `accounts` is the estate **as authored** — the same array `computeEstatePlan`
+ * takes, not the inputs it hands back. Feeding the pass its own outputs would
+ * add every household allocation to itself once per month.
+ *
+ * Cost: months × accounts calls to `computeAccountPlan`, against months × 1 for
+ * the single-account projection. Inputs are never mutated.
+ */
+export function computeEstateProjection(
+  accounts: AccountInput[],
+  asOfDate: string,
+  opts: EstateProjectionOptions = {},
+): EstateProjection {
+  const refs = monthReferences(asOfDate, clampMonths(opts.months));
+  const sims = new Map<string, AccountSim>(
+    accounts.map((a) => [
+      a.accountId,
+      newSim(a, opts.startingBalancesMinor?.[a.accountId] ?? null),
+    ]),
+  );
+
+  const months: EstateMonthProjection[] = [];
+  let first: EstatePlan | null = null;
+
+  for (const [index, ref] of refs.entries()) {
+    const refDate = parseISODate(ref);
+    const monthKey = ref.slice(0, 7);
+    const working = accounts.map((a) => workingInput(sims.get(a.accountId)!, index === 0));
+    const estate = computeEstatePlan(working, ref);
+    first ??= estate;
+
+    for (const plan of estate.plans) advance(sims.get(plan.accountId)!, plan, refDate, monthKey);
+
+    months.push({
+      month: monthKey,
+      // Through `computeOverview` rather than summed here, so the intra-estate
+      // netting is the engine's one implementation and a twelve-month horizon
+      // cannot drift from the one-month rollup it has to agree with.
+      perCurrency: computeOverview(estate.plans, ref).perCurrency,
+      movements: estate.movements,
+    });
+  }
+
+  // Always set: `refs` has at least one entry, so the loop always runs.
+  const order = first!.order;
+  return {
+    asOfDate,
+    order,
+    accounts: order.map((accountId) => {
+      const sim = sims.get(accountId)!;
+      return {
+        accountId,
+        currency: sim.account.currency,
+        asOfDate,
+        months: sim.months,
+      };
+    }),
     months,
+    cycles: first!.cycles,
   };
 }
 
