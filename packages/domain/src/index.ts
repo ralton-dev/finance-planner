@@ -5,5 +5,6 @@ export * from "./estate.js";
 export * from "./flow.js";
 export * from "./household.js";
 export * from "./projection.js";
+export * from "./scope.js";
 export * from "./payday.js";
 export * from "./upcoming.js";
