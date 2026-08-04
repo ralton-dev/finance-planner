@@ -1357,14 +1357,13 @@ describe("api service", () => {
     expect(confirmation.amountMinor).toBe(20000);
     expect(confirmation.month).toBe(`${thisMonth()}-01`);
 
-    // The money it moved is booked against what it pays for, and nothing more
-    // than was moved.
-    expect(contributions).toHaveLength(1);
-    const [booked] = contributions;
-    expect(booked.accountId).toBe(pot.id);
-    expect(booked.transferConfirmationId).toBe(confirmation.id);
-    expect(booked.amountMinor).toBeGreaterThan(0);
-    expect(booked.amountMinor).toBeLessThanOrEqual(confirmation.amountMinor);
+    // **Nothing is booked against a payment.** An authored movement is savings
+    // (decision 9), and the pot's goal is funded by the transfer the pass
+    // derives for it — the movement arrives on top rather than instead
+    // (decision 12). There is nothing the plan says this money paid for, and a
+    // contribution invented against a payment would be a second answer to a
+    // question the pass has already answered.
+    expect(contributions).toEqual([]);
 
     // Confirming the same movement again is refused rather than double-booked.
     expect((await confirm()).statusCode).toBe(409);
@@ -1460,11 +1459,11 @@ describe("api service", () => {
     return { current, pot, movement };
   }
 
-  it("books what a movement funds when the sending account can afford it", async () => {
+  it("says what a movement actually delivered, and books nothing against a bill", async () => {
     const { auth } = await seedUser(store);
-    // £200 arrives against a £150 bill: the pot is already covered, so a second
-    // imaginary £200 would change nothing and book nothing at all.
-    const { pot, movement } = await seedFundedMovement(auth, [
+    // £200 authored out of an account with £3,000 to spare, against a £150 bill
+    // the pass already feeds. Both happen; neither is netted against the other.
+    const { current, pot, movement } = await seedFundedMovement(auth, [
       { name: "Council tax", amountMinor: 15000, priority: 1 },
     ]);
 
@@ -1478,47 +1477,52 @@ describe("api service", () => {
     // What arrived, not what was authored — here they agree, because the sender
     // could send the lot.
     expect(confirmation.amountMinor).toBe(20000);
-    expect(
-      contributions.map((c: { amountMinor: number; accountId: string }) => [
-        c.accountId,
-        c.amountMinor,
-      ]),
-    ).toEqual([[pot.id, 15000]]);
+    expect(contributions).toEqual([]);
+
+    // And the duplication decision 12 accepts, on the wire for the UI to flag:
+    // £150 of derived feed for the bill, £200 of savings on top, £200 of which
+    // stays put in the pot.
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/plan`, headers: auth })
+    ).json();
+    expect(plan.allocatedInflowMinor).toBe(35000);
+    expect(plan.lines[0].fundedFromInflowMinor).toBe(15000);
+    expect(plan.residualMinor).toBe(20000);
+    expect(plan.inflowArrivals).toEqual([
+      {
+        inflowId: movement.id,
+        fromAccountId: current.id,
+        amountMinor: 20000,
+        confirmedMinor: 20000,
+      },
+    ]);
   });
 
-  it("books what the movement funds, not what a second copy of it would", async () => {
+  it("funds a pot's bills in the sender's own priority order, not after them", async () => {
     const { auth } = await seedUser(store);
-    // £200 arrives against £300 of bills. It pays the first in full and half of
-    // the second; a second imaginary £200 would pay the *rest* of the second —
-    // the same rows, the wrong ones, and the wrong money against each.
-    const { pot, movement } = await seedFundedMovement(auth, [
+    // Decision 8, the direction the old pin did not cover: the pot's bills are
+    // expenses of the account's owner, so they are funded from the owner's
+    // budget in one global priority order — not out of whatever an authored
+    // movement happened to carry.
+    const { pot } = await seedFundedMovement(auth, [
       { name: "Council tax", amountMinor: 15000, priority: 1 },
       { name: "Water", amountMinor: 15000, priority: 2 },
     ]);
 
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/inflows/${movement.id}/confirm`,
-      headers: auth,
-    });
-    const { contributions } = res.json();
-    const payments = (
-      await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/payments`, headers: auth })
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/plan`, headers: auth })
     ).json();
-    const named = (name: string) => payments.find((p: { name: string }) => p.name === name).id;
     expect(
-      contributions.map((c: { paymentId: string; amountMinor: number }) => [
-        c.paymentId,
-        c.amountMinor,
-      ]),
-    ).toEqual([
-      [named("Council tax"), 15000],
-      [named("Water"), 5000],
-    ]);
-    // Every penny that moved is accounted for, and no penny twice.
+      plan.lines.map((l: { name: string; fundedMonthlyMinor: number }) => l.fundedMonthlyMinor),
+    ) //
+      .toEqual([15000, 15000]);
+    expect(plan.shortfallMinor).toBe(0);
+    // No authored row says so — the pass derived the whole £300 of it.
     expect(
-      contributions.reduce((sum: number, c: { amountMinor: number }) => sum + c.amountMinor, 0),
-    ).toBe(20000);
+      plan.inflowArrivals.reduce((n: number, a: { amountMinor: number }) => n + a.amountMinor, 0),
+    ) //
+      .toBe(20000);
+    expect(plan.allocatedInflowMinor).toBe(50000);
   });
 
   it("reports a confirmed movement as funded rather than awaiting for ever", async () => {
@@ -1532,7 +1536,8 @@ describe("api service", () => {
       ).json();
 
     const before = await planOf();
-    expect(before.allocatedInflowMinor).toBe(20000);
+    // £150 of derived feed for the bill, plus the £200 the movement authors.
+    expect(before.allocatedInflowMinor).toBe(35000);
     expect(before.confirmedInflowMinor).toBe(0);
     expect(before.lines[0].status).toBe("awaiting_transfer");
 
@@ -1544,10 +1549,19 @@ describe("api service", () => {
     const after = await planOf();
     expect(after.confirmedInflowMinor).toBe(20000);
     expect(after.lines[0].status).toBe("funded");
-    // Nobody else is involved, so there is no household and no member to name —
-    // but there is very much a sender, and it is one of the caller's own
-    // accounts. Membership of a household was never what made that safe to say.
+    // Nobody else is involved, so there is no household — but there is very much
+    // a sender, and it is one of the caller's own accounts. Membership of a
+    // household was never what made that safe to say. Both producers show:
+    // the transfer the pass derived (the caller's own, so nameable) and the
+    // movement they authored.
     expect(after.inflowSources).toEqual([
+      {
+        kind: "member",
+        memberUserId: expect.any(String),
+        displayName: "Owner",
+        amountMinor: 15000,
+        confirmedMinor: 0,
+      },
       {
         kind: "account",
         inflowId: movement.id,
@@ -3139,9 +3153,12 @@ describe("inflows over HTTP", () => {
     expect(plan.allocatedInflowMinor).toBe(20000);
     expect(rows[0].allocatedInflowMinor).toBe(plan.allocatedInflowMinor);
     expect(rows[0].confirmedInflowMinor).toBe(plan.confirmedInflowMinor);
-    // The sender is outside the rollup, so nothing of his is netted out of it:
-    // the money that arrived was counted once, here, and nowhere else.
-    expect(overview.perCurrency[0].intraEstateMovementMinor).toBe(15000);
+    // The sender is outside the rollup, and nothing of his is netted out of it —
+    // there is no netting term left to do it with. My pot's £150 bill is my own
+    // (an account no household plans bears its own payments), so Bob's account
+    // is planned beside mine without taking a share of it.
+    expect(overview.perCurrency[0].leftoverMinor).toBe(0);
+    expect(overview.perCurrency[0].shortfallMinor).toBe(15000);
   });
 
   /**
@@ -3225,12 +3242,16 @@ describe("inflows over HTTP", () => {
   });
 
   /**
-   * The double-count guard, over the shape that used to hide it: a chain. Each
-   * hop's pound is reported as the sender's leftover *and* as the receiver's
-   * funded money, so the rollup has to net it once per hop — which it can only
-   * do when it sees the whole chain at once.
+   * The double-count guard, over the shape that used to hide it: a chain.
+   *
+   * Each hop's pound used to be reported as the sender's leftover *and* as the
+   * receiver's funded money, so the rollup netted it once per hop. The pass
+   * takes it out of the sender's surplus instead, so the rollup is a plain sum
+   * and the identity holds with nothing subtracted — and, as the assertions
+   * below insist, the income figure does not move by a penny however many
+   * transfers the pass derives.
    */
-  it("nets money that moved between the caller's own accounts, once per hop", async () => {
+  it("counts every pound once across a chain, with no netting term", async () => {
     const { auth } = await seedUser(store);
     const current = await makeAccount(auth, "current");
     const pot = await makeAccount(auth, "pot");
@@ -3266,15 +3287,16 @@ describe("inflows over HTTP", () => {
 
     const bucket = (await app.inject({ method: "GET", url: "/api/overview", headers: auth })).json()
       .perCurrency[0];
-    // £3,000 in from outside, and nothing else: the two movements of £500 each
-    // redistribute money already counted.
+    // £3,000 in from outside, and nothing else: the movements and the transfers
+    // the pass derives both redistribute money already counted. Two derived
+    // transfers and two authored movements later, the figure has not moved.
     expect(bucket.monthlyIncomeMinor).toBe(300000);
-    // The pot's £400 bill takes £400 of the £500 that arrived, so only £100 is
-    // left for the second hop and the ISA's bill is funded to £100 of £400.
-    // Every penny of both is money that moved, so the netting is the whole
-    // funded total, counted once per hop and not once per account.
-    expect(bucket.totalFundedMinor).toBe(50000);
-    expect(bucket.intraEstateMovementMinor).toBe(50000);
+    // Both £400 bills are the owner's own obligations, funded from their one
+    // budget and transported by transfers the pass derives; the authored
+    // movements carry surplus on afterwards, as savings.
+    expect(bucket.totalFundedMinor).toBe(80000);
+    expect(bucket.leftoverMinor).toBe(220000);
+    expect(bucket).not.toHaveProperty("intraEstateMovementMinor");
     // The identity that has to hold for an estate that funds itself.
     expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(
       bucket.monthlyIncomeMinor - bucket.bufferMinor,

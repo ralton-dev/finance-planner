@@ -17,19 +17,29 @@ describe("calc service", () => {
       url: "/internal/calc/account-plan",
       payload: {
         asOfDate: "2026-01-01",
-        account: {
-          accountId: "a1",
-          currency: "GBP",
-          incomes: [
-            { id: "i1", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" },
-          ],
-          payments: [
+        accountId: "a1",
+        scope: {
+          scopeId: "owner",
+          members: [{ userId: "owner", shareBp: 10_000 }],
+          accounts: [
             {
-              id: "p1",
-              name: "Holiday",
-              category: "fixed_point",
-              amountMinor: 120_000,
-              dueDate: "2026-09-01",
+              accountId: "a1",
+              currency: "GBP",
+              role: "personal",
+              memberUserId: "owner",
+              incomes: [
+                { id: "i1", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" },
+              ],
+              payments: [
+                {
+                  id: "p1",
+                  name: "Holiday",
+                  category: "fixed_point",
+                  scope: "personal",
+                  amountMinor: 120_000,
+                  dueDate: "2026-09-01",
+                },
+              ],
             },
           ],
         },

@@ -1,14 +1,47 @@
 import { describe, expect, it } from "vitest";
 import {
-  computeAccountPlan,
-  computeOverview,
+  accountPlanFromScope,
   monthlyIncomeMinor,
+  overviewFromPlans,
   requiredMonthlyForPayment,
 } from "./engine.js";
 import { parseISODate } from "./dates.js";
-import type { AccountInput, IncomeInput, PaymentInput } from "./types.js";
+import { computeScopePlan, type ScopeAccountInput, type ScopeInput } from "./scope.js";
+import type { AccountPlan, IncomeInput, PaymentInput } from "./types.js";
 
 const now = parseISODate("2026-01-01");
+
+/** One account, owned outright by one member — the degenerate scope a solo user
+ *  is planned as (ONE-ENGINE.md, "the reframing"). */
+function soloScope(
+  account: Omit<ScopeAccountInput, "role" | "memberUserId" | "payments"> & {
+    payments: PaymentInput[];
+  },
+): ScopeInput {
+  return {
+    scopeId: "owner",
+    members: [{ userId: "owner", shareBp: 10_000 }],
+    accounts: [
+      {
+        ...account,
+        role: "personal",
+        memberUserId: "owner",
+        payments: account.payments.map((p) => ({ ...p, scope: "personal" as const })),
+      },
+    ],
+  };
+}
+
+/** That account's plan, as the one pass settles it and the view reports it. */
+function soloPlan(
+  account: Omit<ScopeAccountInput, "role" | "memberUserId" | "payments"> & {
+    payments: PaymentInput[];
+  },
+  asOfDate: string,
+): AccountPlan {
+  const scope = soloScope(account);
+  return accountPlanFromScope(scope, computeScopePlan(scope, asOfDate), account.accountId);
+}
 
 describe("monthlyIncomeMinor — frequency branches", () => {
   it("custom with a recurrence spreads over the interval", () => {
@@ -221,19 +254,16 @@ describe("requiredMonthlyForPayment — contribution-first goals", () => {
   });
 });
 
-describe("computeAccountPlan — contribution-first goals", () => {
-  const fund = (payments: PaymentInput[], amountMinor = 500_000): AccountInput => ({
+describe("contribution-first goals, through the pass", () => {
+  const fund = (payments: PaymentInput[], amountMinor = 500_000) => ({
     accountId: "a",
     currency: "GBP",
-    incomes: [{ id: "i", amountMinor, frequency: "monthly", anchorDate: "2026-01-01" }],
+    incomes: [{ id: "i", amountMinor, frequency: "monthly" as const, anchorDate: "2026-01-01" }],
     payments,
   });
 
   it("funds the cap and carries it back on the line", () => {
-    const plan = computeAccountPlan(
-      fund([goal({ fixedMonthlyMinor: 20_000, tag: "toys" })]),
-      "2026-01-01",
-    );
+    const plan = soloPlan(fund([goal({ fixedMonthlyMinor: 20_000, tag: "toys" })]), "2026-01-01");
     const line = plan.lines[0]!;
     expect(line.requiredMonthlyMinor).toBe(20_000);
     expect(line.fundedMonthlyMinor).toBe(20_000);
@@ -244,14 +274,14 @@ describe("computeAccountPlan — contribution-first goals", () => {
   });
 
   it("reports null passthroughs for a payment carrying neither", () => {
-    const plan = computeAccountPlan(fund([goal({ dueDate: "2026-09-01" })]), "2026-01-01");
+    const plan = soloPlan(fund([goal({ dueDate: "2026-09-01" })]), "2026-01-01");
     expect(plan.lines[0]?.fixedMonthlyMinor).toBeNull();
     expect(plan.lines[0]?.tag).toBeNull();
   });
 
   describe("dueDateIsDerived", () => {
     const derived = (over: Partial<PaymentInput>): boolean =>
-      computeAccountPlan(fund([goal(over)]), "2026-01-01").lines[0]!.dueDateIsDerived;
+      soloPlan(fund([goal(over)]), "2026-01-01").lines[0]!.dueDateIsDerived;
 
     it("is true only for a capped goal with no date of its own", () => {
       expect(derived({ fixedMonthlyMinor: 20_000 })).toBe(true);
@@ -273,7 +303,7 @@ describe("computeAccountPlan — contribution-first goals", () => {
     });
 
     it("is false for every category a cap does not apply to", () => {
-      const plan = computeAccountPlan(
+      const plan = soloPlan(
         fund([
           {
             id: "bill",
@@ -291,13 +321,13 @@ describe("computeAccountPlan — contribution-first goals", () => {
 
   it("a dateless goal on pace has no projected completion date to add", () => {
     // The pace already *is* the target date, so there is nothing extra to say.
-    const plan = computeAccountPlan(fund([goal({ fixedMonthlyMinor: 20_000 })]), "2026-01-01");
+    const plan = soloPlan(fund([goal({ fixedMonthlyMinor: 20_000 })]), "2026-01-01");
     expect(plan.lines[0]?.projectedCompletionDate).toBeUndefined();
   });
 
   it("flags a fully funded goal that will still miss its date", () => {
     // 120000 at 10000/month = 12 months → 2027-01, well past the June date.
-    const plan = computeAccountPlan(
+    const plan = soloPlan(
       fund([goal({ dueDate: "2026-06-01", fixedMonthlyMinor: 10_000 })]),
       "2026-01-01",
     );
@@ -309,7 +339,7 @@ describe("computeAccountPlan — contribution-first goals", () => {
 
   it("stays quiet when the pace comfortably beats the date", () => {
     // 120000 at 30000/month = 4 months → 2026-05, inside the September date.
-    const plan = computeAccountPlan(
+    const plan = soloPlan(
       fund([goal({ dueDate: "2026-09-01", fixedMonthlyMinor: 30_000 })]),
       "2026-01-01",
     );
@@ -317,10 +347,7 @@ describe("computeAccountPlan — contribution-first goals", () => {
   });
 
   it("an underfunded capped goal still projects off what is actually funded", () => {
-    const plan = computeAccountPlan(
-      fund([goal({ fixedMonthlyMinor: 20_000 })], 5_000),
-      "2026-01-01",
-    );
+    const plan = soloPlan(fund([goal({ fixedMonthlyMinor: 20_000 })], 5_000), "2026-01-01");
     const line = plan.lines[0]!;
     expect(line.fundedMonthlyMinor).toBe(5_000);
     expect(line.onTrack).toBe(false);
@@ -329,7 +356,7 @@ describe("computeAccountPlan — contribution-first goals", () => {
   });
 
   it("a completed goal asks for nothing and leaves the money as leftover", () => {
-    const plan = computeAccountPlan(
+    const plan = soloPlan(
       fund([goal({ alreadySavedMinor: 120_000, fixedMonthlyMinor: 20_000 })]),
       "2026-01-01",
     );
@@ -340,16 +367,20 @@ describe("computeAccountPlan — contribution-first goals", () => {
   });
 });
 
-describe("computeAccountPlan — savings buffer", () => {
+describe("the savings buffer, through the pass", () => {
   it("reserves the buffer off the top before funding goals", () => {
-    const account: AccountInput = {
-      accountId: "a",
-      currency: "GBP",
-      monthlyBufferMinor: 20_000,
-      incomes: [{ id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" }],
-      payments: [{ id: "p", name: "Phone", category: "monthly_recurring", amountMinor: 50_000 }],
-    };
-    const plan = computeAccountPlan(account, "2026-01-01");
+    const plan = soloPlan(
+      {
+        accountId: "a",
+        currency: "GBP",
+        monthlyBufferMinor: 20_000,
+        incomes: [
+          { id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" },
+        ],
+        payments: [{ id: "p", name: "Phone", category: "monthly_recurring", amountMinor: 50_000 }],
+      },
+      "2026-01-01",
+    );
     expect(plan.bufferMinor).toBe(20_000);
     // 100k income - 20k buffer = 80k available; 50k funded; 30k leftover.
     expect(plan.leftoverMinor).toBe(30_000);
@@ -357,23 +388,27 @@ describe("computeAccountPlan — savings buffer", () => {
   });
 
   it("can cause a shortfall when the buffer starves a goal", () => {
-    const account: AccountInput = {
-      accountId: "a",
-      currency: "GBP",
-      monthlyBufferMinor: 70_000,
-      incomes: [{ id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" }],
-      payments: [{ id: "p", name: "Phone", category: "monthly_recurring", amountMinor: 50_000 }],
-    };
-    const plan = computeAccountPlan(account, "2026-01-01");
+    const plan = soloPlan(
+      {
+        accountId: "a",
+        currency: "GBP",
+        monthlyBufferMinor: 70_000,
+        incomes: [
+          { id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" },
+        ],
+        payments: [{ id: "p", name: "Phone", category: "monthly_recurring", amountMinor: 50_000 }],
+      },
+      "2026-01-01",
+    );
     // 100k - 70k = 30k available, goal needs 50k → 20k shortfall.
     expect(plan.shortfallMinor).toBe(20_000);
     expect(plan.leftoverMinor).toBe(0);
   });
 });
 
-describe("computeOverview", () => {
+describe("overviewFromPlans", () => {
   it("aggregates per currency without FX conversion", () => {
-    const gbp = computeAccountPlan(
+    const gbp = soloPlan(
       {
         accountId: "gbp",
         currency: "GBP",
@@ -384,7 +419,7 @@ describe("computeOverview", () => {
       },
       "2026-01-01",
     );
-    const usd = computeAccountPlan(
+    const usd = soloPlan(
       {
         accountId: "usd",
         currency: "USD",
@@ -401,7 +436,7 @@ describe("computeOverview", () => {
       },
       "2026-01-01",
     );
-    const overview = computeOverview([usd, gbp], "2026-01-01");
+    const overview = overviewFromPlans([usd, gbp], "2026-01-01");
     expect(overview.perCurrency.map((c) => c.currency)).toEqual(["GBP", "USD"]);
     const gbpBucket = overview.perCurrency.find((c) => c.currency === "GBP");
     expect(gbpBucket?.leftoverMinor).toBe(60_000);

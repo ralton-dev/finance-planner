@@ -1,4 +1,4 @@
-import type { EstatePlan, EstateMovementStatus } from "./estate.js";
+import type { EstateMovementStatus } from "./estate.js";
 import type { ScopePlan } from "./scope.js";
 
 /**
@@ -7,10 +7,11 @@ import type { ScopePlan } from "./scope.js";
  * A diagram of where money goes is not a household feature. It was one only
  * because `HouseholdPlan.transfers` was the single derivation of "money crossing
  * an account boundary" that anything had, and a household was the only thing
- * that produced one. `computeEstatePlan` already derives the same fact for an
- * arbitrary set — `EstateMovement` is the household-free twin of `Transfer` — so
- * nothing here derives flows a second time. This is a **projection**: the pass's
- * answer, reshaped into the one thing a diagram needs.
+ * that produced one. `computeScopePlan` derives every such crossing for an
+ * arbitrary set of accounts — the transfers it works out for expenses and the
+ * movements the user authored for savings — so nothing here derives flows a
+ * second time. This is a **projection**: the pass's answer, reshaped into the
+ * one thing a diagram needs.
  *
  * ## What a scope is
  *
@@ -33,9 +34,9 @@ import type { ScopePlan } from "./scope.js";
  * right answer for a rollup and the wrong one for a Sankey, where a node whose
  * ribbons do not meet is a drawing that lies.
  *
- * Read off the one pass (`flowFromScope`) the residual is
- * `ScopeAccountPlan.leftoverMinor` verbatim, and it is **signed**: see that
- * field, and this module's note on the floor below.
+ * The residual is `ScopeAccountPlan.leftoverMinor` verbatim, and it is
+ * **signed**: see that field, and `flowFromScope`'s note on the floor that used
+ * to be here.
  *
  * ## The scope has an edge, and money crosses it
  *
@@ -116,174 +117,6 @@ export interface FlowScopeAccount {
 }
 
 /**
- * One member's transfer into an account, as a household plan derived it.
- *
- * ## Superseded by `flowFromScope` (ONE-ENGINE.md, WP-Q)
- *
- * This type exists only because there were two derivations of "money crossing
- * an account boundary" and `flowFromEstate` had to merge them. There is now
- * one: `computeScopePlan` emits `DerivedTransfer` carrying the member, the
- * currency and the confirmed amount directly, so there is nothing to attribute
- * and nothing to clamp. Kept until WP-S deletes its last producer,
- * `householdAllocations` (`apps/api/src/plan.ts:517`).
- *
- * The two derivations of "money crossing an account boundary" are disjoint by
- * construction, so a scope containing both needs both. `computeEstatePlan`
- * settles movements the user *authored* between their own accounts; a household
- * plan settles what each *member* must move to cover their share, which no
- * authored row exists for and the estate pass therefore cannot see — it only
- * sees the total landing in the account (`AllocatedInflow.allocatedMinor`).
- * Handing that total's attribution in here draws it as the ribbons it is,
- * instead of money appearing out of thin air. It is still `HouseholdPlan
- * .transfers`; nothing re-derives it.
- */
-export interface FlowAllocation {
-  /** The account the money arrives in — one of the scope's. */
-  toAccountId: string;
-  /** The member's own account it leaves, in scope or not. */
-  fromAccountId: string;
-  memberUserId: string;
-  /** Only when the caller may be told it. */
-  memberName?: string;
-  amountMinor: number;
-}
-
-/**
- * The ordered pass's answer as a flow over `scope`.
- *
- * `estate` is expected to cover at least the scope — it normally covers more,
- * because the pass reaches upstream to whatever funds the scope's accounts, and
- * that is the point: an arrival from an account the user did not include is
- * still money arriving, and it is drawn crossing the scope's edge.
- *
- * Nothing is derived here that `computeEstatePlan` or a household plan has not
- * already decided.
- *
- * ## Superseded by `flowFromScope` (ONE-ENGINE.md, WP-Q)
- *
- * Everything below the accounts loop is two-engine machinery: the `allocations`
- * parameter, the unattributed remainder it is clamped against, and the floor on
- * the residual that copes with an account promised to two plans at once. All
- * three dissolve when there is one plan. Kept, unchanged, only because its last
- * caller is `apps/api/src/server.ts:1230`, which WP-S rewrites.
- */
-export function flowFromEstate(
-  estate: EstatePlan,
-  scope: readonly FlowScopeAccount[],
-  currency: string,
-  allocations: readonly FlowAllocation[] = [],
-): Flow {
-  const planById = new Map(estate.plans.map((p) => [p.accountId, p]));
-  const inScope = new Set(scope.map((s) => s.accountId));
-
-  const accounts: FlowAccount[] = [];
-  const edges: FlowEdge[] = [];
-
-  for (const entry of scope) {
-    const plan = planById.get(entry.accountId);
-    // An account the pass did not plan cannot be drawn. It should not happen —
-    // every scoped account is seeded into the pass — but a node made of guesses
-    // would be worse than a node that is absent.
-    if (!plan) continue;
-    accounts.push({
-      accountId: entry.accountId,
-      name: entry.name,
-      incomeMinor: plan.monthlyIncomeMinor,
-      spendingMinor: plan.totalFundedMinor,
-      // Filled in once every edge is known — see below.
-      leftoverMinor: 0,
-      shortfallMinor: plan.shortfallMinor,
-    });
-  }
-
-  for (const movement of estate.movements) {
-    const from = inScope.has(movement.fromAccountId);
-    const to = inScope.has(movement.toAccountId);
-    // Two accounts the scope does not contain move money that is none of this
-    // diagram's business, however visible they are to the pass.
-    if (!from && !to) continue;
-    edges.push({
-      fromAccountId: from ? movement.fromAccountId : null,
-      toAccountId: to ? movement.toAccountId : null,
-      amountMinor: movement.fundedMinor,
-      requestedMinor: movement.requestedMinor,
-      status: movement.status,
-      inflowId: movement.inflowId,
-    });
-  }
-
-  // Money a household allocated into a scoped account: whatever is arriving that
-  // no authored movement itemises. `allocations` say who is sending it, when the
-  // caller could find out; without them it simply crosses the scope's edge from
-  // an unnamed source, which is what an arrival nobody can attribute is.
-  const allocationsFor = new Map<string, FlowAllocation[]>();
-  for (const allocation of allocations) {
-    const list = allocationsFor.get(allocation.toAccountId) ?? [];
-    list.push(allocation);
-    allocationsFor.set(allocation.toAccountId, list);
-  }
-
-  for (const entry of accounts) {
-    const plan = planById.get(entry.accountId)!;
-    const itemised = plan.inflowArrivals.reduce((sum, a) => sum + a.amountMinor, 0);
-    let unattributed = Math.max(0, plan.allocatedInflowMinor - itemised);
-    for (const allocation of allocationsFor.get(entry.accountId) ?? []) {
-      if (unattributed <= 0) break;
-      // Clamped to what is actually arriving. An attribution is derived from a
-      // plan of its own and can outrun the arrival it explains; drawing more
-      // than arrived would put money into the account that is not there.
-      const amountMinor = Math.min(allocation.amountMinor, unattributed);
-      unattributed -= amountMinor;
-      edges.push({
-        fromAccountId: inScope.has(allocation.fromAccountId) ? allocation.fromAccountId : null,
-        toAccountId: entry.accountId,
-        amountMinor,
-        requestedMinor: allocation.amountMinor,
-        status: "funded",
-        memberUserId: allocation.memberUserId,
-        ...(allocation.memberName !== undefined ? { memberName: allocation.memberName } : {}),
-      });
-    }
-    if (unattributed <= 0) continue;
-    edges.push({
-      fromAccountId: null,
-      toAccountId: entry.accountId,
-      amountMinor: unattributed,
-      requestedMinor: unattributed,
-      status: "funded",
-    });
-  }
-
-  // Recomputed once every edge is known, because a household transfer *out* of
-  // a scoped account is money the pass never subtracted: the estate plan does
-  // not know its owner has agreed to fund somebody's rent. An account promised
-  // to two plans at once can therefore be over-committed, and floors here at
-  // nothing left over — at which point its ribbons stop meeting, which is the
-  // honest picture of the same pound being spoken for twice.
-  const withResiduals = accounts.map((entry) => ({
-    ...entry,
-    leftoverMinor: Math.max(
-      0,
-      entry.incomeMinor +
-        edges.reduce((sum, e) => sum + (e.toAccountId === entry.accountId ? e.amountMinor : 0), 0) -
-        entry.spendingMinor -
-        edges.reduce(
-          (sum, e) => sum + (e.fromAccountId === entry.accountId ? e.amountMinor : 0),
-          0,
-        ),
-    ),
-  }));
-
-  return {
-    asOfDate: estate.asOfDate,
-    currency,
-    accounts: withResiduals,
-    edges,
-    totalInflowMinor: totalInflow(withResiduals, edges),
-  };
-}
-
-/**
  * The one pass's answer as a flow over `scope`.
  *
  * One derivation, so nothing is merged, attributed or clamped. A
@@ -305,9 +138,9 @@ export function flowFromEstate(
  *
  * ## No floor, on purpose
  *
- * `flowFromEstate` floors each node's residual at zero, because an account
- * promised to two plans at once could be committed to sending more than it has.
- * There is one plan now, and `ScopeAccountPlan.leftoverMinor` is already the
+ * The superseded `flowFromEstate` floored each node's residual at zero, because
+ * an account promised to two plans at once could be committed to sending more
+ * than it has. There is one plan now, and `ScopeAccountPlan.leftoverMinor` is the
  * signed residual `income + arriving − spending − leaving` — so for an account
  * of a scope the ribbons meet exactly, by construction, and the floor could only
  * ever fire on a figure that is *meaningful*: a negative residual means a member

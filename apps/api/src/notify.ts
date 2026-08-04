@@ -1,10 +1,12 @@
-import type { Store } from "@finance-planner/data";
+import type { Account, Store } from "@finance-planner/data";
 import { toISODate } from "@finance-planner/domain";
 import type { Mailer } from "@finance-planner/mailer";
 import {
   accessibleAccounts,
-  computeEstateFor,
-  computeHouseholdPlanWithSchedule,
+  createPlanContext,
+  type PlannedScope,
+  paydayScheduleFor,
+  scopesFor,
   upcomingForUser,
 } from "./plan.js";
 
@@ -35,29 +37,31 @@ const dayLabel = (daysUntil: number): string =>
 const monthStart = (asOfDate: string): string => `${asOfDate.slice(0, 7)}-01`;
 
 /**
- * Movements between the user's own accounts that this month's plan funds and
- * nobody has said they made yet.
+ * The savings movements this month's plan funds out of the user's own accounts
+ * and nobody has said they made yet — decision 13's committed bucket, as a list
+ * of things to do.
  *
- * The household section below asks `listHouseholdsForUser` and so can only ever
- * describe money moving inside a household. A movement between two accounts you
- * own has no household in it at all — it is planned, and since WP-H it is
- * confirmable — so the digest's "what to move" was structurally blind to
- * exactly the case the standalone user has. This is that case, read from the
- * one ordered pass over everything they can see.
+ * Only the *committed* ones: a movement the sender could not afford moves
+ * nothing, and telling somebody to move £0 is not news. Read from the same
+ * scopes every other surface reads, so the digest and the flow diagram cannot
+ * disagree about what is leaving.
  *
- * No date on these lines, deliberately. A household transfer is anchored to a
- * payday and the schedule says when; an authored movement says only that it
- * happens each month, and inventing a day for it would be a fact the plan does
- * not hold. They are a month's outstanding list, not a diary.
+ * No date on these lines, deliberately. A derived transfer is anchored to a
+ * payday and the schedule below says when; an authored movement says only that
+ * it happens each month, and inventing a day for it would be a fact the plan
+ * does not hold. They are a month's outstanding list, not a diary.
  */
-async function movementLines(store: Store, userId: string, asOfDate: string): Promise<string[]> {
-  const accounts = await accessibleAccounts(store, userId);
-  const estate = await computeEstateFor(store, accounts, asOfDate);
+async function movementLines(
+  store: Store,
+  accounts: readonly Account[],
+  scopes: readonly PlannedScope[],
+  asOfDate: string,
+): Promise<string[]> {
   const mine = new Map(accounts.map((a) => [a.id, a]));
   const month = monthStart(asOfDate);
 
   const lines: string[] = [];
-  for (const movement of estate.movements) {
+  for (const movement of scopes.flatMap((s) => s.plan.movements)) {
     const from = mine.get(movement.fromAccountId);
     // Only movements out of an account this user can see: it is their list of
     // things to do, and money leaving somebody else's account is not on it.
@@ -96,21 +100,41 @@ export async function buildDailyDigest(
 ): Promise<string | null> {
   const windowEnd = plusDays(asOfDate, DIGEST_WINDOW_DAYS);
 
-  const due = await upcomingForUser(store, userId, asOfDate, DIGEST_WINDOW_DAYS);
-  const movements = await movementLines(store, userId, asOfDate);
+  const ctx = createPlanContext();
+  const accounts = await accessibleAccounts(store, userId);
+  const scopes = await scopesFor(store, accounts, asOfDate, ctx);
 
+  const due = await upcomingForUser(store, userId, asOfDate, DIGEST_WINDOW_DAYS, ctx);
+  const movements = await movementLines(store, accounts, scopes, asOfDate);
+
+  // The transfers the pass derived for *this* user, whether or not a household
+  // is involved: `splitTransfersByPayday` serves a solo user's derived feed into
+  // a bills pot for free, because the pass derives it exactly as it derives a
+  // member's share of the rent. The old loop asked `listHouseholdsForUser` and
+  // was therefore structurally blind to every standalone estate.
+  const householdNames = new Map<string, string>(
+    (await store.listHouseholdsForUser(userId)).map((h) => [h.id, h.name]),
+  );
   const transferLines: string[] = [];
-  for (const household of await store.listHouseholdsForUser(userId)) {
-    const plan = await computeHouseholdPlanWithSchedule(store, household.id, asOfDate);
-    const accountName = new Map(plan.accounts.map((a) => [a.accountId, a.name ?? "an account"]));
-    const mine = plan.paydaySchedule.find((s) => s.memberUserId === userId);
+  for (const scope of scopes) {
+    const accountName = new Map(
+      scope.input.accounts.map((a) => [a.accountId, a.name ?? "an account"]),
+    );
+    const currency = scope.input.accounts[0]?.currency ?? "GBP";
+    const household = scope.input.householdId
+      ? householdNames.get(scope.input.householdId)
+      : undefined;
+    const mine = paydayScheduleFor(scope, scope.plan.transfers, asOfDate).find(
+      (s) => s.memberUserId === userId,
+    );
     for (const event of mine?.events ?? []) {
       if (event.date < asOfDate || event.date > windowEnd) continue;
       for (const t of event.transfers) {
         transferLines.push(
-          `- ${event.date} — ${formatMoney(t.amountMinor, plan.currency)} from ` +
+          `- ${event.date} — ${formatMoney(t.amountMinor, currency)} from ` +
             `${accountName.get(t.fromAccountId) ?? "an account"} to ` +
-            `${accountName.get(t.toAccountId) ?? "an account"} (${household.name})`,
+            `${accountName.get(t.toAccountId) ?? "an account"}` +
+            `${household ? ` (${household})` : ""}`,
         );
       }
     }

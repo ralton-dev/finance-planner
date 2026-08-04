@@ -1,62 +1,24 @@
-import {
-  splitByShares,
-  type AccountRole,
-  type PaymentCategory,
-  type PaymentScope,
-} from "@finance-planner/contracts";
-import { parseISODate } from "./dates.js";
-import { monthlyIncomeMinor, requiredMonthlyForPayment } from "./engine.js";
-import type { IncomeInput, PaymentInput } from "./types.js";
-
-const DEFAULT_PRIORITY = 100;
-/** Buffer reservations fund after every dated payment. */
-const RESERVE_PRIORITY = Number.MAX_SAFE_INTEGER;
-const FAR_FUTURE = "9999-12-31";
-
-// ---------------------------------------------------------------------------
-// Inputs
-// ---------------------------------------------------------------------------
-
-/** A household member with a proportional contribution to shared costs. */
-export interface HouseholdMemberInput {
-  userId: string;
-  displayName?: string;
-  /** Relative contribution weight (basis points). Normalised by the engine
-   *  against the household total, so the absolute scale is free. */
-  shareBp: number;
-}
-
-/** A payment carrying its household cost-sharing classification. */
-export interface HouseholdPaymentInput extends PaymentInput {
-  scope: PaymentScope;
-  /** When scope === "personal": the member who bears it. Falls back to a
-   *  personal account's owning member. */
-  bearerUserId?: string | null;
-}
-
-/** An account participating in a household plan, with its role. */
-export interface HouseholdAccountInput {
-  accountId: string;
-  name?: string;
-  role: AccountRole;
-  /** Set when role === "personal": the member who owns this account. */
-  memberUserId?: string | null;
-  currency: string;
-  monthlyBufferMinor?: number;
-  incomes: IncomeInput[];
-  payments: HouseholdPaymentInput[];
-}
+import { splitByShares, type AccountRole, type PaymentCategory } from "@finance-planner/contracts";
+import type { PaymentScope } from "@finance-planner/contracts";
+import type { ScopeCurrencyPlan, ScopePlan } from "./scope.js";
 
 /**
- * A household plan request. All accounts are assumed to share one currency
- * (multi-currency households are out of scope — see BACKLOG).
+ * The household plan, as a **view** of the one pass.
+ *
+ * A household is a scope with sharing rules, so it has no engine of its own any
+ * more. `computeHouseholdPlan` used to be the second funding engine — member
+ * budgets, one global priority order, derived transfers — and it could not see
+ * money leaving one of its own accounts, because `HouseholdAccountInput` carried
+ * incomes and payments and nothing else. That blindness is what made the same
+ * account read £2,793 here and £2,093 on the flow diagram (ONE-ENGINE.md). The
+ * pass generalised its structure and gained the term it was missing; this file
+ * keeps the shape the household page reads and none of the arithmetic.
+ *
+ * Everything below is a projection of `ScopeCurrencyPlan`, restricted to the
+ * accounts the household actually holds. A scope normally *is* the household —
+ * but it reaches upstream to whatever funds it, and a sender nobody assigned to
+ * the household is not one of its accounts, however necessary it was to plan.
  */
-export interface HouseholdInput {
-  householdId: string;
-  currency: string;
-  members: HouseholdMemberInput[];
-  accounts: HouseholdAccountInput[];
-}
 
 // ---------------------------------------------------------------------------
 // Outputs
@@ -99,8 +61,12 @@ export interface HouseholdMemberPlan {
    *  proportional slice of shared costs). */
   obligationMinor: number;
   fundedMinor: number;
-  /** Discretionary surplus after the buffer + obligations (>= 0). */
+  /** Discretionary surplus after the buffer + obligations (>= 0). Keeps its
+   *  meaning exactly (decision 13): **not** reduced by `committedMinor`. */
   leftoverMinor: number;
+  /** Of that leftover, what funded savings movements out of this member's own
+   *  accounts have spoken for (decision 13). Added alongside, never netted. */
+  committedMinor: number;
   /** Obligation the member's income can't cover (>= 0). */
   shortfallMinor: number;
 }
@@ -117,9 +83,20 @@ export interface HouseholdAccountPlan {
   fundedOutflowMinor: number;
   transferInMinor: number;
   transferOutMinor: number;
-  /** What remains in the account after the month's flows (includes any buffer
-   *  reserve, and the pennies members rounded their shares up by). */
+  /**
+   * What remains in the account after the month's flows (includes any buffer
+   * reserve, and the pennies members rounded their shares up by) — **before**
+   * the savings movements leaving it.
+   *
+   * Keeps its meaning to the penny (decision 13): for a household with no
+   * authored movement anywhere it is the same `income + in − out − spending` it
+   * always was. `committedMinor` sits alongside, and free-after-committed is the
+   * difference — which is the figure that now agrees with the flow diagram and
+   * the account page (`packages/domain/src/parity.test.ts`).
+   */
   leftoverMinor: number;
+  /** What funded savings movements take out of this account (decision 13). */
+  committedMinor: number;
   shortfallMinor: number;
 }
 
@@ -139,6 +116,9 @@ export interface HouseholdPlan {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /** Of that leftover, what the household's funded savings movements have
+   *  spoken for (decision 13). */
+  committedMinor: number;
   shortfallMinor: number;
   members: HouseholdMemberPlan[];
   accounts: HouseholdAccountPlan[];
@@ -155,294 +135,144 @@ export interface HouseholdPlan {
  *  Re-exported here because it is part of the domain's public surface. */
 export { splitByShares };
 
-/** One unit of money a member must get into an account by a deadline. */
-interface Obligation {
-  accountId: string;
-  memberIdx: number;
-  requiredMinor: number;
-  fundedMinor: number;
-  priority: number;
-  sortDate: string;
-  /** Set for payment-derived obligations; absent for buffer reservations. */
-  lineIdx?: number;
-}
-
 // ---------------------------------------------------------------------------
-// Engine
+// The view
 // ---------------------------------------------------------------------------
 
 /**
- * Compute a household's pooled monthly plan as of `asOfDate`.
+ * A household's pooled plan, read off a planned scope.
  *
- * Unlike the per-account plan, money is considered across all accounts at once:
- *   - Shared costs are split across members by their contribution share, each
- *     member's slice rounded up (see `splitByShares`). The split happens once
- *     per line, so a pot can end the month up to (lines × (members − 1)) minor
- *     units over-funded — deliberately, so no bill is ever a penny short.
- *   - Personal costs are borne entirely by one member (their bearer / the
- *     owning member of a personal account).
- *   - Each member funds their attributed costs from their own income in global
- *     priority order; whatever they can't cover surfaces as their shortfall.
- *   - The money each member must move between accounts to fund everything is
- *     derived as a set of transfers (the input to the Sankey view).
+ * `accountIds` are the accounts assigned to the household — the roster
+ * `listAccountAssignments` returns — and nothing outside it is reported, even
+ * though the pass had to plan more of the graph than that to answer honestly.
+ * `currency` picks the partition: a household is single-currency by assumption
+ * (see BACKLOG), and a scope that spans two plans each on its own.
  *
- * Assumptions (see BACKLOG): one currency per household; shared-pot income is
- * uncommon and accumulates as pot surplus rather than reducing contributions.
+ * No funding arithmetic. Every figure below is a sum or a passthrough of
+ * decisions `computeScopePlan` already made, which is why the household page and
+ * the account page cannot disagree: they are reading the same pass.
  */
-export function computeHouseholdPlan(input: HouseholdInput, asOfDate: string): HouseholdPlan {
-  const now = parseISODate(asOfDate);
-  const members = input.members;
-  const memberIdx = new Map(members.map((m, i) => [m.userId, i] as const));
-  const shareWeights = members.map((m) => Math.max(0, m.shareBp));
-  const totalShareBp = shareWeights.reduce((s, w) => s + w, 0);
+export function householdPlanFromScope(
+  plan: ScopePlan,
+  householdId: string,
+  accountIds: readonly string[],
+  currency: string,
+): HouseholdPlan {
+  const partition: Pick<ScopeCurrencyPlan, "members" | "accounts" | "lines" | "transfers"> =
+    plan.partitions.find((p) => p.currency === currency) ?? {
+      members: [],
+      accounts: [],
+      lines: [],
+      transfers: [],
+    };
+  const inHousehold = new Set(accountIds);
+  const memberIds = new Set(partition.members.map((m) => m.userId));
 
-  // --- income per account ---
-  const accountIncome = new Map<string, number>();
-  for (const acc of input.accounts) {
-    accountIncome.set(
-      acc.accountId,
-      acc.incomes.reduce((sum, i) => sum + monthlyIncomeMinor(i, now), 0),
-    );
-  }
+  const accounts: HouseholdAccountPlan[] = partition.accounts
+    .filter((a) => inHousehold.has(a.accountId))
+    .map((a) => ({
+      accountId: a.accountId,
+      name: a.name,
+      role: a.role,
+      memberUserId: a.memberUserId,
+      currency: a.currency,
+      monthlyIncomeMinor: a.monthlyIncomeMinor,
+      requiredOutflowMinor: a.requiredOutflowMinor,
+      fundedOutflowMinor: a.fundedOutflowMinor,
+      transferInMinor: a.transferInMinor,
+      transferOutMinor: a.transferOutMinor,
+      // The pass's residual is already net of the savings leaving; adding the
+      // committed total back gives the field its historical meaning, and the two
+      // are published side by side rather than one being derived from the other
+      // by whoever reads them.
+      leftoverMinor: a.leftoverMinor + a.committedMinor,
+      committedMinor: a.committedMinor,
+      shortfallMinor: a.shortfallMinor,
+    }));
 
-  // --- per member: income, reserved buffer, and their "source" account ---
-  // (the personal account income lands in — where their transfers originate).
-  const memberIncome = members.map(() => 0);
-  const memberPersonalBuffer = members.map(() => 0);
-  const memberSource: (string | undefined)[] = members.map(() => undefined);
-  for (let i = 0; i < members.length; i++) {
-    const personal = input.accounts
-      .filter((a) => a.role === "personal" && a.memberUserId === members[i]!.userId)
-      .sort((a, b) => (a.accountId < b.accountId ? -1 : 1));
-    let bestInc = -1;
-    for (const a of personal) {
-      const inc = accountIncome.get(a.accountId) ?? 0;
-      memberIncome[i]! += inc;
-      memberPersonalBuffer[i]! += Math.max(0, a.monthlyBufferMinor ?? 0);
-      if (inc > bestInc) {
-        bestInc = inc;
-        memberSource[i] = a.accountId;
-      }
-    }
-  }
+  const lines: HouseholdPlanLine[] = partition.lines
+    .filter((l) => inHousehold.has(l.accountId))
+    .map((l) => ({
+      paymentId: l.paymentId,
+      accountId: l.accountId,
+      name: l.name,
+      category: l.category,
+      scope: l.scope,
+      amountMinor: l.amountMinor,
+      dueDate: l.dueDate,
+      targetDate: l.targetDate,
+      priority: l.priority,
+      requiredMonthlyMinor: l.requiredMonthlyMinor,
+      fundedMonthlyMinor: l.fundedMonthlyMinor,
+      occurrencesThisMonth: l.occurrencesThisMonth,
+      onTrack: l.onTrack,
+      tag: l.tag,
+      allocations: l.allocations,
+    }));
 
-  // --- build lines + obligations ---
-  const lines: HouseholdPlanLine[] = [];
-  const obligations: Obligation[] = [];
+  const committedByAccount = accounts.reduce((s, a) => s + a.committedMinor, 0);
+  const members: HouseholdMemberPlan[] = partition.members.map((m) => ({
+    userId: m.userId,
+    displayName: m.displayName,
+    shareBp: m.shareBp,
+    monthlyIncomeMinor: m.monthlyIncomeMinor,
+    obligationMinor: m.obligationMinor,
+    fundedMinor: m.fundedMinor,
+    leftoverMinor: m.leftoverMinor,
+    // Restricted to the household's own accounts, so a member's private ISA
+    // draining a private current account is not the household's business.
+    committedMinor: accounts
+      .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
+      .reduce((s, a) => s + a.committedMinor, 0),
+    shortfallMinor: m.shortfallMinor,
+  }));
 
-  for (const acc of input.accounts) {
-    for (const p of acc.payments) {
-      if (p.active === false) continue;
-      const req = requiredMonthlyForPayment(p, now);
-      const priority = p.priority ?? DEFAULT_PRIORITY;
-
-      // Attribute the required amount to members.
-      const allocReq = members.map(() => 0);
-      if (p.scope === "personal") {
-        const bearer = p.bearerUserId ?? (acc.role === "personal" ? acc.memberUserId : null);
-        const bi = bearer != null ? memberIdx.get(bearer) : undefined;
-        if (bi !== undefined) {
-          allocReq[bi] = req.requiredMinor;
-        } else {
-          // Unresolvable bearer → fall back to a shared split so it's still
-          // someone's responsibility rather than silently unfunded.
-          splitByShares(req.requiredMinor, shareWeights).forEach((v, i) => (allocReq[i] = v));
-        }
-      } else {
-        splitByShares(req.requiredMinor, shareWeights).forEach((v, i) => (allocReq[i] = v));
-      }
-
-      const lineIdx = lines.length;
-      lines.push({
-        paymentId: p.id,
-        accountId: acc.accountId,
-        name: p.name,
-        category: p.category,
-        scope: p.scope,
-        amountMinor: p.amountMinor,
-        dueDate: p.dueDate ?? req.effectiveDate,
-        targetDate: req.effectiveDate,
-        priority,
-        requiredMonthlyMinor: req.requiredMinor,
-        fundedMonthlyMinor: 0,
-        occurrencesThisMonth: req.occurrencesThisMonth,
-        onTrack: false,
-        tag: p.tag ?? null,
-        allocations: members.map((m) => ({ userId: m.userId, requiredMinor: 0, fundedMinor: 0 })),
-      });
-      for (let i = 0; i < members.length; i++) {
-        lines[lineIdx]!.allocations[i]!.requiredMinor = allocReq[i]!;
-        if (allocReq[i]! > 0) {
-          obligations.push({
-            accountId: acc.accountId,
-            memberIdx: i,
-            requiredMinor: allocReq[i]!,
-            fundedMinor: 0,
-            priority,
-            sortDate: req.effectiveDate,
-            lineIdx,
-          });
-        }
-      }
-    }
-
-    // Shared-pot buffer: a reserve the members fund into the pot proportionally,
-    // at the lowest priority. (Personal-account buffers reduce that member's
-    // budget instead — handled below.)
-    const buffer = Math.max(0, acc.monthlyBufferMinor ?? 0);
-    if (acc.role === "shared" && buffer > 0) {
-      splitByShares(buffer, shareWeights).forEach((v, i) => {
-        if (v > 0) {
-          obligations.push({
-            accountId: acc.accountId,
-            memberIdx: i,
-            requiredMinor: v,
-            fundedMinor: 0,
-            priority: RESERVE_PRIORITY,
-            sortDate: FAR_FUTURE,
-          });
-        }
-      });
-    }
-  }
-
-  // --- fund obligations in global priority order, per member budget ---
-  const budget = members.map((_, i) => Math.max(0, memberIncome[i]! - memberPersonalBuffer[i]!));
-  const remaining = budget.slice();
-  const ordered = obligations
-    .map((o, idx) => ({ o, idx }))
-    .sort(
-      (a, b) =>
-        a.o.priority - b.o.priority ||
-        (a.o.sortDate < b.o.sortDate ? -1 : a.o.sortDate > b.o.sortDate ? 1 : 0) ||
-        a.idx - b.idx,
-    );
-  for (const { o } of ordered) {
-    const funded = Math.max(0, Math.min(o.requiredMinor, remaining[o.memberIdx]!));
-    o.fundedMinor = funded;
-    remaining[o.memberIdx]! -= funded;
-    if (o.lineIdx !== undefined) {
-      const alloc = lines[o.lineIdx]!.allocations[o.memberIdx]!;
-      alloc.fundedMinor = funded;
-    }
-  }
-
-  // --- roll up payment lines ---
-  for (const line of lines) {
-    line.fundedMonthlyMinor = line.allocations.reduce((s, a) => s + a.fundedMinor, 0);
-    line.onTrack = line.fundedMonthlyMinor >= line.requiredMonthlyMinor;
-  }
-
-  // --- derive transfers (funded obligations that cross account boundaries) ---
-  const transferMap = new Map<string, Transfer>();
-  for (const o of obligations) {
-    if (o.fundedMinor <= 0) continue;
-    const from = memberSource[o.memberIdx];
-    if (!from || from === o.accountId) continue; // no source, or internal
-    const key = `${from}→${o.accountId}→${o.memberIdx}`;
-    const existing = transferMap.get(key);
-    if (existing) {
-      existing.amountMinor += o.fundedMinor;
-    } else {
-      transferMap.set(key, {
-        fromAccountId: from,
-        toAccountId: o.accountId,
-        memberUserId: members[o.memberIdx]!.userId,
-        amountMinor: o.fundedMinor,
-      });
-    }
-  }
-  const transfers = [...transferMap.values()].sort(
-    (a, b) =>
-      (a.fromAccountId < b.fromAccountId ? -1 : a.fromAccountId > b.fromAccountId ? 1 : 0) ||
-      (a.toAccountId < b.toAccountId ? -1 : a.toAccountId > b.toAccountId ? 1 : 0),
+  // Counted as the members were *asked* for it — each share rounded up, so a
+  // bill is never a penny short — plus anything a line needed that reached no
+  // member at all. A household with nobody in it still owes the rent, and a
+  // total that silently dropped it would report no shortfall while every account
+  // on it was short (the defect WP-P found in `computeHouseholdPlan` and
+  // declined to patch in a live surface).
+  const totalRequired = lines.reduce(
+    (s, l) =>
+      s +
+      Math.max(
+        l.allocations.reduce((t, a) => t + a.requiredMinor, 0),
+        l.requiredMonthlyMinor,
+      ),
+    0,
   );
-
-  // --- per-member summary ---
-  const memberPlans: HouseholdMemberPlan[] = members.map((m, i) => {
-    const ob = obligations.filter((o) => o.memberIdx === i);
-    const obligation = ob.reduce((s, o) => s + o.requiredMinor, 0);
-    const funded = ob.reduce((s, o) => s + o.fundedMinor, 0);
-    return {
-      userId: m.userId,
-      displayName: m.displayName,
-      shareBp:
-        totalShareBp > 0
-          ? Math.round((shareWeights[i]! / totalShareBp) * 10_000)
-          : Math.round(10_000 / members.length),
-      monthlyIncomeMinor: memberIncome[i]!,
-      obligationMinor: obligation,
-      fundedMinor: funded,
-      leftoverMinor: remaining[i]!,
-      shortfallMinor: Math.max(0, obligation - funded),
-    };
-  });
-
-  // --- per-account summary ---
-  const transferIn = new Map<string, number>();
-  const transferOut = new Map<string, number>();
-  for (const t of transfers) {
-    transferIn.set(t.toAccountId, (transferIn.get(t.toAccountId) ?? 0) + t.amountMinor);
-    transferOut.set(t.fromAccountId, (transferOut.get(t.fromAccountId) ?? 0) + t.amountMinor);
-  }
-  // Bills funded out of each account — the *bills*, taken off the lines rather
-  // than off the member obligations that pay for them. Buffer reserves never
-  // leave the account, and neither do the pennies members round up by: a bill
-  // costs what it costs, so the over-contribution stays as the pot's leftover
-  // instead of appearing as money the account paid out.
-  const fundedOutflow = new Map<string, number>();
-  const requiredOutflow = new Map<string, number>();
-  for (const line of lines) {
-    const paid = Math.min(line.fundedMonthlyMinor, line.requiredMonthlyMinor);
-    fundedOutflow.set(line.accountId, (fundedOutflow.get(line.accountId) ?? 0) + paid);
-    requiredOutflow.set(
-      line.accountId,
-      (requiredOutflow.get(line.accountId) ?? 0) + line.requiredMonthlyMinor,
-    );
-  }
-  const accountPlans: HouseholdAccountPlan[] = input.accounts.map((acc) => {
-    const income = accountIncome.get(acc.accountId) ?? 0;
-    const tin = transferIn.get(acc.accountId) ?? 0;
-    const tout = transferOut.get(acc.accountId) ?? 0;
-    const fout = fundedOutflow.get(acc.accountId) ?? 0;
-    const rout = requiredOutflow.get(acc.accountId) ?? 0;
-    return {
-      accountId: acc.accountId,
-      name: acc.name,
-      role: acc.role,
-      memberUserId: acc.memberUserId ?? null,
-      currency: acc.currency,
-      monthlyIncomeMinor: income,
-      requiredOutflowMinor: rout,
-      fundedOutflowMinor: fout,
-      transferInMinor: tin,
-      transferOutMinor: tout,
-      leftoverMinor: income + tin - tout - fout,
-      shortfallMinor: Math.max(0, rout - fout),
-    };
-  });
-
-  // --- household totals ---
-  const monthlyIncome = [...accountIncome.values()].reduce((s, v) => s + v, 0);
-  const totalRequired = obligations.reduce((s, o) => s + o.requiredMinor, 0);
-  const totalFunded = obligations.reduce((s, o) => s + o.fundedMinor, 0);
-  const sharedIncome = input.accounts
-    .filter((a) => a.role === "shared")
-    .reduce((s, a) => s + (accountIncome.get(a.accountId) ?? 0), 0);
-  const leftover = memberPlans.reduce((s, m) => s + m.leftoverMinor, 0) + sharedIncome;
+  const totalFunded = lines.reduce(
+    (s, l) => s + l.allocations.reduce((t, a) => t + a.fundedMinor, 0),
+    0,
+  );
+  const monthlyIncome = accounts.reduce((s, a) => s + a.monthlyIncomeMinor, 0);
+  // Income no member's budget counted — a shared pot's own income, chiefly, and
+  // a personal account assigned to nobody.
+  const unattributedIncome = accounts
+    .filter((a) => !(a.role === "personal" && a.memberUserId && memberIds.has(a.memberUserId)))
+    .reduce((s, a) => s + a.monthlyIncomeMinor, 0);
 
   return {
-    householdId: input.householdId,
-    asOfDate,
-    currency: input.currency,
+    householdId,
+    asOfDate: plan.asOfDate,
+    currency,
     monthlyIncomeMinor: monthlyIncome,
     totalRequiredMinor: totalRequired,
     totalFundedMinor: totalFunded,
-    leftoverMinor: leftover,
+    leftoverMinor: members.reduce((s, m) => s + m.leftoverMinor, 0) + unattributedIncome,
+    committedMinor: committedByAccount,
     shortfallMinor: Math.max(0, totalRequired - totalFunded),
-    members: memberPlans,
-    accounts: accountPlans,
+    members,
+    accounts,
     lines,
-    transfers,
+    transfers: partition.transfers
+      .filter((t) => inHousehold.has(t.toAccountId) || inHousehold.has(t.fromAccountId))
+      .map((t) => ({
+        fromAccountId: t.fromAccountId,
+        toAccountId: t.toAccountId,
+        memberUserId: t.memberUserId,
+        amountMinor: t.amountMinor,
+      })),
   };
 }

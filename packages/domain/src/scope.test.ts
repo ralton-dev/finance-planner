@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { computeAccountPlan } from "./engine.js";
 import {
   computeScopePlan,
   type ScopeAccountInput,
@@ -7,7 +6,7 @@ import {
   type ScopeInput,
   type ScopePaymentInput,
 } from "./scope.js";
-import type { AccountInput, AccountPlan, OutboundInflowInput, PaymentInput } from "./types.js";
+import type { OutboundInflowInput, PaymentInput } from "./types.js";
 
 const ASOF = "2026-08-04";
 
@@ -101,7 +100,7 @@ const transfer = (p: ScopeCurrencyPlan, from: string, to: string) =>
  * funded and the holiday is £5,000 shorter. So this fixture pins the tie-break
  * as well as the arithmetic.
  */
-function soloAccount(): AccountInput {
+function soloAccount() {
   return {
     accountId: "current",
     currency: "GBP",
@@ -137,7 +136,7 @@ function soloAccount(): AccountInput {
   };
 }
 
-function soloScope(account: AccountInput): ScopeInput {
+function soloScope(account: ReturnType<typeof soloAccount>): ScopeInput {
   return {
     scopeId: "owner",
     members: [{ userId: "owner", shareBp: 10_000 }],
@@ -152,30 +151,64 @@ function soloScope(account: AccountInput): ScopeInput {
   };
 }
 
-/** Every figure the pass produces about one account, in one comparable shape. */
-function pinned(account: AccountPlan): unknown {
-  return {
-    monthlyIncomeMinor: account.monthlyIncomeMinor,
-    bufferMinor: account.bufferMinor,
-    totalRequiredMinor: account.totalRequiredMinor,
-    totalFundedMinor: account.totalFundedMinor,
-    leftoverMinor: account.leftoverMinor,
-    shortfallMinor: account.shortfallMinor,
-    lines: account.lines.map((l) => ({
-      paymentId: l.paymentId,
-      dueDate: l.dueDate,
-      targetDate: l.targetDate,
-      dueDateIsDerived: l.dueDateIsDerived,
-      monthsUntilDue: l.monthsUntilDue,
-      occurrencesThisMonth: l.occurrencesThisMonth,
-      requiredMonthlyMinor: l.requiredMonthlyMinor,
-      fundedMonthlyMinor: l.fundedMonthlyMinor,
-      fundedFromOwnMinor: l.fundedFromOwnMinor,
-      fundedFromInflowMinor: l.fundedFromInflowMinor,
-      onTrack: l.onTrack,
-    })),
-  };
-}
+/**
+ * Every figure `computeAccountPlan` produced for `soloAccount()` at `40f65d8` —
+ * the commit before the account engine was deleted (ONE-ENGINE.md, WP-S).
+ *
+ * Captured rather than recomputed. The pin's whole point is that the pass must
+ * not move a solo user's month by a penny, and once the engine it is pinned
+ * against is gone there is nothing left to call: an expectation re-derived from
+ * the code under test would only ever agree with itself.
+ */
+const ACCOUNT_ENGINE_AT_40F65D8 = {
+  monthlyIncomeMinor: 150_000,
+  bufferMinor: 20_000,
+  totalRequiredMinor: 173_000,
+  totalFundedMinor: 130_000,
+  leftoverMinor: 0,
+  shortfallMinor: 43_000,
+  lines: [
+    {
+      paymentId: "rent",
+      dueDate: "2026-08-15",
+      targetDate: "2026-08-15",
+      dueDateIsDerived: false,
+      monthsUntilDue: 1,
+      occurrencesThisMonth: 1,
+      requiredMonthlyMinor: 120_000,
+      fundedMonthlyMinor: 120_000,
+      fundedFromOwnMinor: 120_000,
+      fundedFromInflowMinor: 0,
+      onTrack: true,
+    },
+    {
+      paymentId: "holiday",
+      dueDate: "2027-02-01",
+      targetDate: "2027-02-01",
+      dueDateIsDerived: false,
+      monthsUntilDue: 5,
+      occurrencesThisMonth: 1,
+      requiredMonthlyMinor: 48_000,
+      fundedMonthlyMinor: 10_000,
+      fundedFromOwnMinor: 10_000,
+      fundedFromInflowMinor: 0,
+      onTrack: false,
+    },
+    {
+      paymentId: "gym",
+      dueDate: "2026-08-04",
+      targetDate: "2026-08-04",
+      dueDateIsDerived: false,
+      monthsUntilDue: 1,
+      occurrencesThisMonth: 1,
+      requiredMonthlyMinor: 5_000,
+      fundedMonthlyMinor: 0,
+      fundedFromOwnMinor: 0,
+      fundedFromInflowMinor: 0,
+      onTrack: false,
+    },
+  ],
+};
 
 function pinnedFromScope(p: ScopeCurrencyPlan, accountId: string): unknown {
   const a = accountOf(p, accountId);
@@ -206,15 +239,18 @@ function pinnedFromScope(p: ScopeCurrencyPlan, accountId: string): unknown {
 
 describe("computeScopePlan — a solo user with one account does not move", () => {
   const account = soloAccount();
-  const engine = computeAccountPlan(account, ASOF);
   const pass = only(computeScopePlan(soloScope(account), ASOF) as never);
 
   it("plans byte-identically to the account engine, tie-breaks included", () => {
-    expect(JSON.stringify(pinnedFromScope(pass, "current"))).toBe(JSON.stringify(pinned(engine)));
+    expect(JSON.stringify(pinnedFromScope(pass, "current"))).toBe(
+      JSON.stringify(ACCOUNT_ENGINE_AT_40F65D8),
+    );
   });
 
   it("spends the month in the order the account engine spends it", () => {
-    expect(pass.lines.map((l) => l.paymentId)).toEqual(engine.lines.map((l) => l.paymentId));
+    expect(pass.lines.map((l) => l.paymentId)).toEqual(
+      ACCOUNT_ENGINE_AT_40F65D8.lines.map((l) => l.paymentId),
+    );
     // Named, so the pin above cannot pass by accident: the budget really does
     // run out, and it runs out on the holiday rather than on the gym.
     expect(pass.lines.map((l) => l.paymentId)).toEqual(["rent", "holiday", "gym"]);
@@ -234,7 +270,7 @@ describe("computeScopePlan — a solo user with one account does not move", () =
     const a = accountOf(pass, "current");
     expect(a.ownLeftoverMinor).toBe(0);
     expect(a.leftoverMinor).toBe(150_000 - 130_000);
-    expect(a.shortfallMinor).toBe(engine.shortfallMinor);
+    expect(a.shortfallMinor).toBe(ACCOUNT_ENGINE_AT_40F65D8.shortfallMinor);
   });
 });
 

@@ -1,639 +1,288 @@
 import { describe, expect, it } from "vitest";
+import { householdPlanFromScope } from "./household.js";
 import {
-  computeHouseholdPlan,
-  type HouseholdAccountInput,
-  type HouseholdInput,
-  type HouseholdPaymentInput,
-} from "./household.js";
+  computeScopePlan,
+  type ScopeAccountInput,
+  type ScopeInput,
+  type ScopePaymentInput,
+} from "./scope.js";
 
-const AS_OF = "2026-06-01";
+/**
+ * The household plan is a **view** now, so this file tests a view.
+ *
+ * Everything that used to live here — proportional shared costs, shares rounding
+ * up per line, personal bearers, contribution-first goals, one global priority
+ * order, buffers — is the funding pass's behaviour and is tested against the pass
+ * in `scope.test.ts`. It moved when the engine did. What is left is the thing
+ * only this module can get wrong: which of the scope's accounts belong to the
+ * household, and how the pass's figures are reported once they do.
+ */
 
-// --- factories ---------------------------------------------------------------
+const ASOF = "2026-08-04";
 
-function pay(
-  over: Partial<HouseholdPaymentInput> & { id: string; amountMinor: number },
-): HouseholdPaymentInput {
-  return {
-    name: over.id,
-    category: "monthly_recurring",
-    scope: "shared",
-    priority: 100,
-    ...over,
-  };
-}
-
-function acc(over: Partial<HouseholdAccountInput> & { accountId: string }): HouseholdAccountInput {
-  return {
-    name: over.accountId,
-    role: "shared",
-    currency: "GBP",
-    incomes: [],
-    payments: [],
-    ...over,
-  };
-}
-
-function income(amountMinor: number) {
-  return [{ id: "inc", amountMinor, frequency: "monthly" as const, anchorDate: AS_OF }];
-}
-
-function plan(input: Omit<HouseholdInput, "householdId" | "currency">) {
-  return computeHouseholdPlan({ householdId: "hh", currency: "GBP", ...input }, AS_OF);
-}
-
-function transfer(p: ReturnType<typeof plan>, from: string, to: string): number {
-  return p.transfers
-    .filter((t) => t.fromAccountId === from && t.toAccountId === to)
-    .reduce((s, t) => s + t.amountMinor, 0);
-}
-
-const member = (userId: string, shareBp: number, displayName?: string) => ({
-  userId,
-  shareBp,
-  displayName,
+const income = (id: string, amountMinor: number) => ({
+  id,
+  amountMinor,
+  frequency: "monthly" as const,
+  anchorDate: "2026-08-25",
 });
 
-// --- the canonical scenario --------------------------------------------------
+const owed = (
+  id: string,
+  amountMinor: number,
+  over: Partial<ScopePaymentInput> = {},
+): ScopePaymentInput => ({
+  id,
+  name: id,
+  category: "monthly_recurring",
+  scope: "shared",
+  amountMinor,
+  priority: 1,
+  ...over,
+});
 
-describe("computeHouseholdPlan — proportional shared costs", () => {
-  const p = plan({
-    members: [member("alice", 6600, "Alice"), member("bob", 3400, "Bob")],
+const acc = (over: Partial<ScopeAccountInput> & { accountId: string }): ScopeAccountInput => ({
+  name: over.accountId,
+  role: "shared",
+  currency: "GBP",
+  incomes: [],
+  payments: [],
+  ...over,
+});
+
+/** Alice and Bob, 60/40, a shared bills pot and one personal gym membership. */
+function household(over: Partial<ScopeInput> = {}): ScopeInput {
+  return {
+    scopeId: "hh",
+    householdId: "hh",
+    members: [
+      { userId: "alice", displayName: "Alice", shareBp: 6_000 },
+      { userId: "bob", displayName: "Bob", shareBp: 4_000 },
+    ],
     accounts: [
       acc({
         accountId: "alice-cur",
         role: "personal",
         memberUserId: "alice",
-        incomes: income(300_000),
+        incomes: [income("alice-pay", 300_000)],
+        payments: [owed("gym", 5_000, { scope: "personal" })],
       }),
       acc({
         accountId: "bob-cur",
         role: "personal",
         memberUserId: "bob",
-        incomes: income(200_000),
+        incomes: [income("bob-pay", 200_000)],
       }),
-      acc({
-        accountId: "bills",
-        role: "shared",
-        payments: [
-          pay({ id: "rent", amountMinor: 100_000 }),
-          pay({ id: "council", amountMinor: 20_000 }),
-        ],
-      }),
-      acc({
-        accountId: "food",
-        role: "shared",
-        payments: [pay({ id: "groceries", amountMinor: 40_000 })],
-      }),
+      acc({ accountId: "bills", payments: [owed("rent", 100_000)] }),
     ],
+    ...over,
+  };
+}
+
+const HOUSEHOLD_ACCOUNTS = ["alice-cur", "bob-cur", "bills"];
+
+function view(input: ScopeInput, accountIds: readonly string[] = HOUSEHOLD_ACCOUNTS) {
+  return householdPlanFromScope(computeScopePlan(input, ASOF), "hh", accountIds, "GBP");
+}
+
+describe("householdPlanFromScope", () => {
+  const plan = view(household());
+
+  it("echoes the household's identity and the pass's as-of date", () => {
+    expect(plan.householdId).toBe("hh");
+    expect(plan.currency).toBe("GBP");
+    expect(plan.asOfDate).toBe(ASOF);
   });
 
-  it("splits each shared cost 66/34 and sums obligations per member", () => {
-    const alice = p.members.find((m) => m.userId === "alice")!;
-    const bob = p.members.find((m) => m.userId === "bob")!;
-    expect(alice.obligationMinor).toBe(105_600); // 66000 + 13200 + 26400
-    expect(bob.obligationMinor).toBe(54_400); // 34000 + 6800 + 13600
-    expect(alice.shareBp).toBe(6600);
-    expect(bob.shareBp).toBe(3400);
+  it("totals what the household earns, owes and got", () => {
+    expect(plan.monthlyIncomeMinor).toBe(500_000);
+    expect(plan.totalRequiredMinor).toBe(105_000);
+    expect(plan.totalFundedMinor).toBe(105_000);
+    expect(plan.shortfallMinor).toBe(0);
+    expect(plan.leftoverMinor).toBe(395_000);
+    expect(plan.committedMinor).toBe(0);
   });
 
-  it("fully funds everyone and reports discretionary leftover", () => {
-    expect(p.shortfallMinor).toBe(0);
-    expect(p.totalFundedMinor).toBe(160_000);
-    expect(p.members.find((m) => m.userId === "alice")!.leftoverMinor).toBe(194_400);
-    expect(p.members.find((m) => m.userId === "bob")!.leftoverMinor).toBe(145_600);
-    expect(p.leftoverMinor).toBe(340_000); // 500000 income − 160000 required
-  });
-
-  it("derives the transfers each person must make into each pot", () => {
-    expect(transfer(p, "alice-cur", "bills")).toBe(79_200); // 66000 + 13200
-    expect(transfer(p, "alice-cur", "food")).toBe(26_400);
-    expect(transfer(p, "bob-cur", "bills")).toBe(40_800); // 34000 + 6800
-    expect(transfer(p, "bob-cur", "food")).toBe(13_600);
-    expect(p.transfers).toHaveLength(4);
-  });
-
-  it("nets each shared pot to zero (inflow == outflow)", () => {
-    const bills = p.accounts.find((a) => a.accountId === "bills")!;
-    expect(bills.transferInMinor).toBe(120_000);
-    expect(bills.fundedOutflowMinor).toBe(120_000);
-    expect(bills.leftoverMinor).toBe(0);
-    expect(bills.shortfallMinor).toBe(0);
-  });
-
-  it("leaves each member's leftover sitting in their current account", () => {
-    const aliceCur = p.accounts.find((a) => a.accountId === "alice-cur")!;
-    expect(aliceCur.transferOutMinor).toBe(105_600);
-    expect(aliceCur.leftoverMinor).toBe(194_400);
-  });
-});
-
-// --- rounding up -------------------------------------------------------------
-
-describe("computeHouseholdPlan — shares round up, per line", () => {
-  it("asks both members for the penny rather than leaving the bill short", () => {
-    const p = plan({
-      members: [member("alice", 6600), member("bob", 3400)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(200_000),
-        }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: [pay({ id: "rent", amountMinor: 100_001 })],
-        }),
-      ],
-    });
-    // 66000.66 and 34000.34 exactly; both round up, so the pot takes in a penny
-    // more than the bill costs.
-    const line = p.lines.find((l) => l.paymentId === "rent")!;
-    expect(line.allocations.map((a) => a.requiredMinor)).toEqual([66_001, 34_001]);
-    expect(p.accounts.find((a) => a.accountId === "bills")!.leftoverMinor).toBe(1);
-  });
-
-  /**
-   * A realistic month: twenty shared bills, none of which divides cleanly by the
-   * 66/34 split. The ceiling applies per line and therefore accumulates — this
-   * pins how far, and that the extra is real money taken out of discretionary
-   * leftover rather than a bookkeeping artefact.
-   */
-  describe("across a month of twenty awkward bills", () => {
-    const AMOUNTS = Array.from({ length: 20 }, (_, i) => 10_001 + i);
-    const REQUIRED = 200_210; // Σ AMOUNTS
-    const p = plan({
-      members: [member("alice", 6600), member("bob", 3400)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: AMOUNTS.map((amountMinor, i) => pay({ id: `bill-${i}`, amountMinor })),
-        }),
-      ],
-    });
-    const alice = p.members.find((m) => m.userId === "alice")!;
-    const bob = p.members.find((m) => m.userId === "bob")!;
-    const asked = alice.obligationMinor + bob.obligationMinor;
-
-    it("overshoots by one minor unit per line, bounded by lines × (members − 1)", () => {
-      expect(p.lines.reduce((s, l) => s + l.requiredMonthlyMinor, 0)).toBe(REQUIRED);
-      // Splitting the total once would ask for 200_211; splitting each of the
-      // twenty lines asks for 20 more than the bills cost, not 1.
-      expect(asked).toBe(REQUIRED + 20);
-      expect(asked - REQUIRED).toBeLessThanOrEqual(p.lines.length * (p.members.length - 1));
-    });
-
-    it("never asks anyone below their exact share", () => {
-      expect(alice.obligationMinor).toBe(132_147); // exact share 132_138.6
-      expect(bob.obligationMinor).toBe(68_083); // exact share 68_071.4
-      expect(alice.obligationMinor).toBeGreaterThan((REQUIRED * 6600) / 10_000);
-      expect(bob.obligationMinor).toBeGreaterThan((REQUIRED * 3400) / 10_000);
-    });
-
-    it("leaves the surplus in the pot instead of inventing a shortfall", () => {
-      const bills = p.accounts.find((a) => a.accountId === "bills")!;
-      expect(bills.requiredOutflowMinor).toBe(REQUIRED); // the bills, not the contributions
-      expect(bills.fundedOutflowMinor).toBe(REQUIRED);
-      expect(bills.transferInMinor).toBe(asked);
-      expect(bills.leftoverMinor).toBe(20); // over-funded, and visibly so
-      expect(bills.shortfallMinor).toBe(0);
-      expect(p.shortfallMinor).toBe(0);
-      expect(p.lines.every((l) => l.onTrack)).toBe(true);
-    });
-
-    it("takes the extra out of discretionary leftover", () => {
-      // 600000 income − 200230 contributed; 20 less than an exact split leaves.
-      expect(p.leftoverMinor).toBe(399_770);
-      expect(alice.leftoverMinor + bob.leftoverMinor).toBe(399_770);
-      expect(alice.leftoverMinor).toBeGreaterThan(0);
-      expect(bob.leftoverMinor).toBeGreaterThan(0);
-    });
-  });
-});
-
-// --- personal expenses -------------------------------------------------------
-
-describe("computeHouseholdPlan — personal expenses", () => {
-  it("charges a personal expense entirely to the owning member of the account", () => {
-    const p = plan({
-      members: [member("alice", 5000), member("bob", 5000)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-          payments: [pay({ id: "gym", amountMinor: 5_000, scope: "personal" })],
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(200_000),
-        }),
-      ],
-    });
-    expect(p.members.find((m) => m.userId === "alice")!.obligationMinor).toBe(5_000);
-    expect(p.members.find((m) => m.userId === "bob")!.obligationMinor).toBe(0);
-    // Paid from her own account → internal, no transfer.
-    expect(p.transfers).toHaveLength(0);
-    expect(p.accounts.find((a) => a.accountId === "alice-cur")!.fundedOutflowMinor).toBe(5_000);
-  });
-
-  it("transfers a personal bill into a separate personal-bills account", () => {
-    const p = plan({
-      members: [member("alice", 1), member("bob", 1)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "alice-bills",
-          role: "personal",
-          memberUserId: "alice",
-          payments: [pay({ id: "phone", amountMinor: 4_500, scope: "personal" })],
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(200_000),
-        }),
-      ],
-    });
-    expect(transfer(p, "alice-cur", "alice-bills")).toBe(4_500);
-    expect(p.accounts.find((a) => a.accountId === "alice-bills")!.leftoverMinor).toBe(0);
-  });
-
-  it("honours an explicit bearer for a personal expense on a shared account", () => {
-    const p = plan({
-      members: [member("alice", 5000), member("bob", 5000)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(200_000),
-        }),
-        acc({
-          accountId: "joint",
-          role: "shared",
-          payments: [
-            pay({ id: "bobs-hobby", amountMinor: 8_000, scope: "personal", bearerUserId: "bob" }),
-          ],
-        }),
-      ],
-    });
-    expect(p.members.find((m) => m.userId === "bob")!.obligationMinor).toBe(8_000);
-    expect(p.members.find((m) => m.userId === "alice")!.obligationMinor).toBe(0);
-    expect(transfer(p, "bob-cur", "joint")).toBe(8_000);
-  });
-
-  it("falls back to a shared split when a personal expense has no resolvable bearer", () => {
-    const p = plan({
-      members: [member("alice", 5000), member("bob", 5000)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(200_000),
-        }),
-        acc({
-          accountId: "joint",
-          role: "shared",
-          payments: [
-            pay({ id: "mystery", amountMinor: 10_000, scope: "personal", bearerUserId: "ghost" }),
-          ],
-        }),
-      ],
-    });
-    expect(p.members.find((m) => m.userId === "alice")!.obligationMinor).toBe(5_000);
-    expect(p.members.find((m) => m.userId === "bob")!.obligationMinor).toBe(5_000);
-  });
-});
-
-// --- contribution-first goals ------------------------------------------------
-
-describe("computeHouseholdPlan — contribution-first goals", () => {
-  const goal = pay({
-    id: "bike",
-    name: "New bike",
-    category: "fixed_point",
-    amountMinor: 100_000,
-    fixedMonthlyMinor: 10_000,
-    tag: "toys",
-  });
-
-  it("splits the monthly contribution, not the whole goal", () => {
-    const p = plan({
-      members: [member("alice", 6600), member("bob", 3400)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(200_000),
-        }),
-        acc({ accountId: "bills", role: "shared", payments: [goal] }),
-      ],
-    });
-    const line = p.lines.find((l) => l.paymentId === "bike")!;
-    expect(line.requiredMonthlyMinor).toBe(10_000); // the cap, not 100000
-    expect(line.targetDate).toBe("2027-04-01"); // 10 months of pace from 2026-06
-    expect(line.allocations.map((a) => a.requiredMinor)).toEqual([6_600, 3_400]);
-    expect(line.onTrack).toBe(true);
-    expect(transfer(p, "alice-cur", "bills")).toBe(6_600);
-    expect(transfer(p, "bob-cur", "bills")).toBe(3_400);
-  });
-
-  it("carries the tag onto the line so charts can group without a refetch", () => {
-    const p = plan({
-      members: [member("alice", 10_000)],
-      accounts: [
-        acc({
-          accountId: "cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(100_000),
-        }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: [goal, pay({ id: "rent", amountMinor: 50_000 })],
-        }),
-      ],
-    });
-    expect(p.lines.find((l) => l.paymentId === "bike")?.tag).toBe("toys");
-    expect(p.lines.find((l) => l.paymentId === "rent")?.tag).toBeNull();
-  });
-
-  it("charges a personal capped goal wholly to its bearer", () => {
-    const p = plan({
-      members: [member("alice", 5000), member("bob", 5000)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(200_000),
-        }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: [{ ...goal, scope: "personal", bearerUserId: "bob" }],
-        }),
-      ],
-    });
-    const line = p.lines.find((l) => l.paymentId === "bike")!;
-    expect(line.requiredMonthlyMinor).toBe(10_000);
-    expect(line.allocations).toEqual([
-      { userId: "alice", requiredMinor: 0, fundedMinor: 0 },
-      { userId: "bob", requiredMinor: 10_000, fundedMinor: 10_000 },
+  it("reports each member's slice, and their committed savings alongside", () => {
+    expect(plan.members.map((m) => [m.userId, m.shareBp, m.obligationMinor])).toEqual([
+      ["alice", 6_000, 65_000],
+      ["bob", 4_000, 40_000],
     ]);
-    expect(transfer(p, "bob-cur", "bills")).toBe(10_000);
-    expect(p.transfers).toHaveLength(1);
+    expect(plan.members.map((m) => m.leftoverMinor)).toEqual([235_000, 160_000]);
+    expect(plan.members.every((m) => m.committedMinor === 0)).toBe(true);
+    expect(plan.members.map((m) => m.displayName)).toEqual(["Alice", "Bob"]);
   });
 
-  it("asks only for the remainder once the goal is nearly there", () => {
-    const p = plan({
-      members: [member("alice", 6600), member("bob", 3400)],
-      accounts: [
-        acc({
-          accountId: "alice-cur",
-          role: "personal",
-          memberUserId: "alice",
-          incomes: income(300_000),
-        }),
-        acc({
-          accountId: "bob-cur",
-          role: "personal",
-          memberUserId: "bob",
-          incomes: income(200_000),
-        }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: [{ ...goal, alreadySavedMinor: 96_000 }],
-        }),
-      ],
+  it("derives the transfers into the shared pot, per member", () => {
+    expect(plan.transfers).toEqual([
+      {
+        fromAccountId: "alice-cur",
+        toAccountId: "bills",
+        memberUserId: "alice",
+        amountMinor: 60_000,
+      },
+      { fromAccountId: "bob-cur", toAccountId: "bills", memberUserId: "bob", amountMinor: 40_000 },
+    ]);
+  });
+
+  it("reports each account's residual before its savings leave", () => {
+    const bills = plan.accounts.find((a) => a.accountId === "bills")!;
+    expect(bills).toMatchObject({
+      role: "shared",
+      memberUserId: null,
+      monthlyIncomeMinor: 0,
+      requiredOutflowMinor: 100_000,
+      fundedOutflowMinor: 100_000,
+      transferInMinor: 100_000,
+      transferOutMinor: 0,
+      leftoverMinor: 0,
+      committedMinor: 0,
+      shortfallMinor: 0,
     });
-    const line = p.lines.find((l) => l.paymentId === "bike")!;
-    expect(line.requiredMonthlyMinor).toBe(4_000);
-    expect(line.allocations.map((a) => a.requiredMinor)).toEqual([2_640, 1_360]);
   });
 });
 
-// --- priority + shortfall across accounts -----------------------------------
+describe("householdPlanFromScope — the money leaving one of its accounts", () => {
+  /**
+   * The defect, in the smallest fixture that shows it: Alice moves £700 a month
+   * into an ISA that is not the household's. The old engine had no term for it
+   * at all, so the household page reported a leftover £700 higher than the flow
+   * diagram's (ONE-ENGINE.md, "the defect that forced this").
+   */
+  const withISA = household({
+    accounts: household().accounts.map((a) =>
+      a.accountId === "alice-cur"
+        ? {
+            ...a,
+            outboundInflows: [
+              {
+                id: "to-isa",
+                toAccountId: "isa",
+                amountMinor: 70_000,
+                frequency: "monthly" as const,
+                anchorDate: "2026-08-25",
+                priority: 10,
+              },
+            ],
+          }
+        : a,
+    ),
+  });
+  const plan = view(withISA);
+  const alice = () => plan.accounts.find((a) => a.accountId === "alice-cur")!;
 
-describe("computeHouseholdPlan — global priority funding", () => {
-  const p = plan({
-    members: [member("carl", 10_000)],
+  it("keeps leftoverMinor's meaning and adds committedMinor alongside", () => {
+    // Decision 13: the residual before savings is what it always was, and what
+    // the movement takes is a second field rather than a change to the first.
+    expect(alice().leftoverMinor).toBe(300_000 - 5_000 - 60_000);
+    expect(alice().committedMinor).toBe(70_000);
+    expect(alice().leftoverMinor - alice().committedMinor).toBe(165_000);
+  });
+
+  it("rolls the committed total up to the household and to the member", () => {
+    expect(plan.committedMinor).toBe(70_000);
+    expect(plan.members.find((m) => m.userId === "alice")?.committedMinor).toBe(70_000);
+    expect(plan.members.find((m) => m.userId === "bob")?.committedMinor).toBe(0);
+  });
+
+  it("leaves the member's own leftover unreduced by it", () => {
+    expect(plan.members.find((m) => m.userId === "alice")?.leftoverMinor).toBe(235_000);
+  });
+});
+
+describe("householdPlanFromScope — the scope is wider than the household", () => {
+  /** Alice's private current account, outside the household, feeding the pot. */
+  const wider = household({
     accounts: [
+      ...household().accounts,
       acc({
-        accountId: "carl-cur",
+        accountId: "alice-private",
         role: "personal",
-        memberUserId: "carl",
-        incomes: income(50_000),
-      }),
-      acc({
-        accountId: "bills",
-        role: "shared",
-        payments: [
-          pay({ id: "rent", amountMinor: 40_000, priority: 10 }),
-          pay({ id: "broadband", amountMinor: 20_000, priority: 20 }),
+        memberUserId: "alice",
+        incomes: [income("side", 50_000)],
+        outboundInflows: [
+          {
+            id: "private->bills",
+            toAccountId: "bills",
+            amountMinor: 10_000,
+            frequency: "monthly",
+            anchorDate: "2026-08-25",
+            priority: 10,
+          },
         ],
       }),
     ],
   });
+  const plan = view(wider);
 
-  it("funds higher-priority payments first when income is short", () => {
-    const rent = p.lines.find((l) => l.paymentId === "rent")!;
-    const broadband = p.lines.find((l) => l.paymentId === "broadband")!;
-    expect(rent.fundedMonthlyMinor).toBe(40_000);
-    expect(rent.onTrack).toBe(true);
-    expect(broadband.fundedMonthlyMinor).toBe(10_000); // only £100 left after rent
-    expect(broadband.onTrack).toBe(false);
+  it("reports only the accounts the household was given", () => {
+    expect(plan.accounts.map((a) => a.accountId)).toEqual(HOUSEHOLD_ACCOUNTS);
+    // In the pass's funding order — the order the month's money was spent —
+    // which is what makes an account's slice of this list its funding order too.
+    expect(plan.lines.map((l) => [l.paymentId, l.accountId])).toEqual([
+      ["gym", "alice-cur"],
+      ["rent", "bills"],
+    ]);
+    expect(plan.monthlyIncomeMinor).toBe(500_000);
   });
 
-  it("surfaces the unfunded gap as member + household + account shortfall", () => {
-    expect(p.members[0]!.shortfallMinor).toBe(10_000);
-    expect(p.members[0]!.leftoverMinor).toBe(0);
-    expect(p.shortfallMinor).toBe(10_000);
-    const bills = p.accounts.find((a) => a.accountId === "bills")!;
-    expect(bills.requiredOutflowMinor).toBe(60_000);
-    expect(bills.fundedOutflowMinor).toBe(50_000);
-    expect(bills.shortfallMinor).toBe(10_000);
-  });
-});
-
-// --- edges -------------------------------------------------------------------
-
-describe("computeHouseholdPlan — edges", () => {
-  it("returns an empty-but-valid plan for no members or accounts", () => {
-    const p = plan({ members: [], accounts: [] });
-    expect(p.monthlyIncomeMinor).toBe(0);
-    expect(p.totalRequiredMinor).toBe(0);
-    expect(p.members).toEqual([]);
-    expect(p.transfers).toEqual([]);
-  });
-
-  it("splits equally when no contribution shares are set", () => {
-    const p = plan({
-      members: [member("a", 0), member("b", 0)],
-      accounts: [
-        acc({ accountId: "a-cur", role: "personal", memberUserId: "a", incomes: income(100_000) }),
-        acc({ accountId: "b-cur", role: "personal", memberUserId: "b", incomes: income(100_000) }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: [pay({ id: "rent", amountMinor: 30_000 })],
-        }),
-      ],
-    });
-    expect(p.members.find((m) => m.userId === "a")!.obligationMinor).toBe(15_000);
-    expect(p.members.find((m) => m.userId === "b")!.obligationMinor).toBe(15_000);
-    expect(p.members[0]!.shareBp).toBe(5000);
-  });
-
-  it("flags a member with no income/source as fully short and makes no transfer", () => {
-    const p = plan({
-      members: [member("dave", 5000), member("eve", 5000)],
-      accounts: [
-        // dave owns no account; eve funds her half only.
-        acc({
-          accountId: "eve-cur",
-          role: "personal",
-          memberUserId: "eve",
-          incomes: income(100_000),
-        }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: [pay({ id: "rent", amountMinor: 10_000 })],
-        }),
-      ],
-    });
-    const dave = p.members.find((m) => m.userId === "dave")!;
-    expect(dave.obligationMinor).toBe(5_000);
-    expect(dave.fundedMinor).toBe(0);
-    expect(dave.shortfallMinor).toBe(5_000);
-    expect(transfer(p, "eve-cur", "bills")).toBe(5_000);
-    // No transfer originates from dave (he has no source account).
-    expect(p.transfers.every((t) => t.fromAccountId === "eve-cur")).toBe(true);
-  });
-
-  it("excludes inactive payments", () => {
-    const p = plan({
-      members: [member("a", 1)],
-      accounts: [
-        acc({ accountId: "a-cur", role: "personal", memberUserId: "a", incomes: income(100_000) }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: [pay({ id: "old", amountMinor: 9_999, active: false })],
-        }),
-      ],
-    });
-    expect(p.totalRequiredMinor).toBe(0);
-    expect(p.lines).toHaveLength(0);
+  it("still counts what arrives from outside it, because the money is there", () => {
+    const bills = plan.accounts.find((a) => a.accountId === "bills")!;
+    expect(bills.leftoverMinor).toBe(10_000);
+    expect(plan.committedMinor).toBe(0);
   });
 });
 
-// --- buffers -----------------------------------------------------------------
-
-describe("computeHouseholdPlan — buffers", () => {
-  it("reserves a personal-account buffer off the top of that member's budget", () => {
-    const p = plan({
-      members: [member("a", 1)],
-      accounts: [
-        acc({
-          accountId: "a-cur",
-          role: "personal",
-          memberUserId: "a",
-          incomes: income(100_000),
-          monthlyBufferMinor: 20_000,
-        }),
-        acc({
-          accountId: "bills",
-          role: "shared",
-          payments: [pay({ id: "rent", amountMinor: 90_000 })],
-        }),
-      ],
-    });
-    // Budget = 100000 − 20000 = 80000 < 90000 rent → 10000 short.
-    expect(p.members[0]!.shortfallMinor).toBe(10_000);
-    expect(p.members[0]!.leftoverMinor).toBe(0);
+describe("householdPlanFromScope — the edges", () => {
+  it("reports the shortfall of a household nobody is a member of", () => {
+    // The finding WP-P raised and declined to patch in a live surface: the old
+    // engine attributed the rent to nobody, summed the obligations it *did*
+    // attribute, and reported a shortfall of zero while the pot was £1,000
+    // short. A bill nobody was asked for is still a bill.
+    const plan = view(household({ members: [] }));
+    expect(plan.members).toEqual([]);
+    expect(plan.totalRequiredMinor).toBe(105_000);
+    expect(plan.totalFundedMinor).toBe(0);
+    expect(plan.shortfallMinor).toBe(105_000);
+    expect(plan.accounts.find((a) => a.accountId === "bills")?.shortfallMinor).toBe(100_000);
   });
 
-  it("funds a shared-pot buffer proportionally and leaves it as pot reserve", () => {
-    const p = plan({
-      members: [member("a", 6000), member("b", 4000)],
+  it("counts income in an account no member owns as the household's own surplus", () => {
+    const orphan = household({
       accounts: [
-        acc({ accountId: "a-cur", role: "personal", memberUserId: "a", incomes: income(300_000) }),
-        acc({ accountId: "b-cur", role: "personal", memberUserId: "b", incomes: income(300_000) }),
-        acc({
-          accountId: "joint",
-          role: "shared",
-          monthlyBufferMinor: 10_000,
-          payments: [pay({ id: "rent", amountMinor: 50_000 })],
-        }),
+        ...household().accounts,
+        acc({ accountId: "joint-savings", incomes: [income("interest", 1_000)] }),
       ],
     });
-    const joint = p.accounts.find((a) => a.accountId === "joint")!;
-    // Members transfer in rent (50000) + buffer (10000); rent is paid out, the
-    // buffer stays as the pot's leftover reserve.
-    expect(joint.transferInMinor).toBe(60_000);
-    expect(joint.fundedOutflowMinor).toBe(50_000);
-    expect(joint.leftoverMinor).toBe(10_000);
-    expect(transfer(p, "a-cur", "joint")).toBe(36_000); // 60% of 60000
-    expect(transfer(p, "b-cur", "joint")).toBe(24_000);
+    const plan = view(orphan, [...HOUSEHOLD_ACCOUNTS, "joint-savings"]);
+    expect(plan.monthlyIncomeMinor).toBe(501_000);
+    expect(plan.leftoverMinor).toBe(396_000);
+  });
+
+  it("plans an empty household without complaint", () => {
+    const plan = householdPlanFromScope(
+      computeScopePlan({ scopeId: "hh", members: [], accounts: [] }, ASOF),
+      "hh",
+      [],
+      "GBP",
+    );
+    expect(plan).toMatchObject({
+      monthlyIncomeMinor: 0,
+      totalRequiredMinor: 0,
+      leftoverMinor: 0,
+      shortfallMinor: 0,
+      members: [],
+      accounts: [],
+      lines: [],
+      transfers: [],
+    });
+  });
+
+  it("answers with nothing for a currency the scope never planned", () => {
+    // Defensive rather than expected: a household is one currency by
+    // assumption, and asking for another must not throw at the view layer.
+    expect(
+      householdPlanFromScope(computeScopePlan(household(), ASOF), "hh", HOUSEHOLD_ACCOUNTS, "USD"),
+    ).toMatchObject({ currency: "USD", accounts: [], members: [], monthlyIncomeMinor: 0 });
   });
 });

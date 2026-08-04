@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { computeAccountPlan, computeOverview, monthlyIncomeMinor } from "./engine.js";
-import { computeEstatePlan } from "./estate.js";
-import type { AccountInput, InflowInput, OutboundInflowInput, PaymentInput } from "./types.js";
+import { accountPlanFromScope, monthlyIncomeMinor, overviewFromPlans } from "./engine.js";
+import {
+  computeScopePlan,
+  type ScopeAccountInput,
+  type ScopeInput,
+  type ScopePaymentInput,
+} from "./scope.js";
+import type { AccountPlan, InflowInput, OutboundInflowInput } from "./types.js";
 
 /**
  * The invariant, asserted rather than assumed:
@@ -46,10 +51,23 @@ const fromAccount = (
   priority,
 });
 
-const bill = (id: string, amountMinor: number, priority: number): PaymentInput => ({
+/** The leaving face of a movement — the same row, read from the sender. */
+const leaving = (id: string, amountMinor: number, toAccountId: string): OutboundInflowInput => ({
+  id,
+  toAccountId,
+  amountMinor,
+  frequency: "monthly",
+  recurrence: null,
+  anchorDate: "2026-08-25",
+  active: true,
+  priority: 10,
+});
+
+const bill = (id: string, amountMinor: number, priority: number): ScopePaymentInput => ({
   id,
   name: id,
   category: "monthly_recurring",
+  scope: "personal",
   amountMinor,
   dueDate: null,
   recurrence: null,
@@ -60,6 +78,21 @@ const bill = (id: string, amountMinor: number, priority: number): PaymentInput =
   active: true,
 });
 
+const owned = (over: Partial<ScopeAccountInput> & { accountId: string }): ScopeAccountInput => ({
+  currency: "GBP",
+  role: "personal",
+  memberUserId: "owner",
+  incomes: [],
+  payments: [],
+  ...over,
+});
+
+const solo = (...accounts: ScopeAccountInput[]): ScopeInput => ({
+  scopeId: "owner",
+  members: [{ userId: "owner", shareBp: 10_000 }],
+  accounts,
+});
+
 /**
  * What the estate actually earns this month: external inflows only.
  *
@@ -67,7 +100,7 @@ const bill = (id: string, amountMinor: number, priority: number): PaymentInput =
  * structurally an `IncomeInput`, so the engine's own normalisation does the
  * arithmetic — no second implementation to drift.
  */
-function estateMoneyInMinor(accounts: AccountInput[], asOfDate: string): number {
+function estateMoneyInMinor(accounts: readonly ScopeAccountInput[], asOfDate: string): number {
   const now = new Date(`${asOfDate}T00:00:00.000Z`);
   return accounts
     .flatMap((a) => a.inflows ?? [])
@@ -81,62 +114,41 @@ function estateMoneyInMinor(accounts: AccountInput[], asOfDate: string): number 
  * become `incomes`, account-sourced rows travel on `inflows` and reach no
  * income figure.
  */
-function chain(): AccountInput[] {
-  const current: AccountInput = {
-    accountId: "current",
-    currency: "GBP",
-    incomes: [external("salary", 500_000)],
-    inflows: [external("salary", 500_000)],
-    payments: [bill("rent", 100_000, 1)],
-  };
-  const pot: AccountInput = {
-    accountId: "pot",
-    currency: "GBP",
-    incomes: [],
-    inflows: [fromAccount("current->pot", 300_000, "current", 10)],
-    payments: [bill("bills", 300_000, 1)],
-  };
-  const savings: AccountInput = {
-    accountId: "savings",
-    currency: "GBP",
-    incomes: [],
-    inflows: [fromAccount("pot->savings", 200_000, "pot", 10)],
-    payments: [bill("emergency fund", 200_000, 1)],
-  };
-  const isa: AccountInput = {
-    accountId: "isa",
-    currency: "GBP",
-    incomes: [],
-    inflows: [fromAccount("savings->isa", 100_000, "savings", 10)],
-    payments: [bill("stocks", 100_000, 1)],
-  };
-  return [current, pot, savings, isa];
+function chain(): ScopeAccountInput[] {
+  return [
+    owned({
+      accountId: "current",
+      incomes: [external("salary", 500_000)],
+      inflows: [external("salary", 500_000)],
+      payments: [bill("rent", 100_000, 1)],
+    }),
+    owned({
+      accountId: "pot",
+      inflows: [fromAccount("current->pot", 300_000, "current", 10)],
+      payments: [bill("bills", 300_000, 1)],
+    }),
+    owned({
+      accountId: "savings",
+      inflows: [fromAccount("pot->savings", 200_000, "pot", 10)],
+      payments: [bill("emergency fund", 200_000, 1)],
+    }),
+    owned({
+      accountId: "isa",
+      inflows: [fromAccount("savings->isa", 100_000, "savings", 10)],
+      payments: [bill("stocks", 100_000, 1)],
+    }),
+  ];
 }
-
-/** The leaving face of a movement — the same row, read from the sender. */
-const leaving = (id: string, amountMinor: number, toAccountId: string): OutboundInflowInput => ({
-  id,
-  toAccountId,
-  amountMinor,
-  frequency: "monthly",
-  recurrence: null,
-  anchorDate: "2026-08-25",
-  active: true,
-  priority: 10,
-});
 
 /**
  * The same chain with both faces of every movement, and a bill at each stop
- * small enough that money reaches the end of it. This is the shape the estate
- * pass plans: one salary, three hops, every pound spent exactly once.
+ * small enough that money reaches the end of it. This is the shape the pass
+ * plans: one salary, three hops, every pound spent exactly once.
  */
-function sendingChain(): AccountInput[] {
+function sendingChain(): ScopeAccountInput[] {
   const [current, pot, savings, isa] = chain();
   return [
-    {
-      ...current!,
-      outboundInflows: [leaving("current->pot", 300_000, "pot")],
-    },
+    { ...current!, outboundInflows: [leaving("current->pot", 300_000, "pot")] },
     {
       ...pot!,
       payments: [bill("bills", 100_000, 1)],
@@ -151,6 +163,13 @@ function sendingChain(): AccountInput[] {
   ];
 }
 
+/** Every seeded account's plan, as the pass settled it and the view reports it. */
+function plansOf(accounts: ScopeAccountInput[]): AccountPlan[] {
+  const scope = solo(...accounts);
+  const plan = computeScopePlan(scope, ASOF);
+  return accounts.map((a) => accountPlanFromScope(scope, plan, a.accountId));
+}
+
 describe("the estate-wide money-in invariant", () => {
   it("counts only external inflows, at every depth of the chain", () => {
     const accounts = chain();
@@ -160,17 +179,14 @@ describe("the estate-wide money-in invariant", () => {
     // any depth — cannot move the figure. Three more hops, same answer.
     const deeper = [
       ...accounts,
-      {
+      owned({
         accountId: "isa-2",
-        currency: "GBP",
-        incomes: [],
         inflows: [
           fromAccount("isa->isa2", 50_000, "isa", 10),
           fromAccount("current->isa2", 25_000, "current", 20),
           fromAccount("pot->isa2", 10_000, "pot", 30),
         ],
-        payments: [],
-      } satisfies AccountInput,
+      }),
     ];
     expect(estateMoneyInMinor(deeper, ASOF)).toBe(500_000);
   });
@@ -188,90 +204,67 @@ describe("the estate-wide money-in invariant", () => {
   it("plans an externally-funded account byte-identically to before inflows existed", () => {
     // The account as the engine has always been handed it: incomes, payments,
     // and no notion of an inflow record.
-    const asItWas: AccountInput = {
+    const asItWas = owned({
       accountId: "current",
-      currency: "GBP",
       incomes: [external("salary", 500_000)],
       payments: [bill("rent", 100_000, 1)],
-    };
+    });
     const [asItIs] = chain();
-    expect(computeAccountPlan(asItIs!, ASOF)).toEqual(computeAccountPlan(asItWas, ASOF));
+    expect(plansOf([asItIs!])[0]).toEqual(plansOf([asItWas])[0]);
     // Deep-equal is not the claim; the serialised plan is.
-    expect(JSON.stringify(computeAccountPlan(asItIs!, ASOF))).toBe(
-      JSON.stringify(computeAccountPlan(asItWas, ASOF)),
-    );
+    expect(JSON.stringify(plansOf([asItIs!])[0])).toBe(JSON.stringify(plansOf([asItWas])[0]));
 
     // And an account-sourced inflow authored on it changes nothing either: the
-    // records are stored and carried, and the engine does not read them yet.
-    const sending: AccountInput = {
+    // arriving face names a sender the scope cannot see, which is reported as an
+    // unsourced movement and funds no part of this account's month.
+    const sending: ScopeAccountInput = {
       ...asItIs!,
-      inflows: [...asItIs!.inflows!, fromAccount("current->pot", 300_000, "current", 10)],
+      inflows: [...asItIs!.inflows!, fromAccount("current->pot", 300_000, "elsewhere", 10)],
     };
-    expect(JSON.stringify(computeAccountPlan(sending, ASOF))).toBe(
-      JSON.stringify(computeAccountPlan(asItWas, ASOF)),
-    );
+    expect(JSON.stringify(plansOf([sending])[0])).toBe(JSON.stringify(plansOf([asItWas])[0]));
   });
 
   it("keeps the currency rollup's income honest across the chain", () => {
-    // The engine plans from `incomes`, and `plan.ts` puts only external rows
+    // The pass plans from `incomes`, and `plan.ts` puts only external rows
     // there. So no account-sourced inflow — however deep — can reach
     // `monthlyIncomeMinor`, in one plan or in the rollup over four.
-    const plans = chain().map((a) => computeAccountPlan(a, ASOF));
-    const overview = computeOverview(plans, ASOF);
+    const overview = overviewFromPlans(plansOf(sendingChain()), ASOF);
     expect(overview.perCurrency).toHaveLength(1);
     expect(overview.perCurrency[0]!.monthlyIncomeMinor).toBe(500_000);
   });
 });
 
 /**
- * The rollup double-flavour, and its fix.
+ * The rollup double-flavour, and the pass that dissolved it.
  *
- * `computeOverview` sums `totalFundedMinor` (which includes inflow-funded
- * amounts) and `leftoverMinor` (which, by WP-A's deliberate choice, still counts
- * the paying account's money as its own surplus). Per account both are right.
+ * `computeOverview` used to sum `totalFundedMinor` (which includes what arriving
+ * money paid for) and `leftoverMinor` (which counted the *sending* account's
+ * money as its own surplus even after it left). Per account both were right.
  * Summed, the same pounds were counted at both ends, once per hop of the chain —
- * £11,000 accounted for out of £5,000 earned, at depth three.
+ * £8,000 accounted for out of £5,000 earned, at depth three — and WP-G netted the
+ * difference back out at rollup time.
  *
- * WP-G nets the intra-estate movement out at rollup time. The netted term is the
- * inflow the receiving accounts actually **spent**, not the whole allocation:
- * allocation that arrived and was never needed is still sitting where it landed
- * and is still counted once, in the sending account's leftover.
+ * There is one pass now, and the sending account's surplus is already net of what
+ * leaves it, so there is nothing left to net. The netting term is deleted with
+ * the engine that needed it (ONE-ENGINE.md, WP-S), and these are the assertions
+ * that say the identity survived its removal.
  */
-describe("the rollup nets money moving between your own accounts", () => {
-  /** The chain planned as one estate, which is the only way the pass can know
-   *  the movements are internal. Each stop spends exactly what reaches it. */
-  const rolled = () => {
-    const estate = computeEstatePlan(sendingChain(), ASOF);
-    return { estate, bucket: computeOverview(estate.plans, ASOF).perCurrency[0]! };
-  };
+describe("the rollup adds up without netting anything", () => {
+  const rolled = (accounts = sendingChain()) => overviewFromPlans(plansOf(accounts), ASOF);
 
   it("still counts income from external inflows alone", () => {
-    expect(rolled().bucket.monthlyIncomeMinor).toBe(500_000);
+    expect(rolled().perCurrency[0]!.monthlyIncomeMinor).toBe(500_000);
   });
 
-  it("names the double-counted amount instead of absorbing it", () => {
-    const { estate, bucket } = rolled();
-    const raw = estate.plans.reduce((sum, p) => sum + p.leftoverMinor, 0);
-
-    // The un-netted figures, unchanged: every per-account number is still right
-    // on its own, which is why the fix belongs in the rollup and nowhere else.
-    // The current account still reports the money it sent as its own surplus.
+  it("counts every pound exactly once, with no term left over to subtract", () => {
+    const bucket = rolled().perCurrency[0]!;
+    const raw = plansOf(sendingChain()).reduce((sum, p) => sum + p.leftoverMinor, 0);
+    // Each stop's bill is covered by the transfer the pass derives for it; the
+    // authored movements carry the surplus on afterwards, as savings.
     expect(bucket.totalFundedMinor).toBe(400_000);
-    expect(raw).toBe(400_000);
-    // £8,000 accounted for out of £5,000 earned — the old answer.
-    expect(bucket.totalFundedMinor + raw).toBe(800_000);
-
-    // And the gap is exactly what moved between the user's own accounts: £1,000
-    // spent at each of the three stops down the chain.
-    expect(bucket.intraEstateMovementMinor).toBe(300_000);
-    expect(bucket.totalFundedMinor + raw - bucket.intraEstateMovementMinor).toBe(
-      bucket.monthlyIncomeMinor,
-    );
-  });
-
-  it("makes the estate add up: funded plus left over is what came in", () => {
-    const { bucket } = rolled();
+    expect(raw).toBe(100_000);
     expect(bucket.leftoverMinor).toBe(100_000);
+    // £5,000 accounted for out of £5,000 earned — no netting anywhere.
     expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(bucket.monthlyIncomeMinor);
   });
 
@@ -279,26 +272,55 @@ describe("the rollup nets money moving between your own accounts", () => {
     // Two hops and four: the same identity, so the error cannot be hiding in
     // the fixture's length.
     for (const depth of [2, 3, 4]) {
-      const estate = computeEstatePlan(sendingChain().slice(0, depth), ASOF);
-      const bucket = computeOverview(estate.plans, ASOF).perCurrency[0]!;
+      const bucket = rolled(sendingChain().slice(0, depth)).perCurrency[0]!;
       expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(bucket.monthlyIncomeMinor);
     }
   });
 
-  it("leaves a household allocation alone, because it is not the estate's money", () => {
-    // Nothing in this rollup sent it, so there is nothing to net: a pot funded
-    // by a partner's account rolls up exactly as it did before WP-G.
-    const [current, pot] = chain();
-    const plans = [
-      computeAccountPlan(current!, ASOF),
-      computeAccountPlan(
-        { ...pot!, inflow: { allocatedMinor: 300_000, confirmedMinor: 300_000 } },
-        ASOF,
-      ),
-    ];
-    const bucket = computeOverview(plans, ASOF).perCurrency[0]!;
-    expect(bucket.intraEstateMovementMinor).toBe(0);
-    expect(bucket.leftoverMinor).toBe(400_000);
-    expect(bucket.totalFundedMinor).toBe(400_000);
+  it("does not subtract a co-member's transfer from a rollup that never counted it", () => {
+    // The trap the old netting term walked into. `internalInflowUsedMinor` meant
+    // "inflow the bills consumed that came from another account of the *scope*",
+    // and a scope contains Bob's account while Alice's rollup does not. Netted,
+    // Bob's £400 would come off Alice's surplus — money she never had, taken from
+    // a total it was never in.
+    const shared: ScopeInput = {
+      scopeId: "hh",
+      householdId: "hh",
+      members: [
+        { userId: "alice", shareBp: 5_000 },
+        { userId: "bob", shareBp: 5_000 },
+      ],
+      accounts: [
+        owned({
+          accountId: "alice-cur",
+          memberUserId: "alice",
+          incomes: [external("alice-pay", 300_000)],
+        }),
+        owned({
+          accountId: "bob-cur",
+          memberUserId: "bob",
+          incomes: [external("bob-pay", 300_000)],
+        }),
+        owned({
+          accountId: "bills",
+          role: "shared",
+          memberUserId: null,
+          payments: [{ ...bill("rent", 80_000, 1), scope: "shared" }],
+        }),
+      ],
+    };
+    const plan = computeScopePlan(shared, ASOF);
+    // Alice's rollup: her own account and the shared pot she can see. Bob's is
+    // in the scope — it has to be, his money pays half the rent — and out of the
+    // rollup, because it is not hers.
+    const bucket = overviewFromPlans(
+      ["alice-cur", "bills"].map((id) => accountPlanFromScope(shared, plan, id)),
+      ASOF,
+    ).perCurrency[0]!;
+    expect(bucket.monthlyIncomeMinor).toBe(300_000);
+    expect(bucket.totalFundedMinor).toBe(80_000);
+    // £3,000 in, £400 of rent gone: £2,600 left, and not a penny of Bob's
+    // transfer subtracted from it.
+    expect(bucket.leftoverMinor).toBe(260_000);
   });
 });

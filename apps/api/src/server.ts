@@ -21,17 +21,22 @@ import {
   updateProjectBody,
   upsertBalanceBody,
 } from "@finance-planner/contracts";
-import { type Account, type AccountAccess, createStore, type Store } from "@finance-planner/data";
+import {
+  type Account,
+  type AccountAccess,
+  type Contribution,
+  createStore,
+  type Store,
+} from "@finance-planner/data";
 import {
   type AccountPlan,
   clampUpcomingDays,
-  computeAccountPlan,
-  computeEstateProjection,
-  computeHouseholdProjection,
-  computeOverview,
-  flowFromEstate,
+  computeScopeProjection,
+  flowFromScope,
+  householdPlanFromScope,
+  householdProjectionFromScope,
+  overviewFromPlans,
   toISODate,
-  withoutArrival,
 } from "@finance-planner/domain";
 import { createMailer, type Mailer } from "@finance-planner/mailer";
 import { type Action, type AppAbility, buildAbility, subject } from "@finance-planner/policies";
@@ -43,19 +48,17 @@ import { type ApiEnv, loadEnv } from "./env.js";
 import { startNotifier } from "./notify.js";
 import {
   accessibleAccounts,
-  buildAccountInput,
-  buildHouseholdInput,
-  computeEstateFor,
-  computeHouseholdPlanFor,
   computeHouseholdPlanWithSchedule,
   computePlanForAccount,
   createPlanContext,
-  fundingClosure,
-  householdAllocations,
   type InflowSource,
-  type PlanContext,
+  inflowSourcesFor,
+  type PlannedScope,
+  plansForAccounts,
   previewPlanForAccount,
-  resolveAccountInflow,
+  scopeForAccount,
+  scopeForHousehold,
+  scopesFor,
   upcomingForUser,
 } from "./plan.js";
 import { buildExport, importExport } from "./portability.js";
@@ -458,16 +461,23 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     userId: string,
     account: Account,
     plan: AccountPlan,
-    asOfDate: string,
-    ctx: PlanContext,
+    scope: PlannedScope,
   ): Promise<PlanInflowSource[] | null> => {
     const sources: PlanInflowSource[] = [];
 
-    // Memoised by the plan computation that precedes every call, so this is a
-    // map lookup rather than a second household plan.
-    const inflow = await resolveAccountInflow(store, account, asOfDate, ctx);
-    if (inflow && (await store.getMembership(inflow.householdId, userId))) {
-      sources.push(...inflow.sources.map((s) => ({ kind: "member" as const, ...s })));
+    // Read off the pass that produced `plan`, so there is nothing to recompute.
+    // The gate is unchanged: a household's transfers name its members, and an
+    // account can be shared with someone outside the household funding it, so
+    // the member rows travel only for a caller who can see the household. A
+    // scope with no household in it derives transfers too (decision 9) and they
+    // are the caller's own to see — nobody else's name is in them.
+    const householdId = scope.householdOf.get(account.id) ?? null;
+    const canNameMembers = householdId
+      ? (await store.getMembership(householdId, userId)) !== null
+      : false;
+    for (const source of inflowSourcesFor(scope, account.id, account.currency)) {
+      if (!canNameMembers && source.memberUserId !== userId) continue;
+      sources.push({ kind: "member", ...source });
     }
 
     for (const arrival of plan.inflowArrivals) {
@@ -569,11 +579,12 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { account } = await requireAccess(userId, id, "view");
     const asOfDate = asOf ?? today();
     const ctx = createPlanContext();
+    const scope = await scopeForAccount(store, account, asOfDate, ctx);
     const plan = await computePlanForAccount(store, account, asOfDate, ctx);
     return {
       ...plan,
       ...(await accountReality(store, plan, asOfDate)),
-      inflowSources: await planInflowSources(userId, account, plan, asOfDate, ctx),
+      inflowSources: await planInflowSources(userId, account, plan, scope),
     };
   });
 
@@ -607,19 +618,15 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * starts from the latest real balance check-in; with no check-in there is no
    * honest opening figure, so every month reports a null balance.
    *
-   * Simulated as part of its estate, not on its own. What arrives in month
-   * seven is another account's month-seven surplus — after month-seven's bills,
-   * out of month-seven's income — and one account's input does not contain the
-   * other account. `computeAccountProjection` holds the as-of month's arrival
-   * flat instead, which is right for a standing transfer out of a steady
-   * account and wrong as soon as the sender's own month changes. So the whole
-   * funding closure is walked forward and this account's slice read back out.
+   * Simulated as part of its scope, not on its own. What arrives in month seven
+   * is another account's month-seven surplus — after month-seven's bills, out of
+   * month-seven's income, and after whatever its owner's other obligations claim
+   * — and one account's input contains none of that. So the whole scope is
+   * walked forward, one funding pass per simulated month, and this account's
+   * slice is read back out.
    *
-   * The closure is the estate **as authored**, deliberately: a completed pass's
-   * `inputs` already carry the money that arrived, and re-feeding them would
-   * hand the account its allocation again in every simulated month. Senders the
-   * caller cannot see are in the closure and never leave it — the same rule the
-   * plan endpoint follows, for the same reason.
+   * Accounts the caller cannot see are in the scope and never leave it — the
+   * same rule the plan endpoint follows, for the same reason.
    */
   app.get("/api/accounts/:id/projection", async (req) => {
     const userId = await authenticate(req);
@@ -627,20 +634,20 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { asOf, months } = req.query as { asOf?: string; months?: string };
     const { account } = await requireAccess(userId, id, "view");
     const asOfDate = asOf ?? today();
-    const [closure, balances] = await Promise.all([
-      fundingClosure(store, [account], asOfDate),
+    const [scope, balances] = await Promise.all([
+      scopeForAccount(store, account, asOfDate),
       store.listBalanceSnapshots(id),
     ]);
     const latest = balances.at(-1);
-    const estate = computeEstateProjection(closure, asOfDate, {
+    const walk = computeScopeProjection(scope.input, asOfDate, {
       months: intParam(months),
       // Only this account's opening balance is known here, and only this
-      // account's months are returned; the senders' balances are irrelevant to
+      // account's months are returned; the others' balances are irrelevant to
       // what they can afford to send, which is an income-and-bills question.
       startingBalancesMinor: { [id]: latest?.balanceMinor ?? null },
     });
-    // Always present: the account is in its own funding closure.
-    return estate.accounts.find((a) => a.accountId === id)!;
+    // Always present: the account is in its own scope.
+    return walk.accounts.find((a) => a.accountId === id)!;
   });
 
   // ---- contributions (the money-set-aside ledger) ----
@@ -860,12 +867,11 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * **A movement between two currencies is refused**, because there is no rate
    * anywhere in this system to convert it with. Nothing would be wrong at the
    * two ends — each account would report an honest figure in its own money —
-   * but `computeOverview` buckets per currency and nets intra-estate movement
-   * *inside* one bucket, so a GBP→USD movement would leave the identity
+   * but the pass plans per currency (decision 10) and would see the money leave
+   * one partition without arriving in any, so the identity
    * `totalFundedMinor + leftoverMinor === monthlyIncomeMinor - bufferMinor`
-   * broken in **both** buckets: money spoken for in the sending currency and
-   * arriving in the receiving one, netted in neither. Refusing is the only
-   * answer that stays true; converting would mean inventing a rate.
+   * would break in **both**. Refusing is the only answer that stays true;
+   * converting would mean inventing a rate.
    *
    * Nothing is refused for closing a funding loop. A cycle is a property of the
    * estate rather than of the edge that completes it, so it is detected by the
@@ -1074,15 +1080,15 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * so the Overview's checklist gets the lines it must act on from here rather
    * than paying a plan request per row for work already done in this loop.
    *
-   * **One estate pass, not one per account.** Planning each account in turn ran
-   * a separate ordered pass over that account's own funding closure, so the
-   * rollup was assembled from plans no two of which had been computed together
-   * — and `computeOverview` nets money that moved *between accounts in the same
-   * rollup*, a question no single-account pass is in a position to answer. Now
-   * every account the caller can see is seeded into one pass. The pass reaches
-   * further than the caller can — it must, since money can arrive from an
-   * account they cannot see — so only the seeded accounts' plans are read back
-   * out of it, which is where the access filter lives.
+   * **One pass per scope, not one per account.** Planning each account in turn
+   * ran a separate pass over that account's own closure, so the rollup was
+   * assembled from plans no two of which had been computed together. Now every
+   * account the caller can see is seeded, and the accounts that share a scope
+   * are planned together. A scope reaches further than the caller can — it must,
+   * since money can arrive from an account they cannot see — so only the seeded
+   * accounts' plans are read back out of it, which is where the access filter
+   * lives, and the rollup is a plain sum over them (see `overviewFromPlans` for
+   * why there is no longer anything to net).
    */
   app.get("/api/overview", async (req) => {
     const userId = await authenticate(req);
@@ -1099,10 +1105,9 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     // planning the household, and every account of a one-household estate would
     // otherwise ask for the identical plan in turn.
     const ctx = createPlanContext();
-    const estate = await computeEstateFor(store, accounts, asOfDate, ctx);
-    const planById = new Map(estate.plans.map((p) => [p.accountId, p]));
+    const planById = await plansForAccounts(store, accounts, asOfDate, ctx);
     for (const account of accounts) {
-      // Always present: every account seeded into the pass is planned by it.
+      // Always present: every account seeded into a scope is planned by it.
       const plan = planById.get(account.id)!;
       const reality = await accountReality(store, plan, asOfDate);
       const planSummary = summarisePlanLines(plan, reality.contributionsMTD);
@@ -1134,7 +1139,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       });
     }
 
-    const overview = computeOverview(plans, asOfDate);
+    const overview = overviewFromPlans(plans, asOfDate);
     return {
       ...overview,
       perCurrency: overview.perCurrency.map((c) => ({
@@ -1153,17 +1158,15 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * at all. Scope here is a user-defined set: two households' accounts and a
    * standalone pot is an ordinary request.
    *
-   * Nothing new is derived. The ordered pass already works out which money
-   * crosses which account boundary (`EstatePlan.movements`, the household-free
-   * twin of `HouseholdPlan.transfers`), and `flowFromEstate` reshapes its answer
-   * — it had simply never had an HTTP surface, so the only consumer in the whole
-   * codebase was the daily digest.
+   * Nothing new is derived. The funding pass already works out which money
+   * crosses which account boundary — the transfers it derives for expenses and
+   * the movements the user authored for savings — and `flowFromScope` reshapes
+   * its answer into ribbons.
    *
-   * The pass deliberately reaches beyond the scope, upstream to whatever funds
-   * it; only the scope's own accounts are drawn, and money arriving from an
-   * account outside it crosses the scope's edge as an unnamed source. Access is
-   * checked per account, so a set is exactly as visible as its least visible
-   * member.
+   * The pass reaches beyond the picture, to whatever the drawn accounts share
+   * money with; only the requested accounts are drawn, and money crossing that
+   * edge is drawn with a null end. Access is checked per account, so a set is
+   * exactly as visible as its least visible member.
    *
    * **Visibility is not scope.** Hiding a noisy account from a diagram is a
    * presentation act and must not change a computed figure, so it is never sent
@@ -1223,16 +1226,34 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
 
     const ctx = createPlanContext();
-    const [estate, allocations] = await Promise.all([
-      computeEstateFor(store, scope, asOfDate, ctx),
-      householdAllocations(store, userId, scope, asOfDate, ctx),
-    ]);
-    return flowFromEstate(
-      estate,
-      scope.map((a) => ({ accountId: a.id, name: a.name })),
-      currencies[0]!,
-      allocations,
-    );
+    const planned = await scopesFor(store, scope, asOfDate, ctx);
+    // **Names are gated, amounts are not.** A derived transfer names the member
+    // whose money it is, and an account can be drawn by somebody outside the
+    // household that funds it — so a name travels only when the caller can see
+    // the household it belongs to, or when it is their own.
+    const memberNames = new Map<string, string>();
+    for (const p of planned) {
+      const householdId = p.input.householdId;
+      const visible = householdId
+        ? (await store.getMembership(householdId, userId)) !== null
+        : false;
+      for (const [id, name] of p.memberNames) {
+        if (visible || id === userId) memberNames.set(id, name);
+      }
+    }
+    // A picture can span two scopes that share no money; each contributes the
+    // nodes and ribbons it knows about, and neither invents an edge to the other.
+    const picture = scope.map((a) => ({ accountId: a.id, name: a.name }));
+    const flows = planned.map((p) => flowFromScope(p.plan, picture, currencies[0]!, memberNames));
+    return {
+      asOfDate,
+      currency: currencies[0]!,
+      accounts: picture.flatMap((entry) =>
+        flows.flatMap((f) => f.accounts.filter((a) => a.accountId === entry.accountId)),
+      ),
+      edges: flows.flatMap((f) => f.edges),
+      totalInflowMinor: flows.reduce((sum, f) => sum + f.totalInflowMinor, 0),
+    };
   });
 
   // ---- upcoming payments ----
@@ -1275,8 +1296,14 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { id } = req.params as { id: string };
     const { asOf, months } = req.query as { asOf?: string; months?: string };
     await requireMembership(userId, id);
-    const input = await buildHouseholdInput(store, id);
-    return computeHouseholdProjection(input, asOf ?? today(), { months: intParam(months) });
+    const asOfDate = asOf ?? today();
+    const { scope, accountIds, currency } = await scopeForHousehold(store, id, asOfDate);
+    return householdProjectionFromScope(
+      computeScopeProjection(scope.input, asOfDate, { months: intParam(months) }),
+      id,
+      accountIds,
+      currency,
+    );
   });
 
   /** The roster of accounts in this household's plan, with their roles. */
@@ -1360,7 +1387,8 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(409, "already_confirmed", "Transfer already confirmed this month");
     }
 
-    const plan = await computeHouseholdPlanFor(store, id, today());
+    const { scope, accountIds, currency } = await scopeForHousehold(store, id, today());
+    const plan = householdPlanFromScope(scope.plan, id, accountIds, currency);
     const transfer = plan.transfers.find(
       (t) =>
         t.fromAccountId === body.fromAccountId &&
@@ -1467,26 +1495,16 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(409, "already_confirmed", "Movement already confirmed this month");
     }
 
-    // What the movement actually delivered, as the ordered pass over the estate
-    // settled it: the sending account's own bills come first (decision 6), so
-    // an authored £300 out of an account with £120 to spare moves £120 and this
-    // is that £120. Nothing arrived means the sender could spare nothing —
-    // confirming it books nothing, because there is nothing the plan says it
-    // paid for.
-    const input = await buildAccountInput(store, account, asOfDate);
-    const arrival = input.inflow?.sources?.find((s) => s.inflowId === inflowId);
-    const amountMinor = arrival?.amountMinor ?? 0;
-
-    // What this money pays for, answered by the engine rather than by a second
-    // allocator written here. The movement is *already* in the plan — the pass
-    // delivers it whether or not anyone has said it moved — so the base is this
-    // account's month with this one movement taken back out, and the plan as it
-    // stands is the month with it. The difference, line by line, is what the
-    // movement funds. Adding the amount on top instead would diff against an
-    // imaginary second copy of the movement: zero rows on an account that can
-    // absorb it, and rows against the wrong payments on one that cannot.
-    const before = computeAccountPlan(withoutArrival(input, inflowId), asOfDate);
-    const after = computeAccountPlan(input, asOfDate);
+    // What the movement actually delivered, as the one pass settled it: every
+    // expense in the scope is funded first (decision 8), so an authored £300 out
+    // of an account with £120 to spare moves £120 and this is that £120.
+    // `ScopeMovement` answers directly — the old handler planned the account
+    // twice, once with the arrival taken back out, and diffed the two, because
+    // the only way to ask "what did this movement pay for" of an engine that had
+    // already been handed the money was to take it away again.
+    const scope = await scopeForAccount(store, account, asOfDate);
+    const movement = scope.plan.movements.find((m) => m.inflowId === inflowId);
+    const amountMinor = movement?.fundedMinor ?? 0;
 
     const confirmation = await store.createTransferConfirmation({
       householdId: null,
@@ -1497,23 +1515,15 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       memberUserId: userId,
       amountMinor,
     });
-    const fundedBefore = new Map(before.lines.map((l) => [l.paymentId, l.fundedFromInflowMinor]));
-    const contributions = [];
-    for (const line of after.lines) {
-      const funded = line.fundedFromInflowMinor - (fundedBefore.get(line.paymentId) ?? 0);
-      if (funded <= 0) continue;
-      contributions.push(
-        await store.createContribution({
-          paymentId: line.paymentId,
-          accountId: inflow.accountId,
-          userId,
-          month,
-          amountMinor: funded,
-          note: null,
-          transferConfirmationId: confirmation.id,
-        }),
-      );
-    }
+    // **No contributions.** An authored movement is savings (decision 9), and
+    // savings money never pays for an expense: the pass funds every obligation
+    // from the members' budgets and delivers the transfers those need itself, so
+    // a movement into a bills pot arrives *on top of* the feed rather than
+    // instead of it (decision 12 — netting the two would put savings money
+    // inside expense arithmetic). There is nothing the plan says this paid for,
+    // so booking a contribution against a payment would be inventing one. The
+    // duplication is real and the UI flags it; the ledger does not hide it.
+    const contributions: Contribution[] = [];
     return reply.code(201).send({ confirmation, contributions });
   });
 
@@ -1525,6 +1535,123 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { month } = req.query as { month?: string };
     await requireAccess(userId, id, "view");
     return store.listTransferConfirmationsForAccount(id, monthQuery(month));
+  });
+
+  /**
+   * Confirm a transfer the plan **derived** — the feed into a pot nobody
+   * authored a movement for.
+   *
+   * The household handler above answers the same question when a household
+   * attributes the transfer; this one asks no household anything, because a
+   * solo user's derived feed has none in it. That case had nowhere to go before
+   * migration 0010: a derived solo transfer carries neither a `household_id` nor
+   * an `inflow_id`, and the old CHECK constraint required one of them. It is
+   * scoped by `(from, to, month, member)`, which is what it always was.
+   *
+   * `edit` on the receiving account and `view` on the sending one — the same
+   * rule the authored-movement handler applies, for the same reason: recording
+   * that money moved commits nothing, so it does not take `edit` at both ends.
+   */
+  app.post("/api/accounts/:id/transfers/confirm", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { month: monthParam } = req.query as { month?: string };
+    const { account } = await requireAccess(userId, id, "edit");
+    const body = confirmTransferBody.parse(req.body);
+    if (body.toAccountId !== id) {
+      throw new HttpError(422, "validation_error", "toAccountId must be this account");
+    }
+    // Only your own: a derived transfer is a member's own money moving, and
+    // there is no household roster here to make anybody an admin of it.
+    if (body.memberUserId !== userId) {
+      throw new HttpError(403, "forbidden", "You may only confirm your own transfer");
+    }
+    await requireAccess(userId, body.fromAccountId, "view");
+    const month = monthQuery(monthParam);
+    const asOfDate = today();
+
+    // Idempotency guard first, exactly as the other two handlers do it: once
+    // confirmed, stay confirmed even if the plan has since moved on. The
+    // database says the same thing through
+    // `transfer_confirmations_derived_month_unique`.
+    const confirmed = await store.listDerivedTransferConfirmationsForAccount(id, month);
+    if (
+      confirmed.some(
+        (c) =>
+          c.fromAccountId === body.fromAccountId &&
+          c.toAccountId === id &&
+          c.memberUserId === userId,
+      )
+    ) {
+      throw new HttpError(409, "already_confirmed", "Transfer already confirmed this month");
+    }
+
+    const scope = await scopeForAccount(store, account, asOfDate);
+    const partition = scope.plan.partitions.find((p) => p.currency === account.currency);
+    const transfer = (partition?.transfers ?? []).find(
+      (t) =>
+        t.fromAccountId === body.fromAccountId && t.toAccountId === id && t.memberUserId === userId,
+    );
+    if (!transfer) {
+      throw new HttpError(422, "no_planned_transfer", "No matching planned transfer");
+    }
+
+    const confirmation = await store.createTransferConfirmation({
+      // Neither: a transfer the pass derived for a scope no household applies to
+      // is scoped by its two accounts, its month and the member who moves it.
+      householdId: null,
+      inflowId: null,
+      month,
+      fromAccountId: body.fromAccountId,
+      toAccountId: id,
+      memberUserId: userId,
+      amountMinor: transfer.amountMinor,
+    });
+    // The transfer funds this member's share of every bill in the destination
+    // account; book each slice against its payment so un-confirming can undo it.
+    const contributions: Contribution[] = [];
+    for (const line of partition?.lines ?? []) {
+      if (line.accountId !== id) continue;
+      const funded = line.allocations.find((a) => a.userId === userId)?.fundedMinor ?? 0;
+      if (funded <= 0) continue;
+      contributions.push(
+        await store.createContribution({
+          paymentId: line.paymentId,
+          accountId: id,
+          userId,
+          month,
+          amountMinor: funded,
+          note: null,
+          transferConfirmationId: confirmation.id,
+        }),
+      );
+    }
+    return reply.code(201).send({ confirmation, contributions });
+  });
+
+  /**
+   * Un-confirm a derived transfer: drops it and the contributions it created.
+   *
+   * Nested under the receiving account deliberately, so it can only ever reach a
+   * confirmation with no household and no inflow. The household route keeps its
+   * own rule — a plain member may only un-confirm their own — and this must not
+   * become a way around it.
+   */
+  app.delete("/api/accounts/:id/transfers/confirmations/:confId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id, confId } = req.params as { id: string; confId: string };
+    const confirmation = await store.getTransferConfirmation(confId);
+    if (
+      !confirmation ||
+      confirmation.toAccountId !== id ||
+      confirmation.householdId !== null ||
+      confirmation.inflowId !== null
+    ) {
+      throw new HttpError(404, "not_found", "Confirmation not found");
+    }
+    await requireAccess(userId, id, "edit");
+    await store.deleteTransferConfirmation(confId);
+    return reply.code(204).send();
   });
 
   /**
@@ -1562,10 +1689,11 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     if (await store.getMonthClose({ householdId: id }, month)) {
       throw new HttpError(409, "already_closed", "Month already closed");
     }
-    const [plan, assignments] = await Promise.all([
-      computeHouseholdPlanFor(store, id, asOfDate),
+    const [{ scope, accountIds, currency }, assignments] = await Promise.all([
+      scopeForHousehold(store, id, asOfDate),
       store.listAccountAssignments(id),
     ]);
+    const plan = householdPlanFromScope(scope.plan, id, accountIds, currency);
     let contributedMinor = 0;
     for (const assignment of assignments) {
       const contributions = await store.listContributionsForAccount(assignment.accountId, month);

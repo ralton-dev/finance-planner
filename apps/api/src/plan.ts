@@ -1,22 +1,24 @@
 import type { CreateIncomeBody, CreatePaymentBody } from "@finance-planner/contracts";
 import {
-  type AccountInput,
   type AccountPlan,
-  computeAccountPlan,
-  computeEstatePlan,
-  computeHouseholdPlan,
+  accountPlanFromScope,
   type ConfirmedArrival,
-  type EstatePlan,
-  type FlowAllocation,
-  type HouseholdAccountInput,
-  type HouseholdInput,
+  type ConfirmedTransfer,
+  computeScopePlan,
   type HouseholdPlan,
+  householdPlanFromScope,
   type IncomeInput,
   type InflowInput,
   type MemberPaydaySchedule,
   type OutboundInflowInput,
   type PaymentInput,
+  type ScopeAccountInput,
+  type ScopeInput,
+  type ScopeMemberInput,
+  type ScopePaymentInput,
+  type ScopePlan,
   splitTransfersByPayday,
+  type Transfer,
   type UpcomingPayment,
   upcomingPayments,
 } from "@finance-planner/domain";
@@ -51,8 +53,8 @@ function toIncomeInput(i: Inflow): IncomeInput {
   };
 }
 
-/** An authored inflow, carried through to the engine whole. The estate pass
- *  reads the account-sourced ones to work out what has to be planned first. */
+/** An authored inflow, carried through to the pass whole. It reads the
+ *  account-sourced ones only to notice a sender the scope never loaded. */
 function toInflowInput(i: Inflow): InflowInput {
   return {
     id: i.id,
@@ -104,78 +106,109 @@ function toPaymentInput(p: Payment, saved: Map<string, number>): PaymentInput {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Allocated inflow: what a household has earmarked into one of its accounts
-// ---------------------------------------------------------------------------
-
 /** ISO date of the first day of the month a date falls in. Transfer
  *  confirmations are keyed by that, the same as everywhere else. */
 const monthStart = (isoDate: string): string => `${isoDate.slice(0, 7)}-01`;
+
+// ---------------------------------------------------------------------------
+// One scope loader
+// ---------------------------------------------------------------------------
 
 /** One member's slice of the money arriving into an account this month. */
 export interface InflowSource {
   memberUserId: string;
   displayName?: string;
-  /** What the household plan asks this member to move in. */
+  /** What the plan asks this member to move in. */
   amountMinor: number;
   /** How much of it they have confirmed moving (<= `amountMinor`). */
   confirmedMinor: number;
 }
 
 /**
- * What a household has allocated into one account for the month, and who is
- * sending it.
+ * A scope, planned: what was handed to the pass, what the pass answered, and the
+ * few facts about the accounts and people in it that a *view* needs and the
+ * engine is deliberately never told.
  *
- * The **amount** is a fact about the account: anyone who can see the account can
- * already see the bills it pays and that they are covered, so it travels into
- * the plan unconditionally. **`sources` names household members**, and an
- * account can be shared with someone who is not one — so the plan endpoint only
- * attaches them for a caller who can see the household.
+ * The engine is never told who sent money, so no plan response can leak a name
+ * by accident; `memberNames` lives here instead, and the endpoints gate it.
  */
-export interface AccountInflow {
-  householdId: string;
-  allocatedMinor: number;
-  confirmedMinor: number;
-  sources: InflowSource[];
+export interface PlannedScope {
+  input: ScopeInput;
+  plan: ScopePlan;
+  /** The household planning each account, for the accounts one plans. */
+  householdOf: ReadonlyMap<string, string>;
+  /** Display names of the scope's members. */
+  memberNames: ReadonlyMap<string, string>;
+  /** The accounts in this scope, in the order they were handed to the pass. */
+  accountIds: readonly string[];
+}
+
+/** Everything one account contributes to a scope, loaded once. */
+interface LoadedAccount {
+  account: Account;
+  /** Accounts that send money here, and accounts this one sends to: the funding
+   *  graph, walked in both directions. */
+  senders: string[];
+  receivers: string[];
+  incomes: IncomeInput[];
+  inflows: InflowInput[];
+  outboundInflows: OutboundInflowInput[];
+  payments: ScopePaymentInput[];
+  confirmedArrivals: ConfirmedArrival[];
+  /** Confirmations of a transfer nobody authored — the derived-solo shape 0010
+   *  made storable, and the household rows, read from this account's end. */
+  derivedConfirmations: TransferConfirmation[];
+}
+
+/** A household as the scope loader needs it: who is in it, and what it plans. */
+interface LoadedHousehold {
+  members: ScopeMemberInput[];
+  roles: Map<string, { role: "shared" | "personal"; memberUserId: string | null }>;
+  accountIds: string[];
 }
 
 /**
- * Per-request memo for the household work an account plan now needs.
+ * Per-request memo for the scope work every read now needs.
  *
- * Planning an account in a household means planning the whole household, and
- * some reads plan many accounts at once: the overview plans every account the
- * caller can see, and the upcoming feed builds an input per account. Without
- * this, an estate of one household would recompute the identical household plan
- * once per account. One context per request collapses that to one.
+ * Planning an account means planning its scope, and some reads plan many
+ * accounts at once: the overview plans every account the caller can see, and the
+ * digest walks the same set. Without this, an estate of one household would
+ * settle the identical scope once per account. One context per request collapses
+ * that to one.
  *
  * Deliberately request-scoped and handed in by the call site: it is a memo, not
  * a cache, so there is nothing to invalidate and no way for a mutation in one
  * request to be served stale results in the next. Keys carry the as-of date, so
  * a request that plans two dates cannot cross them.
+ *
+ * **Re-keyed by scope** (ONE-ENGINE.md, WP-S). The old context memoised
+ * household plans by `householdId@month` and account inputs by `accountId@date`,
+ * which is two keys for one question and neither of them a key a solo user has.
+ * A scope is keyed by the accounts it contains, and every account of one resolves
+ * to the same key.
  */
 export interface PlanContext {
-  readonly householdPlans: Map<string, Promise<HouseholdPlan>>;
-  readonly confirmations: Map<string, Promise<TransferConfirmation[]>>;
-  readonly inflows: Map<string, Promise<AccountInflow | null>>;
-  /** Engine inputs before the estate pass, keyed `accountId@date`. Planning one
-   *  account now reads its senders too, and a chain's accounts share senders. */
-  readonly accountInputs: Map<string, Promise<AccountInput>>;
-  /** Accounts fetched while walking a funding chain upstream. */
   readonly accounts: Map<string, Promise<Account | null>>;
-  /** Estate passes, keyed by the set of accounts they cover. */
-  readonly estatePlans: Map<string, Promise<EstatePlan>>;
+  readonly loaded: Map<string, Promise<LoadedAccount>>;
+  readonly households: Map<string, Promise<LoadedHousehold>>;
+  /** Which household plans an account, independent of who is asking. */
+  readonly accountHousehold: Map<string, Promise<string | null>>;
+  /** Planned scopes, keyed by the accounts they cover. */
+  readonly scopes: Map<string, Promise<PlannedScope>>;
+  /** `accountId@date` → the key of the scope that account belongs to. */
+  readonly scopeOf: Map<string, string>;
 }
 
-/** A fresh memo. One per request; `buildAccountInput` makes its own when a
- *  caller has nothing to share, so a single-account read needs no ceremony. */
+/** A fresh memo. One per request; every entry point makes its own when a caller
+ *  has nothing to share, so a single-account read needs no ceremony. */
 export function createPlanContext(): PlanContext {
   return {
-    householdPlans: new Map(),
-    confirmations: new Map(),
-    inflows: new Map(),
-    accountInputs: new Map(),
     accounts: new Map(),
-    estatePlans: new Map(),
+    loaded: new Map(),
+    households: new Map(),
+    accountHousehold: new Map(),
+    scopes: new Map(),
+    scopeOf: new Map(),
   };
 }
 
@@ -189,6 +222,9 @@ function memo<T>(map: Map<string, Promise<T>>, key: string, f: () => Promise<T>)
   return pending;
 }
 
+const getAccount = (store: Store, ctx: PlanContext, id: string): Promise<Account | null> =>
+  memo(ctx.accounts, id, () => store.getAccount(id));
+
 /**
  * Which household plans this account, independent of who is asking.
  *
@@ -201,96 +237,113 @@ function memo<T>(map: Map<string, Promise<T>>, key: string, f: () => Promise<T>)
  * so the answer is deterministic, matching `accountPlacements`' rule of taking
  * the first when an account is assigned in two.
  */
-async function householdPlanningAccount(store: Store, account: Account): Promise<string | null> {
-  const [owned, shares] = await Promise.all([
-    store.listHouseholdsForUser(account.ownerUserId),
-    store.listSharesForAccount(account.id),
-  ]);
-  const seen = new Set<string>();
-  for (const householdId of [...owned.map((h) => h.id), ...shares.map((s) => s.householdId)]) {
-    if (seen.has(householdId)) continue;
-    seen.add(householdId);
-    if (await store.getAccountAssignment(householdId, account.id)) return householdId;
-  }
-  return null;
+async function householdPlanningAccount(
+  store: Store,
+  ctx: PlanContext,
+  account: Account,
+): Promise<string | null> {
+  return memo(ctx.accountHousehold, account.id, async () => {
+    const [owned, shares] = await Promise.all([
+      store.listHouseholdsForUser(account.ownerUserId),
+      store.listSharesForAccount(account.id),
+    ]);
+    const seen = new Set<string>();
+    for (const householdId of [...owned.map((h) => h.id), ...shares.map((s) => s.householdId)]) {
+      if (seen.has(householdId)) continue;
+      seen.add(householdId);
+      if (await store.getAccountAssignment(householdId, account.id)) return householdId;
+    }
+    return null;
+  });
 }
 
-/**
- * The money a household has allocated into `account` this month, or null when
- * no household plans it.
- *
- * `allocatedMinor` is the household plan's derived transfers into the account —
- * the same figure `HouseholdAccountPlan.transferInMinor` reports, taken off the
- * transfers so it can be attributed per member. `confirmedMinor` is how much of
- * it has actually moved, from the confirmations already stored for the month.
- *
- * A member's confirmation is clamped to what the plan currently asks of *that
- * member*: a confirmation outlives the plan that derived it (deliberately — see
- * the confirm handler's idempotency guard), so a stale one must not credit
- * another member's slice.
- */
-export async function resolveAccountInflow(
+async function loadHousehold(
   store: Store,
-  account: Account,
-  asOfDate: string,
-  ctx: PlanContext = createPlanContext(),
-): Promise<AccountInflow | null> {
-  return memo(ctx.inflows, `${account.id}@${asOfDate}`, async () => {
-    const householdId = await householdPlanningAccount(store, account);
-    if (!householdId) return null;
-
-    const [plan, confirmations] = await Promise.all([
-      memo(ctx.householdPlans, `${householdId}@${asOfDate}`, () =>
-        computeHouseholdPlanFor(store, householdId, asOfDate),
-      ),
-      memo(ctx.confirmations, `${householdId}@${monthStart(asOfDate)}`, () =>
-        store.listTransferConfirmations(householdId, monthStart(asOfDate)),
-      ),
+  ctx: PlanContext,
+  householdId: string,
+): Promise<LoadedHousehold> {
+  return memo(ctx.households, householdId, async () => {
+    const [memberships, assignments] = await Promise.all([
+      store.listMembersForHousehold(householdId),
+      store.listAccountAssignments(householdId),
     ]);
-
-    const confirmedByMember = new Map<string, number>();
-    for (const c of confirmations) {
-      if (c.toAccountId !== account.id) continue;
-      confirmedByMember.set(
-        c.memberUserId,
-        (confirmedByMember.get(c.memberUserId) ?? 0) + c.amountMinor,
-      );
-    }
-
-    const byMember = new Map<string, number>();
-    for (const t of plan.transfers) {
-      if (t.toAccountId !== account.id) continue;
-      byMember.set(t.memberUserId, (byMember.get(t.memberUserId) ?? 0) + t.amountMinor);
-    }
-
-    const sources: InflowSource[] = [...byMember.entries()]
-      .map(([memberUserId, amountMinor]) => ({
-        memberUserId,
-        displayName: plan.members.find((m) => m.userId === memberUserId)?.displayName,
-        amountMinor,
-        confirmedMinor: Math.min(amountMinor, confirmedByMember.get(memberUserId) ?? 0),
-      }))
-      .sort(
-        (a, b) => b.amountMinor - a.amountMinor || a.memberUserId.localeCompare(b.memberUserId),
-      );
-
+    const members = await Promise.all(
+      memberships.map(async (m) => {
+        const user = await store.getUserById(m.userId);
+        return { userId: m.userId, displayName: user?.displayName, shareBp: m.contributionShareBp };
+      }),
+    );
     return {
-      householdId,
-      allocatedMinor: sources.reduce((sum, s) => sum + s.amountMinor, 0),
-      confirmedMinor: sources.reduce((sum, s) => sum + s.confirmedMinor, 0),
-      sources,
+      members,
+      roles: new Map(
+        assignments.map((a) => [a.accountId, { role: a.role, memberUserId: a.memberUserId }]),
+      ),
+      accountIds: assignments.map((a) => a.accountId),
     };
   });
 }
 
 /**
- * How much of each movement into `accountId` has been confirmed as actually
- * moved this month, one entry per authored inflow.
+ * One account's contribution to a scope: what it earns, what it owes, what moves
+ * in and out of it, and what somebody has said actually moved.
+ *
+ * Loaded once per account per request, whichever scope asks for it.
+ */
+async function loadAccount(
+  store: Store,
+  ctx: PlanContext,
+  account: Account,
+  asOfDate: string,
+): Promise<LoadedAccount> {
+  return memo(ctx.loaded, `${account.id}@${asOfDate}`, async () => {
+    const month = monthStart(asOfDate);
+    const [inflows, outbound, payments, saved, derived] = await Promise.all([
+      store.listInflows(account.id),
+      store.listOutboundInflows(account.id),
+      store.listPayments(account.id),
+      savedByPayment(store, account.id),
+      store.listDerivedTransferConfirmationsForAccount(account.id, month),
+    ]);
+
+    // Nothing can be confirmed as arriving at an account nothing moves into, so
+    // an account with no account-sourced inflow — every account in the estate,
+    // until the user authors one — does not pay for the question.
+    const receives = inflows.some((i) => i.source === "account" && i.active !== false);
+    const confirmedArrivals = receives ? await loadConfirmedArrivals(store, account.id, month) : [];
+
+    return {
+      account,
+      senders: inflows
+        .filter((i) => i.source === "account" && i.active !== false && i.sourceAccountId)
+        .map((i) => i.sourceAccountId!),
+      receivers: outbound.filter((i) => i.active !== false).map((i) => i.accountId),
+      incomes: externalOf(inflows),
+      inflows: inflows.map(toInflowInput),
+      outboundInflows: outbound.map(toOutboundInflowInput),
+      payments: payments.map((p) => ({
+        ...toPaymentInput(p, saved),
+        scope: p.scope,
+        bearerUserId: p.bearerUserId,
+      })),
+      confirmedArrivals,
+      derivedConfirmations: derived,
+    };
+  });
+}
+
+/**
+ * How much of each **authored** movement into `accountId` has been confirmed as
+ * actually moved this month, one entry per inflow.
  *
  * Only the arriving side counts. The store answers with every confirmation
  * touching the account, because a movement is one row read from both ends — but
  * confirming money *out* of here says nothing about what came *in*, and summing
  * both would credit an account for its own outgoings.
+ *
+ * A confirmation with no `inflowId` is not one of these: it confirms a transfer
+ * the pass derived, which no row authors, and it travels as a
+ * `ConfirmedTransfer` instead. That is the split WP-R's third store path exists
+ * for — before it, a derived feed read as never-confirmed for ever.
  *
  * Sorted, so an input built twice is byte-identical twice.
  */
@@ -311,173 +364,302 @@ async function loadConfirmedArrivals(
 }
 
 /**
- * Load one account's incomes, payments and movements as engine input, before
- * anything is known about the accounts around it.
+ * Everything that has to be planned together with `seeds`.
  *
- * The household's allocation is filled in here — an account inside a household
- * is not funded by its own income alone, and a bills pot has none at all — but
- * what *another account you own* sends is not, because that depends on how the
- * sender's own month works out. `buildAccountInput` adds it.
+ * Three relations close the set, and they all run **in both directions**:
  *
- * What *has* moved is read here too, for both producers: the household's
- * confirmations come through `resolveAccountInflow`, and a movement between two
- * of your own accounts through `loadConfirmedArrivals`. Without the second, a
- * standalone movement you confirmed months ago would still report
- * `awaiting_transfer` for ever.
+ *  - **Household assignment.** An account assigned to a household is planned
+ *    with the household's other accounts, because its bills are attributed to
+ *    members whose budgets pay for other accounts' bills too.
+ *  - **Common ownership, for the accounts no household plans.** A member's
+ *    budget is their income across the accounts that are theirs, and their
+ *    obligations are the bills on those accounts — so a holiday pot with a bill
+ *    and no income of its own is planned beside the current account that will
+ *    feed it, and the pass derives the feed (decision 9) without anybody
+ *    authoring a movement. Household-assigned accounts are deliberately excluded
+ *    from this: a household plans the money you have put into it, and a private
+ *    account's income is not that.
+ *  - **Funding edges.** An account's money can be another account's surplus, so
+ *    a sender has to be planned; and an account's surplus can be committed to a
+ *    movement out, so a *receiver* has to be planned as well.
+ *
+ * The old `fundingClosure` walked senders only, on the sound reasoning that
+ * nothing downstream changes what an account can afford. That is still true of
+ * the money — but it is no longer true of the *scope*, and the scope is what
+ * fixes the answer: two endpoints that closed over different sets would attribute
+ * a member's income differently and print two figures for one account, which is
+ * the class of defect this package exists to end. Closing symmetrically makes the
+ * scope a property of the account rather than of the question asked about it.
+ *
+ * Deliberately does not check the caller's access to the accounts it loads. An
+ * account you can see may be fed by one you cannot, and the amount arriving is a
+ * fact about *your* account. Only seeded accounts' plans are ever returned to a
+ * caller; the rest stay inside the pass.
  */
-async function loadAccountInput(
+async function closeScope(
+  store: Store,
+  seeds: readonly Account[],
+  asOfDate: string,
+  ctx: PlanContext,
+): Promise<{ accounts: LoadedAccount[]; households: Map<string, LoadedHousehold> }> {
+  const loaded = new Map<string, LoadedAccount>();
+  const households = new Map<string, LoadedHousehold>();
+  const queue: Account[] = [...seeds];
+
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    if (loaded.has(next.id)) continue;
+    const entry = await loadAccount(store, ctx, next, asOfDate);
+    loaded.set(next.id, entry);
+
+    const neighbours = [...entry.senders, ...entry.receivers];
+    const householdId = await householdPlanningAccount(store, ctx, next);
+    if (householdId) {
+      const household = await loadHousehold(store, ctx, householdId);
+      households.set(householdId, household);
+      neighbours.push(...household.accountIds);
+    } else {
+      for (const sibling of await store.listAccountsForOwner(next.ownerUserId)) {
+        // Only the ones no household plans. Reaching a household through a
+        // member's private account would drag its whole roster into a scope
+        // that has nothing to do with it, and quietly hand the household an
+        // income it was never told about.
+        if (await householdPlanningAccount(store, ctx, sibling)) continue;
+        neighbours.push(sibling.id);
+      }
+    }
+    for (const id of neighbours) {
+      if (loaded.has(id)) continue;
+      const neighbour = await getAccount(store, ctx, id);
+      if (neighbour) queue.push(neighbour);
+    }
+  }
+
+  // Sorted so the scope's key identifies it and the pass is reproducible: two
+  // accounts of the same scope must not order the same set differently and
+  // disagree about which edge of a loop was broken.
+  return {
+    accounts: [...loaded.values()].sort((a, b) => (a.account.id < b.account.id ? -1 : 1)),
+    households,
+  };
+}
+
+/**
+ * The members whose money a scope is.
+ *
+ * A household contributes its roster with its contribution shares. An account
+ * nobody has assigned to a household is its owner's, and the owner joins the
+ * scope as a member — at a 100% share when no household applies at all (the solo
+ * case: a household of one, planned by the same pass), and at **zero** when one
+ * does, so that a sender pulled in from outside the household cannot take a slice
+ * of its shared rent. Their own personal bills are still attributed to them,
+ * which is what they were pulled in for.
+ */
+async function scopeMembers(
+  store: Store,
+  accounts: readonly LoadedAccount[],
+  households: ReadonlyMap<string, LoadedHousehold>,
+  householdOf: ReadonlyMap<string, string>,
+): Promise<ScopeMemberInput[]> {
+  const members = new Map<string, ScopeMemberInput>();
+  for (const household of households.values()) {
+    for (const m of household.members) {
+      if (!members.has(m.userId)) members.set(m.userId, m);
+    }
+  }
+  const outsiderShareBp = households.size > 0 ? 0 : 10_000;
+  for (const entry of accounts) {
+    if (householdOf.has(entry.account.id)) continue;
+    const owner = entry.account.ownerUserId;
+    if (members.has(owner)) continue;
+    const user = await store.getUserById(owner);
+    members.set(owner, {
+      userId: owner,
+      displayName: user?.displayName,
+      shareBp: outsiderShareBp,
+    });
+  }
+  return [...members.values()];
+}
+
+/** Every derived transfer somebody has said they made this month, from both the
+ *  household rows and the household-free ones 0010 made storable. */
+function confirmedTransfers(
+  accounts: readonly LoadedAccount[],
+  householdRows: readonly TransferConfirmation[],
+): ConfirmedTransfer[] {
+  const byId = new Map<string, TransferConfirmation>();
+  for (const row of [...householdRows, ...accounts.flatMap((a) => a.derivedConfirmations)]) {
+    // A household row confirms a transfer the plan derived; an authored movement
+    // has its own row and its own clamp (`confirmedArrivals`).
+    if (row.inflowId) continue;
+    byId.set(row.id, row);
+  }
+  return [...byId.values()]
+    .sort((a, b) => (a.id < b.id ? -1 : 1))
+    .map((c) => ({
+      fromAccountId: c.fromAccountId,
+      toAccountId: c.toAccountId,
+      memberUserId: c.memberUserId,
+      confirmedMinor: c.amountMinor,
+    }));
+}
+
+/**
+ * Plan the scope `seeds` belong to — one closure, one pass, one answer.
+ *
+ * Seeds spanning two unconnected scopes get one `PlannedScope` each: two sets of
+ * accounts with no household and no funding edge between them share no money, so
+ * planning them together would only pool members who have nothing to do with one
+ * another. Every seed is in exactly one of the results.
+ */
+export async function scopesFor(
+  store: Store,
+  seeds: readonly Account[],
+  asOfDate: string,
+  ctx: PlanContext = createPlanContext(),
+): Promise<PlannedScope[]> {
+  const scopes: PlannedScope[] = [];
+  const done = new Set<string>();
+  for (const seed of seeds) {
+    if (done.has(seed.id)) continue;
+    const scope = await scopeForAccount(store, seed, asOfDate, ctx);
+    for (const id of scope.accountIds) done.add(id);
+    scopes.push(scope);
+  }
+  return scopes;
+}
+
+/** The planned scope one account belongs to. */
+export async function scopeForAccount(
   store: Store,
   account: Account,
   asOfDate: string,
-  ctx: PlanContext,
-): Promise<AccountInput> {
-  return memo(ctx.accountInputs, `${account.id}@${asOfDate}`, async () => {
-    const [inflows, outbound, payments, saved, inflow] = await Promise.all([
-      store.listInflows(account.id),
-      store.listOutboundInflows(account.id),
-      store.listPayments(account.id),
-      savedByPayment(store, account.id),
-      resolveAccountInflow(store, account, asOfDate, ctx),
-    ]);
+  ctx: PlanContext = createPlanContext(),
+): Promise<PlannedScope> {
+  const known = ctx.scopeOf.get(`${account.id}@${asOfDate}`);
+  if (known) return ctx.scopes.get(known)!;
+  return planScope(store, [account], asOfDate, ctx);
+}
 
-    // Nothing can be confirmed as arriving at an account nothing moves into, so
-    // an account with no account-sourced inflow — every account in the estate,
-    // until the user authors one — does not pay for the question.
-    const receives = inflows.some((i) => i.source === "account" && i.active !== false);
-    const confirmedArrivals = receives
-      ? await loadConfirmedArrivals(store, account.id, monthStart(asOfDate))
-      : [];
+/**
+ * The planned scope a household's accounts belong to.
+ *
+ * Seeded from the roster rather than from one account, so a household whose
+ * accounts are in no funding relationship with each other still plans as one.
+ * A household with nothing assigned to it plans an empty scope, which is the
+ * honest answer rather than an error: it has no accounts to be wrong about.
+ */
+export async function scopeForHousehold(
+  store: Store,
+  householdId: string,
+  asOfDate: string,
+  ctx: PlanContext = createPlanContext(),
+): Promise<{ scope: PlannedScope; accountIds: string[]; currency: string }> {
+  const household = await loadHousehold(store, ctx, householdId);
+  const accounts = (
+    await Promise.all(household.accountIds.map((id) => getAccount(store, ctx, id)))
+  ).filter((a): a is Account => a !== null);
+  const scope = accounts[0]
+    ? await scopeForAccount(store, accounts[0], asOfDate, ctx)
+    : await planScope(store, [], asOfDate, ctx);
+  return {
+    scope,
+    accountIds: accounts.map((a) => a.id),
+    // A household is single-currency by assumption (see BACKLOG); the roster's
+    // first account is what the plan is denominated in.
+    currency: accounts[0]?.currency ?? "GBP",
+  };
+}
+
+async function planScope(
+  store: Store,
+  seeds: readonly Account[],
+  asOfDate: string,
+  ctx: PlanContext,
+): Promise<PlannedScope> {
+  const { accounts, households } = await closeScope(store, seeds, asOfDate, ctx);
+  const key = `${accounts.map((a) => a.account.id).join(",")}@${asOfDate}`;
+  for (const entry of accounts) ctx.scopeOf.set(`${entry.account.id}@${asOfDate}`, key);
+
+  return memo(ctx.scopes, key, async () => {
+    const householdOf = new Map<string, string>();
+    for (const [householdId, household] of households) {
+      for (const id of household.accountIds) {
+        if (!householdOf.has(id)) householdOf.set(id, householdId);
+      }
+    }
+
+    const members = await scopeMembers(store, accounts, households, householdOf);
+    const memberNames = new Map<string, string>();
+    for (const m of members) if (m.displayName) memberNames.set(m.userId, m.displayName);
+
+    const scopeAccounts: ScopeAccountInput[] = accounts.map((entry) => {
+      const householdId = householdOf.get(entry.account.id);
+      const assigned = householdId
+        ? households.get(householdId)!.roles.get(entry.account.id)
+        : null;
+      return {
+        accountId: entry.account.id,
+        name: entry.account.name,
+        // An account nobody assigned is its owner's, which is what makes a solo
+        // user a household of one at a 100% share rather than a special case.
+        role: assigned?.role ?? "personal",
+        memberUserId: assigned ? assigned.memberUserId : entry.account.ownerUserId,
+        currency: entry.account.currency,
+        monthlyBufferMinor: entry.account.monthlyBufferMinor,
+        incomes: entry.incomes,
+        inflows: entry.inflows,
+        outboundInflows: entry.outboundInflows,
+        // **Cost-sharing is a household concept.** `Payment.scope` defaults to
+        // "shared", which meant nothing at all while an unassigned account was
+        // planned alone — and would now mean "split it across every member of
+        // the scope", including somebody who merely happens to send money into
+        // one of these accounts and never agreed to pay for anything. So an
+        // account no household plans bears its own payments, whatever the column
+        // says: there is no household for them to be shared within.
+        payments: assigned
+          ? entry.payments
+          : entry.payments.map((p) => ({
+              ...p,
+              scope: "personal" as const,
+              bearerUserId: p.bearerUserId ?? entry.account.ownerUserId,
+            })),
+        confirmedArrivals: entry.confirmedArrivals,
+      };
+    });
+
+    const householdRows = (
+      await Promise.all(
+        [...households.keys()].map((id) =>
+          store.listTransferConfirmations(id, monthStart(asOfDate)),
+        ),
+      )
+    ).flat();
+
+    const input: ScopeInput = {
+      // The household's id when exactly one applies, so a view can say so; the
+      // accounts otherwise, which is what the scope actually is.
+      scopeId: households.size === 1 ? [...households.keys()][0]! : key,
+      householdId: households.size === 1 ? [...households.keys()][0]! : null,
+      members,
+      accounts: scopeAccounts,
+      confirmedTransfers: confirmedTransfers(accounts, householdRows),
+    };
 
     return {
-      accountId: account.id,
-      currency: account.currency,
-      monthlyBufferMinor: account.monthlyBufferMinor,
-      incomes: externalOf(inflows),
-      inflows: inflows.map(toInflowInput),
-      outboundInflows: outbound.map(toOutboundInflowInput),
-      payments: payments.map((p) => toPaymentInput(p, saved)),
-      // Only the amounts: the engine never learns who sent it, so no plan
-      // response can leak a household member's name by accident. The same holds
-      // of `confirmedArrivals`, which names inflows and nobody else.
-      inflow: inflow
-        ? { allocatedMinor: inflow.allocatedMinor, confirmedMinor: inflow.confirmedMinor }
-        : null,
-      confirmedArrivals,
+      input,
+      plan: computeScopePlan(input, asOfDate),
+      householdOf,
+      memberNames,
+      accountIds: scopeAccounts.map((a) => a.accountId),
     };
   });
 }
 
 /**
- * Every account whose month has to be worked out before these ones' can be.
- *
- * Walks the authored inflows upstream — the seeds' senders, their senders, and
- * so on — because an account's funding is the surplus of whatever pays into it.
- * Downstream accounts are deliberately absent unless they were seeded: what an
- * account sends *out* is decided by its own bills, so nothing below it can
- * change its plan.
- *
- * The walk is iterative and guarded by the set it is building, so a circular
- * estate terminates here rather than in the engine; the loop is then named and
- * broken by `computeEstatePlan`, which is the thing that can see the whole shape.
- *
- * Deliberately does not check the caller's access to the accounts it loads. An
- * account you can see may be fed by one you cannot, and the amount arriving is
- * a fact about *your* account — the same reasoning `householdPlanningAccount`
- * uses to plan a household the caller may not be in. Only the seeded accounts'
- * plans are ever returned to a caller; the senders' plans stay inside the pass.
- *
- * Exported as well as used here because this is the estate **as authored** —
- * the array `computeEstatePlan` and `computeEstateProjection` both take, before
- * either has merged anything into it. A caller wanting to simulate the estate
- * forward needs exactly this and must not be handed a completed pass's
- * `inputs`, which already carry the arrivals and would gain them again in every
- * simulated month.
- */
-export async function fundingClosure(
-  store: Store,
-  seeds: readonly Account[],
-  asOfDate: string,
-  ctx: PlanContext = createPlanContext(),
-): Promise<AccountInput[]> {
-  const inputs = new Map<string, AccountInput>();
-  const queue: Account[] = [...seeds];
-
-  while (queue.length > 0) {
-    const next = queue.shift()!;
-    if (inputs.has(next.id)) continue;
-    const input = await loadAccountInput(store, next, asOfDate, ctx);
-    inputs.set(next.id, input);
-    for (const row of input.inflows ?? []) {
-      if (row.source !== "account" || row.active === false || !row.sourceAccountId) continue;
-      if (inputs.has(row.sourceAccountId)) continue;
-      const sender = await memo(ctx.accounts, row.sourceAccountId, () =>
-        store.getAccount(row.sourceAccountId!),
-      );
-      if (sender) queue.push(sender);
-    }
-  }
-
-  // Sorted so the key below identifies the pass and the pass itself is
-  // reproducible: two accounts of the same estate must not order the same set
-  // differently and disagree about which edge of a loop was broken.
-  return [...inputs.values()].sort((a, b) => (a.accountId < b.accountId ? -1 : 1));
-}
-
-/**
- * The one ordered pass covering `accounts` and everything that funds them.
- *
- * Taking a *set* of accounts rather than one is what makes an estate-wide read
- * a single pass. A caller that plans every account it can see — the overview,
- * the upcoming feed, the digest — would otherwise run one pass per account,
- * each over that account's own funding closure: quadratic work, and a rollup
- * assembled from plans no two of which were computed together. One pass over
- * the union settles the whole graph once.
- *
- * Which accounts a *caller* may see is not this function's business and must
- * not become it: the closure deliberately reaches accounts the caller cannot,
- * because that is where the money comes from. Filtering happens where the plans
- * are handed out.
- */
-export async function computeEstateFor(
-  store: Store,
-  accounts: readonly Account[],
-  asOfDate: string,
-  ctx: PlanContext = createPlanContext(),
-): Promise<EstatePlan> {
-  const closure = await fundingClosure(store, accounts, asOfDate, ctx);
-  const key = `${closure.map((a) => a.accountId).join(",")}@${asOfDate}`;
-  return memo(ctx.estatePlans, key, async () => computeEstatePlan(closure, asOfDate));
-}
-
-/**
- * An account's engine input, with everything arriving into it settled: the
- * household's allocation and whatever the accounts feeding it could actually
- * afford to send.
- *
- * Shared by every read that reasons about the account's money — the plan, the
- * projection, the upcoming feed — so they all see the same derived already-saved
- * *and* the same money coming in. Doing it here rather than per call site is the
- * point: every such read comes through this function, so none of them can be
- * left planning the account as if the money were not coming.
- *
- * The input handed back is the one the ordered pass planned from, not a
- * reconstruction of it, so a caller that plans it again gets the pass's answer
- * to the penny.
- */
-export async function buildAccountInput(
-  store: Store,
-  account: Account,
-  asOfDate: string,
-  ctx: PlanContext = createPlanContext(),
-): Promise<AccountInput> {
-  const estate = await computeEstateFor(store, [account], asOfDate, ctx);
-  // Always present: an account is in its own funding closure.
-  return estate.inputs.find((i) => i.accountId === account.id)!;
-}
-
-/**
- * Compute an account's savings plan, as one slice of the ordered pass over
- * every account that funds it.
+ * Compute an account's savings plan, as one view of the pass over the scope it
+ * belongs to.
  *
  * Snapshot persistence is intentionally NOT performed here. The plan endpoint
  * is read-only on every browser refresh; writing a row each call turned an
@@ -491,59 +673,34 @@ export async function computePlanForAccount(
   asOfDate: string,
   ctx: PlanContext = createPlanContext(),
 ): Promise<AccountPlan> {
-  const estate = await computeEstateFor(store, [account], asOfDate, ctx);
-  return estate.plans.find((p) => p.accountId === account.id)!;
+  const scope = await scopeForAccount(store, account, asOfDate, ctx);
+  return accountPlanFromScope(scope.input, scope.plan, account.id);
 }
 
 /**
- * Who is sending the money each of `accounts` has arriving from a household.
+ * Who is being asked to move money into `account` this month, and how much of it
+ * they have said they moved.
  *
- * The two derivations of money crossing an account boundary are disjoint: the
- * ordered pass settles movements the user *authored*, and a household plan
- * settles what each *member* must move. A diagram over a set of accounts needs
- * both, or a shared pot fills up out of nowhere while the account paying for it
- * shows the money still sitting there.
- *
- * This adds nothing to either. `HouseholdPlan.transfers` is already the answer;
- * all that happens here is looking it up per account and pairing it with the
- * account it lands in. The household plan is the one the account's own inflow
- * resolution already computed — same memo, same request, no second pass.
- *
- * **Names are gated, amounts are not**, the same rule the plan endpoint's
- * `inflowSources` applies: an account can be shared with someone outside the
- * household funding it, and how much arrives is a fact about the account while
- * who sent it is a fact about a household they may not be in.
+ * Straight off the pass's derived transfers: nothing is re-derived and nothing
+ * is attributed here. The clamp is the pass's own — a confirmation outlives the
+ * plan that derived it, so a stale one credits only what this month's transfer
+ * actually comes to.
  */
-export async function householdAllocations(
-  store: Store,
-  userId: string,
-  accounts: readonly Account[],
-  asOfDate: string,
-  ctx: PlanContext = createPlanContext(),
-): Promise<FlowAllocation[]> {
-  const allocations: FlowAllocation[] = [];
-  for (const account of accounts) {
-    const inflow = await resolveAccountInflow(store, account, asOfDate, ctx);
-    if (!inflow) continue;
-    const [plan, membership] = await Promise.all([
-      memo(ctx.householdPlans, `${inflow.householdId}@${asOfDate}`, () =>
-        computeHouseholdPlanFor(store, inflow.householdId, asOfDate),
-      ),
-      store.getMembership(inflow.householdId, userId),
-    ]);
-    for (const transfer of plan.transfers) {
-      if (transfer.toAccountId !== account.id) continue;
-      const name = plan.members.find((m) => m.userId === transfer.memberUserId)?.displayName;
-      allocations.push({
-        toAccountId: account.id,
-        fromAccountId: transfer.fromAccountId,
-        memberUserId: transfer.memberUserId,
-        ...(membership && name !== undefined ? { memberName: name } : {}),
-        amountMinor: transfer.amountMinor,
-      });
-    }
-  }
-  return allocations;
+export function inflowSourcesFor(
+  scope: PlannedScope,
+  accountId: string,
+  currency: string,
+): InflowSource[] {
+  const partition = scope.plan.partitions.find((p) => p.currency === currency);
+  return (partition?.transfers ?? [])
+    .filter((t) => t.toAccountId === accountId)
+    .map((t) => ({
+      memberUserId: t.memberUserId,
+      displayName: scope.memberNames.get(t.memberUserId),
+      amountMinor: t.amountMinor,
+      confirmedMinor: t.confirmedMinor,
+    }))
+    .sort((a, b) => b.amountMinor - a.amountMinor || a.memberUserId.localeCompare(b.memberUserId));
 }
 
 /**
@@ -555,6 +712,27 @@ export async function accessibleAccounts(store: Store, userId: string): Promise<
   const access = await store.listAccessibleAccounts(userId);
   const accounts = await Promise.all(access.map((a) => store.getAccount(a.accountId)));
   return accounts.filter((a): a is Account => a !== null);
+}
+
+/**
+ * One plan per account the caller named, all read off however many scopes those
+ * accounts span. The order is the caller's.
+ */
+export async function plansForAccounts(
+  store: Store,
+  accounts: readonly Account[],
+  asOfDate: string,
+  ctx: PlanContext = createPlanContext(),
+): Promise<Map<string, AccountPlan>> {
+  const scopes = await scopesFor(store, accounts, asOfDate, ctx);
+  const byAccount = new Map<string, PlannedScope>();
+  for (const scope of scopes) for (const id of scope.accountIds) byAccount.set(id, scope);
+  const plans = new Map<string, AccountPlan>();
+  for (const account of accounts) {
+    const scope = byAccount.get(account.id)!;
+    plans.set(account.id, accountPlanFromScope(scope.input, scope.plan, account.id));
+  }
+  return plans;
 }
 
 // ---------------------------------------------------------------------------
@@ -580,18 +758,19 @@ export async function upcomingForUser(
   userId: string,
   asOfDate: string,
   days: number,
+  ctx: PlanContext = createPlanContext(),
 ): Promise<UpcomingItem[]> {
   const accounts = await accessibleAccounts(store, userId);
+  const scopes = await scopesFor(store, accounts, asOfDate, ctx);
+  const paymentsFor = new Map<string, PaymentInput[]>();
+  for (const scope of scopes) {
+    for (const acc of scope.input.accounts) paymentsFor.set(acc.accountId, acc.payments);
+  }
+
   const items: UpcomingItem[] = [];
-  // One pass over the whole estate rather than one per account: the feed asks
-  // the same question of every account the caller can see, and asking it
-  // account by account settles the same funding graph once per account.
-  const estate = await computeEstateFor(store, accounts, asOfDate);
-  const inputById = new Map(estate.inputs.map((i) => [i.accountId, i]));
   for (const account of accounts) {
-    // Always present: every seeded account is in the pass.
-    const input = inputById.get(account.id)!;
-    for (const row of upcomingPayments(input.payments, asOfDate, days)) {
+    // Always present: every seeded account is in the scope it seeded.
+    for (const row of upcomingPayments(paymentsFor.get(account.id)!, asOfDate, days)) {
       items.push({
         ...row,
         accountId: account.id,
@@ -637,7 +816,7 @@ function toOverlayIncome(i: CreateIncomeBody, index: number): IncomeInput {
   };
 }
 
-function toOverlayPayment(p: CreatePaymentBody, index: number): PaymentInput {
+function toOverlayPayment(p: CreatePaymentBody, index: number): ScopePaymentInput {
   return {
     id: `preview-payment-${index + 1}`,
     name: p.name,
@@ -652,6 +831,8 @@ function toOverlayPayment(p: CreatePaymentBody, index: number): PaymentInput {
     active: p.active,
     fixedMonthlyMinor: p.fixedMonthlyMinor ?? null,
     tag: p.tag ?? null,
+    scope: p.scope,
+    bearerUserId: p.bearerUserId ?? null,
   };
 }
 
@@ -661,93 +842,44 @@ function toOverlayPayment(p: CreatePaymentBody, index: number): PaymentInput {
  * so the two are directly comparable.
  *
  * Strictly read-only: the overlay never reaches the store, and the store is only
- * queried for the account's real incomes, payments and contributions.
+ * queried for the account's real inflows, payments and contributions.
  *
- * Both sides carry the household's *current* allocation. A hypothetical payment
- * added to a shared pot therefore shows as a shortfall rather than being quietly
- * covered — which is the honest answer: nobody has agreed to send more yet.
+ * Both sides are planned over the **whole scope**, which is what makes the
+ * comparison mean anything now: a hypothetical bill on a shared pot is funded
+ * from the members' budgets in one global priority order, so it can push a real
+ * bill somewhere else off the end of the month, and the preview shows that. The
+ * overlay reaching only this account would have shown a shortfall on the pot and
+ * left the rest of the scope pretending nothing had happened.
  */
 export async function previewPlanForAccount(
   store: Store,
   account: Account,
   asOfDate: string,
   overlay: PlanOverlay,
+  ctx: PlanContext = createPlanContext(),
 ): Promise<PlanPreview> {
-  const input = await buildAccountInput(store, account, asOfDate);
-  const withOverlay: AccountInput = {
-    ...input,
-    incomes: [...input.incomes, ...(overlay.addIncomes ?? []).map(toOverlayIncome)],
-    payments: [...input.payments, ...(overlay.addPayments ?? []).map(toOverlayPayment)],
+  const scope = await scopeForAccount(store, account, asOfDate, ctx);
+  const withOverlay: ScopeInput = {
+    ...scope.input,
+    accounts: scope.input.accounts.map((a) =>
+      a.accountId === account.id
+        ? {
+            ...a,
+            incomes: [...a.incomes, ...(overlay.addIncomes ?? []).map(toOverlayIncome)],
+            payments: [...a.payments, ...(overlay.addPayments ?? []).map(toOverlayPayment)],
+          }
+        : a,
+    ),
   };
   return {
-    base: computeAccountPlan(input, asOfDate),
-    preview: computeAccountPlan(withOverlay, asOfDate),
+    base: accountPlanFromScope(scope.input, scope.plan, account.id),
+    preview: accountPlanFromScope(withOverlay, computeScopePlan(withOverlay, asOfDate), account.id),
   };
 }
 
-/**
- * Assemble a household's engine input: its members (with their contribution
- * shares), the accounts assigned to the household (with their roles), and every
- * income + payment on those accounts. Shared by the household plan and the
- * household projection. Read-only; no snapshot persistence.
- */
-export async function buildHouseholdInput(
-  store: Store,
-  householdId: string,
-): Promise<HouseholdInput> {
-  const [memberships, assignments] = await Promise.all([
-    store.listMembersForHousehold(householdId),
-    store.listAccountAssignments(householdId),
-  ]);
-
-  const members = await Promise.all(
-    memberships.map(async (m) => {
-      const user = await store.getUserById(m.userId);
-      return { userId: m.userId, displayName: user?.displayName, shareBp: m.contributionShareBp };
-    }),
-  );
-
-  const accounts: HouseholdAccountInput[] = [];
-  for (const asg of assignments) {
-    const account = await store.getAccount(asg.accountId);
-    if (!account) continue;
-    const [inflows, payments, saved] = await Promise.all([
-      store.listInflows(account.id),
-      store.listPayments(account.id),
-      savedByPayment(store, account.id),
-    ]);
-    accounts.push({
-      accountId: account.id,
-      name: account.name,
-      role: asg.role,
-      memberUserId: asg.memberUserId,
-      currency: account.currency,
-      monthlyBufferMinor: account.monthlyBufferMinor,
-      incomes: externalOf(inflows),
-      payments: payments.map((p) => ({
-        ...toPaymentInput(p, saved),
-        scope: p.scope,
-        bearerUserId: p.bearerUserId,
-      })),
-    });
-  }
-
-  const currency = accounts[0]?.currency ?? "GBP";
-  return { householdId, currency, members, accounts };
-}
-
-/**
- * Compute a household's pooled plan: the engine splits shared costs by share,
- * funds across accounts by priority, and derives the transfers needed between
- * accounts.
- */
-export async function computeHouseholdPlanFor(
-  store: Store,
-  householdId: string,
-  asOfDate: string,
-): Promise<HouseholdPlan> {
-  return computeHouseholdPlan(await buildHouseholdInput(store, householdId), asOfDate);
-}
+// ---------------------------------------------------------------------------
+// The household plan
+// ---------------------------------------------------------------------------
 
 export interface HouseholdPlanWithSchedule extends HouseholdPlan {
   /** When each member should move their transfers, anchored to their paydays. */
@@ -757,24 +889,43 @@ export interface HouseholdPlanWithSchedule extends HouseholdPlan {
 /**
  * The household plan plus the payday schedule for its derived transfers. A
  * member's paydays come from the incomes on their personal accounts — the same
- * member→accounts mapping the engine uses (role "personal", matching
- * memberUserId) — read off the input already loaded rather than refetched.
+ * member→accounts mapping the pass uses (role "personal", matching
+ * memberUserId) — read off the scope already planned rather than refetched.
  */
 export async function computeHouseholdPlanWithSchedule(
   store: Store,
   householdId: string,
   asOfDate: string,
+  ctx: PlanContext = createPlanContext(),
 ): Promise<HouseholdPlanWithSchedule> {
-  const input = await buildHouseholdInput(store, householdId);
-  const plan = computeHouseholdPlan(input, asOfDate);
-  const memberIncomes = input.members.map((m) => ({
+  const { scope, accountIds, currency } = await scopeForHousehold(
+    store,
+    householdId,
+    asOfDate,
+    ctx,
+  );
+  const plan = householdPlanFromScope(scope.plan, householdId, accountIds, currency);
+  return { ...plan, paydaySchedule: paydayScheduleFor(scope, plan.transfers, asOfDate) };
+}
+
+/**
+ * When the scope's members should make the transfers it derived.
+ *
+ * Household or not: a solo user's derived feed into a bills pot is a transfer
+ * with a member and a source account like any other, so the payday schedule
+ * serves them for free — which it could not when the only producer of a transfer
+ * was a household plan.
+ */
+export function paydayScheduleFor(
+  scope: PlannedScope,
+  transfers: Transfer[],
+  asOfDate: string,
+): MemberPaydaySchedule[] {
+  const memberIncomes = scope.input.members.map((m) => ({
     memberUserId: m.userId,
-    incomes: input.accounts
+    incomes: scope.input.accounts
       .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
       .flatMap((a) => a.incomes),
   }));
-  return {
-    ...plan,
-    paydaySchedule: splitTransfersByPayday(plan.transfers, memberIncomes, asOfDate),
-  };
+  return splitTransfersByPayday(transfers, memberIncomes, asOfDate);
 }

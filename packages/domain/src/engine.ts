@@ -11,7 +11,6 @@ import {
 } from "./dates.js";
 import type { ScopeInput, ScopePlan } from "./scope.js";
 import type {
-  AccountInput,
   AccountPlan,
   IncomeInput,
   OutboundInflowPlan,
@@ -19,8 +18,6 @@ import type {
   PaymentPlanLine,
   PaymentPlanStatus,
 } from "./types.js";
-
-const DEFAULT_PRIORITY = 100;
 
 /** Normalise a single income to its equivalent monthly amount (minor units). */
 export function monthlyIncomeMinor(income: IncomeInput, now: Date): number {
@@ -165,225 +162,6 @@ export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredR
   };
 }
 
-/**
- * Compute the full savings plan for an account as of `asOfDate`.
- *
- * ## Superseded by `accountPlanFromScope` (ONE-ENGINE.md, WP-Q)
- *
- * This is the account-local funding loop, and it is the second of the two
- * engines this work exists to remove: it plans one account from its own income
- * plus a total somebody else worked out (`AllocatedInflow`), which is precisely
- * the arrangement that let the household page and the flow diagram disagree
- * about the same month of the same account.
- *
- * `accountPlanFromScope` produces the same `AccountPlan` from
- * `computeScopePlan`'s decisions and does no funding arithmetic at all. This
- * function survives WP-Q only because its remaining callers are in files WP-Q
- * does not own — `computeEstatePlan` (`estate.ts:324`),
- * `apps/api/src/plan.ts:683-684`, `apps/api/src/server.ts:1488-1489` and
- * `apps/calc/src/server.ts` — and it is deleted with them in WP-S, together
- * with `AllocatedInflow`, whose last producer dies at the same time.
- *
- * Funding rule (confirmed in discovery): prioritise + show shortfall. Payments
- * are funded in priority order from the month's money; whatever cannot be funded
- * is surfaced as a shortfall and the affected goals are flagged off-track with a
- * projected completion date.
- *
- * The month's money is the account's own income plus any allocated inflow — what
- * a household earmarked for it, plus what another account you own sent it. Own
- * income is spent first, so the per-line own/inflow split falls straight out of
- * the priority order rather than needing a second pass.
- *
- * Requirements still never depend on income — only funding does — so nothing
- * here is circular. **Funding order across accounts is another matter**: an
- * account's allocated inflow is another account's surplus, so the accounts have
- * to be planned in dependency order. That is `computeEstatePlan`'s job; by the
- * time an account reaches this function the money arriving at it is settled.
- *
- * Outbound movements (`outboundInflows`) are funded **last**, out of whatever
- * the payments left, in their own priority order. Decision 6: every expense on
- * this account beats every movement off it, however the movement is ranked.
- */
-export function computeAccountPlan(account: AccountInput, asOfDate: string): AccountPlan {
-  const now = parseISODate(asOfDate);
-
-  const monthlyIncome = account.incomes.reduce(
-    (sum, income) => sum + monthlyIncomeMinor(income, now),
-    0,
-  );
-
-  // Clamped defensively: a caller cannot have confirmed more than it allocated,
-  // nor have more of it arrive from inside the estate than arrived at all.
-  const allocatedInflow = Math.max(0, account.inflow?.allocatedMinor ?? 0);
-  const confirmedInflow = Math.min(
-    allocatedInflow,
-    Math.max(0, account.inflow?.confirmedMinor ?? 0),
-  );
-  const arrivals = account.inflow?.sources ?? [];
-  const internalInflow = Math.min(
-    allocatedInflow,
-    arrivals.reduce((sum, a) => sum + Math.max(0, a.amountMinor), 0),
-  );
-
-  const sorted = account.payments
-    .filter((p) => p.active !== false)
-    .sort((a, b) => {
-      const pa = a.priority ?? DEFAULT_PRIORITY;
-      const pb = b.priority ?? DEFAULT_PRIORITY;
-      if (pa !== pb) return pa - pb;
-      const da = a.targetDate ?? a.dueDate ?? "9999-12-31";
-      const db = b.targetDate ?? b.dueDate ?? "9999-12-31";
-      return da < db ? -1 : da > db ? 1 : 0;
-    });
-
-  const buffer = Math.max(0, account.monthlyBufferMinor ?? 0);
-  // The buffer comes off the account's *own* income only. Allocated inflow
-  // arrives earmarked — a shared pot's buffer is already funded as an obligation
-  // in the household plan — so taking it off the inflow too would reserve the
-  // same money twice. It also keeps the own/inflow split honest when own income
-  // is smaller than the buffer.
-  let remainingOwn = Math.max(0, monthlyIncome - buffer);
-  let remainingInflow = allocatedInflow;
-  // How much of the inflow earlier lines have already spent. Confirmed money is
-  // spent before merely promised money, so a line leaned on an unconfirmed
-  // transfer exactly when its slice of the inflow runs past the confirmed mark.
-  let inflowUsed = 0;
-  let totalRequired = 0;
-  let totalFunded = 0;
-
-  const lines: PaymentPlanLine[] = sorted.map((p) => {
-    const req = requiredMonthlyForPayment(p, now);
-    const need = Math.max(0, req.requiredMinor);
-    const fromOwn = Math.min(need, remainingOwn);
-    const fromInflow = Math.min(need - fromOwn, remainingInflow);
-    const funded = fromOwn + fromInflow;
-    remainingOwn -= fromOwn;
-    remainingInflow -= fromInflow;
-    const drewOnUnconfirmed = fromInflow > 0 && inflowUsed + fromInflow > confirmedInflow;
-    inflowUsed += fromInflow;
-    totalRequired += req.requiredMinor;
-    totalFunded += funded;
-
-    const onTrack = funded >= req.requiredMinor;
-    const status: PaymentPlanStatus = !onTrack
-      ? "at_risk"
-      : drewOnUnconfirmed
-        ? "awaiting_transfer"
-        : "funded";
-    const remaining = Math.max(0, p.amountMinor - (p.alreadySavedMinor ?? 0));
-    let projectedCompletionDate: string | undefined;
-    if (!onTrack) {
-      const monthsNeeded = ceilDiv(remaining, Math.max(funded, 1));
-      projectedCompletionDate = toISODate(addUnit(now, monthsNeeded, "month"));
-    } else if (remaining > 0 && contributionCapMinor(p) !== null) {
-      // A contribution-capped goal can be fully funded and still miss its date:
-      // the cap, not the calendar, sets the pace. Surface the real finish date
-      // when it lands after the date the goal carries — "on pace, but late", two
-      // facts the UI can show side by side. For a dateless goal the finish date
-      // *is* the effective date, so this never fires.
-      const finish = toISODate(addUnit(now, ceilDiv(remaining, req.requiredMinor), "month"));
-      if (finish > req.effectiveDate) projectedCompletionDate = finish;
-    }
-
-    return {
-      paymentId: p.id,
-      name: p.name,
-      category: p.category,
-      amountMinor: p.amountMinor,
-      dueDate: p.dueDate ?? req.effectiveDate,
-      targetDate: req.effectiveDate,
-      // The pace decided the date exactly when there was a cap and no date to
-      // keep — the same condition `requiredMonthlyForPayment` branches on.
-      dueDateIsDerived: contributionCapMinor(p) !== null && !p.targetDate && !p.dueDate,
-      monthsUntilDue: req.monthsUntilDue,
-      requiredMonthlyMinor: req.requiredMinor,
-      fundedMonthlyMinor: funded,
-      fundedFromOwnMinor: fromOwn,
-      fundedFromInflowMinor: fromInflow,
-      alreadySavedMinor: p.alreadySavedMinor ?? 0,
-      occurrencesThisMonth: req.occurrencesThisMonth,
-      onTrack,
-      status,
-      projectedCompletionDate,
-      fixedMonthlyMinor: p.fixedMonthlyMinor ?? null,
-      tag: p.tag ?? null,
-    };
-  });
-
-  // --- movements out, from whatever the bills left ---
-  // Decision 6, and the reason this is a separate loop rather than another
-  // entry in the priority sort: an outbound movement never competes with a
-  // payment, whatever priority number it carries. It competes only with other
-  // movements. Own income goes first here too, mirroring the lines above, so a
-  // pot forwarding money passes on inflow rather than inventing income.
-  let outboundOwn = remainingOwn;
-  let outboundInflowLeft = remainingInflow;
-  let outboundTotal = 0;
-  const outboundInflows: OutboundInflowPlan[] = (account.outboundInflows ?? [])
-    .filter((o) => o.active !== false)
-    .sort((a, b) => {
-      const pa = a.priority ?? DEFAULT_PRIORITY;
-      const pb = b.priority ?? DEFAULT_PRIORITY;
-      if (pa !== pb) return pa - pb;
-      // Stable and independent of load order: the destination, then the row.
-      if (a.toAccountId !== b.toAccountId) return a.toAccountId < b.toAccountId ? -1 : 1;
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    })
-    .map((o) => {
-      const need = Math.max(0, monthlyIncomeMinor(o, now));
-      const fromOwn = Math.min(need, outboundOwn);
-      const fromInflow = Math.min(need - fromOwn, outboundInflowLeft);
-      outboundOwn -= fromOwn;
-      outboundInflowLeft -= fromInflow;
-      const funded = fromOwn + fromInflow;
-      outboundTotal += funded;
-      return {
-        inflowId: o.id,
-        toAccountId: o.toAccountId,
-        requiredMonthlyMinor: need,
-        fundedMonthlyMinor: funded,
-        fundedFromOwnMinor: fromOwn,
-        fundedFromInflowMinor: fromInflow,
-        onTrack: funded >= need,
-      };
-    });
-
-  // Of the inflow the *payments* consumed, the part that came from inside the
-  // estate. Household-earmarked money is spent first (it was earmarked for
-  // these bills), so internal money is what is left at the bottom of the pot.
-  // Inflow merely passed on to another account is not "used" — it is used
-  // wherever it finally lands, and netting it here as well would net it twice.
-  const internalInflowUsed = Math.min(
-    internalInflow,
-    Math.max(0, inflowUsed - (allocatedInflow - internalInflow)),
-  );
-
-  return {
-    accountId: account.accountId,
-    asOfDate,
-    currency: account.currency,
-    monthlyIncomeMinor: monthlyIncome,
-    allocatedInflowMinor: allocatedInflow,
-    confirmedInflowMinor: confirmedInflow,
-    bufferMinor: buffer,
-    totalRequiredMinor: totalRequired,
-    totalFundedMinor: totalFunded,
-    // Own income only — see the field's comment for why unspent inflow is not
-    // this account's surplus to claim. Deliberately *not* reduced by what the
-    // movements above send: this is the account's own surplus, and the estate
-    // rollup is where money moving between two of your accounts is netted.
-    leftoverMinor: Math.max(0, remainingOwn),
-    shortfallMinor: Math.max(0, totalRequired - totalFunded),
-    internalInflowUsedMinor: internalInflowUsed,
-    inflowArrivals: arrivals,
-    outboundInflowMinor: outboundTotal,
-    outboundInflows,
-    fundingCycleAccountIds: account.fundingCycleAccountIds,
-    fundingCycleBrokenInflowId: account.fundingCycleBrokenInflowId,
-    lines,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // The account plan, as a view of the one pass
 // ---------------------------------------------------------------------------
@@ -391,7 +169,7 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
 /**
  * One account's `AccountPlan`, read off a planned scope.
  *
- * Same shape on the wire as `computeAccountPlan`, and **no funding arithmetic**:
+ * The `AccountPlan` shape, unchanged on the wire, and **no funding arithmetic**:
  * every amount here was decided once, by `computeScopePlan`, in one global
  * priority order over one set of member budgets. What is left to do is shape —
  * pick this account's lines out of the pass's funding order, hand back the
@@ -532,11 +310,6 @@ export function accountPlanFromScope(
     // diagram print one number rather than three derivations of it.
     residualMinor: account.leftoverMinor,
     shortfallMinor: account.shortfallMinor,
-    // Every pound arriving at an account of a scope came from another account of
-    // that scope — a derived transfer or an authored movement, both planned
-    // here — so the inflow the bills consumed *is* the intra-scope movement, and
-    // there is nothing left to reconstruct from an ordering assumption.
-    internalInflowUsedMinor: inflowUsed,
     inflowArrivals: account.inflowArrivals,
     outboundInflowMinor: account.committedMinor,
     outboundInflows,
@@ -560,21 +333,11 @@ export interface CurrencyOverview {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   /**
-   * Surplus across the estate, **net of money that moved between its own
-   * accounts** — so this is not the sum of the per-account `leftoverMinor`s
-   * below, and deliberately so. The difference is `intraEstateMovementMinor`.
+   * Surplus across the rollup: the per-account `leftoverMinor`s, summed.
+   *
+   * A plain sum, with nothing netted out of it — see `overviewFromPlans`.
    */
   leftoverMinor: number;
-  /**
-   * Money that left one account in this rollup and was spent by another
-   * (`AccountPlan.internalInflowUsedMinor`, summed).
-   *
-   * Exposed rather than silently absorbed because it is the whole explanation
-   * for why the rows do not add up to the total: the sending account still
-   * reports the pound as its surplus, and the receiving account reports the same
-   * pound as funded. One pound, counted twice, once per hop of the chain.
-   */
-  intraEstateMovementMinor: number;
   shortfallMinor: number;
   accounts: AccountSummary[];
 }
@@ -589,26 +352,33 @@ export interface Overview {
  * currency (no FX conversion — see decision #1). Currencies are returned in
  * stable alphabetical order.
  *
- * **Intra-estate movement is netted out of the total leftover.** Each account's
- * figures are right on their own: the sender's leftover is its own income after
- * its own obligations, and the receiver's funded total is what its bills got.
- * Summed, a pound that moved between the two is counted at both ends — and a
- * chain (current → pot → ISA) counts it again at every hop, which is why the
- * error is invisible on a two-account fixture and grows without bound on a real
- * estate. Netting the inflow the receiving accounts actually *spent* restores
- * the identity that has to hold:
+ * ## The netting is gone, and that is the point
+ *
+ * `computeOverview` used to subtract an `intraEstateMovementMinor` term from the
+ * total surplus, because the two engines disagreed about whose money a
+ * transferred pound was: the sending account's `leftoverMinor` still counted it
+ * while the receiving account's `totalFundedMinor` counted it again, so a chain
+ * inflated the estate once per hop. Netting was the patch.
+ *
+ * There is one pass now, and it settles the question in the accounts rather than
+ * in the rollup. `ScopeAccountPlan.ownLeftoverMinor` — which is what
+ * `AccountPlan.leftoverMinor` reports — is the account's own income after its own
+ * bills **and after the derived transfers its owner has to make**, so a pound
+ * that leaves is already gone from the sender's surplus before this function
+ * sees it. Money that merely arrived is excluded at the receiver for the same
+ * reason. Every pound is therefore counted exactly once, and the identity
  *
  *     totalFundedMinor + leftoverMinor === monthlyIncomeMinor - bufferMinor
  *
- * for an estate that funds itself. Nothing is netted for a household allocation
- * arriving from someone else's account, because that money never was this
- * estate's income — so today's household rollups are unchanged to the penny.
+ * holds for a scope that funds itself with no term to subtract.
  *
- * The per-account rows keep their own un-netted `leftoverMinor`: a row is a fact
- * about one account, and an account genuinely does have that surplus before it
- * moves any of it on.
+ * That matters beyond tidiness. The netted term meant "inflow the bills consumed
+ * that came from another account **of the scope**", and a scope contains a
+ * co-member's account while a caller's rollup does not: netted here, a partner's
+ * transfer into a shared pot would be subtracted from a total that never counted
+ * their income. A rollup over any subset of a scope's accounts is now just a sum.
  */
-export function computeOverview(plans: AccountPlan[], asOfDate: string): Overview {
+export function overviewFromPlans(plans: AccountPlan[], asOfDate: string): Overview {
   const byCurrency = new Map<string, CurrencyOverview>();
 
   for (const plan of plans) {
@@ -621,7 +391,6 @@ export function computeOverview(plans: AccountPlan[], asOfDate: string): Overvie
         totalRequiredMinor: 0,
         totalFundedMinor: 0,
         leftoverMinor: 0,
-        intraEstateMovementMinor: 0,
         shortfallMinor: 0,
         accounts: [],
       };
@@ -632,7 +401,6 @@ export function computeOverview(plans: AccountPlan[], asOfDate: string): Overvie
     bucket.totalRequiredMinor += plan.totalRequiredMinor;
     bucket.totalFundedMinor += plan.totalFundedMinor;
     bucket.leftoverMinor += plan.leftoverMinor;
-    bucket.intraEstateMovementMinor += plan.internalInflowUsedMinor;
     bucket.shortfallMinor += plan.shortfallMinor;
     bucket.accounts.push({
       accountId: plan.accountId,
@@ -640,13 +408,6 @@ export function computeOverview(plans: AccountPlan[], asOfDate: string): Overvie
       shortfallMinor: plan.shortfallMinor,
       atRiskCount: plan.lines.filter((l) => !l.onTrack).length,
     });
-  }
-
-  for (const bucket of byCurrency.values()) {
-    // Floored at zero: an estate can be handed more money than it earns (a
-    // partner's account funding a pot inside it), and a negative surplus would
-    // be an alarming way to say "somebody else is paying".
-    bucket.leftoverMinor = Math.max(0, bucket.leftoverMinor - bucket.intraEstateMovementMinor);
   }
 
   return {

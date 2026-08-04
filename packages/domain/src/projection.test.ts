@@ -1,22 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { accountPlanFromScope, computeAccountPlan, computeOverview } from "./engine.js";
-import { computeEstatePlan } from "./estate.js";
-import type { HouseholdInput } from "./household.js";
+import { accountPlanFromScope } from "./engine.js";
 import {
-  computeEstateProjection,
-  computeHouseholdProjection,
   computeScopeProjection,
+  householdProjectionFromScope,
   type AccountProjection,
   type MonthProjection,
 } from "./projection.js";
 import { computeScopePlan, type ScopeAccountInput, type ScopeInput } from "./scope.js";
-import type {
-  AccountInput,
-  IncomeInput,
-  InflowInput,
-  OutboundInflowInput,
-  PaymentInput,
-} from "./types.js";
+import type { IncomeInput, InflowInput, OutboundInflowInput, PaymentInput } from "./types.js";
+
+/** An account as the walk's own fixtures describe one, before its scope role is
+ *  bolted on by `owned` below. */
+interface PlainAccount {
+  accountId: string;
+  currency: string;
+  monthlyBufferMinor?: number;
+  incomes: IncomeInput[];
+  payments: PaymentInput[];
+  inflows?: InflowInput[];
+  outboundInflows?: OutboundInflowInput[];
+}
 
 const AS_OF = "2026-08-03";
 
@@ -28,15 +31,15 @@ function income(amountMinor: number, over: Partial<IncomeInput> = {}): IncomeInp
 
 function account(
   payments: PaymentInput[],
-  over: Partial<AccountInput> = {},
+  over: Partial<PlainAccount> = {},
   incomes: IncomeInput[] = [income(200_000)],
-): AccountInput {
+): PlainAccount {
   return { accountId: "acct", currency: "GBP", incomes, payments, ...over };
 }
 
 /** The same account, as a scope of one member at 100% — the degenerate case the
  *  pass plans a solo user with, and the one every figure below is read from. */
-function owned(acc: AccountInput): ScopeAccountInput {
+function owned(acc: PlainAccount): ScopeAccountInput {
   return {
     ...acc,
     role: "personal",
@@ -45,7 +48,7 @@ function owned(acc: AccountInput): ScopeAccountInput {
   };
 }
 
-function soloScope(...accounts: AccountInput[]): ScopeInput {
+function soloScope(...accounts: PlainAccount[]): ScopeInput {
   return {
     scopeId: "owner",
     members: [{ userId: "owner", shareBp: 10_000 }],
@@ -59,7 +62,7 @@ interface ProjOpts {
 }
 
 /** One account's walk, taken out of the scope walk that produced it. */
-function project(acc: AccountInput, opts: ProjOpts = {}): AccountProjection {
+function project(acc: PlainAccount, opts: ProjOpts = {}): AccountProjection {
   return computeScopeProjection(soloScope(acc), AS_OF, {
     months: opts.months,
     startingBalancesMinor: { [acc.accountId]: opts.startingBalanceMinor ?? null },
@@ -117,11 +120,12 @@ describe("computeScopeProjection — monthly recurring", () => {
     expect(p.months.every((m) => m.lines.length === 1)).toBe(true);
   });
 
-  it("matches computeAccountPlan for the as-of month", () => {
+  it("matches the account's plan for the as-of month", () => {
     const acc = account([
       { id: "phone", name: "Phone", category: "monthly_recurring", amountMinor: 4_500 },
     ]);
-    const plan = computeAccountPlan(acc, AS_OF);
+    const scope = soloScope(acc);
+    const plan = accountPlanFromScope(scope, computeScopePlan(scope, AS_OF), acc.accountId);
     const first = project(acc).months[0]!;
     expect(first.monthlyIncomeMinor).toBe(plan.monthlyIncomeMinor);
     expect(first.totalRequiredMinor).toBe(plan.totalRequiredMinor);
@@ -513,9 +517,11 @@ describe("computeScopeProjection — custom_recurring", () => {
     expect(p.months.every((m) => only(m)?.dueThisMonth === true)).toBe(true);
   });
 
-  it("requires exactly what the engine requires", () => {
+  it("requires exactly what the pass requires", () => {
+    const scope = soloScope(acc);
     expect(only(p.months[0]!)?.requiredMonthlyMinor).toBe(
-      computeAccountPlan(acc, AS_OF).lines[0]?.requiredMonthlyMinor,
+      accountPlanFromScope(scope, computeScopePlan(scope, AS_OF), acc.accountId).lines[0]
+        ?.requiredMonthlyMinor,
     );
     expect(only(p.months[1]!)?.requiredMonthlyMinor).toBe(4_000);
   });
@@ -723,14 +729,14 @@ const insurance: PaymentInput = {
  *  starts rebuilding after it. Pinned once; three tests read it. */
 const FUNDED_RESERVE = [40_000, 66_667, 93_334, 120_000, 0, 10_910, 21_819, 32_728];
 
-function pot(over: Partial<AccountInput> = {}): AccountInput {
+function pot(over: Partial<PlainAccount> = {}): PlainAccount {
   return { accountId: "pot", currency: "GBP", incomes: [], payments: [insurance], ...over };
 }
 
 /** The same pot, with the account that feeds it — a scope of one member whose
  *  income is in one account and whose bill is paid from another. Nobody authors
  *  the feed; the pass derives it (decision 9). */
-function fedScope(over: Partial<AccountInput> = {}): ScopeInput {
+function fedScope(over: Partial<PlainAccount> = {}): ScopeInput {
   return soloScope(
     { accountId: "current", currency: "GBP", incomes: [income(40_000)], payments: [] },
     pot(over),
@@ -899,7 +905,7 @@ const bill = (id: string, amountMinor: number): PaymentInput => ({
 });
 
 /** current pays the rent and sends 40,000 a month into the bills pot. */
-function fedPot(): AccountInput[] {
+function fedPot(): PlainAccount[] {
   return [
     {
       accountId: "current",
@@ -912,70 +918,110 @@ function fedPot(): AccountInput[] {
   ];
 }
 
-const forAccount = (p: ReturnType<typeof computeEstateProjection>, accountId: string) =>
-  p.accounts.find((a) => a.accountId === accountId)!;
-
-describe("computeEstateProjection — the whole estate walks forward together", () => {
-  const p = computeEstateProjection(fedPot(), AS_OF, {
+/**
+ * The same fixture, planned as one scope rather than as an estate.
+ *
+ * Two things move, and both are decisions 9 and 12 rather than drift. The pot's
+ * bill is an obligation of the account's owner, so the pass **derives** a
+ * transfer to cover it whether or not anybody authored one — and the authored
+ * £400 arrives on top of that, as savings, because netting the two would put
+ * savings money inside expense arithmetic (decision 12). And the sending
+ * account's `leftoverMinor` is its own income after the derived transfer has
+ * left, which is why it is no longer flat.
+ */
+describe("computeScopeProjection — the whole scope walks forward together", () => {
+  const p = computeScopeProjection(soloScope(...fedPot()), AS_OF, {
     months: 8,
     startingBalancesMinor: { pot: 0 },
   });
 
   it("plans senders before receivers and echoes the identity", () => {
     expect(p.asOfDate).toBe(AS_OF);
-    expect(p.order).toEqual(["current", "pot"]);
     expect(p.accounts.map((a) => a.accountId)).toEqual(["current", "pot"]);
     expect(p.cycles).toEqual([]);
     expect(p.months.map((m) => m.month).slice(0, 3)).toEqual(["2026-08", "2026-09", "2026-10"]);
   });
 
-  it("builds the pot's reserve out of what the sender can afford, month by month", () => {
-    expect(forAccount(p, "pot").months.map((m) => m.reservedEndMinor)).toEqual(FUNDED_RESERVE);
-    expect(forAccount(p, "pot").months.every((m) => m.allocatedInflowMinor === 40_000)).toBe(true);
-    expect(forAccount(p, "pot").months.every((m) => m.shortfallMinor === 0)).toBe(true);
+  it("builds the pot's reserve out of what the month's bill actually needs", () => {
+    expect(forScopeAccount(p, "pot").months.map((m) => m.reservedEndMinor)).toEqual(FUNDED_RESERVE);
+    expect(forScopeAccount(p, "pot").months.every((m) => m.shortfallMinor === 0)).toBe(true);
+  });
+
+  it("feeds the pot what its bill costs, and the authored £400 on top", () => {
+    // The derived transfer is exactly the month's obligation; the authored
+    // movement is a further £400 of savings, arriving whether or not the bill
+    // needed it. The month the bill falls due, only the movement arrives.
+    expect(forScopeAccount(p, "pot").months.map((m) => m.allocatedInflowMinor)).toEqual([
+      80_000, 66_667, 66_667, 66_666, 40_000, 50_910, 50_909, 50_909,
+    ]);
   });
 
   it("says what the sending account sends, so its surplus is not read as spare", () => {
-    const current = forAccount(p, "current");
+    const current = forScopeAccount(p, "current");
     expect(current.months.every((m) => m.outboundInflowMinor === 40_000)).toBe(true);
-    expect(current.months.every((m) => m.leftoverMinor === 100_000)).toBe(true);
     expect(current.months.every((m) => m.allocatedInflowMinor === 0)).toBe(true);
+    // £2,000 income, £1,000 rent, then the derived transfer the pot's bill
+    // needs. The savings movement is *not* subtracted — `leftoverMinor` keeps
+    // its meaning (decision 13) and `outboundInflowMinor` sits alongside it.
+    expect(current.months.map((m) => m.leftoverMinor)).toEqual([
+      60_000, 73_333, 73_333, 73_334, 100_000, 89_090, 89_091, 89_091,
+    ]);
   });
 
-  it("reports the movements of each simulated month", () => {
+  it("reports the movements and the derived transfers of each simulated month", () => {
     expect(p.months[5]?.movements).toEqual([
       {
         inflowId: "cur->pot",
         fromAccountId: "current",
         toAccountId: "pot",
+        currency: "GBP",
         priority: 10,
         requestedMinor: 40_000,
         fundedMinor: 40_000,
+        fundedFromOwnMinor: 40_000,
+        fundedFromInflowMinor: 0,
         status: "funded",
+      },
+    ]);
+    expect(p.months[5]?.transfers).toEqual([
+      {
+        fromAccountId: "current",
+        toAccountId: "pot",
+        memberUserId: "owner",
+        currency: "GBP",
+        amountMinor: 10_910,
+        confirmedMinor: 0,
       },
     ]);
   });
 
   it("reports a null balance for an account given no opening figure", () => {
-    expect(forAccount(p, "current").months.every((m) => m.projectedBalanceMinor === null)).toBe(
-      true,
-    );
     expect(
-      computeEstateProjection(fedPot(), AS_OF, { months: 2 }).accounts[1]?.months[0]
+      forScopeAccount(p, "current").months.every((m) => m.projectedBalanceMinor === null),
+    ).toBe(true);
+    expect(
+      computeScopeProjection(soloScope(...fedPot()), AS_OF, { months: 2 }).accounts[1]?.months[0]
         ?.projectedBalanceMinor,
     ).toBe(null);
   });
 
   it("clamps and defaults the month count like the account projection", () => {
-    expect(computeEstateProjection(fedPot(), AS_OF).months).toHaveLength(12);
-    expect(computeEstateProjection(fedPot(), AS_OF, { months: 99 }).months).toHaveLength(24);
-    expect(computeEstateProjection(fedPot(), AS_OF, { months: 0 }).months).toHaveLength(1);
+    expect(computeScopeProjection(soloScope(...fedPot()), AS_OF).months).toHaveLength(12);
+    expect(
+      computeScopeProjection(soloScope(...fedPot()), AS_OF, { months: 99 }).months,
+    ).toHaveLength(24);
+    expect(
+      computeScopeProjection(soloScope(...fedPot()), AS_OF, { months: 0 }).months,
+    ).toHaveLength(1);
   });
 
   it("does not mutate its input", () => {
     const input = fedPot();
     const before = snapshot(input);
-    computeEstateProjection(input, AS_OF, { months: 14, startingBalancesMinor: { pot: 5_000 } });
+    computeScopeProjection(soloScope(...input), AS_OF, {
+      months: 14,
+      startingBalancesMinor: { pot: 5_000 },
+    });
     expect(input).toEqual(before);
   });
 
@@ -983,19 +1029,19 @@ describe("computeEstateProjection — the whole estate walks forward together", 
     const solo = account([
       { id: "phone", name: "Phone", category: "monthly_recurring", amountMinor: 4_500 },
     ]);
-    expect(computeEstateProjection([solo], AS_OF, { months: 4 }).accounts[0]?.months).toEqual(
-      project(solo, { months: 4 }).months,
-    );
+    expect(
+      computeScopeProjection(soloScope(solo), AS_OF, { months: 4 }).accounts[0]?.months,
+    ).toEqual(project(solo, { months: 4 }).months);
   });
 });
 
 // --- the plan changing mid-horizon -------------------------------------------
 
-describe("computeEstateProjection — the plan changes mid-horizon", () => {
+describe("computeScopeProjection — the plan changes mid-horizon", () => {
   it("passes on the money a completed goal stops consuming", () => {
     // 60,000 saved at 20,000 a month: three months of the sender's income is
     // spoken for, and from the fourth the pot gets the lot.
-    const accounts: AccountInput[] = [
+    const accounts: PlainAccount[] = [
       {
         accountId: "current",
         currency: "GBP",
@@ -1014,8 +1060,8 @@ describe("computeEstateProjection — the plan changes mid-horizon", () => {
       },
       { accountId: "pot", currency: "GBP", incomes: [], payments: [] },
     ];
-    const p = computeEstateProjection(accounts, AS_OF, { months: 5 });
-    expect(forAccount(p, "pot").months.map((m) => m.allocatedInflowMinor)).toEqual([
+    const p = computeScopeProjection(soloScope(...accounts), AS_OF, { months: 5 });
+    expect(forScopeAccount(p, "pot").months.map((m) => m.allocatedInflowMinor)).toEqual([
       80_000, 80_000, 80_000, 100_000, 100_000,
     ]);
     expect(p.months.map((m) => m.movements[0]?.status)).toEqual([
@@ -1028,7 +1074,7 @@ describe("computeEstateProjection — the plan changes mid-horizon", () => {
   });
 
   it("sends less when the sender can no longer afford it, and says so", () => {
-    const accounts: AccountInput[] = [
+    const accounts: PlainAccount[] = [
       {
         accountId: "current",
         currency: "GBP",
@@ -1041,25 +1087,28 @@ describe("computeEstateProjection — the plan changes mid-horizon", () => {
       },
       { accountId: "pot", currency: "GBP", incomes: [], payments: [bill("bills", 130_000)] },
     ];
-    const p = computeEstateProjection(accounts, AS_OF, { months: 5 });
-    // The bonus tapers in, lands, and is gone; the movement follows it down.
-    expect(forAccount(p, "pot").months.map((m) => m.allocatedInflowMinor)).toEqual([
-      120_000, 120_000, 130_000, 100_000, 100_000,
+    const p = computeScopeProjection(soloScope(...accounts), AS_OF, { months: 5 });
+    // The bonus tapers in, lands, and is gone; the feed follows it down. What
+    // arrives is the derived transfer covering the pot's bill — plus, in the
+    // bonus month, the £100 of surplus the authored movement could carry after
+    // it (decision 8: every expense first, savings out of what is left).
+    expect(forScopeAccount(p, "pot").months.map((m) => m.allocatedInflowMinor)).toEqual([
+      120_000, 120_000, 140_000, 100_000, 100_000,
     ]);
-    expect(forAccount(p, "pot").months.map((m) => m.shortfallMinor)).toEqual([
+    expect(forScopeAccount(p, "pot").months.map((m) => m.shortfallMinor)).toEqual([
       10_000, 10_000, 0, 30_000, 30_000,
     ]);
     expect(p.months.map((m) => m.movements[0]?.status)).toEqual([
+      "unfunded",
+      "unfunded",
       "short",
-      "short",
-      "funded",
-      "short",
-      "short",
+      "unfunded",
+      "unfunded",
     ]);
   });
 
   it("stops a one-off movement once its date has passed", () => {
-    const accounts: AccountInput[] = [
+    const accounts: PlainAccount[] = [
       {
         accountId: "current",
         currency: "GBP",
@@ -1071,8 +1120,8 @@ describe("computeEstateProjection — the plan changes mid-horizon", () => {
       },
       { accountId: "pot", currency: "GBP", incomes: [], payments: [] },
     ];
-    const p = computeEstateProjection(accounts, AS_OF, { months: 5 });
-    expect(forAccount(p, "pot").months.map((m) => m.allocatedInflowMinor)).toEqual([
+    const p = computeScopeProjection(soloScope(...accounts), AS_OF, { months: 5 });
+    expect(forScopeAccount(p, "pot").months.map((m) => m.allocatedInflowMinor)).toEqual([
       30_000, 30_000, 60_000, 0, 0,
     ]);
     // One pass over the scope reaches the same answer, and for the same reason:
@@ -1086,7 +1135,7 @@ describe("computeEstateProjection — the plan changes mid-horizon", () => {
   });
 
   it("breaks a funding loop the same way every month rather than hanging", () => {
-    const accounts: AccountInput[] = [
+    const accounts: PlainAccount[] = [
       {
         accountId: "a",
         currency: "GBP",
@@ -1102,7 +1151,7 @@ describe("computeEstateProjection — the plan changes mid-horizon", () => {
         outboundInflows: [leaving("b->a", 50_000, "a")],
       },
     ];
-    const p = computeEstateProjection(accounts, AS_OF, { months: 6 });
+    const p = computeScopeProjection(soloScope(...accounts), AS_OF, { months: 6 });
     expect(p.cycles).toHaveLength(1);
     expect(p.cycles[0]?.accountIds).toEqual(["a", "b"]);
     expect(p.months).toHaveLength(6);
@@ -1117,7 +1166,7 @@ describe("computeEstateProjection — the plan changes mid-horizon", () => {
 // --- the invariant, over a whole horizon --------------------------------------
 
 /** current → pot → savings → isa, one salary and a bill at every stop. */
-function chain(): AccountInput[] {
+function chain(): PlainAccount[] {
   return [
     {
       accountId: "current",
@@ -1152,12 +1201,14 @@ function chain(): AccountInput[] {
   ];
 }
 
-describe("computeEstateProjection — money in is still only what comes from outside", () => {
+describe("computeScopeProjection — money in is still only what comes from outside", () => {
   it("never inflates the estate's income, at any month or any depth", () => {
     // A projection that treated a movement as new money would add a salary's
     // worth per hop per month — invisible on one account, ruinous on a chain.
     for (const depth of [2, 3, 4]) {
-      const p = computeEstateProjection(chain().slice(0, depth), AS_OF, { months: 12 });
+      const p = computeScopeProjection(soloScope(...chain().slice(0, depth)), AS_OF, {
+        months: 12,
+      });
       for (const month of p.months) {
         expect(month.perCurrency).toHaveLength(1);
         expect(month.perCurrency[0]!.monthlyIncomeMinor).toBe(500_000);
@@ -1166,29 +1217,46 @@ describe("computeEstateProjection — money in is still only what comes from out
   });
 
   it("keeps funded plus left over equal to what came in, every month", () => {
-    const p = computeEstateProjection(chain(), AS_OF, { months: 12 });
+    // No netting term anywhere: the pass takes a transferred pound out of the
+    // sending account's own surplus before anything sums it, so the identity
+    // holds on a four-deep chain with nothing subtracted (see
+    // `overviewFromPlans` for the netting this replaced).
+    const p = computeScopeProjection(soloScope(...chain()), AS_OF, { months: 12 });
     for (const month of p.months) {
       const bucket = month.perCurrency[0]!;
       expect(bucket.totalFundedMinor).toBe(400_000);
-      expect(bucket.intraEstateMovementMinor).toBe(300_000);
       expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(bucket.monthlyIncomeMinor);
     }
   });
 
-  it("agrees with the one-month rollup in its first month", () => {
-    const p = computeEstateProjection(chain(), AS_OF, { months: 12 });
-    const estate = computeEstatePlan(chain(), AS_OF);
-    expect(p.months[0]?.perCurrency).toEqual(computeOverview(estate.plans, AS_OF).perCurrency);
-    expect(p.months[0]?.movements).toEqual(estate.movements);
+  it("agrees with the one-month plan in its first month", () => {
+    const p = computeScopeProjection(soloScope(...chain()), AS_OF, { months: 12 });
+    const plan = computeScopePlan(soloScope(...chain()), AS_OF);
+    const partition = plan.partitions[0]!;
+    expect(p.months[0]?.perCurrency).toEqual([
+      {
+        currency: partition.currency,
+        monthlyIncomeMinor: partition.monthlyIncomeMinor,
+        totalRequiredMinor: partition.totalRequiredMinor,
+        totalFundedMinor: partition.totalFundedMinor,
+        leftoverMinor: partition.leftoverMinor,
+        committedMinor: partition.committedMinor,
+        shortfallMinor: partition.shortfallMinor,
+      },
+    ]);
+    expect(p.months[0]?.movements).toEqual(plan.movements);
+    expect(p.months[0]?.transfers).toEqual(plan.transfers);
   });
 });
 
 // --- household ---------------------------------------------------------------
 
-function household(): HouseholdInput {
+const HOUSEHOLD_ACCOUNTS = ["alice-cur", "bob-cur", "bills"];
+
+function household(): ScopeInput {
   return {
+    scopeId: "hh",
     householdId: "hh",
-    currency: "GBP",
     members: [
       { userId: "alice", shareBp: 6_000, displayName: "Alice" },
       { userId: "bob", shareBp: 4_000, displayName: "Bob" },
@@ -1238,8 +1306,18 @@ function household(): HouseholdInput {
   };
 }
 
-describe("computeHouseholdProjection", () => {
-  const p = computeHouseholdProjection(household(), AS_OF, { months: 7 });
+/** The household's months, read off the one scope walk. */
+function householdWalk(input: ScopeInput, months: number) {
+  return householdProjectionFromScope(
+    computeScopeProjection(input, AS_OF, { months }),
+    "hh",
+    HOUSEHOLD_ACCOUNTS,
+    "GBP",
+  );
+}
+
+describe("householdProjectionFromScope", () => {
+  const p = householdWalk(household(), 7);
   const insurance = (m: number) => p.months[m]?.lines.find((l) => l.paymentId === "ins");
   const gym = (m: number) => p.months[m]?.lines.find((l) => l.paymentId === "gym");
 
@@ -1278,16 +1356,18 @@ describe("computeHouseholdProjection", () => {
     // Both shares round up, so a month whose requirement does not divide by the
     // split moves a penny more than it strictly needs (26_667 → 26_668).
     expect(p.months.map((m) => m.transfersTotalMinor)).toEqual([
-      40_000, 26_668, 26_667, 26_665, 0, 10_910, 10_910,
+      40_000, 26_668, 26_668, 26_667, 0, 10_910, 10_910,
     ]);
     expect(p.months.slice(0, 4).every((m) => m.transfersTotalMinor > 0)).toBe(true);
   });
 
   it("evolves the shared reserve and empties it in the due month", () => {
-    // Running a penny ahead early leaves less to find later: the reserve still
-    // lands exactly on the 120_000 the bill costs, one month's rounding sooner.
+    // The members are asked for a penny more than the bill costs, and the pot
+    // keeps it: what is *set aside* is the requirement, so the reserve tracks
+    // the bill exactly rather than running a penny ahead of it. That penny is
+    // the pot's surplus, which is where `splitByShares`' overshoot belongs.
     expect(p.months.map((m) => m.reservedEndMinor)).toEqual([
-      40_000, 66_668, 93_335, 120_000, 0, 10_910, 21_820,
+      40_000, 66_667, 93_334, 120_000, 0, 10_910, 21_819,
     ]);
     expect(insurance(3)?.alreadySavedEndMinor).toBe(120_000);
     expect(insurance(4)?.dueThisMonth).toBe(true);
@@ -1315,7 +1395,7 @@ describe("computeHouseholdProjection", () => {
       dueDate: "2026-10-01",
       scope: "shared",
     });
-    const p2 = computeHouseholdProjection(input, AS_OF, { months: 4 });
+    const p2 = householdWalk(input, 4);
     expect(p2.months[1]?.lines.some((l) => l.paymentId === "sofa")).toBe(true);
     expect(p2.months[2]?.lines.find((l) => l.paymentId === "sofa")?.dueThisMonth).toBe(true);
     expect(p2.months[3]?.lines.some((l) => l.paymentId === "sofa")).toBe(false);
@@ -1325,20 +1405,44 @@ describe("computeHouseholdProjection", () => {
     const input = household();
     input.accounts[0]!.incomes = [income(20_000, { id: "alice-pay" })];
     input.accounts[1]!.incomes = [income(10_000, { id: "bob-pay" })];
-    const p2 = computeHouseholdProjection(input, AS_OF, { months: 3 });
+    const p2 = householdWalk(input, 3);
     expect(p2.months.every((m) => m.shortfallMinor > 0)).toBe(true);
   });
 
   it("defaults to 12 months and clamps like the account projection", () => {
-    expect(computeHouseholdProjection(household(), AS_OF).months).toHaveLength(12);
-    expect(computeHouseholdProjection(household(), AS_OF, { months: 99 }).months).toHaveLength(24);
-    expect(computeHouseholdProjection(household(), AS_OF, { months: 0 }).months).toHaveLength(1);
+    expect(
+      householdProjectionFromScope(
+        computeScopeProjection(household(), AS_OF),
+        "hh",
+        HOUSEHOLD_ACCOUNTS,
+        "GBP",
+      ).months,
+    ).toHaveLength(12);
+    expect(householdWalk(household(), 99).months).toHaveLength(24);
+    expect(householdWalk(household(), 0).months).toHaveLength(1);
+  });
+
+  it("reports only the household's own accounts, however far the pass reached", () => {
+    // The scope walk plans whatever funds the household as well; a sender
+    // nobody assigned to it is not one of its accounts.
+    const input = household();
+    input.accounts.push({
+      accountId: "alice-isa",
+      role: "personal",
+      memberUserId: "alice",
+      currency: "GBP",
+      incomes: [],
+      payments: [],
+    });
+    const p2 = householdWalk(input, 2);
+    expect(p2.months[0]?.lines.map((l) => l.accountId)).toEqual(["alice-cur", "bills"]);
+    expect(p2.months[0]?.monthlyIncomeMinor).toBe(500_000);
   });
 
   it("does not mutate its input", () => {
     const input = household();
     const before = snapshot(input);
-    computeHouseholdProjection(input, AS_OF, { months: 14 });
+    householdWalk(input, 14);
     expect(input).toEqual(before);
   });
 });
@@ -1544,41 +1648,5 @@ describe("computeScopeProjection — a pooled account holds its reserve", () => 
       70_000, 56_668, 56_668, 56_667, 30_000, 40_910, 40_910, 40_910,
     ]);
     expect(months.every((m) => m.allocatedInflowMinor - m.totalFundedMinor >= 30_000)).toBe(true);
-  });
-});
-
-describe("computeEstateProjection — a household allocation across the horizon", () => {
-  it("keeps the money arriving and lets only the confirmation expire", () => {
-    // The estate walk still takes a total another plan worked out — the shape
-    // WP-S deletes. Until then its confirmation rule is asserted here: a
-    // confirmation is a statement about the month it was made in, so it is
-    // cleared from month 1 while the arrival itself stands.
-    const p = computeEstateProjection(
-      [
-        {
-          accountId: "bills",
-          currency: "GBP",
-          incomes: [],
-          payments: [bill("rent", 30_000)],
-          inflow: {
-            allocatedMinor: 40_000,
-            confirmedMinor: 40_000,
-            sources: [
-              {
-                inflowId: "cur->pot",
-                fromAccountId: "current",
-                amountMinor: 40_000,
-                confirmedMinor: 40_000,
-              },
-            ],
-          },
-        },
-      ],
-      AS_OF,
-      { months: 3 },
-    );
-    const months = forAccount(p, "bills").months;
-    expect(months.map((m) => m.allocatedInflowMinor)).toEqual([40_000, 40_000, 40_000]);
-    expect(months.map((m) => m.confirmedInflowMinor)).toEqual([40_000, 0, 0]);
   });
 });

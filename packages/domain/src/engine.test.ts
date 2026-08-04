@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-  accountPlanFromScope,
-  computeAccountPlan,
-  monthlyIncomeMinor,
-  requiredMonthlyForPayment,
-} from "./engine.js";
+import { accountPlanFromScope, monthlyIncomeMinor, requiredMonthlyForPayment } from "./engine.js";
 import { parseISODate } from "./dates.js";
 import { computeScopePlan, type ScopeInput } from "./scope.js";
-import type { AccountInput, AllocatedInflow, IncomeInput, PaymentInput } from "./types.js";
+import type { AccountPlan, IncomeInput, PaymentInput } from "./types.js";
 
 const AS_OF = "2026-01-01";
 const now = parseISODate(AS_OF);
@@ -155,408 +150,6 @@ describe("requiredMonthlyForPayment", () => {
   });
 });
 
-describe("computeAccountPlan", () => {
-  it("reports leftover when income comfortably covers contributions", () => {
-    const account: AccountInput = {
-      accountId: "a1",
-      currency: "GBP",
-      incomes: [{ id: "i1", amountMinor: 100_000, frequency: "monthly", anchorDate: AS_OF }],
-      payments: [{ id: "p3", name: "Phone", category: "monthly_recurring", amountMinor: 4_500 }],
-    };
-    const plan = computeAccountPlan(account, AS_OF);
-    expect(plan.monthlyIncomeMinor).toBe(100_000);
-    expect(plan.totalRequiredMinor).toBe(4_500);
-    expect(plan.leftoverMinor).toBe(95_500);
-    expect(plan.shortfallMinor).toBe(0);
-    expect(plan.lines[0]?.onTrack).toBe(true);
-  });
-
-  it("funds by priority and surfaces a shortfall when income is short", () => {
-    const account: AccountInput = {
-      accountId: "a2",
-      currency: "GBP",
-      incomes: [{ id: "i1", amountMinor: 100_000, frequency: "monthly", anchorDate: AS_OF }],
-      payments: [
-        {
-          id: "high",
-          name: "High priority",
-          category: "fixed_point",
-          amountMinor: 80_000,
-          dueDate: AS_OF,
-          priority: 1,
-        },
-        {
-          id: "low",
-          name: "Low priority",
-          category: "fixed_point",
-          amountMinor: 50_000,
-          dueDate: AS_OF,
-          priority: 2,
-        },
-      ],
-    };
-    const plan = computeAccountPlan(account, AS_OF);
-    expect(plan.totalRequiredMinor).toBe(130_000);
-    expect(plan.totalFundedMinor).toBe(100_000);
-    expect(plan.leftoverMinor).toBe(0);
-    expect(plan.shortfallMinor).toBe(30_000);
-
-    const high = plan.lines.find((l) => l.paymentId === "high");
-    const low = plan.lines.find((l) => l.paymentId === "low");
-    expect(high?.fundedMonthlyMinor).toBe(80_000);
-    expect(high?.onTrack).toBe(true);
-    expect(low?.fundedMonthlyMinor).toBe(20_000);
-    expect(low?.onTrack).toBe(false);
-    expect(low?.projectedCompletionDate).toBeDefined();
-  });
-
-  it("counts a sub-monthly custom recurrence multiple times in the month", () => {
-    const account: AccountInput = {
-      accountId: "a4",
-      currency: "GBP",
-      incomes: [{ id: "i1", amountMinor: 100_000, frequency: "monthly", anchorDate: AS_OF }],
-      payments: [
-        {
-          id: "fortnightly",
-          name: "Butternut",
-          category: "custom_recurring",
-          amountMinor: 8_213,
-          dueDate: "2026-01-08",
-          recurrence: { interval: 2, unit: "week", anchor: "2026-01-08" },
-        },
-      ],
-    };
-    const plan = computeAccountPlan(account, AS_OF);
-    // Two occurrences in January → the plan reflects both, not a single payment.
-    expect(plan.lines[0]?.requiredMonthlyMinor).toBe(16_426);
-    expect(plan.lines[0]?.occurrencesThisMonth).toBe(2);
-    expect(plan.totalRequiredMinor).toBe(16_426);
-  });
-
-  it("totals are summed from the rounded per-payment figures", () => {
-    const account: AccountInput = {
-      accountId: "a3",
-      currency: "GBP",
-      incomes: [{ id: "i1", amountMinor: 500_000, frequency: "monthly", anchorDate: AS_OF }],
-      payments: [
-        {
-          id: "p1",
-          name: "Holiday",
-          category: "fixed_point",
-          amountMinor: 120_000,
-          dueDate: "2026-09-01",
-        },
-        {
-          id: "p2",
-          name: "Insurance",
-          category: "yearly_recurring",
-          amountMinor: 32_000,
-          dueDate: "2026-06-01",
-        },
-      ],
-    };
-    const plan = computeAccountPlan(account, AS_OF);
-    const sumRequired = plan.lines.reduce((s, l) => s + l.requiredMonthlyMinor, 0);
-    expect(plan.totalRequiredMinor).toBe(sumRequired);
-  });
-});
-
-describe("computeAccountPlan — allocated inflow", () => {
-  /** Three bills, funded in this order. 10000 + 15000 + 5300 = 30300. */
-  const BILLS: PaymentInput[] = [
-    {
-      id: "b1",
-      name: "Council tax",
-      category: "monthly_recurring",
-      amountMinor: 10_000,
-      priority: 1,
-    },
-    { id: "b2", name: "Energy", category: "monthly_recurring", amountMinor: 15_000, priority: 2 },
-    { id: "b3", name: "Broadband", category: "monthly_recurring", amountMinor: 5_300, priority: 3 },
-  ];
-  const TOTAL = 30_300;
-
-  /** A bills pot: no income of its own, so everything it funds arrives. */
-  const pot = (inflow?: AllocatedInflow, over: Partial<AccountInput> = {}): AccountInput => ({
-    accountId: "pot",
-    currency: "GBP",
-    incomes: [],
-    payments: BILLS,
-    ...(inflow ? { inflow } : {}),
-    ...over,
-  });
-
-  const statuses = (account: AccountInput): string[] =>
-    computeAccountPlan(account, AS_OF).lines.map((l) => l.status);
-
-  it("leaves a standalone account's plan exactly as it was", () => {
-    // Pinned in full: everything but the four additive fields is the byte-for-
-    // byte output of the engine before it learned about inflow, and the additive
-    // fields sit at the values an account with nothing arriving must report.
-    const account: AccountInput = {
-      accountId: "solo",
-      currency: "GBP",
-      monthlyBufferMinor: 5_000,
-      incomes: [{ id: "i1", amountMinor: 100_000, frequency: "monthly", anchorDate: AS_OF }],
-      payments: [
-        {
-          id: "phone",
-          name: "Phone",
-          category: "monthly_recurring",
-          amountMinor: 4_500,
-          priority: 1,
-        },
-        {
-          id: "holiday",
-          name: "Holiday",
-          category: "fixed_point",
-          amountMinor: 120_000,
-          dueDate: "2026-09-01",
-          priority: 2,
-          tag: "fun",
-        },
-        {
-          id: "car",
-          name: "Car insurance",
-          category: "yearly_recurring",
-          amountMinor: 32_000,
-          dueDate: "2026-06-01",
-          priority: 3,
-        },
-      ],
-    };
-    expect(computeAccountPlan(account, AS_OF)).toEqual({
-      accountId: "solo",
-      asOfDate: AS_OF,
-      currency: "GBP",
-      monthlyIncomeMinor: 100_000,
-      allocatedInflowMinor: 0,
-      confirmedInflowMinor: 0,
-      bufferMinor: 5_000,
-      totalRequiredMinor: 25_900,
-      totalFundedMinor: 25_900,
-      leftoverMinor: 69_100,
-      shortfallMinor: 0,
-      internalInflowUsedMinor: 0,
-      inflowArrivals: [],
-      outboundInflowMinor: 0,
-      outboundInflows: [],
-      fundingCycleAccountIds: undefined,
-      lines: [
-        {
-          paymentId: "phone",
-          name: "Phone",
-          category: "monthly_recurring",
-          amountMinor: 4_500,
-          dueDate: AS_OF,
-          targetDate: AS_OF,
-          dueDateIsDerived: false,
-          monthsUntilDue: 1,
-          requiredMonthlyMinor: 4_500,
-          fundedMonthlyMinor: 4_500,
-          fundedFromOwnMinor: 4_500,
-          fundedFromInflowMinor: 0,
-          alreadySavedMinor: 0,
-          occurrencesThisMonth: 1,
-          onTrack: true,
-          status: "funded",
-          projectedCompletionDate: undefined,
-          fixedMonthlyMinor: null,
-          tag: null,
-        },
-        {
-          paymentId: "holiday",
-          name: "Holiday",
-          category: "fixed_point",
-          amountMinor: 120_000,
-          dueDate: "2026-09-01",
-          targetDate: "2026-09-01",
-          dueDateIsDerived: false,
-          monthsUntilDue: 8,
-          requiredMonthlyMinor: 15_000,
-          fundedMonthlyMinor: 15_000,
-          fundedFromOwnMinor: 15_000,
-          fundedFromInflowMinor: 0,
-          alreadySavedMinor: 0,
-          occurrencesThisMonth: 1,
-          onTrack: true,
-          status: "funded",
-          projectedCompletionDate: undefined,
-          fixedMonthlyMinor: null,
-          tag: "fun",
-        },
-        {
-          paymentId: "car",
-          name: "Car insurance",
-          category: "yearly_recurring",
-          amountMinor: 32_000,
-          dueDate: "2026-06-01",
-          targetDate: "2026-06-01",
-          dueDateIsDerived: false,
-          monthsUntilDue: 5,
-          requiredMonthlyMinor: 6_400,
-          fundedMonthlyMinor: 6_400,
-          fundedFromOwnMinor: 6_400,
-          fundedFromInflowMinor: 0,
-          alreadySavedMinor: 0,
-          occurrencesThisMonth: 1,
-          onTrack: true,
-          status: "funded",
-          projectedCompletionDate: undefined,
-          fixedMonthlyMinor: null,
-          tag: null,
-        },
-      ],
-    });
-  });
-
-  it("treats an absent inflow and a zero one identically", () => {
-    expect(computeAccountPlan(pot(), AS_OF)).toEqual(
-      computeAccountPlan(pot({ allocatedMinor: 0, confirmedMinor: 0 }), AS_OF),
-    );
-  });
-
-  it("funds nothing without an inflow — the defect this exists to fix", () => {
-    const plan = computeAccountPlan(pot(), AS_OF);
-    expect(plan.shortfallMinor).toBe(TOTAL);
-    expect(statuses(pot())).toEqual(["at_risk", "at_risk", "at_risk"]);
-  });
-
-  it("a fully confirmed inflow funds every line and clears the shortfall", () => {
-    const plan = computeAccountPlan(pot({ allocatedMinor: TOTAL, confirmedMinor: TOTAL }), AS_OF);
-    expect(plan.monthlyIncomeMinor).toBe(0); // own income, and only own income
-    expect(plan.allocatedInflowMinor).toBe(TOTAL);
-    expect(plan.confirmedInflowMinor).toBe(TOTAL);
-    expect(plan.totalFundedMinor).toBe(TOTAL);
-    expect(plan.shortfallMinor).toBe(0);
-    expect(plan.lines.map((l) => l.status)).toEqual(["funded", "funded", "funded"]);
-    expect(plan.lines.map((l) => l.fundedFromInflowMinor)).toEqual([10_000, 15_000, 5_300]);
-    expect(plan.lines.map((l) => l.fundedFromOwnMinor)).toEqual([0, 0, 0]);
-    expect(plan.lines.every((l) => l.onTrack)).toBe(true);
-  });
-
-  it("an unconfirmed inflow still funds, but every line says so", () => {
-    const plan = computeAccountPlan(pot({ allocatedMinor: TOTAL, confirmedMinor: 0 }), AS_OF);
-    expect(plan.shortfallMinor).toBe(0);
-    expect(plan.lines.every((l) => l.onTrack)).toBe(true); // the plan covers them…
-    expect(plan.lines.map((l) => l.status)).toEqual([
-      "awaiting_transfer", // …the money just has not moved
-      "awaiting_transfer",
-      "awaiting_transfer",
-    ]);
-  });
-
-  it("spends confirmed money before promised money, in priority order", () => {
-    // 25000 confirmed covers b1 and b2 exactly; b3 runs past the mark.
-    const plan = computeAccountPlan(pot({ allocatedMinor: TOTAL, confirmedMinor: 25_000 }), AS_OF);
-    expect(plan.lines.map((l) => l.status)).toEqual(["funded", "funded", "awaiting_transfer"]);
-  });
-
-  it("only the uncovered lines are at risk when the inflow falls short", () => {
-    const plan = computeAccountPlan(pot({ allocatedMinor: 20_000, confirmedMinor: 20_000 }), AS_OF);
-    expect(plan.lines.map((l) => l.status)).toEqual(["funded", "at_risk", "at_risk"]);
-    expect(plan.lines.map((l) => l.fundedMonthlyMinor)).toEqual([10_000, 10_000, 0]);
-    expect(plan.shortfallMinor).toBe(TOTAL - 20_000);
-  });
-
-  it("a part-funded line is at risk, not merely awaiting a transfer", () => {
-    // b2 draws on unconfirmed inflow *and* comes up short. "You are short" is
-    // the louder fact and the one with a different remedy, so it wins.
-    expect(statuses(pot({ allocatedMinor: 20_000, confirmedMinor: 0 }))).toEqual([
-      "awaiting_transfer",
-      "at_risk",
-      "at_risk",
-    ]);
-  });
-
-  it("spends own income before inflow, splitting the line that straddles", () => {
-    const account = pot(
-      { allocatedMinor: 20_000, confirmedMinor: 0 },
-      {
-        incomes: [{ id: "i", amountMinor: 12_000, frequency: "monthly", anchorDate: AS_OF }],
-      },
-    );
-    const plan = computeAccountPlan(account, AS_OF);
-    expect(plan.lines.map((l) => l.fundedFromOwnMinor)).toEqual([10_000, 2_000, 0]);
-    expect(plan.lines.map((l) => l.fundedFromInflowMinor)).toEqual([0, 13_000, 5_300]);
-    expect(plan.lines.map((l) => l.status)).toEqual([
-      "funded", // own money only
-      "awaiting_transfer", // straddles the boundary
-      "awaiting_transfer",
-    ]);
-    expect(plan.shortfallMinor).toBe(0);
-  });
-
-  it("the own/inflow split sums to fundedMonthlyMinor on every line", () => {
-    for (const inflow of [
-      undefined,
-      { allocatedMinor: 8_000, confirmedMinor: 3_000 },
-      { allocatedMinor: 20_000, confirmedMinor: 20_000 },
-      { allocatedMinor: 90_000, confirmedMinor: 0 },
-    ]) {
-      const account = pot(inflow, {
-        incomes: [{ id: "i", amountMinor: 12_000, frequency: "monthly", anchorDate: AS_OF }],
-      });
-      const plan = computeAccountPlan(account, AS_OF);
-      for (const line of plan.lines) {
-        expect(line.fundedFromOwnMinor + line.fundedFromInflowMinor).toBe(line.fundedMonthlyMinor);
-      }
-      expect(plan.totalFundedMinor).toBe(plan.lines.reduce((s, l) => s + l.fundedMonthlyMinor, 0));
-    }
-  });
-
-  it("leftover is the account's own surplus — never inflow it did not spend", () => {
-    // The account that sent the money still reports it as *its* leftover, so
-    // counting it here too would double it in any cross-account total.
-    const plan = computeAccountPlan(pot({ allocatedMinor: 50_000, confirmedMinor: 50_000 }), AS_OF);
-    expect(plan.leftoverMinor).toBe(0);
-    // …and the unspent portion is still recoverable, just not as this account's.
-    const spentFromInflow = plan.lines.reduce((s, l) => s + l.fundedFromInflowMinor, 0);
-    expect(plan.allocatedInflowMinor - spentFromInflow).toBe(19_700);
-  });
-
-  it("own income still becomes leftover, undisturbed by an inflow", () => {
-    const account = pot(
-      { allocatedMinor: 50_000, confirmedMinor: 50_000 },
-      {
-        incomes: [{ id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: AS_OF }],
-      },
-    );
-    const plan = computeAccountPlan(account, AS_OF);
-    // Own income funds all three bills first, so the whole inflow goes unspent.
-    expect(plan.leftoverMinor).toBe(100_000 - TOTAL);
-    expect(plan.lines.every((l) => l.fundedFromInflowMinor === 0)).toBe(true);
-  });
-
-  it("reserves the buffer out of own income only, not out of the inflow", () => {
-    // A shared pot's buffer is already funded as an obligation in the household
-    // plan, so charging it against the arriving money would reserve it twice.
-    const plan = computeAccountPlan(
-      pot({ allocatedMinor: TOTAL, confirmedMinor: TOTAL }, { monthlyBufferMinor: 10_000 }),
-      AS_OF,
-    );
-    expect(plan.bufferMinor).toBe(10_000);
-    expect(plan.shortfallMinor).toBe(0);
-    expect(plan.lines.every((l) => l.status === "funded")).toBe(true);
-  });
-
-  it("clamps an inflow that claims more confirmed than allocated", () => {
-    const plan = computeAccountPlan(
-      pot({ allocatedMinor: 10_000, confirmedMinor: 999_999 }),
-      AS_OF,
-    );
-    expect(plan.confirmedInflowMinor).toBe(10_000);
-    expect(plan.totalFundedMinor).toBe(10_000);
-  });
-
-  it("clamps negative inflow figures to nothing arriving", () => {
-    const plan = computeAccountPlan(pot({ allocatedMinor: -5_000, confirmedMinor: -1 }), AS_OF);
-    expect(plan.allocatedInflowMinor).toBe(0);
-    expect(plan.confirmedInflowMinor).toBe(0);
-    expect(plan.shortfallMinor).toBe(TOTAL);
-  });
-});
-
 // =============================================================================
 // The account plan, as a view of the one pass
 // =============================================================================
@@ -572,74 +165,199 @@ describe("computeAccountPlan — allocated inflow", () => {
  * shows the same numbers because they are the same numbers" is a claim about
  * arithmetic nobody checked.
  */
+/**
+ * The `AccountPlan` `computeAccountPlan` produced for the fixture below, at
+ * `40f65d8` — the commit before it was deleted.
+ *
+ * Captured rather than recomputed, because the engine it came from is gone: a
+ * pin against a function you also deleted is no pin at all, and re-deriving the
+ * expectation from the code under test would make it agree with itself. The one
+ * field dropped is `internalInflowUsedMinor`, which existed solely to feed the
+ * rollup netting deleted with it (see `overviewFromPlans`).
+ */
+const ACCOUNT_ENGINE_AT_40F65D8: AccountPlan = {
+  accountId: "current",
+  asOfDate: "2026-01-01",
+  currency: "GBP",
+  monthlyIncomeMinor: 150000,
+  allocatedInflowMinor: 0,
+  confirmedInflowMinor: 0,
+  bufferMinor: 20000,
+  totalRequiredMinor: 163462,
+  totalFundedMinor: 130000,
+  leftoverMinor: 0,
+  shortfallMinor: 33462,
+  inflowArrivals: [],
+  outboundInflowMinor: 0,
+  outboundInflows: [],
+  lines: [
+    {
+      paymentId: "rent",
+      name: "rent",
+      category: "monthly_recurring",
+      amountMinor: 120000,
+      dueDate: "2026-01-15",
+      targetDate: "2026-01-15",
+      dueDateIsDerived: false,
+      monthsUntilDue: 1,
+      requiredMonthlyMinor: 120000,
+      fundedMonthlyMinor: 120000,
+      fundedFromOwnMinor: 120000,
+      fundedFromInflowMinor: 0,
+      alreadySavedMinor: 0,
+      occurrencesThisMonth: 1,
+      onTrack: true,
+      status: "funded",
+      fixedMonthlyMinor: null,
+      tag: null,
+    },
+    {
+      paymentId: "holiday",
+      name: "holiday",
+      category: "fixed_point",
+      amountMinor: 240000,
+      dueDate: "2027-02-01",
+      targetDate: "2027-02-01",
+      dueDateIsDerived: false,
+      monthsUntilDue: 13,
+      requiredMonthlyMinor: 18462,
+      fundedMonthlyMinor: 10000,
+      fundedFromOwnMinor: 10000,
+      fundedFromInflowMinor: 0,
+      alreadySavedMinor: 0,
+      occurrencesThisMonth: 1,
+      onTrack: false,
+      status: "at_risk",
+      projectedCompletionDate: "2028-01-01",
+      fixedMonthlyMinor: null,
+      tag: null,
+    },
+    {
+      paymentId: "gym",
+      name: "gym",
+      category: "monthly_recurring",
+      amountMinor: 5000,
+      dueDate: "2026-01-01",
+      targetDate: "2026-01-01",
+      dueDateIsDerived: false,
+      monthsUntilDue: 1,
+      requiredMonthlyMinor: 5000,
+      fundedMonthlyMinor: 0,
+      fundedFromOwnMinor: 0,
+      fundedFromInflowMinor: 0,
+      alreadySavedMinor: 0,
+      occurrencesThisMonth: 1,
+      onTrack: false,
+      status: "at_risk",
+      projectedCompletionDate: "2442-09-01",
+      fixedMonthlyMinor: null,
+      tag: null,
+    },
+    {
+      paymentId: "laptop",
+      name: "laptop",
+      category: "fixed_point",
+      amountMinor: 90000,
+      dueDate: "2026-02-01",
+      targetDate: "2026-02-01",
+      dueDateIsDerived: false,
+      monthsUntilDue: 1,
+      requiredMonthlyMinor: 20000,
+      fundedMonthlyMinor: 0,
+      fundedFromOwnMinor: 0,
+      fundedFromInflowMinor: 0,
+      alreadySavedMinor: 0,
+      occurrencesThisMonth: 1,
+      onTrack: false,
+      status: "at_risk",
+      projectedCompletionDate: "9526-01-01",
+      fixedMonthlyMinor: 20000,
+      tag: null,
+    },
+  ],
+};
+
 describe("accountPlanFromScope — a solo user with one account does not move", () => {
   /** Deliberately hostile: the budget runs out mid-order, two payments tie on
    *  priority with sort keys the two engines used to disagree about, a buffer
    *  bites, one payment is retired, and one goal is contribution-capped. */
-  const soloAccount: AccountInput = {
-    accountId: "current",
-    currency: "GBP",
-    monthlyBufferMinor: 20_000,
-    incomes: [{ id: "inc", amountMinor: 150_000, frequency: "monthly", anchorDate: AS_OF }],
-    payments: [
-      {
-        id: "rent",
-        name: "rent",
-        category: "monthly_recurring",
-        amountMinor: 120_000,
-        dueDate: "2026-01-15",
-        priority: 1,
-      },
-      {
-        id: "holiday",
-        name: "holiday",
-        category: "fixed_point",
-        amountMinor: 240_000,
-        targetDate: "2027-02-01",
-        priority: 50,
-      },
-      { id: "gym", name: "gym", category: "monthly_recurring", amountMinor: 5_000, priority: 50 },
-      {
-        id: "laptop",
-        name: "laptop",
-        category: "fixed_point",
-        amountMinor: 90_000,
-        fixedMonthlyMinor: 20_000,
-        dueDate: "2026-02-01",
-        priority: 60,
-      },
-      {
-        id: "retired",
-        name: "retired",
-        category: "monthly_recurring",
-        amountMinor: 99_000,
-        priority: 2,
-        active: false,
-      },
-    ],
-  };
-
   const soloScope: ScopeInput = {
     scopeId: "owner",
     members: [{ userId: "owner", shareBp: 10_000 }],
     accounts: [
       {
-        ...soloAccount,
+        accountId: "current",
+        currency: "GBP",
         role: "personal",
         memberUserId: "owner",
-        payments: soloAccount.payments.map((p) => ({ ...p, scope: "personal" as const })),
+        monthlyBufferMinor: 20_000,
+        incomes: [{ id: "inc", amountMinor: 150_000, frequency: "monthly", anchorDate: AS_OF }],
+        payments: [
+          {
+            id: "rent",
+            name: "rent",
+            category: "monthly_recurring",
+            scope: "personal",
+            amountMinor: 120_000,
+            dueDate: "2026-01-15",
+            priority: 1,
+          },
+          {
+            id: "holiday",
+            name: "holiday",
+            category: "fixed_point",
+            scope: "personal",
+            amountMinor: 240_000,
+            targetDate: "2027-02-01",
+            priority: 50,
+          },
+          {
+            id: "gym",
+            name: "gym",
+            category: "monthly_recurring",
+            scope: "personal",
+            amountMinor: 5_000,
+            priority: 50,
+          },
+          {
+            id: "laptop",
+            name: "laptop",
+            category: "fixed_point",
+            scope: "personal",
+            amountMinor: 90_000,
+            fixedMonthlyMinor: 20_000,
+            dueDate: "2026-02-01",
+            priority: 60,
+          },
+          {
+            id: "retired",
+            name: "retired",
+            category: "monthly_recurring",
+            scope: "personal",
+            amountMinor: 99_000,
+            priority: 2,
+            active: false,
+          },
+        ],
       },
     ],
   };
 
-  const engine = computeAccountPlan(soloAccount, AS_OF);
   const view = accountPlanFromScope(soloScope, computeScopePlan(soloScope, AS_OF), "current");
 
-  it("builds byte-identically the same AccountPlan, field for field", () => {
-    // Every field the account engine published, in its order, to the byte.
+  it("builds byte-identically the AccountPlan the account engine built", () => {
+    // `computeAccountPlan` is deleted (ONE-ENGINE.md, WP-S), so the thing to
+    // compare against is its answer rather than another call to it: this is the
+    // plan it produced for this fixture at `40f65d8`, captured verbatim, less
+    // the `internalInflowUsedMinor` field that died with the rollup netting it
+    // existed to feed. The comparison the pin used to make is preserved exactly
+    // — the same fixture, the same date, the same bytes — and it now survives
+    // the deletion of the engine it was pinning against, which a call could not.
     const same = { ...view };
     delete same.residualMinor;
-    expect(JSON.stringify(same)).toBe(JSON.stringify(engine));
+    expect(same).toEqual(ACCOUNT_ENGINE_AT_40F65D8);
+    // Deep-equal is not the claim; the serialised plan is, field order included.
+    expect(JSON.stringify(same)).toBe(JSON.stringify(ACCOUNT_ENGINE_AT_40F65D8));
   });
 
   it("adds the residual alongside, changing nothing that was already there", () => {
@@ -649,7 +367,7 @@ describe("accountPlanFromScope — a solo user with one account does not move", 
     // is the buffer, and it is a different question with a different answer.
     expect(view.leftoverMinor).toBe(0);
     expect(view.residualMinor).toBe(20_000);
-    expect(engine.residualMinor).toBeUndefined();
+    expect("residualMinor" in ACCOUNT_ENGINE_AT_40F65D8).toBe(false);
   });
 
   it("runs out of money in the same place, on the same bill", () => {
@@ -765,10 +483,10 @@ describe("accountPlanFromScope — arriving money and what it funds", () => {
     expect(plan.totalFundedMinor).toBe(80_000);
     expect(plan.lines.map((l) => l.fundedFromInflowMinor)).toEqual([60_000, 20_000]);
     expect(plan.lines.map((l) => l.status)).toEqual(["awaiting_transfer", "awaiting_transfer"]);
-    // Every arriving pound came from another account of the scope, so the whole
-    // of what the bills consumed is intra-scope movement — read off the pass,
-    // not reconstructed from an assumption about spending order.
-    expect(plan.internalInflowUsedMinor).toBe(80_000);
+    // Every arriving pound came from another account of the scope, and it is
+    // already gone from that account's own surplus — which is why a rollup over
+    // both is a plain sum with nothing left to net (see `overviewFromPlans`).
+    expect(plan.lines.reduce((s, l) => s + l.fundedFromInflowMinor, 0)).toBe(80_000);
   });
 
   it("marks only the line that runs past the confirmed mark", () => {
@@ -785,7 +503,7 @@ describe("accountPlanFromScope — arriving money and what it funds", () => {
     // and nothing about the pot's bills is counted here twice.
     expect(plan.leftoverMinor).toBe(20_000);
     expect(plan.totalRequiredMinor).toBe(0);
-    expect(plan.internalInflowUsedMinor).toBe(0);
+    expect(plan.lines).toEqual([]);
   });
 });
 
