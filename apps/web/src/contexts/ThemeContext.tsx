@@ -11,8 +11,9 @@ export type Theme = "dark" | "light" | "system";
 export type ResolvedTheme = "dark" | "light";
 
 /** The order the toggle walks: the two explicit choices, then "whatever the
- *  machine says". */
-export const THEME_ORDER: readonly Theme[] = ["dark", "light", "system"];
+ *  machine says". Light leads because light is the default — so from a fresh
+ *  install dark is exactly one click away. */
+export const THEME_ORDER: readonly Theme[] = ["light", "dark", "system"];
 
 interface ThemeValue {
   /** The stored choice, including `system`. */
@@ -20,7 +21,7 @@ interface ThemeValue {
   /** `system` resolved against the OS preference; never `system` itself. */
   resolved: ResolvedTheme;
   setTheme: (theme: Theme) => void;
-  /** dark → light → system → dark. */
+  /** light → dark → system → light. */
   cycle: () => void;
 }
 
@@ -30,8 +31,8 @@ interface ThemeValue {
  * not crash.
  */
 const ThemeContext = createContext<ThemeValue>({
-  theme: "dark",
-  resolved: "dark",
+  theme: "light",
+  resolved: "light",
   setTheme: () => {},
   cycle: () => {},
 });
@@ -42,20 +43,23 @@ const isTheme = (value: string | null): value is Theme =>
 function readStored(): Theme {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    // Dark stays the default until the light-first flip; an unset (or corrupt)
-    // preference must not fall through to the OS, or light would arrive
-    // uninvited.
-    return isTheme(stored) ? stored : "dark";
+    // Light is the default now. An unset (or corrupt) preference still resolves
+    // to a fixed theme rather than falling through to the OS: `system` is a
+    // choice you make, not one you inherit, and the stylesheet's `:root` block
+    // has to agree with whatever this returns or the first paint flashes.
+    return isTheme(stored) ? stored : "light";
   } catch {
     // Private-mode Safari and friends: no persistence, still a working toggle.
-    return "dark";
+    return "light";
   }
 }
 
-/** The OS preference, when the browser will say. */
-function prefersLight(): boolean {
+/** The OS preference, when the browser will say. Asked as "is it dark?" to
+ *  match the stylesheet, which now carries light in `:root` and overrides it
+ *  under `@media (prefers-color-scheme: dark)`. */
+function prefersDark(): boolean {
   try {
-    return window.matchMedia("(prefers-color-scheme: light)").matches;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
   } catch {
     return false;
   }
@@ -63,7 +67,7 @@ function prefersLight(): boolean {
 
 /**
  * `system` leaves the attribute off so the stylesheet's
- * `@media (prefers-color-scheme: light)` block can answer; anything else stamps
+ * `@media (prefers-color-scheme: dark)` block can answer; anything else stamps
  * it, which outranks that block in both directions.
  */
 function stamp(theme: Theme): void {
@@ -86,7 +90,7 @@ function stamp(theme: Theme): void {
  */
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(readStored);
-  const [systemLight, setSystemLight] = useState<boolean>(prefersLight);
+  const [systemDark, setSystemDark] = useState<boolean>(prefersDark);
 
   useEffect(() => {
     stamp(theme);
@@ -102,11 +106,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let query: MediaQueryList;
     try {
-      query = window.matchMedia("(prefers-color-scheme: light)");
+      query = window.matchMedia("(prefers-color-scheme: dark)");
     } catch {
       return undefined;
     }
-    const onChange = (event: MediaQueryListEvent): void => setSystemLight(event.matches);
+    const onChange = (event: MediaQueryListEvent): void => setSystemDark(event.matches);
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
   }, []);
@@ -127,7 +131,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const resolved: ResolvedTheme = theme === "system" ? (systemLight ? "light" : "dark") : theme;
+  const resolved: ResolvedTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
 
   return (
     <ThemeContext.Provider value={{ theme, resolved, setTheme, cycle }}>

@@ -3,7 +3,7 @@ import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-route
 import { useAuth } from "../auth/AuthContext.js";
 import { usePrivacy } from "../contexts/PrivacyContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
-import { type Theme, useTheme } from "../contexts/ThemeContext.js";
+import { type Theme, THEME_ORDER, useTheme } from "../contexts/ThemeContext.js";
 import { useChordShortcuts } from "../lib/useChordShortcuts.js";
 
 export function Layout() {
@@ -197,10 +197,11 @@ function navClass({ isActive }: { isActive: boolean }): string {
 const THEME_MARK: Record<Theme, string> = { dark: "●", light: "○", system: "◑" };
 
 /** A three-way cycle has no honest `aria-pressed`, so the label says where the
- *  next press lands. */
+ *  next press lands — read off `THEME_ORDER` rather than restated here, which
+ *  is how it came to promise the wrong stop when the order changed. */
 function themeActionLabel(theme: Theme): string {
-  const next: Record<Theme, Theme> = { dark: "light", light: "system", system: "dark" };
-  return `theme ${theme} — switch to ${next[theme]}`;
+  const next = THEME_ORDER[(THEME_ORDER.indexOf(theme) + 1) % THEME_ORDER.length]!;
+  return `theme ${theme} — switch to ${next}`;
 }
 
 /** Dark, light, or whatever the OS says. In the mobile bar as well as the

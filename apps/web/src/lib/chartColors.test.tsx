@@ -67,7 +67,7 @@ describe("readChartColors", () => {
         --link: #0b0b0b; --accent: #0d0d0d;
         --tag-1: #111111; --tag-2: #222222; --tag-3: #333333;
         --tag-4: #444444; --tag-5: #555555; --tag-6: #666666;
-        --tag-untagged: #777777; --tag-ink: #888888;
+        --tag-untagged: #777777;
         --shadow-tip: 0 4px 14px #999999;
       }
     `);
@@ -81,7 +81,6 @@ describe("readChartColors", () => {
     expect(colors.ink3).toBe("#070707");
     expect(colors.tags).toEqual(["#111111", "#222222", "#333333", "#444444", "#555555", "#666666"]);
     expect(colors.untagged).toBe("#777777");
-    expect(colors.tagInk).toBe("#888888");
     expect(colors.tipShadow).toBe("0 4px 14px #999999");
     // The series ramp is built from the status colours, not a set of its own:
     // funded, accent, link, needs-you, alert.
@@ -114,23 +113,23 @@ describe("useChartColors", () => {
 
   it("re-resolves when the theme changes", () => {
     styleTokens(`
-      :root, :root[data-theme="dark"] { --funded: #7be087; --tag-1: #b89df0; }
-      :root[data-theme="light"] { --funded: #1e7a5a; --tag-1: #6d4ca8; }
+      :root, :root[data-theme="light"] { --funded: #1a6b4f; --tag-1: #6d4ca8; }
+      :root[data-theme="dark"] { --funded: #7be087; --tag-1: #b89df0; }
     `);
     render(
       <ThemeProvider>
         <Probe />
       </ThemeProvider>,
     );
-    expect(screen.getByRole("status")).toHaveTextContent("#7be087 #b89df0");
+    expect(screen.getByRole("status")).toHaveTextContent("#1a6b4f #6d4ca8");
 
     fireEvent.click(screen.getByRole("button", { name: "next theme" }));
-    expect(screen.getByRole("status")).toHaveTextContent("#1e7a5a #6d4ca8");
-
-    // …and back again: dark → light → system (no attribute) → dark.
-    fireEvent.click(screen.getByRole("button", { name: "next theme" }));
-    fireEvent.click(screen.getByRole("button", { name: "next theme" }));
     expect(screen.getByRole("status")).toHaveTextContent("#7be087 #b89df0");
+
+    // …and back again: light → dark → system (no attribute) → light.
+    fireEvent.click(screen.getByRole("button", { name: "next theme" }));
+    fireEvent.click(screen.getByRole("button", { name: "next theme" }));
+    expect(screen.getByRole("status")).toHaveTextContent("#1a6b4f #6d4ca8");
   });
 });
 
