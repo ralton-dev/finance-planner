@@ -3,13 +3,16 @@ import {
   type AccountInput,
   type AccountPlan,
   computeAccountPlan,
+  computeEstatePlan,
   computeHouseholdPlan,
+  type EstatePlan,
   type HouseholdAccountInput,
   type HouseholdInput,
   type HouseholdPlan,
   type IncomeInput,
   type InflowInput,
   type MemberPaydaySchedule,
+  type OutboundInflowInput,
   type PaymentInput,
   splitTransfersByPayday,
   type UpcomingPayment,
@@ -46,8 +49,8 @@ function toIncomeInput(i: Inflow): IncomeInput {
   };
 }
 
-/** An authored inflow, carried through to the engine whole. Inert until WP-G
- *  reads it; the external ones are what `toIncomeInput` plans from today. */
+/** An authored inflow, carried through to the engine whole. The estate pass
+ *  reads the account-sourced ones to work out what has to be planned first. */
 function toInflowInput(i: Inflow): InflowInput {
   return {
     id: i.id,
@@ -58,6 +61,21 @@ function toInflowInput(i: Inflow): InflowInput {
     active: i.active,
     source: i.source,
     sourceAccountId: i.sourceAccountId,
+    priority: i.priority,
+  };
+}
+
+/** The same row read from the account the money leaves: `accountId` is where it
+ *  arrives, which from this end is the destination. */
+function toOutboundInflowInput(i: Inflow): OutboundInflowInput {
+  return {
+    id: i.id,
+    toAccountId: i.accountId,
+    amountMinor: i.amountMinor,
+    frequency: i.frequency,
+    recurrence: i.recurrence,
+    anchorDate: i.anchorDate,
+    active: i.active,
     priority: i.priority,
   };
 }
@@ -137,12 +155,26 @@ export interface PlanContext {
   readonly householdPlans: Map<string, Promise<HouseholdPlan>>;
   readonly confirmations: Map<string, Promise<TransferConfirmation[]>>;
   readonly inflows: Map<string, Promise<AccountInflow | null>>;
+  /** Engine inputs before the estate pass, keyed `accountId@date`. Planning one
+   *  account now reads its senders too, and a chain's accounts share senders. */
+  readonly accountInputs: Map<string, Promise<AccountInput>>;
+  /** Accounts fetched while walking a funding chain upstream. */
+  readonly accounts: Map<string, Promise<Account | null>>;
+  /** Estate passes, keyed by the set of accounts they cover. */
+  readonly estatePlans: Map<string, Promise<EstatePlan>>;
 }
 
 /** A fresh memo. One per request; `buildAccountInput` makes its own when a
  *  caller has nothing to share, so a single-account read needs no ceremony. */
 export function createPlanContext(): PlanContext {
-  return { householdPlans: new Map(), confirmations: new Map(), inflows: new Map() };
+  return {
+    householdPlans: new Map(),
+    confirmations: new Map(),
+    inflows: new Map(),
+    accountInputs: new Map(),
+    accounts: new Map(),
+    estatePlans: new Map(),
+  };
 }
 
 /** Memoised `f`, keyed in `map`. Promises are cached rather than values, so two
@@ -250,16 +282,120 @@ export async function resolveAccountInflow(
 }
 
 /**
- * Load an account's incomes + payments as engine input. Shared by every read
- * that reasons about the account's money — the plan, the projection, the
- * upcoming feed — so they all see the same derived already-saved.
+ * Load one account's incomes, payments and movements as engine input, before
+ * anything is known about the accounts around it.
  *
- * It also fills in what a household has allocated into the account, which is why
- * it needs the as-of date: an account inside a household is not funded by its
- * own income alone, and a bills pot has none at all. Doing it here rather than
- * per call site is the point — every read that reasons about the account's money
- * comes through this function, so none of them can be left planning the account
- * as if the money were not coming.
+ * The household's allocation is filled in here — an account inside a household
+ * is not funded by its own income alone, and a bills pot has none at all — but
+ * what *another account you own* sends is not, because that depends on how the
+ * sender's own month works out. `buildAccountInput` adds it.
+ */
+async function loadAccountInput(
+  store: Store,
+  account: Account,
+  asOfDate: string,
+  ctx: PlanContext,
+): Promise<AccountInput> {
+  return memo(ctx.accountInputs, `${account.id}@${asOfDate}`, async () => {
+    const [inflows, outbound, payments, saved, inflow] = await Promise.all([
+      store.listInflows(account.id),
+      store.listOutboundInflows(account.id),
+      store.listPayments(account.id),
+      savedByPayment(store, account.id),
+      resolveAccountInflow(store, account, asOfDate, ctx),
+    ]);
+
+    return {
+      accountId: account.id,
+      currency: account.currency,
+      monthlyBufferMinor: account.monthlyBufferMinor,
+      incomes: externalOf(inflows),
+      inflows: inflows.map(toInflowInput),
+      outboundInflows: outbound.map(toOutboundInflowInput),
+      payments: payments.map((p) => toPaymentInput(p, saved)),
+      // Only the amounts: the engine never learns who sent it, so no plan
+      // response can leak a household member's name by accident.
+      inflow: inflow
+        ? { allocatedMinor: inflow.allocatedMinor, confirmedMinor: inflow.confirmedMinor }
+        : null,
+    };
+  });
+}
+
+/**
+ * Every account whose month has to be worked out before this one's can be.
+ *
+ * Walks the authored inflows upstream — this account's senders, their senders,
+ * and so on — because an account's funding is the surplus of whatever pays into
+ * it. Downstream accounts are deliberately absent: what this account sends *out*
+ * is decided by its own bills, so nothing below it can change its plan.
+ *
+ * The walk is iterative and guarded by the set it is building, so a circular
+ * estate terminates here rather than in the engine; the loop is then named and
+ * broken by `computeEstatePlan`, which is the thing that can see the whole shape.
+ *
+ * Deliberately does not check the caller's access to the accounts it loads. An
+ * account you can see may be fed by one you cannot, and the amount arriving is
+ * a fact about *your* account — the same reasoning `householdPlanningAccount`
+ * uses to plan a household the caller may not be in. Only the target account's
+ * plan is ever returned to a caller; the senders' plans stay inside the pass.
+ */
+async function fundingClosure(
+  store: Store,
+  account: Account,
+  asOfDate: string,
+  ctx: PlanContext,
+): Promise<AccountInput[]> {
+  const inputs = new Map<string, AccountInput>();
+  const queue: Account[] = [account];
+
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    if (inputs.has(next.id)) continue;
+    const input = await loadAccountInput(store, next, asOfDate, ctx);
+    inputs.set(next.id, input);
+    for (const row of input.inflows ?? []) {
+      if (row.source !== "account" || row.active === false || !row.sourceAccountId) continue;
+      if (inputs.has(row.sourceAccountId)) continue;
+      const sender = await memo(ctx.accounts, row.sourceAccountId, () =>
+        store.getAccount(row.sourceAccountId!),
+      );
+      if (sender) queue.push(sender);
+    }
+  }
+
+  // Sorted so the key below identifies the pass and the pass itself is
+  // reproducible: two accounts of the same estate must not order the same set
+  // differently and disagree about which edge of a loop was broken.
+  return [...inputs.values()].sort((a, b) => (a.accountId < b.accountId ? -1 : 1));
+}
+
+/** The one ordered pass covering `account` and everything that funds it. */
+async function estatePlanFor(
+  store: Store,
+  account: Account,
+  asOfDate: string,
+  ctx: PlanContext,
+): Promise<EstatePlan> {
+  const closure = await fundingClosure(store, account, asOfDate, ctx);
+  const key = `${closure.map((a) => a.accountId).join(",")}@${asOfDate}`;
+  return memo(ctx.estatePlans, key, async () => computeEstatePlan(closure, asOfDate));
+}
+
+/**
+ * An account's engine input, with everything arriving into it settled: the
+ * household's allocation and whatever the accounts feeding it could actually
+ * afford to send.
+ *
+ * Shared by every read that reasons about the account's money — the plan, the
+ * projection, the upcoming feed — so they all see the same derived already-saved
+ * *and* the same money coming in. Doing it here rather than per call site is the
+ * point: every such read comes through this function, so none of them can be
+ * left planning the account as if the money were not coming.
+ *
+ * The input handed back is the one the ordered pass planned from, not a
+ * reconstruction of it, so a caller that plans it again gets the pass's answer
+ * to the penny.
  */
 export async function buildAccountInput(
   store: Store,
@@ -267,30 +403,14 @@ export async function buildAccountInput(
   asOfDate: string,
   ctx: PlanContext = createPlanContext(),
 ): Promise<AccountInput> {
-  const [inflows, payments, saved, inflow] = await Promise.all([
-    store.listInflows(account.id),
-    store.listPayments(account.id),
-    savedByPayment(store, account.id),
-    resolveAccountInflow(store, account, asOfDate, ctx),
-  ]);
-
-  return {
-    accountId: account.id,
-    currency: account.currency,
-    monthlyBufferMinor: account.monthlyBufferMinor,
-    incomes: externalOf(inflows),
-    inflows: inflows.map(toInflowInput),
-    payments: payments.map((p) => toPaymentInput(p, saved)),
-    // Only the amounts: the engine never learns who sent it, so no plan
-    // response can leak a household member's name by accident.
-    inflow: inflow
-      ? { allocatedMinor: inflow.allocatedMinor, confirmedMinor: inflow.confirmedMinor }
-      : null,
-  };
+  const estate = await estatePlanFor(store, account, asOfDate, ctx);
+  // Always present: an account is in its own funding closure.
+  return estate.inputs.find((i) => i.accountId === account.id)!;
 }
 
 /**
- * Compute an account's savings plan.
+ * Compute an account's savings plan, as one slice of the ordered pass over
+ * every account that funds it.
  *
  * Snapshot persistence is intentionally NOT performed here. The plan endpoint
  * is read-only on every browser refresh; writing a row each call turned an
@@ -304,7 +424,8 @@ export async function computePlanForAccount(
   asOfDate: string,
   ctx: PlanContext = createPlanContext(),
 ): Promise<AccountPlan> {
-  return computeAccountPlan(await buildAccountInput(store, account, asOfDate, ctx), asOfDate);
+  const estate = await estatePlanFor(store, account, asOfDate, ctx);
+  return estate.plans.find((p) => p.accountId === account.id)!;
 }
 
 // ---------------------------------------------------------------------------

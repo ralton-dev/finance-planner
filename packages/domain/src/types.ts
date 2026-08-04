@@ -27,11 +27,12 @@ export type InflowSourceKind = "external" | "account";
  * account that owns it and leaves `sourceAccountId`. It is not two records — two
  * could drift apart, one cannot.
  *
- * **The engine does not read this yet.** `computeAccountPlan` still plans from
- * `incomes`, and an account-sourced inflow has no effect on any figure until
- * WP-G teaches the engine to walk the accounts in dependency order. It is
- * carried on `AccountInput` so the records reach the engine unchanged when that
- * lands; setting it today is inert, not wrong.
+ * This is the **arriving** face. `computeAccountPlan` does not read it: what
+ * actually arrives is whatever the sending account could afford to send, which
+ * only the ordered pass over the estate knows (`computeEstatePlan`). The pass
+ * reads these rows to work out which account must be planned before which, then
+ * hands the resulting amount down as `AllocatedInflow`. The **leaving** face is
+ * `OutboundInflowInput`, which the engine does read.
  */
 export interface InflowInput {
   id: string;
@@ -48,6 +49,35 @@ export interface InflowInput {
   /** Rank among the *sending* account's outbound inflows, lower first. It only
    *  ever ranks against other outbound inflows: every expense on the sending
    *  account is funded first, whatever this says (decision 6). */
+  priority?: number;
+}
+
+/**
+ * The same account-sourced inflow, seen from the account the money **leaves**.
+ *
+ * One authored row, read from its other end: `id` is that row's id, so the two
+ * faces can never disagree about how much moves. It is a type of its own rather
+ * than a flag on `InflowInput` because the two faces genuinely differ — arriving
+ * money names where it came from, leaving money names where it goes — and a
+ * single type would have to make both nullable and hope callers read the right
+ * one.
+ *
+ * The engine funds these **after every expense on this account**, in their own
+ * priority order (decision 6): a pot can never starve a real bill, however
+ * eagerly it is ranked.
+ */
+export interface OutboundInflowInput {
+  id: string;
+  /** The account the money arrives in. Never this account. */
+  toAccountId: string;
+  amountMinor: number;
+  frequency: Frequency;
+  recurrence?: Recurrence | null;
+  /** ISO date (YYYY-MM-DD) of the first/next occurrence. */
+  anchorDate: string;
+  active?: boolean;
+  /** Rank among this account's outbound movements, lower first. Defaults to 100,
+   *  matching a payment's default priority. */
   priority?: number;
 }
 
@@ -79,8 +109,9 @@ export interface PaymentInput {
 }
 
 /**
- * Money arriving into the account from outside it this month — today, the slice
- * a household plan has allocated to it (`HouseholdAccountPlan.transferInMinor`).
+ * Money arriving into the account from outside it this month — the slice a
+ * household plan has allocated to it (`HouseholdAccountPlan.transferInMinor`),
+ * plus whatever another account you own actually managed to send it.
  *
  * It exists because an account is not always funded by its own income: a bills
  * pot has none, and planning it from its own incomes alone reports every line at
@@ -96,6 +127,31 @@ export interface AllocatedInflow {
    * lines that lean on it `awaiting_transfer`. Clamped to `allocatedMinor`.
    */
   confirmedMinor: number;
+  /**
+   * Of `allocatedMinor`, the part that arrived from **another account in the
+   * same estate**, itemised by the movement that delivered it. The rest came
+   * from outside the estate — a household member's account — and is not
+   * itemised, because the engine is deliberately never told who sent it.
+   *
+   * Two things need it. A rollup over both ends of a hop has to net internal
+   * movement out or it inflates the estate once per hop (see
+   * `AccountPlan.internalInflowUsedMinor`). And anything asking "what did *this*
+   * movement pay for" needs to be able to take it back out again — otherwise it
+   * has no base to compare against, having already been handed the answer with
+   * the money in it. Absent means nothing internal arrived, which is the case
+   * for every household allocation.
+   */
+  sources?: InflowArrival[];
+}
+
+/** Money one authored movement actually delivered into an account. */
+export interface InflowArrival {
+  /** The authored inflow's id — one row, read from both ends. */
+  inflowId: string;
+  fromAccountId: string;
+  /** What the sending account could afford, which may be less than the row
+   *  asks for. */
+  amountMinor: number;
 }
 
 export interface AccountInput {
@@ -107,12 +163,28 @@ export interface AccountInput {
    *  Every row here is also in `inflows` with `source: "external"`. */
   incomes: IncomeInput[];
   payments: PaymentInput[];
-  /** What the household has allocated into this account. Absent for a
-   *  standalone account, which is funded entirely by its own income. */
+  /** What has been allocated into this account — by a household, by another
+   *  account you own, or both. Absent for a standalone account funded entirely
+   *  by its own income. */
   inflow?: AllocatedInflow | null;
   /** Every inflow authored on this account, external and account-sourced alike.
-   *  Not read by the engine yet — see `InflowInput`. */
+   *  The engine reads only the external ones (through `incomes`); the arriving
+   *  face of an account-sourced row is `computeEstatePlan`'s business — see
+   *  `InflowInput`. */
   inflows?: InflowInput[];
+  /** Account-sourced inflows **leaving** this account. Funded after every
+   *  payment above, in their own priority order (decision 6). */
+  outboundInflows?: OutboundInflowInput[];
+  /**
+   * The accounts in the funding loop this account belongs to, if any, in the
+   * order money would travel round it.
+   *
+   * Worked out by `computeEstatePlan` and carried through the engine untouched,
+   * so that a caller holding nothing but one account's plan still learns its
+   * funding is circular and can name the accounts involved. The engine neither
+   * computes nor acts on it.
+   */
+  fundingCycleAccountIds?: string[];
 }
 
 /**
@@ -178,6 +250,23 @@ export interface PaymentPlanLine {
   tag?: string | null;
 }
 
+/** How one outbound movement fared against the money left after the bills. */
+export interface OutboundInflowPlan {
+  /** The authored inflow's id — the same row the receiving account sees. */
+  inflowId: string;
+  toAccountId: string;
+  /** The movement's monthly amount, normalised the way income is. */
+  requiredMonthlyMinor: number;
+  /** What this account can actually afford to send, after every payment on it
+   *  is funded. Less than required when the money ran out. */
+  fundedMonthlyMinor: number;
+  /** Of `fundedMonthlyMinor`, the part paid for by this account's own income. */
+  fundedFromOwnMinor: number;
+  /** Of `fundedMonthlyMinor`, the part passed on out of arriving inflow. */
+  fundedFromInflowMinor: number;
+  onTrack: boolean;
+}
+
 /** Full computed plan for an account, as of a reference date. */
 export interface AccountPlan {
   accountId: string;
@@ -211,5 +300,39 @@ export interface AccountPlan {
   /** Gap the month's money — own income plus allocated inflow — cannot cover
    *  (>= 0). Inflow that covers the gap takes this to 0. */
   shortfallMinor: number;
+  /**
+   * Of the inflow this account's payments consumed, how much came from another
+   * account in the same estate (see `AllocatedInflow.internalMinor`).
+   *
+   * This is the term `computeOverview` nets out. Allocation that arrived and was
+   * never spent is deliberately excluded: it is still sitting in this account,
+   * and the account that sent it still reports it as its own leftover, so it is
+   * counted exactly once already. What was *spent* is the money counted twice.
+   *
+   * Household-earmarked money is treated as spent before internal money, on the
+   * grounds that it was earmarked for these very bills; internal movement is the
+   * top-up on the end.
+   */
+  internalInflowUsedMinor: number;
+  /** Of `allocatedInflowMinor`, what each movement from another of your accounts
+   *  delivered. Empty unless the ordered pass filled it in. */
+  inflowArrivals: InflowArrival[];
+  /**
+   * Total this account actually sends to other accounts — the sum of
+   * `outboundInflows`' funded amounts.
+   *
+   * **Not** subtracted from `leftoverMinor`, which keeps its meaning: the
+   * account's own income after the account's own obligations. Part of that
+   * leftover is committed to these movements, so the two are not additive —
+   * see the rollup in `computeOverview` for how the estate resolves it.
+   */
+  outboundInflowMinor: number;
+  /** Every movement out of this account, funded from what the payments left.
+   *  Empty for an account that sends nothing anywhere. */
+  outboundInflows: OutboundInflowPlan[];
+  /** Carried straight through from the input: the accounts in the funding loop
+   *  this account is part of. Absent when its funding is acyclic, which is
+   *  almost always. See `AccountInput.fundingCycleAccountIds`. */
+  fundingCycleAccountIds?: string[];
   lines: PaymentPlanLine[];
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { computeAccountPlan, computeOverview, monthlyIncomeMinor } from "./engine.js";
-import type { AccountInput, InflowInput, PaymentInput } from "./types.js";
+import { computeEstatePlan } from "./estate.js";
+import type { AccountInput, InflowInput, OutboundInflowInput, PaymentInput } from "./types.js";
 
 /**
  * The invariant, asserted rather than assumed:
@@ -112,6 +113,44 @@ function chain(): AccountInput[] {
   return [current, pot, savings, isa];
 }
 
+/** The leaving face of a movement — the same row, read from the sender. */
+const leaving = (id: string, amountMinor: number, toAccountId: string): OutboundInflowInput => ({
+  id,
+  toAccountId,
+  amountMinor,
+  frequency: "monthly",
+  recurrence: null,
+  anchorDate: "2026-08-25",
+  active: true,
+  priority: 10,
+});
+
+/**
+ * The same chain with both faces of every movement, and a bill at each stop
+ * small enough that money reaches the end of it. This is the shape the estate
+ * pass plans: one salary, three hops, every pound spent exactly once.
+ */
+function sendingChain(): AccountInput[] {
+  const [current, pot, savings, isa] = chain();
+  return [
+    {
+      ...current!,
+      outboundInflows: [leaving("current->pot", 300_000, "pot")],
+    },
+    {
+      ...pot!,
+      payments: [bill("bills", 100_000, 1)],
+      outboundInflows: [leaving("pot->savings", 200_000, "savings")],
+    },
+    {
+      ...savings!,
+      payments: [bill("emergency fund", 100_000, 1)],
+      outboundInflows: [leaving("savings->isa", 100_000, "isa")],
+    },
+    isa!,
+  ];
+}
+
 describe("the estate-wide money-in invariant", () => {
   it("counts only external inflows, at every depth of the chain", () => {
     const accounts = chain();
@@ -185,54 +224,81 @@ describe("the estate-wide money-in invariant", () => {
 });
 
 /**
- * Evidence for WP-G, not a defect this work fixes.
+ * The rollup double-flavour, and its fix.
  *
  * `computeOverview` sums `totalFundedMinor` (which includes inflow-funded
  * amounts) and `leftoverMinor` (which, by WP-A's deliberate choice, still counts
  * the paying account's money as its own surplus). Per account both are right.
- * Summed, the same pounds are counted at both ends, and the chain does it once
- * per hop.
+ * Summed, the same pounds were counted at both ends, once per hop of the chain —
+ * £11,000 accounted for out of £5,000 earned, at depth three.
  *
- * The overstatement is exactly `Σ allocatedInflowMinor` — pinned below so WP-G
- * can see the number move when it decides what to do.
+ * WP-G nets the intra-estate movement out at rollup time. The netted term is the
+ * inflow the receiving accounts actually **spent**, not the whole allocation:
+ * allocation that arrived and was never needed is still sitting where it landed
+ * and is still counted once, in the sending account's leftover.
  */
-describe("the rollup double-flavour (WP-G's decision, pinned here)", () => {
-  const allocatedChain = (): AccountInput[] => {
-    const [current, pot, savings, isa] = chain();
-    return [
-      current!,
-      { ...pot!, inflow: { allocatedMinor: 300_000, confirmedMinor: 300_000 } },
-      { ...savings!, inflow: { allocatedMinor: 200_000, confirmedMinor: 200_000 } },
-      { ...isa!, inflow: { allocatedMinor: 100_000, confirmedMinor: 100_000 } },
-    ];
+describe("the rollup nets money moving between your own accounts", () => {
+  /** The chain planned as one estate, which is the only way the pass can know
+   *  the movements are internal. Each stop spends exactly what reaches it. */
+  const rolled = () => {
+    const estate = computeEstatePlan(sendingChain(), ASOF);
+    return { estate, bucket: computeOverview(estate.plans, ASOF).perCurrency[0]! };
   };
 
-  it("overstates the estate by the allocated inflow, once per hop", () => {
-    const accounts = allocatedChain();
-    const plans = accounts.map((a) => computeAccountPlan(a, ASOF));
-    const bucket = computeOverview(plans, ASOF).perCurrency[0]!;
+  it("still counts income from external inflows alone", () => {
+    expect(rolled().bucket.monthlyIncomeMinor).toBe(500_000);
+  });
 
-    const allocated = plans.reduce((sum, p) => sum + p.allocatedInflowMinor, 0);
-    expect(allocated).toBe(600_000);
+  it("names the double-counted amount instead of absorbing it", () => {
+    const { estate, bucket } = rolled();
+    const raw = estate.plans.reduce((sum, p) => sum + p.leftoverMinor, 0);
 
-    // Income is right. Everything derived from it is not.
-    expect(bucket.monthlyIncomeMinor).toBe(500_000);
-    expect(bucket.totalFundedMinor).toBe(700_000);
-    // The current account still reports the money it is sending as its own
-    // surplus — it has no idea the money left.
-    expect(bucket.leftoverMinor).toBe(400_000);
+    // The un-netted figures, unchanged: every per-account number is still right
+    // on its own, which is why the fix belongs in the rollup and nowhere else.
+    // The current account still reports the money it sent as its own surplus.
+    expect(bucket.totalFundedMinor).toBe(400_000);
+    expect(raw).toBe(400_000);
+    // £8,000 accounted for out of £5,000 earned — the old answer.
+    expect(bucket.totalFundedMinor + raw).toBe(800_000);
 
-    // £11,000 accounted for out of £5,000 earned. The gap is the allocation,
-    // counted once at each end of every hop.
-    expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(1_100_000);
-    expect(bucket.totalFundedMinor + bucket.leftoverMinor - bucket.monthlyIncomeMinor).toBe(
-      allocated,
-    );
-
-    // What a netted rollup would say — and what makes it add up: money in is
-    // funded plus left over, no more.
-    expect(bucket.totalFundedMinor + bucket.leftoverMinor - allocated).toBe(
+    // And the gap is exactly what moved between the user's own accounts: £1,000
+    // spent at each of the three stops down the chain.
+    expect(bucket.intraEstateMovementMinor).toBe(300_000);
+    expect(bucket.totalFundedMinor + raw - bucket.intraEstateMovementMinor).toBe(
       bucket.monthlyIncomeMinor,
     );
+  });
+
+  it("makes the estate add up: funded plus left over is what came in", () => {
+    const { bucket } = rolled();
+    expect(bucket.leftoverMinor).toBe(100_000);
+    expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(bucket.monthlyIncomeMinor);
+  });
+
+  it("holds at every depth of the chain, not just the end of it", () => {
+    // Two hops and four: the same identity, so the error cannot be hiding in
+    // the fixture's length.
+    for (const depth of [2, 3, 4]) {
+      const estate = computeEstatePlan(sendingChain().slice(0, depth), ASOF);
+      const bucket = computeOverview(estate.plans, ASOF).perCurrency[0]!;
+      expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(bucket.monthlyIncomeMinor);
+    }
+  });
+
+  it("leaves a household allocation alone, because it is not the estate's money", () => {
+    // Nothing in this rollup sent it, so there is nothing to net: a pot funded
+    // by a partner's account rolls up exactly as it did before WP-G.
+    const [current, pot] = chain();
+    const plans = [
+      computeAccountPlan(current!, ASOF),
+      computeAccountPlan(
+        { ...pot!, inflow: { allocatedMinor: 300_000, confirmedMinor: 300_000 } },
+        ASOF,
+      ),
+    ];
+    const bucket = computeOverview(plans, ASOF).perCurrency[0]!;
+    expect(bucket.intraEstateMovementMinor).toBe(0);
+    expect(bucket.leftoverMinor).toBe(400_000);
+    expect(bucket.totalFundedMinor).toBe(400_000);
   });
 });

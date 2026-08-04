@@ -331,6 +331,11 @@ describe("computeAccountPlan — allocated inflow", () => {
       totalFundedMinor: 25_900,
       leftoverMinor: 69_100,
       shortfallMinor: 0,
+      internalInflowUsedMinor: 0,
+      inflowArrivals: [],
+      outboundInflowMinor: 0,
+      outboundInflows: [],
+      fundingCycleAccountIds: undefined,
       lines: [
         {
           paymentId: "phone",
