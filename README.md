@@ -8,9 +8,11 @@ left over — per account and across all accounts.
 **The unit of planning is the user, not the account.** An account is a location
 money sits in, not a planning universe: a bills pot fed by your current account
 is funded out of that account's surplus, so the two cannot be planned
-independently. One dependency-ordered pass covers everything you own. Money
-arriving from outside is income; money you move between two of your own accounts
-is not — it is your own money, moved.
+independently. One funding pass covers everything you own, and every screen —
+the account page, the household page, the flow diagram, the forecast — is a
+**view** of that one pass rather than a calculation of its own. Money arriving
+from outside is income; money you move between two of your own accounts is not —
+it is your own money, moved.
 
 Multi-user with shared **households**, cross-account **projects**, and a
 **savings engine** that prioritises goals, surfaces shortfalls, and projects
@@ -22,8 +24,10 @@ and mark expenses shared or personal. The engine then splits shared costs by
 share, funds across all accounts by priority, and works out the **transfers**
 each person should make into each account. A household is an **attribution
 layer** — whose money this is, who bears a cost, how a shared cost splits —
-never a boundary on which accounts take part in the plan. "Not in a household"
-means "no sharing rules apply".
+never a boundary on which accounts take part in the plan, and never a
+calculation boundary either: a household is the same pass with sharing rules,
+and a solo user is a household of one at a 100% share. "Not in a household"
+means "no sharing rules apply", not "planned by something else".
 
 The plan is grounded in reality by a **contributions ledger**: record what you
 actually set aside, check in your real balance, tick off transfers, and close
@@ -37,6 +41,9 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 - **UI redesign plan (delivered, WP-0…WP-8):** [`REDESIGN.md`](./REDESIGN.md)
 - **Inflows plan (delivered):** [`INFLOWS.md`](./INFLOWS.md), which supersedes
   [`HOUSEHOLD-CONTEXT.md`](./HOUSEHOLD-CONTEXT.md)
+- **One-engine plan (delivered, WP-O…WP-U):** [`ONE-ENGINE.md`](./ONE-ENGINE.md),
+  which supersedes the two-engine architecture the way `INFLOWS.md` superseded
+  `HOUSEHOLD-CONTEXT.md`
 - **Contributing:** [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - **Licence:** [MIT](./LICENSE)
 
@@ -53,18 +60,25 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   account and leaving the other. Total money in comes only from the external
   ones, so a current → pot → ISA chain reports one salary rather than three;
   everything else is redistribution of money already counted.
-- **Movements are authored from the account page** — what arrives here, what
+- **A pot with bills and no income feeds itself.** You do not author "£300 a
+  month into the bills pot" and hope it covers the bills — the plan reads the
+  bills and says the transfer is £303.20. Every expense-bearing account is fed
+  this way, household or not, and nobody writes the transfer down. What you owe
+  changes, and so does the transfer.
+- **Movements you author are savings** — a sweep into an ISA, a standing amount
+  into a holiday pot. Authored from the account page: what arrives here, what
   leaves here, and a drawer to add, change or call one off from either end.
   Authoring takes edit on _both_ accounts (a view grant says you may see my
   money, not that you may spend it); removing takes edit on either, because
   releasing a claim can harm neither end. The picker offers same-currency
   accounts only and the API refuses a cross-currency movement outright — there
   is no exchange rate anywhere in this system.
-- **Expenses before movements.** An account's own payments are all funded before
-  anything it sends onward, whatever the priority numbers say, so a pot can
-  never starve a bill. Money cannot be spent twice at any depth either: a £300
-  movement out of an account with £120 left after its bills moves £120, and says
-  so.
+- **Expenses beat savings, always.** Your bills and your household's share one
+  priority order and intertwine — either can outrank the other — and every one
+  of them is funded before a penny goes to savings, whatever priority the
+  movement carries. So a pot can never starve a bill. Money cannot be spent
+  twice at any depth either: a £300 movement out of an account with £120 left
+  after its bills moves £120, and says so.
 - **Funding loops are detected, not refused.** A → B → C → A is a property of
   the estate rather than of whichever row happened to be saved last, so it is
   found when the plan is computed, reported with the accounts in the order money
@@ -83,17 +97,25 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 
 **Household**
 
-- An account inside a household is planned _with what arrives_. The household's
-  allocation is resolved once, at the point every read shares, so the plan
-  endpoint, the projection, the what-if preview, the upcoming feed, the overview
-  and the digest all see the same figure rather than six that can drift.
+- **The household page and the account page cannot disagree.** They are not two
+  computations reconciled after the fact; they are two views of one pass, so an
+  account's left over is the same number on the household plan, on the account's
+  own page and in the flow diagram — pinned to the penny by
+  `packages/domain/src/parity.test.ts`. The plan endpoint, the projection, the
+  what-if preview, the upcoming feed, the overview and the digest all read that
+  same pass rather than six figures that can drift.
 - Shared-pot vs personal accounts, per-member contribution shares, and
   shared vs personal expenses. Shared costs split by share; personal costs land
   on their bearer. Each share is rounded **up** to the penny, so a pot ends the
   month a few pence over rather than a bill ending it a penny short.
-- Derived **transfers**: who moves what into which account each month.
+- Derived **transfers**: who moves what into which account each month. The same
+  mechanism that feeds a solo user's pots — a household only changes whose
+  obligation each transfer settles.
 - **Payday-anchored schedule** splits each transfer across that member's actual
   pay dates, derived from the incomes on their personal accounts.
+- Savings leaving a household account show as one **committed** total rather
+  than itemised, and the headline left over is what is free after it. Which ISA
+  somebody sweeps into is the account's business; the flow diagram itemises it.
 - Household-wide month closes.
 
 **Reality loop**
@@ -114,6 +136,13 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   with no household anywhere. What gets booked is what actually arrived rather
   than what the row asks for, so a sender that could only spare £120 of an
   authored £300 records £120.
+- **So does confirming a transfer the plan derived for you.** A feed into a pot
+  that nobody authored is a confirmation in its own right, scoped by its two
+  accounts, its month and the person moving the money — no household anywhere,
+  no authored row to hang it on (migration `0010`, and
+  `POST /api/accounts/:id/transfers/confirm`). It is listed as something to do
+  on the Overview and in the digest, with the payday it is anchored to; the tick
+  itself is not wired up yet — see `BACKLOG.md`.
 - **Month closes** freeze income / planned / saved for a month, and the
   **savings scorecard** shows the resulting savings rate per month.
 - **Net-worth chart** built from balance check-ins, one line per currency,
@@ -129,8 +158,9 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   one balance check-in.
 - **Upcoming payments** feed (default 14 days) on the Overview, and an opt-in
   **daily email digest** covering the next 7 days of bills, plus the money this
-  month funds and nobody has said they moved — household transfers with their
-  payday, your own movements without one.
+  month funds and nobody has said they moved — derived transfers with the payday
+  they are anchored to, household or not, and your own authored movements
+  without one, because a movement says only that it happens each month.
 
 **Insight**
 
@@ -200,14 +230,39 @@ Browser ──/api──▶ api (gateway/BFF) ──┬─ core domain (accounts
 - **Calculation engine** is a pure library (`packages/domain`) — takes an
   explicit `asOfDate`, never reads the wall clock, exhaustively unit-tested
   (≥95% lines / ≥80% branches, gated in CI).
-- **One pass over the estate, not one per account.** `computeEstatePlan`
-  (`packages/domain/src/estate.ts`) sorts the accounts a person owns into
-  dependency order, senders first, and carries what each can actually afford
-  down to the next; `computePlanForAccount` is a view onto that pass rather than
-  a calculation of its own. Traversal is iterative, so a deep chain is a long
-  estate and not a stack overflow. Inflow is resolved once at
-  `buildAccountInput` — the choke point every read shares — which is the only
-  way six call sites cannot drift apart.
+- **One funding pass over a scope; everything else is a view of it.**
+  `computeScopePlan` (`packages/domain/src/scope.ts`) takes a set of accounts
+  and the members whose money they are, partitions them by currency, and runs
+  four phases per partition: **attribute** every active payment to members
+  (shares for a shared cost, the bearer for a personal one); **fund** those
+  obligations out of pooled member budgets in one global priority order, with
+  household-shared and personal intertwined; **derive** the transfers that
+  funding implies, which is how an account with bills and no income is fed; then
+  fund **authored movements as savings**, last, out of what is left. One funding
+  loop, one derivation of leftover, one concept of money crossing an account
+  boundary.
+- **A household is a scope with sharing rules; a solo user is a household of one
+  at a 100% share** — the same pass, degenerate attribution. Attribution decides
+  whose money a figure is, never which accounts get planned or by what.
+- **The views own no arithmetic.** `accountPlanFromScope` (`engine.ts`),
+  `householdPlanFromScope` (`household.ts`), `flowFromScope` (`flow.ts`) and
+  `computeScopeProjection` (`projection.ts`) sum and pass through decisions the
+  pass has already made; none of them funds anything. That is why the account
+  page, the household page and the flow diagram print one number rather than
+  three derivations of it — asserted to the penny in
+  `packages/domain/src/parity.test.ts`, which was written against the two-engine
+  tree and observed failing there. The API builds one scope per request
+  (`apps/api/src/plan.ts`), closing over funding edges _and_ household
+  assignment, so which accounts are planned together is a property of the
+  accounts rather than of the question asked about them.
+- **Savings can loop; expense transport cannot.** An authored movement spends
+  what its sending account has left, so A → B → C → A is a real cycle: found
+  when the plan is computed, reported with the accounts in the order money
+  travels, and broken at one edge so everything else still plans. Traversal is
+  iterative, so a deep chain is a long estate and not a stack overflow
+  (`estate.ts`). A derived transfer is paid out of a member budget settled
+  before any transfer is derived, so each member's transfers form a star of
+  depth one and there is no order to be circular.
 - **Persistence** behind a `Store` interface (`packages/data`) with two
   implementations: `PgStore` (Drizzle + Postgres) and `MemoryStore` (tests
   and DB-less local dev). Services pick `PgStore` when `DATABASE_URL` is set.
@@ -230,7 +285,7 @@ packages/
   policies  per-request authorisation rules (action + subject)
   security  scrypt password hashing, HS256 JWT (jose), TOTP
   mailer    Mailer interface + SmtpMailer (nodemailer) / LogMailer fallback
-db/          SQL migrations (0001_init.sql … 0009_standalone_confirmations.sql) + seed
+db/          SQL migrations (0001_init.sql … 0010_derived_confirmations.sql) + seed
 deploy/
   local/     docker-compose stack, compose nginx, kind helper
   helm/      cloud-agnostic chart (services, ingress, migrate Job, HPA, PDB, …)

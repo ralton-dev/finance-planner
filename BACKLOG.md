@@ -6,59 +6,75 @@ endorsement.
 
 ## Product
 
-- **SHIP-BLOCKING — a household plan cannot see money leaving the household, and
-  overstates what its accounts hold.** `HouseholdAccountInput`
-  (`packages/domain/src/household.ts:38`) carries `incomes` and `payments` and
-  has no word for inflows; `buildHouseholdInput` (`apps/api/src/plan.ts:694`)
-  fills it with `externalOf(inflows)`, so an authored movement _out_ of a
-  household account into an account outside the household is invisible to the
-  household engine. Measured in a browser on the same account: **left over
-  £2,793** on the household plan page against **£2,093** on the flow diagram —
-  the difference is exactly the movements the household plan has never heard of.
-  Four things make this urgent rather than a nit:
-  - **The error runs in the dangerous direction.** The household page overstates
-    the money in an account. An understatement is a nuisance; an overstatement
-    is a household spending money that is already committed.
-  - **This work created the exposure.** Account-sourced inflows did not exist
-    before it, so a household plan could not be wrong about them. The
-    source-account picker offers any account the caller can edit, household-
-    assigned ones included, so authoring one movement out of a household account
-    is enough to trigger it. Reachable through the UI, not theoretical.
-  - **It is the original defect with the arrow reversed.**
-    `HOUSEHOLD-CONTEXT.md` opens with "an account assigned to a household is
-    planned twice, by two engines that never speak". This work fixed household →
-    account, the pot that could not see its funding, and left account →
-    household. The remedy is the same class: fix it in the plan, never in
-    presentation (`INFLOWS.md` decision 2 — two sources of truth is the defect
-    being avoided).
-  - **There was an early warning.** WP-B reported that
-    `packages/domain/src/household.ts:420` computes a second, structurally
-    different `leftoverMinor` — `income + tin - tout - fout` — from the engine's,
-    and judged it pre-existing and out of scope. It was, and the judgement was
-    right at the time; it stopped being harmless the moment movements became
-    authorable. That line is where the reconciliation has to start.
+The first four entries are **defects the one-engine work created**, not polish.
+Each was found in source by the agents that built the scope pass and verified
+again when it closed ([`ONE-ENGINE.md`](./ONE-ENGINE.md)). A follow-up package is
+expected to take them together: they touch the same DTOs and the same pass, and
+picking this class of thing up piecemeal is how the two-engine split survived a
+whole plan.
 
-  Fixing it needs a decision about what a household plan _means_ once its
-  accounts can send money outside it — is an outbound movement an obligation of
-  the household, or of the member who authored it? **A new plan is being written
-  for this.** It is not loose work to be picked up piecemeal.
-
-- **The household projection is blind the same way.**
-  `computeHouseholdProjection` (`packages/domain/src/projection.ts:584`) takes
-  the same `HouseholdInput`, so every simulated month inherits the entry above:
-  the household forecast ignores every authored movement, while
-  `computeEstateProjection` beside it re-plans them each month. Two forecasts of
-  the same accounts therefore disagree for the same reason the two plans do.
-  Fix the input shape and this follows.
+- **A derived transfer cannot be confirmed from the app.**
+  `POST /api/accounts/:id/transfers/confirm` (`apps/api/src/server.ts:1570`)
+  requires `fromAccountId` and matches the planned transfer on it — but the
+  member variant of `PlanInflowSource` (`apps/api/src/plan.ts:125`, built at
+  `apps/api/src/plan.ts:713`) has no such field: an account plan names the
+  _member_ sending, never the account they send from. There is nothing on the
+  wire to post, so `derivedTransferItems` (`apps/web/src/lib/needsYou.ts:483`)
+  renders the row with no action rather than a button that cannot work — the
+  comment there says so. Everything else is in place: migration `0010`, the
+  store paths, the endpoint, and typed, tested client methods
+  (`confirmDerivedTransfer` / `unconfirmDerivedTransfer`,
+  `apps/web/src/lib/api.ts:457`). The fix is `fromAccountId` on
+  `inflowSourcesFor`'s map and on `PlanInflowSource`'s member variant.
+- **`householdPlanFromScope` mixes two scopes in one response.**
+  `packages/domain/src/household.ts:214-228`: `members` comes straight off the
+  partition, so a member's `obligationMinor`, `fundedMinor` and
+  `shortfallMinor` are **whole-scope** figures, while `lines`,
+  `totalRequiredMinor` and `totalFundedMinor` are restricted to the household's
+  own accounts. Measured in a browser: a person's costs exceeded everything the
+  cost breakdown could explain, and the unexplained tail painted red on a month
+  with a shortfall of zero. WP-T patched the symptom where it showed
+  (`elsewhereMinor` in `apps/web/src/lib/tags.ts`, quiet and never red); the DTO
+  still publishes two scopes side by side without saying which is which. Fixing
+  it means deciding what a member's obligation _means_ when the same pass funds
+  their bills on an account this household cannot see — restrict the figure, or
+  publish both and name them.
+- **`confirmedInflowMinor` conflates two questions.**
+  `packages/domain/src/scope.ts:802-803` adds derived-transfer confirmations and
+  authored-arrival confirmations into one total, and `accountPlanFromScope`
+  (`packages/domain/src/engine.ts:216-224`) tests each line's
+  `fundedFromInflowMinor` against a running sum of it. So confirming an authored
+  movement into a pot can flip a line actually fed by an **unconfirmed** derived
+  transfer from `awaiting_transfer` to `funded` — amber to green on money nobody
+  has moved. The two kinds of arrival need separate totals, and a line's status
+  needs to ask about the one that funded it.
+- **One member vector per scope.** `computeScopePlan`
+  (`packages/domain/src/scope.ts:421-423`) holds a single ordered list of members
+  with one share weight each, and `scopeMembers` (`apps/api/src/plan.ts:476`)
+  unions the rosters of every household the scope closed over. Two households
+  joined into one connected component by a single authored movement between
+  their accounts therefore get **both** rosters, and a `scope: "shared"` payment
+  splits across all of them, including people with no claim on it. No fixture
+  reaches it today. The fix is per-payment share weights inside the pass rather
+  than one vector for the whole scope; it pairs with the two-households entry
+  below.
+- **Cosmetic, and pre-existing: a household's transfer table can name an account
+  it cannot see.** `householdPlanFromScope`
+  (`packages/domain/src/household.ts:269-276`) keeps a transfer with _either_ end
+  inside the household but publishes only the household's own accounts, so a
+  transfer whose far end sits outside renders as "Ben → account £303.20" in
+  `TransferChecklist` and in `needsYou`. Either carry the far end's name — it is
+  another household's business, so probably not — or say plainly that the money
+  leaves.
 - **An account in two households is planned by whichever assigned it first.**
-  `householdPlanningAccount` (`apps/api/src/plan.ts:203`) looks from the account
+  `householdPlanningAccount` (`apps/api/src/plan.ts:253`) looks from the account
   outwards — the households its owner belongs to, then the households it is
   shared into — and takes the first that has actually assigned it a role. That
   is deterministic but arbitrary: an account genuinely assigned in two
-  households gets one of them, and the other's allocation never reaches its
-  plan. `GET /api/flow` inherits it through `householdAllocations`
-  (`apps/api/src/plan.ts:517`). Fixing it means deciding what two allocations
-  into one account add up to — a product question, not a lookup bug.
+  households gets one of them, and the other's sharing rules never reach it. The
+  scope loader takes that answer, so every surface reading the pass inherits it.
+  Fixing it means deciding what two sets of sharing rules over one account add
+  up to — a product question, not a lookup bug.
 - **Saved flow scopes are browser-local.** `apps/web/src/lib/scopes.ts` keeps
   named scopes in `localStorage` beside the theme and the privacy toggle,
   because a scope decides how you are looking rather than anything about
@@ -77,15 +93,30 @@ endorsement.
   comment. Relinking needs the import to match contributions back to the
   confirmation that produced them, and nothing in the file identifies that
   today.
+- **A derived transfer you confirmed does not survive an export.**
+  `apps/api/src/portability.ts:95-99` skips every confirmation without an
+  `inflowId`, and the export schema hangs confirmations off
+  `exportAccountInflow` (`packages/contracts/src/index.ts:462-481`) — an
+  authored movement. A confirmation of a transfer the _pass_ derived has no
+  authored row to hang on, so "I moved the money" for a pot fed automatically is
+  dropped on the way out and the restore reads `awaiting_transfer` for a month
+  that was settled. Carrying it needs a new top-level field on the export
+  schema, keyed the way the confirmation itself is: two accounts, a month and a
+  member.
 - **Household plan — effective-dated contribution shares.** A member's share is
   a single current value (`household_memberships.contribution_share_bp`). The
   planner is forward-looking, so changing 60/40 → 66/34 just updates the split
   from now on; past splits aren't retained. Storing dated rows + resolving the
   active one at `asOfDate` would add history (pairs with the share-change audit
   log below).
-- **Household plan — multi-currency households.** `computeHouseholdPlan` assumes
-  one currency across a household's accounts (it labels output with the first
-  account's currency). Mixed-currency households need the FX work below first.
+- **Household plan — multi-currency households.** The pass partitions by
+  currency and plans each partition on its own (`ONE-ENGINE.md` decision 10), so
+  nothing derived crosses a currency and every figure is honest as far as it
+  goes. `scopeForHousehold` (`apps/api/src/plan.ts:571`) then picks one
+  partition — the currency of the roster's first account — and
+  `householdPlanFromScope` reports that one, so a household whose accounts span
+  two currencies has the rest silently absent from its plan. Presenting one
+  needs the FX work below first.
 - **Household plan — shared-pot income.** Income on a _shared_ account is
   uncommon and currently accumulates as pot surplus rather than reducing each
   member's contribution. If joint accounts start receiving income directly,
@@ -106,7 +137,7 @@ endorsement.
   Per-slice confirmations would need the schedule to be stable enough to
   reference — today it is derived fresh on every read. A movement between two
   accounts you own is monthly for a different and deliberate reason: it carries
-  no date at all (`apps/api/src/notify.ts:47`), because it says only that it
+  no date at all (`apps/api/src/notify.ts:49`), because it says only that it
   happens each month and inventing a day would be a fact the plan does not hold.
   Any per-slice design has to answer both cases, not just the household one.
 - **Upcoming feed skips undated recurring bills.** `packages/domain/src/upcoming.ts`
@@ -211,14 +242,26 @@ endorsement.
   movement inside one household. Either wire the account-scoped read up or
   delete the method; a typed, unused client method is a claim the app does not
   make.
-- **`packages/domain/src/projection.ts` is invisible to `grep` and `rg`.** It
-  contains a literal NUL byte at offset 22393 — a deliberate key separator in
-  the template literal at `lineKey()`, line 571 — so `grep` skips the file
-  silently (exit 1, no output at all) and `rg` prints `binary file matches`
-  instead of the lines. Searching it needs `grep -a` / `rg --text`, and nothing
-  tells you that until you notice the projection engine never appears in any
-  result. It has already cost one contributor time. Swapping the separator for
-  an ordinary character removes the trap.
+- **Two DTOs make the web layer re-derive figures the pass already holds.**
+  `HouseholdAccountPlan` (`packages/domain/src/household.ts:85`) carries no
+  `movementInMinor`, and `AccountPlan` (`packages/domain/src/types.ts:224`) no
+  `transferOutMinor`, though `ScopeAccountPlan` computes both. So `arrivingMinor`
+  (`apps/web/src/lib/flow.ts:123`) and `derivedTransferOutMinor`
+  (`apps/web/src/components/AccountMovements.tsx:436`) rearrange each plan's
+  published identity to recover them. Both are correct, both say in a comment
+  that carrying the field directly would be better, and both are a place where a
+  future change to the identity breaks a caller silently rather than at the type
+  level.
+- **`MemoryStore.deleteAccount` leaves contributions Postgres would cascade.**
+  `packages/data/src/memory-store.ts:486-488` drops every transfer confirmation
+  touching the account, but only deletes contributions whose own `accountId` is
+  the account — so a contribution sitting on a _third_ account and carrying the
+  `transferConfirmationId` of a deleted confirmation survives, pointing at
+  nothing. `PgStore` gets it for free from
+  `core.contributions.transfer_confirmation_id … ON DELETE CASCADE`
+  (`db/migrations/0004_reality_loop.sql:37`). Pre-existing; the contract test
+  does not reach it because nothing in it books a contribution against a third
+  account.
 - **Inline edit affordance for amounts.** Today changing an income/payment
   amount opens the full drawer; a click-to-edit on the row would be slicker.
   Same for moving a payment to a project or another account — both work in the

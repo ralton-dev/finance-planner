@@ -413,9 +413,9 @@ describe("flowFromScope — a member who has to consolidate first", () => {
  * The specification of `parity.test.ts`, satisfied.
  *
  * That file asserts three figures equal to the penny — the household plan's
- * figure for an account, the flow residual, and the account plan — and is landed
- * `it.fails` against the two engines it names, which cannot agree. Here the same
- * three figures come off one pass, through the three views this package builds,
+ * figure for an account, the flow residual, and the account plan — and was
+ * landed `it.fails` against the two engines it names, which could not agree.
+ * Here the same figures come off one pass, through the three views this builds,
  * and they are the same number because they *are* the same number.
  *
  * Both directions are pinned, because the disagreement had two of them:

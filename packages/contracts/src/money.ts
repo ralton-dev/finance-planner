@@ -16,9 +16,9 @@
  * only when every share divides exactly, and otherwise overshoot it by up to
  * `weights.length - 1` minor units, which lands in the pot as reserve.
  *
- * The household engine splits each obligation on its own and sums, so the
- * overshoot accumulates per line, not per member per month. That is intended;
- * see `computeHouseholdPlan`.
+ * The scope pass splits each obligation on its own and sums, so the overshoot
+ * accumulates per line, not per member per month. That is intended; see
+ * `computeScopePlan`.
  *
  * Non-positive total weight falls back to an equal split — defensive; the
  * engine pre-normalises.

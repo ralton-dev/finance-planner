@@ -1853,8 +1853,8 @@ describe("api service", () => {
       await app.inject({ method: "GET", url: `/api/accounts/${h.bills.id}/plan`, headers: h.auth })
     ).json();
 
-    // The two engines now agree: what the household allocates is what the
-    // account plans with, and the pot's own income is still nothing.
+    // One pass, read twice: what the household attributes is what the account
+    // plans with, and the pot's own income is still nothing.
     expect(plan.monthlyIncomeMinor).toBe(0);
     expect(plan.allocatedInflowMinor).toBe(pot.transferInMinor);
     expect(plan.confirmedInflowMinor).toBe(0);
