@@ -1523,7 +1523,7 @@ describe("api service", () => {
 
   it("reports a confirmed movement as funded rather than awaiting for ever", async () => {
     const { auth } = await seedUser(store);
-    const { pot, movement } = await seedFundedMovement(auth, [
+    const { current, pot, movement } = await seedFundedMovement(auth, [
       { name: "Council tax", amountMinor: 15000, priority: 1 },
     ]);
     const planOf = async () =>
@@ -1544,8 +1544,19 @@ describe("api service", () => {
     const after = await planOf();
     expect(after.confirmedInflowMinor).toBe(20000);
     expect(after.lines[0].status).toBe("funded");
-    // Nobody else is involved, so there is no household and no member to name.
-    expect(after.inflowSources).toBeNull();
+    // Nobody else is involved, so there is no household and no member to name —
+    // but there is very much a sender, and it is one of the caller's own
+    // accounts. Membership of a household was never what made that safe to say.
+    expect(after.inflowSources).toEqual([
+      {
+        kind: "account",
+        inflowId: movement.id,
+        fromAccountId: current.id,
+        accountName: "current",
+        amountMinor: 20000,
+        confirmedMinor: 20000,
+      },
+    ]);
   });
 
   it("closes a standalone pot's month on its own income plus what moved into it", async () => {
@@ -2585,6 +2596,569 @@ describe("api service", () => {
   });
 });
 
+/**
+ * The inflow routes: authoring money arriving, from outside the estate or from
+ * another account you own. Everything WP-F, WP-G and WP-H built was reachable
+ * only through the Store until these existed.
+ */
+describe("inflows over HTTP", () => {
+  let store: MemoryStore;
+  let app: ReturnType<typeof buildServer>;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    app = buildServer({ store, env, registerAuthProxy: false });
+  });
+
+  const makeAccount = async (auth: { authorization: string }, name: string) =>
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name, currency: "GBP" },
+      })
+    ).json();
+
+  const movementBody = (sourceAccountId: string, over: object = {}) => ({
+    name: "Monthly top-up",
+    source: "account",
+    sourceAccountId,
+    amountMinor: 20000,
+    frequency: "monthly",
+    anchorDate: "2026-01-01",
+    priority: 50,
+    ...over,
+  });
+
+  it("authors a movement, and both ends read the same row", async () => {
+    const { auth } = await seedUser(store);
+    const current = await makeAccount(auth, "current");
+    const pot = await makeAccount(auth, "pot");
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/inflows`,
+      headers: auth,
+      payload: movementBody(current.id),
+    });
+    expect(created.statusCode).toBe(201);
+    const movement = created.json();
+    expect(movement.source).toBe("account");
+    expect(movement.sourceAccountId).toBe(current.id);
+    expect(movement.priority).toBe(50);
+
+    // One row, two faces: arriving on the pot, leaving the current account.
+    const arriving = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${pot.id}/inflows`,
+      headers: auth,
+    });
+    expect(arriving.json().map((i: { id: string }) => i.id)).toEqual([movement.id]);
+    const leaving = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${current.id}/inflows/outbound`,
+      headers: auth,
+    });
+    expect(leaving.json().map((i: { id: string }) => i.id)).toEqual([movement.id]);
+    // ...and nothing arrives into the sender.
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `/api/accounts/${current.id}/inflows`,
+          headers: auth,
+        })
+      ).json(),
+    ).toEqual([]);
+  });
+
+  it("authors an external inflow the income routes can see", async () => {
+    const { auth } = await seedUser(store);
+    const account = await makeAccount(auth, "current");
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/inflows`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().source).toBe("external");
+    expect(created.json().sourceAccountId).toBeNull();
+
+    const incomes = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+    });
+    expect(incomes.json().map((i: { name: string }) => i.name)).toEqual(["Salary"]);
+  });
+
+  /**
+   * The access rule authoring turns on. A movement commits the *sending*
+   * account's surplus every month from the moment it exists, so being allowed
+   * to look at that account cannot be enough.
+   */
+  it("will not spend an account it may only look at", async () => {
+    const { auth } = await seedUser(store);
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
+    const household = await store.createHousehold("Home", bob.id);
+    await store.addMembership(
+      household.id,
+      (await store.getUserByEmail("owner@example.com"))!.id,
+      "member",
+    );
+
+    const bobCurrent = await makeAccount(bobAuth, "bob-current");
+    const myPot = await makeAccount(auth, "my-pot");
+    await store.createAccountShare(bobCurrent.id, household.id, "view");
+
+    // Visible, and still not spendable.
+    expect(
+      (await app.inject({ method: "GET", url: `/api/accounts/${bobCurrent.id}`, headers: auth }))
+        .statusCode,
+    ).toBe(200);
+    const refused = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${myPot.id}/inflows`,
+      headers: auth,
+      payload: movementBody(bobCurrent.id),
+    });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error.code).toBe("forbidden");
+    expect(await store.listInflows(myPot.id)).toEqual([]);
+
+    // Edit on the sender, and it goes through.
+    await store.createAccountShare(bobCurrent.id, household.id, "edit");
+    const allowed = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${myPot.id}/inflows`,
+      headers: auth,
+      payload: movementBody(bobCurrent.id),
+    });
+    expect(allowed.statusCode).toBe(201);
+  });
+
+  it("says nothing about a source account it cannot see", async () => {
+    const { auth } = await seedUser(store);
+    const { auth: bobAuth } = await seedUser(store, "bob@example.com");
+    const mine = await makeAccount(auth, "mine");
+    const theirs = await makeAccount(bobAuth, "theirs");
+
+    const hidden = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${mine.id}/inflows`,
+      headers: auth,
+      payload: movementBody(theirs.id),
+    });
+    const absent = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${mine.id}/inflows`,
+      headers: auth,
+      payload: movementBody("11111111-1111-4111-8111-111111111111"),
+    });
+    // An account somebody else owns and an account that does not exist answer
+    // identically, so this cannot be used to find out which is which.
+    expect(hidden.statusCode).toBe(404);
+    expect(absent.statusCode).toBe(404);
+    expect(hidden.json()).toEqual(absent.json());
+  });
+
+  it("refuses an account that funds itself, at the API and not only at the CHECK", async () => {
+    const { auth } = await seedUser(store);
+    const account = await makeAccount(auth, "solo");
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/inflows`,
+      headers: auth,
+      payload: movementBody(account.id),
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("validation_error");
+  });
+
+  it("rejects a source account on an external inflow, and one missing from a movement", async () => {
+    const { auth } = await seedUser(store);
+    const a = await makeAccount(auth, "a");
+    const b = await makeAccount(auth, "b");
+    const post = (payload: object) =>
+      app.inject({ method: "POST", url: `/api/accounts/${a.id}/inflows`, headers: auth, payload });
+
+    expect(
+      (
+        await post({
+          name: "Salary",
+          amountMinor: 1000,
+          frequency: "monthly",
+          anchorDate: "2026-01-01",
+          sourceAccountId: b.id,
+        })
+      ).statusCode,
+    ).toBe(422);
+    expect(
+      (
+        await post({
+          name: "Top-up",
+          source: "account",
+          amountMinor: 1000,
+          frequency: "monthly",
+          anchorDate: "2026-01-01",
+        })
+      ).statusCode,
+    ).toBe(422);
+  });
+
+  /** Priority ranks a movement among what leaves the sending account. Nothing
+   *  sends a salary, so asking for one on an external inflow is refused rather
+   *  than ignored. */
+  it("refuses a priority on an external inflow, on create and on update", async () => {
+    const { auth } = await seedUser(store);
+    const account = await makeAccount(auth, "current");
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/inflows`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 1000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+        priority: 5,
+      },
+    });
+    expect(created.statusCode).toBe(422);
+
+    const ok = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/inflows`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 1000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    // Carried on every row, meaningful on none of these: the default rank.
+    expect(ok.json().priority).toBe(100);
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/api/inflows/${ok.json().id}`,
+      headers: auth,
+      payload: { priority: 5 },
+    });
+    expect(patched.statusCode).toBe(422);
+  });
+
+  it("updates what a movement asks for, but not which accounts it runs between", async () => {
+    const { auth } = await seedUser(store);
+    const current = await makeAccount(auth, "current");
+    const other = await makeAccount(auth, "other");
+    const pot = await makeAccount(auth, "pot");
+    const movement = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${pot.id}/inflows`,
+        headers: auth,
+        payload: movementBody(current.id),
+      })
+    ).json();
+
+    const changed = await app.inject({
+      method: "PATCH",
+      url: `/api/inflows/${movement.id}`,
+      headers: auth,
+      payload: { amountMinor: 30000, priority: 10, active: false },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json()).toMatchObject({ amountMinor: 30000, priority: 10, active: false });
+
+    for (const payload of [
+      { sourceAccountId: other.id },
+      { accountId: other.id },
+      { source: "external" },
+    ]) {
+      const res = await app.inject({
+        method: "PATCH",
+        url: `/api/inflows/${movement.id}`,
+        headers: auth,
+        payload,
+      });
+      expect(res.statusCode).toBe(422);
+    }
+    // Untouched by every refusal above.
+    expect((await store.getInflow(movement.id))!.sourceAccountId).toBe(current.id);
+  });
+
+  /** Authoring takes edit on both ends; calling it off takes edit on either.
+   *  Laying a claim on somebody's surplus is not the same act as releasing one. */
+  it("lets the sending end call a movement off", async () => {
+    const { auth } = await seedUser(store);
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
+    const me = (await store.getUserByEmail("owner@example.com"))!;
+    const household = await store.createHousehold("Home", bob.id);
+    await store.addMembership(household.id, me.id, "member");
+
+    const bobCurrent = await makeAccount(bobAuth, "bob-current");
+    const myPot = await makeAccount(auth, "my-pot");
+    await store.createAccountShare(bobCurrent.id, household.id, "edit");
+    const movement = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${myPot.id}/inflows`,
+        headers: auth,
+        payload: movementBody(bobCurrent.id),
+      })
+    ).json();
+
+    // Bob cannot see the pot at all, and can still stop money leaving his own
+    // account.
+    expect(
+      (await app.inject({ method: "GET", url: `/api/accounts/${myPot.id}`, headers: bobAuth }))
+        .statusCode,
+    ).toBe(404);
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/inflows/${movement.id}`,
+      headers: bobAuth,
+    });
+    expect(removed.statusCode).toBe(204);
+    expect(await store.getInflow(movement.id)).toBeNull();
+  });
+
+  it("hides an inflow from a stranger and refuses a viewer", async () => {
+    const { auth } = await seedUser(store);
+    const { user: carol, auth: carolAuth } = await seedUser(store, "carol@example.com");
+    const { auth: strangerAuth } = await seedUser(store, "nobody@example.com");
+    const current = await makeAccount(auth, "current");
+    const pot = await makeAccount(auth, "pot");
+    const movement = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${pot.id}/inflows`,
+        headers: auth,
+        payload: movementBody(current.id),
+      })
+    ).json();
+
+    const household = await store.createHousehold("Carol's place", carol.id);
+    await store.createAccountShare(pot.id, household.id, "view");
+
+    const stranger = await app.inject({
+      method: "DELETE",
+      url: `/api/inflows/${movement.id}`,
+      headers: strangerAuth,
+    });
+    expect(stranger.statusCode).toBe(404);
+    const viewer = await app.inject({
+      method: "DELETE",
+      url: `/api/inflows/${movement.id}`,
+      headers: carolAuth,
+    });
+    expect(viewer.statusCode).toBe(403);
+  });
+
+  /**
+   * The income routes are the external half of these very rows, and WP-F held
+   * that line at the Store. It is held here too: a movement is invisible to
+   * every one of them.
+   */
+  it("keeps an account-sourced inflow out of the income routes", async () => {
+    const { auth } = await seedUser(store);
+    const current = await makeAccount(auth, "current");
+    const pot = await makeAccount(auth, "pot");
+    const movement = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${pot.id}/inflows`,
+        headers: auth,
+        payload: movementBody(current.id),
+      })
+    ).json();
+
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${pot.id}/incomes`,
+      headers: auth,
+    });
+    expect(listed.json()).toEqual([]);
+    for (const method of ["PATCH", "DELETE"] as const) {
+      const res = await app.inject({
+        method,
+        url: `/api/incomes/${movement.id}`,
+        headers: auth,
+        payload: { amountMinor: 1 },
+      });
+      expect(res.statusCode).toBe(404);
+    }
+    // Still there, untouched by either attempt.
+    expect((await store.getInflow(movement.id))!.amountMinor).toBe(20000);
+  });
+
+  /**
+   * WP-G decided a funding loop is detected at compute time and broken, never
+   * refused at authoring: a cycle is a property of the estate, not of whichever
+   * edge happened to be saved last. So both edges are accepted, and the plan is
+   * where the loop is named — end to end, over HTTP.
+   */
+  it("accepts an edge that closes a loop, and names the loop on the plan", async () => {
+    const { auth } = await seedUser(store);
+    const a = await makeAccount(auth, "a");
+    const b = await makeAccount(auth, "b");
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${b.id}/inflows`,
+      headers: auth,
+      payload: movementBody(a.id, { name: "a to b" }),
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${a.id}/inflows`,
+      headers: auth,
+      payload: movementBody(b.id, { name: "b to a" }),
+    });
+    expect([first.statusCode, second.statusCode]).toEqual([201, 201]);
+
+    for (const account of [a, b]) {
+      const plan = (
+        await app.inject({
+          method: "GET",
+          url: `/api/accounts/${account.id}/plan`,
+          headers: auth,
+        })
+      ).json();
+      expect([...plan.fundingCycleAccountIds].sort()).toEqual([a.id, b.id].sort());
+    }
+    // ...and the overview still answers rather than hanging on it.
+    const overview = await app.inject({ method: "GET", url: "/api/overview", headers: auth });
+    expect(overview.statusCode).toBe(200);
+    expect(overview.json().perCurrency[0].accounts).toHaveLength(2);
+  });
+
+  /**
+   * The overview is one estate pass now. The pass reaches accounts the caller
+   * cannot see — it must, since that is where the money comes from — so this
+   * pins that only the accounts they *can* see come back, and that the row they
+   * get agrees with the account's own plan endpoint to the penny.
+   */
+  it("plans the whole estate at once and still shows only what the caller may see", async () => {
+    const { auth } = await seedUser(store);
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
+    const me = (await store.getUserByEmail("owner@example.com"))!;
+    const household = await store.createHousehold("Home", bob.id);
+    await store.addMembership(household.id, me.id, "member");
+
+    const bobCurrent = await makeAccount(bobAuth, "bob-current");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${bobCurrent.id}/incomes`,
+      headers: bobAuth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    const myPot = await makeAccount(auth, "my-pot");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${myPot.id}/payments`,
+      headers: auth,
+      payload: { name: "Council tax", category: "monthly_recurring", amountMinor: 15000 },
+    });
+    await store.createAccountShare(bobCurrent.id, household.id, "edit");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${myPot.id}/inflows`,
+      headers: auth,
+      payload: movementBody(bobCurrent.id),
+    });
+    // Bob's account leaves my view again: the money still arrives, and I still
+    // must not be shown his account.
+    await store.deleteAccountShare((await store.listSharesForAccount(bobCurrent.id))[0]!.id);
+
+    const overview = (
+      await app.inject({ method: "GET", url: "/api/overview", headers: auth })
+    ).json();
+    const rows = overview.perCurrency[0].accounts;
+    expect(rows.map((r: { accountId: string }) => r.accountId)).toEqual([myPot.id]);
+
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${myPot.id}/plan`, headers: auth })
+    ).json();
+    expect(plan.allocatedInflowMinor).toBe(20000);
+    expect(rows[0].allocatedInflowMinor).toBe(plan.allocatedInflowMinor);
+    expect(rows[0].confirmedInflowMinor).toBe(plan.confirmedInflowMinor);
+    // The sender is outside the rollup, so nothing of his is netted out of it:
+    // the money that arrived was counted once, here, and nowhere else.
+    expect(overview.perCurrency[0].intraEstateMovementMinor).toBe(15000);
+  });
+
+  /**
+   * The double-count guard, over the shape that used to hide it: a chain. Each
+   * hop's pound is reported as the sender's leftover *and* as the receiver's
+   * funded money, so the rollup has to net it once per hop — which it can only
+   * do when it sees the whole chain at once.
+   */
+  it("nets money that moved between the caller's own accounts, once per hop", async () => {
+    const { auth } = await seedUser(store);
+    const current = await makeAccount(auth, "current");
+    const pot = await makeAccount(auth, "pot");
+    const isa = await makeAccount(auth, "isa");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${current.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    for (const [to, from] of [
+      [pot, current],
+      [isa, pot],
+    ]) {
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${to!.id}/inflows`,
+        headers: auth,
+        payload: movementBody(from!.id, { amountMinor: 50000 }),
+      });
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${to!.id}/payments`,
+        headers: auth,
+        payload: { name: `bill-${to!.name}`, category: "monthly_recurring", amountMinor: 40000 },
+      });
+    }
+
+    const bucket = (await app.inject({ method: "GET", url: "/api/overview", headers: auth })).json()
+      .perCurrency[0];
+    // £3,000 in from outside, and nothing else: the two movements of £500 each
+    // redistribute money already counted.
+    expect(bucket.monthlyIncomeMinor).toBe(300000);
+    // The pot's £400 bill takes £400 of the £500 that arrived, so only £100 is
+    // left for the second hop and the ISA's bill is funded to £100 of £400.
+    // Every penny of both is money that moved, so the netting is the whole
+    // funded total, counted once per hop and not once per account.
+    expect(bucket.totalFundedMinor).toBe(50000);
+    expect(bucket.intraEstateMovementMinor).toBe(50000);
+    // The identity that has to hold for an estate that funds itself.
+    expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(
+      bucket.monthlyIncomeMinor - bucket.bufferMinor,
+    );
+  });
+});
+
 describe("export / import", () => {
   let store: MemoryStore;
   let app: ReturnType<typeof buildServer>;
@@ -2743,6 +3317,7 @@ describe("export / import", () => {
       accounts: 1,
       incomes: 1,
       accountInflows: 0,
+      accountInflowConfirmations: 0,
       payments: 1,
       contributions: 1,
       balanceSnapshots: 1,

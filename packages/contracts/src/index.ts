@@ -154,6 +154,70 @@ export const updateIncomeBody = createIncomeBody.partial().extend({
   accountId: z.string().uuid().optional(),
 });
 
+/** Where money arriving into an account came from: outside everything you own,
+ *  or another account you own. */
+export const inflowSourceKind = z.enum(["external", "account"]);
+export type InflowSourceKind = z.infer<typeof inflowSourceKind>;
+
+/**
+ * Money arriving into an account, authored on the account it arrives in.
+ *
+ * `source: "external"` is what an income has always been. `source: "account"`
+ * is one row with two faces — it arrives on the account it is posted to and
+ * leaves `sourceAccountId` — so the two ends can never drift apart.
+ *
+ * `priority` ranks a movement among everything else leaving the *sending*
+ * account, lower first, and is meaningless on an external inflow: nothing sends
+ * a salary. Supplying one anyway is refused rather than quietly dropped — a
+ * caller who believes they have ordered their income should be told they have
+ * not.
+ */
+const inflowObject = z.object({
+  name: z.string().min(1),
+  source: inflowSourceKind.default("external"),
+  /** Required exactly when `source` is "account", forbidden otherwise, and
+   *  never the account the money arrives in. */
+  sourceAccountId: z.string().uuid().nullish(),
+  amountMinor,
+  frequency,
+  recurrence: recurrence.nullish(),
+  anchorDate: isoDate,
+  /** Only for `source: "account"`. Absent means the default rank. */
+  priority: z.number().int().optional(),
+  active: z.boolean().default(true),
+});
+
+export const createInflowBody = inflowObject
+  .refine((i) => i.source !== "account" || !!i.sourceAccountId, {
+    message: "an account-sourced inflow requires a sourceAccountId",
+    path: ["sourceAccountId"],
+  })
+  .refine((i) => i.source === "account" || !i.sourceAccountId, {
+    message: "only an account-sourced inflow may name a sourceAccountId",
+    path: ["sourceAccountId"],
+  })
+  .refine((i) => i.source === "account" || i.priority === undefined, {
+    message: "priority is meaningful only for an account-sourced inflow",
+    path: ["priority"],
+  });
+export type CreateInflowBody = z.infer<typeof createInflowBody>;
+
+/**
+ * What may be changed about an inflow: everything except which two accounts it
+ * runs between.
+ *
+ * Re-pointing an end is deliberately not an update. A movement is a claim on
+ * the sending account's surplus, and moving that claim onto a different account
+ * is authoring a new one — it needs the same rights over the new sender that
+ * creating it did, and leaves the old sender's plan changed by a request that
+ * never named it. Delete and author again; the API rejects the attempt rather
+ * than ignoring it.
+ */
+export const updateInflowBody = inflowObject
+  .omit({ source: true, sourceAccountId: true })
+  .partial();
+export type UpdateInflowBody = z.infer<typeof updateInflowBody>;
+
 const paymentObject = z.object({
   name: z.string().min(1),
   category: paymentCategory,
@@ -386,6 +450,22 @@ const exportIncome = z.object({
  * account is not in the same file is dropped on import rather than imported
  * pointing at nothing.
  */
+/**
+ * "I moved this money", for one month of one movement.
+ *
+ * Household transfer confirmations stay out of the file for the reason the
+ * header gives — they are an arrangement between people. A *standalone* one is
+ * not: it is a fact about two accounts the exporter owns, and it drives
+ * `confirmedInflowMinor` and whether a line reads funded or still awaiting a
+ * transfer. Dropping it would let a restore quietly un-move money that moved.
+ */
+const exportInflowConfirmation = z.object({
+  /** The month it was confirmed for, as its first day ("2026-08-01"). */
+  month: isoDate,
+  /** What the movement delivered when it was confirmed. */
+  amountMinor,
+});
+
 const exportAccountInflow = z.object({
   name: z.string().min(1),
   /** The exported account this money leaves. */
@@ -397,6 +477,8 @@ const exportAccountInflow = z.object({
   /** Rank among the sending account's movements, lower first. */
   priority: z.number().int().default(100),
   active: z.boolean().default(true),
+  /** Months this movement was confirmed as actually made. */
+  confirmations: z.array(exportInflowConfirmation).default([]),
 });
 
 const exportBalanceSnapshot = z.object({

@@ -5,6 +5,7 @@ import {
   createAccountBody,
   createContributionBody,
   createIncomeBody,
+  createInflowBody,
   createPaymentBody,
   createProjectBody,
   type HealthResponse,
@@ -15,6 +16,7 @@ import {
   shareAccountBody,
   updateAccountBody,
   updateIncomeBody,
+  updateInflowBody,
   updatePaymentBody,
   updateProjectBody,
   upsertBalanceBody,
@@ -24,7 +26,7 @@ import {
   type AccountPlan,
   clampUpcomingDays,
   computeAccountPlan,
-  computeAccountProjection,
+  computeEstateProjection,
   computeHouseholdProjection,
   computeOverview,
   toISODate,
@@ -39,13 +41,17 @@ import { seedDemoData } from "./demo.js";
 import { type ApiEnv, loadEnv } from "./env.js";
 import { startNotifier } from "./notify.js";
 import {
+  accessibleAccounts,
   buildAccountInput,
   buildHouseholdInput,
+  computeEstateFor,
   computeHouseholdPlanFor,
   computeHouseholdPlanWithSchedule,
   computePlanForAccount,
   createPlanContext,
+  fundingClosure,
   type InflowSource,
+  type PlanContext,
   previewPlanForAccount,
   resolveAccountInflow,
   upcomingForUser,
@@ -57,6 +63,9 @@ const VERSION = process.env.npm_package_version ?? "0.0.0";
 const startedAt = Date.now();
 /** Row cap on the upcoming feed — see the handler comment. */
 const MAX_UPCOMING_ITEMS = 50;
+/** Rank a movement takes among a sending account's outbound inflows when the
+ *  caller does not say. The same 100 a payment's priority defaults to. */
+const DEFAULT_INFLOW_PRIORITY = 100;
 
 export interface ApiDeps {
   store?: Store;
@@ -252,6 +261,29 @@ function summarisePlanLines(
   return { unrecorded, lineCount: plan.lines.length, lastFundedName };
 }
 
+/**
+ * One sender's share of the money arriving into an account this month.
+ *
+ * Two producers, because there are two: a household member the household plan
+ * asks to transfer, and another account of your own that a movement drains.
+ * Discriminated rather than merged — a member has a name and no account, an
+ * account has an id and no member — so a client can render each honestly
+ * instead of guessing which fields are populated.
+ */
+type PlanInflowSource =
+  | ({ kind: "member" } & InflowSource)
+  | {
+      kind: "account";
+      /** The authored inflow, so "I moved it" has something to post to. */
+      inflowId: string;
+      fromAccountId: string;
+      /** Only when the caller can see the sending account — see
+       *  `planInflowSources`. */
+      accountName?: string;
+      amountMinor: number;
+      confirmedMinor: number;
+    };
+
 /** Where an account sits in the user's households, when it sits in one. */
 interface AccountPlacement {
   householdId: string | null;
@@ -401,6 +433,57 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
   };
 
+  /**
+   * Where the money arriving into an account is coming from, as much of it as
+   * this caller may be told.
+   *
+   * The gate is on **names**, and only on names. A household's allocation names
+   * members, and an account can be shared with someone outside the household
+   * that funds it, so the member rows are attached only for a caller who can
+   * see the household — exactly as strict as it has always been. The sending
+   * account's *name* is gated the same way, on being able to see that account.
+   *
+   * Everything else travels. `plan.inflowArrivals` already itemises what each
+   * movement delivered, by account id, with no name in it, and it rides on this
+   * very response — so withholding the arrivals here would hide nothing while
+   * leaving a standalone estate unable to say which of its own accounts fed
+   * this one. Household membership was never what made that safe to answer.
+   */
+  const planInflowSources = async (
+    userId: string,
+    account: Account,
+    plan: AccountPlan,
+    asOfDate: string,
+    ctx: PlanContext,
+  ): Promise<PlanInflowSource[] | null> => {
+    const sources: PlanInflowSource[] = [];
+
+    // Memoised by the plan computation that precedes every call, so this is a
+    // map lookup rather than a second household plan.
+    const inflow = await resolveAccountInflow(store, account, asOfDate, ctx);
+    if (inflow && (await store.getMembership(inflow.householdId, userId))) {
+      sources.push(...inflow.sources.map((s) => ({ kind: "member" as const, ...s })));
+    }
+
+    for (const arrival of plan.inflowArrivals) {
+      const sender = (await store.getAccess(userId, arrival.fromAccountId))
+        ? await store.getAccount(arrival.fromAccountId)
+        : null;
+      sources.push({
+        kind: "account",
+        inflowId: arrival.inflowId,
+        fromAccountId: arrival.fromAccountId,
+        ...(sender ? { accountName: sender.name } : {}),
+        amountMinor: arrival.amountMinor,
+        confirmedMinor: arrival.confirmedMinor ?? 0,
+      });
+    }
+
+    // Null rather than an empty array keeps the old contract: nothing arriving
+    // that you may be told about reads the same as nothing arriving.
+    return sources.length > 0 ? sources : null;
+  };
+
   // ---- health ----
   app.get(
     "/healthz",
@@ -470,10 +553,9 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    *
    * `allocatedInflowMinor` / `confirmedInflowMinor` come off the plan itself and
    * are always present — what is arriving is a fact about an account the caller
-   * can already see. `inflowSources` **names household members**, and an account
-   * can be shared with someone outside the household that funds it, so it is
-   * attached only for a caller who can see the household. Null means "not yours
-   * to see, or nothing arriving"; the amount on the plan says which.
+   * can already see. `inflowSources` says where it is coming from; see
+   * `planInflowSources` for what is gated and why. Null means nothing is
+   * arriving that this caller may be told about.
    */
   app.get("/api/accounts/:id/plan", async (req) => {
     const userId = await authenticate(req);
@@ -483,12 +565,11 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const asOfDate = asOf ?? today();
     const ctx = createPlanContext();
     const plan = await computePlanForAccount(store, account, asOfDate, ctx);
-    // Memoised by the line above, so this is a map lookup rather than a second
-    // household plan.
-    const inflow = await resolveAccountInflow(store, account, asOfDate, ctx);
-    const inflowSources: InflowSource[] | null =
-      inflow && (await store.getMembership(inflow.householdId, userId)) ? inflow.sources : null;
-    return { ...plan, ...(await accountReality(store, plan, asOfDate)), inflowSources };
+    return {
+      ...plan,
+      ...(await accountReality(store, plan, asOfDate)),
+      inflowSources: await planInflowSources(userId, account, plan, asOfDate, ctx),
+    };
   });
 
   /**
@@ -520,6 +601,20 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * the money lands rather than just this month's slice. The balance trajectory
    * starts from the latest real balance check-in; with no check-in there is no
    * honest opening figure, so every month reports a null balance.
+   *
+   * Simulated as part of its estate, not on its own. What arrives in month
+   * seven is another account's month-seven surplus — after month-seven's bills,
+   * out of month-seven's income — and one account's input does not contain the
+   * other account. `computeAccountProjection` holds the as-of month's arrival
+   * flat instead, which is right for a standing transfer out of a steady
+   * account and wrong as soon as the sender's own month changes. So the whole
+   * funding closure is walked forward and this account's slice read back out.
+   *
+   * The closure is the estate **as authored**, deliberately: a completed pass's
+   * `inputs` already carry the money that arrived, and re-feeding them would
+   * hand the account its allocation again in every simulated month. Senders the
+   * caller cannot see are in the closure and never leave it — the same rule the
+   * plan endpoint follows, for the same reason.
    */
   app.get("/api/accounts/:id/projection", async (req) => {
     const userId = await authenticate(req);
@@ -527,15 +622,20 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { asOf, months } = req.query as { asOf?: string; months?: string };
     const { account } = await requireAccess(userId, id, "view");
     const asOfDate = asOf ?? today();
-    const [input, balances] = await Promise.all([
-      buildAccountInput(store, account, asOfDate),
+    const [closure, balances] = await Promise.all([
+      fundingClosure(store, [account], asOfDate),
       store.listBalanceSnapshots(id),
     ]);
     const latest = balances.at(-1);
-    return computeAccountProjection(input, asOfDate, {
+    const estate = computeEstateProjection(closure, asOfDate, {
       months: intParam(months),
-      startingBalanceMinor: latest?.balanceMinor ?? null,
+      // Only this account's opening balance is known here, and only this
+      // account's months are returned; the senders' balances are irrelevant to
+      // what they can afford to send, which is an income-and-bills question.
+      startingBalancesMinor: { [id]: latest?.balanceMinor ?? null },
     });
+    // Always present: the account is in its own funding closure.
+    return estate.accounts.find((a) => a.accountId === id)!;
   });
 
   // ---- contributions (the money-set-aside ledger) ----
@@ -707,6 +807,152 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return reply.code(204).send();
   });
 
+  // ---- inflows (money arriving, whatever its source) ----
+  /**
+   * Everything arriving into this account: money from outside the estate and
+   * movements out of other accounts alike. `/incomes` above is the external
+   * half of these very rows — one table, two doors, and the income door
+   * deliberately cannot see a movement.
+   */
+  app.get("/api/accounts/:id/inflows", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireAccess(userId, id, "view");
+    return store.listInflows(id);
+  });
+
+  /**
+   * The other face of the same rows: movements *leaving* this account. What its
+   * surplus is already committed to, which is a question only the sending end
+   * can ask and which nothing else answers.
+   */
+  app.get("/api/accounts/:id/inflows/outbound", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireAccess(userId, id, "view");
+    return store.listOutboundInflows(id);
+  });
+
+  /**
+   * Author an inflow on the account the money arrives in.
+   *
+   * **An account-sourced inflow needs `edit` on both ends, not `edit` here and
+   * `view` there.** Creating one commits the *sending* account's surplus: from
+   * this call onward that account's plan funds the movement after its own bills
+   * and the money leaves, every month, whether or not its owner ever looks. A
+   * `view` grant says "you may see my money"; it must not silently also mean
+   * "you may spend it", or an account shared read-only into a household becomes
+   * a funding source for any member's private pot. Confirming a movement takes
+   * only `view` on the sender (see the confirm route) because it records a fact
+   * about money already planned to move — it commits nothing.
+   *
+   * A source account the caller cannot see at all answers 404 for the *account*,
+   * the same answer a source account that does not exist gets, so this cannot
+   * be used to probe for accounts. A self-reference is refused here as well as
+   * by the store's CHECK: the API should not need the database to tell it that
+   * an account cannot fund itself.
+   *
+   * Nothing is refused for closing a funding loop. A cycle is a property of the
+   * estate rather than of the edge that completes it, so it is detected by the
+   * ordered pass and reported on every plan involved as
+   * `fundingCycleAccountIds` — see `computeEstatePlan`. Authoring stays
+   * permissive; the plan is where the loop is named.
+   */
+  app.post("/api/accounts/:id/inflows", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    await requireAccess(userId, id, "edit");
+    const body = createInflowBody.parse(req.body);
+    const sourceAccountId = body.sourceAccountId ?? null;
+    if (sourceAccountId === id) {
+      throw new HttpError(
+        422,
+        "validation_error",
+        "An inflow cannot be sourced from the account it arrives in",
+      );
+    }
+    if (sourceAccountId) await requireAccess(userId, sourceAccountId, "edit");
+    const inflow = await store.createInflow({
+      accountId: id,
+      name: body.name,
+      source: body.source,
+      sourceAccountId,
+      amountMinor: body.amountMinor,
+      frequency: body.frequency,
+      recurrence: body.recurrence ?? null,
+      anchorDate: body.anchorDate,
+      priority: body.priority ?? DEFAULT_INFLOW_PRIORITY,
+      active: body.active,
+    });
+    return reply.code(201).send(inflow);
+  });
+
+  /**
+   * Change what an inflow asks for. Same rule as authoring it, and for the same
+   * reason: raising a movement's amount commits more of the sending account's
+   * surplus, so it takes `edit` at both ends.
+   *
+   * Which two accounts a movement runs between is not editable — see
+   * `updateInflowBody`. The attempt is rejected rather than silently dropped.
+   */
+  app.patch("/api/inflows/:inflowId", async (req) => {
+    const userId = await authenticate(req);
+    const { inflowId } = req.params as { inflowId: string };
+    const inflow = await store.getInflow(inflowId);
+    if (!inflow) throw new HttpError(404, "not_found", "Inflow not found");
+    await requireAccess(userId, inflow.accountId, "edit");
+    if (inflow.sourceAccountId) await requireAccess(userId, inflow.sourceAccountId, "edit");
+    for (const key of ["accountId", "source", "sourceAccountId"]) {
+      if (req.body && typeof req.body === "object" && key in req.body) {
+        throw new HttpError(
+          422,
+          "validation_error",
+          `${key} cannot be changed; delete the inflow and author it again`,
+        );
+      }
+    }
+    const body = updateInflowBody.parse(req.body);
+    if (body.priority !== undefined && inflow.source !== "account") {
+      throw new HttpError(
+        422,
+        "validation_error",
+        "priority is meaningful only for an account-sourced inflow",
+      );
+    }
+    return store.updateInflow(inflowId, defined(body));
+  });
+
+  /**
+   * Call a movement off. **Either end may, with `edit` on that end.**
+   *
+   * Deliberately looser than authoring, because it is the opposite act:
+   * creating a movement lays a claim on the sending account's money, deleting
+   * one releases it, and releasing a claim can harm neither account. The
+   * asymmetry also closes a trap — an account shared with edit, used to author
+   * a movement out of it, and then un-shared would otherwise leave its owner
+   * with money draining every month and no way to stop it.
+   */
+  app.delete("/api/inflows/:inflowId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { inflowId } = req.params as { inflowId: string };
+    const inflow = await store.getInflow(inflowId);
+    if (!inflow) throw new HttpError(404, "not_found", "Inflow not found");
+    const ability = await abilityFor(userId);
+    const ends = [inflow.accountId, ...(inflow.sourceAccountId ? [inflow.sourceAccountId] : [])];
+    const refs = ends.map((accountId) => subject("Account", { id: accountId }));
+    // The policy package's 404-vs-403 rule, applied to a record with two
+    // owners: no access to either end and it does not exist as far as you are
+    // concerned; access to an end you cannot edit and you are simply refused.
+    if (!refs.some((ref) => ability.hasAnyAccess(ref))) {
+      throw new HttpError(404, "not_found", "Inflow not found");
+    }
+    if (!refs.some((ref) => ability.can("edit", ref))) {
+      throw new HttpError(403, "forbidden", "edit access required");
+    }
+    await store.deleteInflow(inflowId);
+    return reply.code(204).send();
+  });
+
   // ---- payments ----
   app.get("/api/accounts/:id/payments", async (req) => {
     const userId = await authenticate(req);
@@ -803,26 +1049,37 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * That includes `planSummary`: the handler has every account's plan in hand,
    * so the Overview's checklist gets the lines it must act on from here rather
    * than paying a plan request per row for work already done in this loop.
+   *
+   * **One estate pass, not one per account.** Planning each account in turn ran
+   * a separate ordered pass over that account's own funding closure, so the
+   * rollup was assembled from plans no two of which had been computed together
+   * — and `computeOverview` nets money that moved *between accounts in the same
+   * rollup*, a question no single-account pass is in a position to answer. Now
+   * every account the caller can see is seeded into one pass. The pass reaches
+   * further than the caller can — it must, since money can arrive from an
+   * account they cannot see — so only the seeded accounts' plans are read back
+   * out of it, which is where the access filter lives.
    */
   app.get("/api/overview", async (req) => {
     const userId = await authenticate(req);
     const { asOf } = req.query as { asOf?: string };
     const asOfDate = asOf ?? today();
-    const [access, placements] = await Promise.all([
-      store.listAccessibleAccounts(userId),
+    const [accounts, placements] = await Promise.all([
+      accessibleAccounts(store, userId),
       accountPlacements(store, userId),
     ]);
 
     const plans: AccountPlan[] = [];
     const state = new Map<string, Record<string, unknown>>();
-    // One memo for the whole loop. Planning an account in a household now means
+    // One memo for the whole handler. Planning an account in a household means
     // planning the household, and every account of a one-household estate would
     // otherwise ask for the identical plan in turn.
     const ctx = createPlanContext();
-    for (const a of access) {
-      const account = await store.getAccount(a.accountId);
-      if (!account) continue;
-      const plan = await computePlanForAccount(store, account, asOfDate, ctx);
+    const estate = await computeEstateFor(store, accounts, asOfDate, ctx);
+    const planById = new Map(estate.plans.map((p) => [p.accountId, p]));
+    for (const account of accounts) {
+      // Always present: every account seeded into the pass is planned by it.
+      const plan = planById.get(account.id)!;
       const reality = await accountReality(store, plan, asOfDate);
       const planSummary = summarisePlanLines(plan, reality.contributionsMTD);
       plans.push(plan);
@@ -1308,7 +1565,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    */
   app.get("/api/export", async (req, reply) => {
     const userId = await authenticate(req);
-    const file = await buildExport(store, userId);
+    const file = await buildExport(store, userId, today());
     return reply
       .header(
         "content-disposition",

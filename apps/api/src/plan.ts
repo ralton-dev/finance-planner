@@ -367,12 +367,13 @@ async function loadAccountInput(
 }
 
 /**
- * Every account whose month has to be worked out before this one's can be.
+ * Every account whose month has to be worked out before these ones' can be.
  *
- * Walks the authored inflows upstream — this account's senders, their senders,
- * and so on — because an account's funding is the surplus of whatever pays into
- * it. Downstream accounts are deliberately absent: what this account sends *out*
- * is decided by its own bills, so nothing below it can change its plan.
+ * Walks the authored inflows upstream — the seeds' senders, their senders, and
+ * so on — because an account's funding is the surplus of whatever pays into it.
+ * Downstream accounts are deliberately absent unless they were seeded: what an
+ * account sends *out* is decided by its own bills, so nothing below it can
+ * change its plan.
  *
  * The walk is iterative and guarded by the set it is building, so a circular
  * estate terminates here rather than in the engine; the loop is then named and
@@ -381,17 +382,24 @@ async function loadAccountInput(
  * Deliberately does not check the caller's access to the accounts it loads. An
  * account you can see may be fed by one you cannot, and the amount arriving is
  * a fact about *your* account — the same reasoning `householdPlanningAccount`
- * uses to plan a household the caller may not be in. Only the target account's
- * plan is ever returned to a caller; the senders' plans stay inside the pass.
+ * uses to plan a household the caller may not be in. Only the seeded accounts'
+ * plans are ever returned to a caller; the senders' plans stay inside the pass.
+ *
+ * Exported as well as used here because this is the estate **as authored** —
+ * the array `computeEstatePlan` and `computeEstateProjection` both take, before
+ * either has merged anything into it. A caller wanting to simulate the estate
+ * forward needs exactly this and must not be handed a completed pass's
+ * `inputs`, which already carry the arrivals and would gain them again in every
+ * simulated month.
  */
-async function fundingClosure(
+export async function fundingClosure(
   store: Store,
-  account: Account,
+  seeds: readonly Account[],
   asOfDate: string,
-  ctx: PlanContext,
+  ctx: PlanContext = createPlanContext(),
 ): Promise<AccountInput[]> {
   const inputs = new Map<string, AccountInput>();
-  const queue: Account[] = [account];
+  const queue: Account[] = [...seeds];
 
   while (queue.length > 0) {
     const next = queue.shift()!;
@@ -414,14 +422,28 @@ async function fundingClosure(
   return [...inputs.values()].sort((a, b) => (a.accountId < b.accountId ? -1 : 1));
 }
 
-/** The one ordered pass covering `account` and everything that funds it. */
-async function estatePlanFor(
+/**
+ * The one ordered pass covering `accounts` and everything that funds them.
+ *
+ * Taking a *set* of accounts rather than one is what makes an estate-wide read
+ * a single pass. A caller that plans every account it can see — the overview,
+ * the upcoming feed, the digest — would otherwise run one pass per account,
+ * each over that account's own funding closure: quadratic work, and a rollup
+ * assembled from plans no two of which were computed together. One pass over
+ * the union settles the whole graph once.
+ *
+ * Which accounts a *caller* may see is not this function's business and must
+ * not become it: the closure deliberately reaches accounts the caller cannot,
+ * because that is where the money comes from. Filtering happens where the plans
+ * are handed out.
+ */
+export async function computeEstateFor(
   store: Store,
-  account: Account,
+  accounts: readonly Account[],
   asOfDate: string,
-  ctx: PlanContext,
+  ctx: PlanContext = createPlanContext(),
 ): Promise<EstatePlan> {
-  const closure = await fundingClosure(store, account, asOfDate, ctx);
+  const closure = await fundingClosure(store, accounts, asOfDate, ctx);
   const key = `${closure.map((a) => a.accountId).join(",")}@${asOfDate}`;
   return memo(ctx.estatePlans, key, async () => computeEstatePlan(closure, asOfDate));
 }
@@ -447,7 +469,7 @@ export async function buildAccountInput(
   asOfDate: string,
   ctx: PlanContext = createPlanContext(),
 ): Promise<AccountInput> {
-  const estate = await estatePlanFor(store, account, asOfDate, ctx);
+  const estate = await computeEstateFor(store, [account], asOfDate, ctx);
   // Always present: an account is in its own funding closure.
   return estate.inputs.find((i) => i.accountId === account.id)!;
 }
@@ -468,8 +490,19 @@ export async function computePlanForAccount(
   asOfDate: string,
   ctx: PlanContext = createPlanContext(),
 ): Promise<AccountPlan> {
-  const estate = await estatePlanFor(store, account, asOfDate, ctx);
+  const estate = await computeEstateFor(store, [account], asOfDate, ctx);
   return estate.plans.find((p) => p.accountId === account.id)!;
+}
+
+/**
+ * Every account the user can see, loaded once. The order `listAccessibleAccounts`
+ * returns them in is kept — it is the order the overview's rows come back in,
+ * and it must not start depending on the shape of the funding graph.
+ */
+export async function accessibleAccounts(store: Store, userId: string): Promise<Account[]> {
+  const access = await store.listAccessibleAccounts(userId);
+  const accounts = await Promise.all(access.map((a) => store.getAccount(a.accountId)));
+  return accounts.filter((a): a is Account => a !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -496,15 +529,16 @@ export async function upcomingForUser(
   asOfDate: string,
   days: number,
 ): Promise<UpcomingItem[]> {
-  const access = await store.listAccessibleAccounts(userId);
+  const accounts = await accessibleAccounts(store, userId);
   const items: UpcomingItem[] = [];
-  // One memo for the whole feed: an estate is usually one household, so its
-  // accounts would otherwise each recompute the same household plan.
-  const ctx = createPlanContext();
-  for (const a of access) {
-    const account = await store.getAccount(a.accountId);
-    if (!account) continue;
-    const input = await buildAccountInput(store, account, asOfDate, ctx);
+  // One pass over the whole estate rather than one per account: the feed asks
+  // the same question of every account the caller can see, and asking it
+  // account by account settles the same funding graph once per account.
+  const estate = await computeEstateFor(store, accounts, asOfDate);
+  const inputById = new Map(estate.inputs.map((i) => [i.accountId, i]));
+  for (const account of accounts) {
+    // Always present: every seeded account is in the pass.
+    const input = inputById.get(account.id)!;
     for (const row of upcomingPayments(input.payments, asOfDate, days)) {
       items.push({
         ...row,
