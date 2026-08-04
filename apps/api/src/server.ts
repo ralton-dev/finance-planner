@@ -158,30 +158,70 @@ async function accountReality(
 }
 
 /**
- * Save-up money the plan funded this month that nobody has recorded yet.
+ * A save-up the plan funded this month with money nobody has recorded against
+ * it yet — as much of the line as it takes to *act* on it: which payment, what
+ * to call it, what the month asked for, and what is still missing.
+ */
+interface UnrecordedLine {
+  paymentId: string;
+  name: string;
+  /** The month's target — what the row is asking for. */
+  fundedMonthlyMinor: number;
+  /** What is still missing — the amount the record action prefills. */
+  remainderMinor: number;
+}
+
+/**
+ * What the Overview's checklist would otherwise read off an account plan's line
+ * list, and the reason it used to fetch a plan per account.
+ *
+ * Only the unrecorded lines travel. The rest of the list is the account page's
+ * business and shipping it per account is the round trip this replaces; the two
+ * counts alongside are the facts the fold's sentences need from lines nobody is
+ * being asked to act on.
+ */
+interface PlanLineSummary {
+  unrecorded: UnrecordedLine[];
+  /** How many payment lines the plan has — "all N payments funded". */
+  lineCount: number;
+  /** The last line the plan still funds: what a tighter month would cut first. */
+  lastFundedName: string | null;
+}
+
+/**
+ * Save-up money the plan funded this month that nobody has recorded yet, line
+ * by line, alongside the two counts above.
  *
  * Same test as the web checklist's `record` rule (`web/src/lib/needsYou.ts`): a
  * non-monthly line is covered once this month's contributions reach what the
- * plan funded for it. The total is what is still missing rather than the
- * month's target, so the index chip and the checklist's prefill agree.
+ * plan funded for it. Each line carries the remainder rather than the month's
+ * target, so the index chip, the checklist row and its prefill are all read off
+ * this one derivation and cannot disagree.
  */
-function unrecordedSaveUps(
+function summarisePlanLines(
   plan: AccountPlan,
   contributionsMTD: readonly ContributionTotal[],
-): { unrecordedCount: number; unrecordedTotalMinor: number } {
+): PlanLineSummary {
   const mtd = new Map(contributionsMTD.map((c) => [c.paymentId, c.amountMinor]));
-  let unrecordedCount = 0;
-  let unrecordedTotalMinor = 0;
+  const unrecorded: UnrecordedLine[] = [];
+  let lastFundedName: string | null = null;
 
   for (const line of plan.lines) {
+    // Lines arrive in funding order, so the last funded one is the lowest
+    // priority the plan reached.
+    if (line.fundedMonthlyMinor > 0) lastFundedName = line.name;
     if (line.category === "monthly_recurring" || line.fundedMonthlyMinor <= 0) continue;
     const contributed = mtd.get(line.paymentId) ?? 0;
     if (contributed >= line.fundedMonthlyMinor) continue;
-    unrecordedCount += 1;
-    unrecordedTotalMinor += line.fundedMonthlyMinor - contributed;
+    unrecorded.push({
+      paymentId: line.paymentId,
+      name: line.name,
+      fundedMonthlyMinor: line.fundedMonthlyMinor,
+      remainderMinor: line.fundedMonthlyMinor - contributed,
+    });
   }
 
-  return { unrecordedCount, unrecordedTotalMinor };
+  return { unrecorded, lineCount: plan.lines.length, lastFundedName };
 }
 
 /** Where an account sits in the user's households, when it sits in one. */
@@ -707,6 +747,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * holds, and what is waiting on a human. The aggregation itself stays in the
    * engine; everything added here is read off the same plan and the same
    * reality the account page reads, so no screen can disagree with another.
+   *
+   * That includes `planSummary`: the handler has every account's plan in hand,
+   * so the Overview's checklist gets the lines it must act on from here rather
+   * than paying a plan request per row for work already done in this loop.
    */
   app.get("/api/overview", async (req) => {
     const userId = await authenticate(req);
@@ -724,6 +768,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       if (!account) continue;
       const plan = await computePlanForAccount(store, account, asOfDate);
       const reality = await accountReality(store, plan, asOfDate);
+      const planSummary = summarisePlanLines(plan, reality.contributionsMTD);
       plans.push(plan);
       state.set(account.id, {
         name: account.name,
@@ -732,7 +777,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         latestBalanceMinor: reality.latestBalance?.balanceMinor ?? null,
         latestBalanceDate: reality.latestBalance?.asOfDate ?? null,
         reservedMinor: reality.reservedMinor,
-        ...unrecordedSaveUps(plan, reality.contributionsMTD),
+        planSummary,
+        // The index's chip, off the very lines the checklist will draw rows for.
+        unrecordedCount: planSummary.unrecorded.length,
+        unrecordedTotalMinor: planSummary.unrecorded.reduce((n, l) => n + l.remainderMinor, 0),
       });
     }
 

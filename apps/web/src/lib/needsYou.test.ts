@@ -492,6 +492,100 @@ describe("deriveNeedsYou · record", () => {
   });
 });
 
+/**
+ * The Overview holds no account plan — its API derives the line facts from the
+ * plans it computes anyway, so the page costs no request per row. What comes
+ * out the other end has to be the same rows the plan pages get.
+ */
+describe("deriveNeedsYou · accounts given a line summary instead of a plan", () => {
+  /** Ben current, restated: the same three lines, already reduced. */
+  function summarised(over: Partial<NeedsYouAccountInput> = {}): NeedsYouAccountInput {
+    return {
+      name: "Ben current",
+      householdId: "hh",
+      plan: {
+        accountId: "ben-current",
+        currency: "GBP",
+        leftoverMinor: 0,
+        shortfallMinor: 0,
+        latestBalance: { asOfDate: AS_OF, balanceMinor: 318_450 },
+      },
+      lineSummary: {
+        unrecorded: [
+          {
+            paymentId: "rainy",
+            name: "Rainy day",
+            fundedMonthlyMinor: 20_000,
+            remainderMinor: 20_000,
+          },
+        ],
+        lineCount: 3,
+        lastFundedName: "Rainy day",
+      },
+      ...over,
+    };
+  }
+
+  it("draws rows indistinguishable from the ones the plan's lines give", () => {
+    expect(deriveNeedsYou({ asOfDate: AS_OF, accounts: [summarised()] })).toEqual(
+      deriveNeedsYou({ asOfDate: AS_OF, accounts: [benCurrent()] }),
+    );
+  });
+
+  it("prefills the remainder the summary carries, not the month's target", () => {
+    const [item] = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        summarised({
+          lineSummary: {
+            unrecorded: [
+              {
+                paymentId: "rainy",
+                name: "Rainy day",
+                fundedMonthlyMinor: 20_000,
+                remainderMinor: 15_000,
+              },
+            ],
+            lineCount: 3,
+            lastFundedName: "Rainy day",
+          },
+        }),
+      ],
+    });
+    expect(item!.amountMinor).toBe(20_000);
+    expect(phraseText(item!.meta)).toBe("Ben current · £50.00 of £200.00 set aside so far");
+    expect(item!.action).toMatchObject({ amountMinor: 15_000 });
+  });
+
+  it("names what to cut, and counts the payments the headline speaks for", () => {
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      accounts: [
+        summarised({
+          name: "Side hustle",
+          householdId: undefined,
+          plan: {
+            accountId: "side",
+            currency: "GBP",
+            leftoverMinor: 40_000,
+            shortfallMinor: 12_500,
+            latestBalance: { asOfDate: AS_OF, balanceMinor: 90_000 },
+          },
+          lineSummary: { unrecorded: [], lineCount: 4, lastFundedName: "Van" },
+        }),
+      ],
+    };
+    const items = deriveNeedsYou(input);
+
+    expect(phraseText(items[0]!.meta)).toBe(
+      "income is £125.00 short — trim the plan, or move £125.00 from Van",
+    );
+    expect(phraseText(deriveHeadline(input, items).sentence)).toContain(
+      "across 4 payments is covered",
+    );
+  });
+});
+
 describe("deriveNeedsYou · checkin", () => {
   it("asks about a balance older than the threshold, dated against what is due", () => {
     const items = deriveNeedsYou(fullInput()).filter((i) => i.kind === "checkin");

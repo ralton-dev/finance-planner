@@ -14,11 +14,11 @@ import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { AccountCell, AttentionCell, BalanceCell } from "./AccountsPage.js";
 import type {
   AccountDto,
-  AccountPlanDto,
   BalanceSnapshotDto,
   CurrencyOverviewDto,
   HouseholdDto,
   HouseholdPlanDto,
+  LatestBalanceDto,
   OverviewAccountDto,
   OverviewDto,
   TransferConfirmationDto,
@@ -40,6 +40,13 @@ import type {
  * rows are derived from them and the link cards print totals that same read
  * already carries. Nothing here renders their lines.
  *
+ * The *account* plans are not read at all. GET /overview computes every one of
+ * them to aggregate it, so it sends down the handful of line facts the
+ * checklist acts on (`planSummary`) and the page costs a fixed number of
+ * requests however many accounts you have. The one per-account read left is the
+ * balance history behind the net-worth disclosure, and it waits until the
+ * disclosure is opened.
+ *
  * `UpcomingDigest` stays a section of its own, directly beneath the fold,
  * rather than folding into the checklist. A bill that falls due next Tuesday is
  * not waiting on a human — it will be paid whether or not anyone ticks
@@ -56,21 +63,23 @@ const NetWorthChart = lazy(() =>
   import("../components/NetWorthChart.js").then((m) => ({ default: m.NetWorthChart })),
 );
 
-/** Balances for the net-worth chart, plus the account plan the checklist's
- *  `record` and `check-in` rules are derived from. */
-interface AccountReality extends AccountBalanceHistory {
-  account: AccountDto;
-  /** null when this account's plan failed to load — it drops out of the
-   *  checklist rather than blanking it. */
-  plan: AccountPlanDto | null;
-}
-
 /** A household, its plan and this month's confirmations: everything the fold
  *  derives from, and everything its link card says. */
 export interface HouseholdEntry {
   household: HouseholdDto;
   plan: HouseholdPlanDto;
   confirmations: TransferConfirmationDto[];
+}
+
+/**
+ * An account's last check-in in the shape the checklist reads it, or null. The
+ * two halves arrive together or not at all; anything less than both is "never
+ * checked in", which is what the check-in row is for.
+ */
+function latestBalanceOf(s: OverviewAccountDto): LatestBalanceDto | null {
+  const { latestBalanceDate: asOfDate, latestBalanceMinor: balanceMinor } = s;
+  if (!asOfDate || balanceMinor === null || balanceMinor === undefined) return null;
+  return { asOfDate, balanceMinor };
 }
 
 export function OverviewPage() {
@@ -102,23 +111,25 @@ export function OverviewPage() {
     [householdKey],
   );
 
-  // One parallel batch across every accessible account: balance history for the
-  // chart, the account plan for the checklist. A single failing account degrades
-  // to "no data" instead of blanking the section.
+  // The trend chart is the only thing left that needs a balance *history*, and
+  // it sits behind a closed disclosure. Reading one per account at mount would
+  // be a request per row for a chart most visits never open, so the batch waits
+  // for the disclosure and is kept once read. A failing account degrades to "no
+  // data" rather than blanking the chart.
   const accountList = accounts.data ?? [];
   const accountKey = accountList.map((a) => a.id).join(",");
-  const reality = useAsync<AccountReality[]>(
+  const [trendOpen, setTrendOpen] = useState(false);
+  const histories = useAsync<AccountBalanceHistory[] | null>(
     () =>
-      Promise.all(
-        accountList.map(async (account) => {
-          const [snapshots, plan] = await Promise.all([
-            api.listBalances(account.id).catch((): BalanceSnapshotDto[] => []),
-            api.getPlan(account.id).catch(() => null),
-          ]);
-          return { account, snapshots, plan };
-        }),
-      ),
-    [accountKey],
+      trendOpen
+        ? Promise.all(
+            accountList.map(async (account) => ({
+              account,
+              snapshots: await api.listBalances(account.id).catch((): BalanceSnapshotDto[] => []),
+            })),
+          )
+        : Promise.resolve(null),
+    [trendOpen, accountKey],
   );
 
   /** Everything on the page, re-read: for anything that can create data behind
@@ -127,7 +138,8 @@ export function OverviewPage() {
     overview.refetch();
     accounts.refetch();
     plans.refetch();
-    reality.refetch();
+    // A no-op while the trend is closed — the read is deps-gated on `trendOpen`.
+    histories.refetch();
     upcoming.refetch();
   }
 
@@ -142,7 +154,6 @@ export function OverviewPage() {
 
   const { asOfDate, perCurrency: buckets } = overview.data;
   const byId = new Map((accounts.data ?? []).map((a) => [a.id, a]));
-  const stateById = new Map(buckets.flatMap((c) => c.accounts).map((a) => [a.accountId, a]));
   const householdPlans = plans.data ?? [];
   const totalAccounts = accounts.data?.length ?? 0;
 
@@ -157,14 +168,29 @@ export function OverviewPage() {
   // `householdId` is the de-duplication hook: an account inside a household in
   // this input contributes its record and check-in rows, but its shortfall is
   // left to that household's member rows, which say whose money is missing.
+  //
+  // Every account fact here is off the overview's own read — the shortfall and
+  // left-over it aggregates anyway, the balance the index prints, and the line
+  // summary the API derives from the plan it computed. No plan is fetched.
   const needsYou: NeedsYouInput = {
     asOfDate,
     households: householdPlans.map(({ plan, confirmations }) => ({ plan, confirmations })),
-    accounts: (reality.data ?? []).flatMap(({ account, plan }): NeedsYouAccountInput[] => {
-      if (!plan) return [];
-      const householdId = stateById.get(account.id)?.householdId;
-      return [{ plan, name: account.name, ...(householdId ? { householdId } : {}) }];
-    }),
+    accounts: buckets.flatMap((bucket) =>
+      bucket.accounts.map(
+        (s): NeedsYouAccountInput => ({
+          name: s.name,
+          plan: {
+            accountId: s.accountId,
+            currency: bucket.currency,
+            leftoverMinor: s.leftoverMinor,
+            shortfallMinor: s.shortfallMinor,
+            latestBalance: latestBalanceOf(s),
+          },
+          ...(s.householdId ? { householdId: s.householdId } : {}),
+          ...(s.planSummary ? { lineSummary: s.planSummary } : {}),
+        }),
+      ),
+    ),
     upcoming: upcoming.data?.items ?? [],
   };
 
@@ -194,7 +220,7 @@ export function OverviewPage() {
           {/* The headline and the checklist must not appear before the data
               they are derived from, or the page greets you with a confident
               "nothing planned yet" it is about to take back. */}
-          {plans.loading || reality.loading ? (
+          {plans.loading ? (
             <p className="muted">reading your plans…</p>
           ) : (
             <Fold input={needsYou} loading={upcoming.loading} onActioned={refetchAll} />
@@ -218,7 +244,11 @@ export function OverviewPage() {
             />
           ))}
 
-          <NetWorth buckets={buckets} reality={reality.data ?? []} loading={reality.loading} />
+          <NetWorth
+            buckets={buckets}
+            histories={histories.data ?? null}
+            onOpenTrend={() => setTrendOpen(true)}
+          />
         </>
       )}
     </section>
@@ -478,17 +508,23 @@ export function netWorthSentence(totals: NetWorthTotals, currency: string): Phra
   ];
 }
 
-/** What you hold, said in a sentence; the trend is a disclosure behind it. */
+/**
+ * What you hold, said in a sentence; the trend is a disclosure behind it.
+ *
+ * The figure is read off the overview itself. The trend needs a balance history
+ * per account, which nothing else on the page wants, so `histories` is null
+ * until the disclosure asks for it and the chart says it is loading meanwhile.
+ */
 function NetWorth({
   buckets,
-  reality,
-  loading,
+  histories,
+  onOpenTrend,
 }: {
   buckets: CurrencyOverviewDto[];
-  reality: AccountReality[];
-  loading: boolean;
+  histories: AccountBalanceHistory[] | null;
+  onOpenTrend: () => void;
 }) {
-  const points = buildNetWorthSeries(reality);
+  const points = histories === null ? null : buildNetWorthSeries(histories);
   const chartRef = useRef<HTMLDivElement>(null);
   const multi = buckets.length > 1;
 
@@ -514,9 +550,14 @@ function NetWorth({
         );
       })}
 
-      <details className="disclosure">
+      <details
+        className="disclosure"
+        onToggle={(e) => {
+          if (e.currentTarget.open) onOpenTrend();
+        }}
+      >
         <summary>net worth over time</summary>
-        {loading ? (
+        {points === null ? (
           <p className="muted" style={{ fontSize: "12px" }}>
             loading balances…
           </p>

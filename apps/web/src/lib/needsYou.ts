@@ -2,9 +2,10 @@ import { formatDayMonth, formatMonth, monthOf } from "./months.js";
 import { money, type Phrase, type PhrasePart } from "./money.js";
 import { tagKey, UNTAGGED } from "./tags.js";
 import type {
-  AccountPlanDto,
+  ContributionTotalDto,
   HouseholdPlanDto,
   HouseholdPlanLineDto,
+  LatestBalanceDto,
   PlanLineDto,
   TransferConfirmationDto,
   UpcomingItemDto,
@@ -50,13 +51,52 @@ export interface NeedsYouHouseholdInput {
   confirmations: readonly TransferConfirmationDto[];
 }
 
+/** A save-up the plan funded this month with money still unrecorded against it. */
+export interface NeedsYouUnrecorded {
+  paymentId: string;
+  name: string;
+  /** The month's target — the row's figure. */
+  fundedMonthlyMinor: number;
+  /** What is still missing — the action's prefill. */
+  remainderMinor: number;
+}
+
+/** Everything the checklist reads off an account plan's line list. */
+export interface NeedsYouLineSummary {
+  unrecorded: readonly NeedsYouUnrecorded[];
+  /** How many payment lines the plan has — the headline's payment count. */
+  lineCount: number;
+  /** The last line the plan still funds — what a tighter month would cut. */
+  lastFundedName: string | null;
+}
+
+/**
+ * The parts of an account plan the checklist reads. A whole `AccountPlanDto`
+ * satisfies it — the account and household plan pages read one per account
+ * anyway — and so does the Overview, which has the same facts from its own
+ * endpoint and would otherwise pay a request per row to restate them.
+ */
+export interface NeedsYouAccountPlan {
+  accountId: string;
+  currency: string;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  /** Last manual balance check-in, or null when never reconciled. */
+  latestBalance: LatestBalanceDto | null;
+  /** The plan's lines, in funding order. Absent when the caller has no line
+   *  list and passes {@link NeedsYouAccountInput.lineSummary} instead. */
+  lines?: readonly PlanLineDto[];
+  /** Per-payment totals contributed this month — read alongside `lines`. */
+  contributionsMTD?: readonly ContributionTotalDto[];
+}
+
 /**
  * An account's plan, which already carries `contributionsMTD`, `latestBalance`
  * and `reservedMinor`. The name is passed alongside because `AccountPlanDto`
  * has none — the plan is keyed by id and the pages hold the account list.
  */
 export interface NeedsYouAccountInput {
-  plan: AccountPlanDto;
+  plan: NeedsYouAccountPlan;
   name: string;
   /**
    * The household this account is assigned to, when it has one. Set it and the
@@ -64,6 +104,13 @@ export interface NeedsYouAccountInput {
    * money is missing; the record and check-in rules still apply.
    */
   householdId?: string;
+  /**
+   * The line-list facts, already derived. The Overview's API computes every
+   * account's plan to aggregate it, so it sends these down with the summary and
+   * the page needs no plan of its own. Otherwise left unset and derived from
+   * `plan.lines` here, which is the same rule in the same order.
+   */
+  lineSummary?: NeedsYouLineSummary;
 }
 
 export interface NeedsYouInput {
@@ -212,11 +259,39 @@ function lastFundedForMember(plan: HouseholdPlanDto, userId: string): string | n
   return worst?.name ?? null;
 }
 
-/** Same idea for an account plan, whose lines already arrive in funding order. */
-function lastFundedOnAccount(lines: readonly PlanLineDto[]): string | null {
-  let name: string | null = null;
-  for (const line of lines) if (line.fundedMonthlyMinor > 0) name = line.name;
-  return name;
+/**
+ * Everything the account rules read off a plan's line list, from whichever the
+ * caller has: the pre-derived summary, or the lines themselves.
+ *
+ * The two branches are one rule stated twice — a non-monthly line the plan
+ * funded is outstanding until this month's contributions reach it — because the
+ * API states it too, for the callers that hold no lines. Change it here and in
+ * `api/src/server.ts`'s `summarisePlanLines` together.
+ */
+function accountLines(entry: NeedsYouAccountInput): NeedsYouLineSummary {
+  if (entry.lineSummary) return entry.lineSummary;
+
+  const lines = entry.plan.lines ?? [];
+  const mtd = new Map((entry.plan.contributionsMTD ?? []).map((c) => [c.paymentId, c.amountMinor]));
+  const unrecorded: NeedsYouUnrecorded[] = [];
+  let lastFundedName: string | null = null;
+
+  for (const line of lines) {
+    // Lines arrive in funding order, so the last funded one is what you would
+    // cut first to free the money.
+    if (line.fundedMonthlyMinor > 0) lastFundedName = line.name;
+    if (line.category === "monthly_recurring" || line.fundedMonthlyMinor <= 0) continue;
+    const contributed = mtd.get(line.paymentId) ?? 0;
+    if (contributed >= line.fundedMonthlyMinor) continue;
+    unrecorded.push({
+      paymentId: line.paymentId,
+      name: line.name,
+      fundedMonthlyMinor: line.fundedMonthlyMinor,
+      remainderMinor: line.fundedMonthlyMinor - contributed,
+    });
+  }
+
+  return { unrecorded, lineCount: lines.length, lastFundedName };
 }
 
 function householdShortfalls(entry: NeedsYouHouseholdInput): ShortfallFact[] {
@@ -253,7 +328,7 @@ function householdShortfalls(entry: NeedsYouHouseholdInput): ShortfallFact[] {
 function accountShortfall(entry: NeedsYouAccountInput): ShortfallFact | null {
   const { plan } = entry;
   if (plan.shortfallMinor <= 0) return null;
-  const cut = lastFundedOnAccount(plan.lines);
+  const cut = accountLines(entry).lastFundedName;
   const amount = money(plan.shortfallMinor, plan.currency);
 
   return {
@@ -324,13 +399,10 @@ function transferItems(entry: NeedsYouHouseholdInput, month: string): NeedsYouIt
 
 function recordItems(entry: NeedsYouAccountInput, month: string): NeedsYouItem[] {
   const { plan } = entry;
-  const mtd = new Map((plan.contributionsMTD ?? []).map((c) => [c.paymentId, c.amountMinor]));
 
-  return plan.lines
-    .filter((line) => line.category !== "monthly_recurring" && line.fundedMonthlyMinor > 0)
-    .map((line) => ({ line, contributed: mtd.get(line.paymentId) ?? 0 }))
-    .filter(({ line, contributed }) => contributed < line.fundedMonthlyMinor)
-    .map(({ line, contributed }) => ({
+  return accountLines(entry).unrecorded.map((line) => {
+    const contributed = line.fundedMonthlyMinor - line.remainderMinor;
+    return {
       key: `record:${line.paymentId}`,
       kind: "record" as const,
       label: `record ${line.name}`,
@@ -352,10 +424,12 @@ function recordItems(entry: NeedsYouAccountInput, month: string): NeedsYouItem[]
         kind: "recordContribution" as const,
         paymentId: line.paymentId,
         accountId: plan.accountId,
-        amountMinor: line.fundedMonthlyMinor - contributed,
+        // The remainder: the row asks for the target, the box prefills the gap.
+        amountMinor: line.remainderMinor,
         month,
       },
-    }));
+    };
+  });
 }
 
 // --- check-ins -------------------------------------------------------------
@@ -525,7 +599,7 @@ export function deriveHeadline(
   const leftoverMinor = sum((p) => p.leftoverMinor);
   const paymentCount =
     households.reduce((n, h) => n + h.plan.lines.length, 0) +
-    standalone.reduce((n, a) => n + a.plan.lines.length, 0);
+    standalone.reduce((n, a) => n + accountLines(a).lineCount, 0);
 
   if (shortfallMinor > 0) {
     const facts = [

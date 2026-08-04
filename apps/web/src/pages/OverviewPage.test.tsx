@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickAddProvider } from "../contexts/QuickAddContext.js";
@@ -46,12 +46,9 @@ function renderOverview(routes: Routes = {}): ReturnType<typeof render> {
                 totalFundedMinor: 0,
                 leftoverMinor: 250000,
                 shortfallMinor: 0,
-                accounts: accounts.map((a) => ({
-                  accountId: a.id,
-                  leftoverMinor: 250000,
-                  shortfallMinor: 0,
-                  atRiskCount: 0,
-                })),
+                accounts: accounts.map((a) =>
+                  state({ accountId: a.id, name: a.name, leftoverMinor: 250000 }),
+                ),
               },
             ]
           : [],
@@ -164,6 +161,7 @@ function state(over: Partial<OverviewAccountDto> & { accountId: string }): Overv
     reservedMinor: 0,
     unrecordedCount: 0,
     unrecordedTotalMinor: 0,
+    planSummary: { unrecorded: [], lineCount: 0, lastFundedName: null },
     ...over,
   };
 }
@@ -277,9 +275,29 @@ const PLANNED_ACCOUNTS = [
   account("side", "Side hustle"),
 ];
 
+/**
+ * The overview's own read of those three accounts — which is now the *only*
+ * read the checklist's account rows come from. Ada's balance is two months old
+ * (a check-in row), the side account has a part-recorded save-up (a record
+ * row), and the joint account is settled.
+ */
 const PLANNED_STATE = [
-  state({ accountId: "ada", name: "Ada current", householdId: "hh", householdRole: "personal" }),
-  state({ accountId: "bills", name: "Bills joint", householdId: "hh", householdRole: "shared" }),
+  state({
+    accountId: "ada",
+    name: "Ada current",
+    householdId: "hh",
+    householdRole: "personal",
+    latestBalanceMinor: 0,
+    latestBalanceDate: "2026-06-01",
+  }),
+  state({
+    accountId: "bills",
+    name: "Bills joint",
+    householdId: "hh",
+    householdRole: "shared",
+    latestBalanceMinor: 0,
+    latestBalanceDate: AS_OF,
+  }),
   state({
     accountId: "side",
     name: "Side hustle",
@@ -287,27 +305,22 @@ const PLANNED_STATE = [
     latestBalanceMinor: 90_000,
     latestBalanceDate: AS_OF,
     reservedMinor: 30_000,
+    unrecordedCount: 1,
+    unrecordedTotalMinor: 15_000,
+    planSummary: {
+      unrecorded: [
+        {
+          paymentId: "holiday",
+          name: "Holiday",
+          fundedMonthlyMinor: 20_000,
+          remainderMinor: 15_000,
+        },
+      ],
+      lineCount: 1,
+      lastFundedName: "Holiday",
+    },
   }),
 ];
-
-/** An account plan flat enough that the checklist has nothing to say about it —
- *  the household's rows are what these tests are about. */
-function emptyPlan(accountId: string) {
-  return {
-    accountId,
-    currency: "GBP",
-    monthlyIncomeMinor: 0,
-    bufferMinor: 0,
-    totalRequiredMinor: 0,
-    totalFundedMinor: 0,
-    leftoverMinor: 0,
-    shortfallMinor: 0,
-    lines: [],
-    contributionsMTD: [],
-    latestBalance: { asOfDate: AS_OF, balanceMinor: 0 },
-    reservedMinor: 0,
-  };
-}
 
 function renderPlanned(routes: Routes = {}): ReturnType<typeof render> {
   stub = stubApiFetch({
@@ -333,9 +346,6 @@ function renderPlanned(routes: Routes = {}): ReturnType<typeof render> {
     "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
     "GET /api/households/hh/plan": { body: HOUSEHOLD_PLAN },
     "GET /api/households/hh/transfers/confirmations": { body: [] },
-    "GET /api/accounts/ada/plan": { body: emptyPlan("ada") },
-    "GET /api/accounts/bills/plan": { body: emptyPlan("bills") },
-    "GET /api/accounts/side/plan": { body: emptyPlan("side") },
     "GET /api/accounts/ada/balances": { body: [] },
     "GET /api/accounts/bills/balances": { body: [] },
     "GET /api/accounts/side/balances": { body: [] },
@@ -423,6 +433,47 @@ describe("OverviewPage — fold + doorways", () => {
     await waitFor(() => expect(stub.calls("GET /api/households/hh/plan")).toBe(1));
   });
 
+  it("builds the record row off the overview alone, and it still actions", async () => {
+    renderPlanned({ "POST /api/payments/holiday/contributions": { status: 201, body: {} } });
+
+    fireEvent.click(await screen.findByRole("button", { name: "record" }));
+    // The row asks for the month's target; the box prefills what is missing.
+    expect(screen.getByLabelText("record Holiday")).toHaveValue("150.00");
+
+    fireEvent.click(screen.getByRole("button", { name: "save" }));
+    await waitFor(() => expect(stub.calls("POST /api/payments/holiday/contributions")).toBe(1));
+    expect(stub.bodyOf("POST /api/payments/holiday/contributions")).toEqual({
+      amountMinor: 15_000,
+      month: "2026-08",
+    });
+    // …and no account plan was read to get there.
+    expect(stub.calls("GET /api/accounts/side/plan")).toBe(0);
+  });
+
+  it("builds the check-in row off the overview alone, and it still actions", async () => {
+    renderPlanned({ "PUT /api/accounts/ada/balance": { body: {} } });
+
+    fireEvent.click(await screen.findByRole("button", { name: "check in" }));
+    fireEvent.change(screen.getByLabelText("check in Ada current balance"), {
+      target: { value: "1234.50" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "save" }));
+
+    await waitFor(() => expect(stub.calls("PUT /api/accounts/ada/balance")).toBe(1));
+    expect(stub.bodyOf("PUT /api/accounts/ada/balance")).toEqual({ balanceMinor: 123_450 });
+  });
+
+  it("leaves the balance history until the trend disclosure asks for it", async () => {
+    renderPlanned();
+    await screen.findByRole("link", { name: /Chestnut Road/ });
+
+    // Three accounts on the page, no balance read for any of them.
+    expect(stub.calls("GET /api/accounts/side/balances")).toBe(0);
+
+    fireEvent.click(screen.getByText("net worth over time"));
+    await waitFor(() => expect(stub.calls("GET /api/accounts/side/balances")).toBe(1));
+  });
+
   it("sends an empty household to the screen that can fill it", async () => {
     renderPlanned({
       "GET /api/households/hh/plan": {
@@ -433,6 +484,80 @@ describe("OverviewPage — fold + doorways", () => {
     const card = await screen.findByRole("link", { name: /Chestnut Road/ });
     expect(card).toHaveAttribute("href", "/households/hh");
     expect(card).toHaveTextContent("no accounts yet");
+  });
+});
+
+/**
+ * The regression this file exists to hold: the Overview used to read a balance
+ * list *and* an account plan per account, so an estate of ten accounts cost
+ * twenty requests nobody asked for. Everything the checklist needs now comes
+ * down with the overview itself, so the cost is flat.
+ */
+describe("OverviewPage — request cost", () => {
+  /** Mounts the page over `count` standalone accounts, each with a row to
+   *  action, and reports how many requests that took. */
+  async function requestsFor(count: number): Promise<number> {
+    const list = Array.from({ length: count }, (_, i) => account(`a${i}`, `Account ${i}`));
+    stub = stubApiFetch({
+      "GET /api/auth/me": { body: ME },
+      "GET /api/accounts": { body: list },
+      "GET /api/overview": {
+        body: {
+          asOfDate: AS_OF,
+          perCurrency: [
+            {
+              currency: "GBP",
+              monthlyIncomeMinor: 0,
+              bufferMinor: 0,
+              totalRequiredMinor: 0,
+              totalFundedMinor: 0,
+              leftoverMinor: 0,
+              shortfallMinor: 0,
+              accounts: list.map((a) =>
+                state({
+                  accountId: a.id,
+                  name: a.name,
+                  planSummary: {
+                    unrecorded: [
+                      {
+                        paymentId: `p-${a.id}`,
+                        name: "Holiday",
+                        fundedMonthlyMinor: 20_000,
+                        remainderMinor: 15_000,
+                      },
+                    ],
+                    lineCount: 1,
+                    lastFundedName: "Holiday",
+                  },
+                }),
+              ),
+            },
+          ],
+        },
+      },
+      "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
+    });
+
+    render(
+      <MemoryRouter>
+        <QuickAddProvider>
+          <OverviewPage />
+        </QuickAddProvider>
+      </MemoryRouter>,
+    );
+    // Every account's row is on screen, so nothing is still in flight.
+    expect(await screen.findAllByText("record Holiday")).toHaveLength(count);
+
+    const total = stub.mock.mock.calls.length;
+    cleanup();
+    vi.unstubAllGlobals();
+    return total;
+  }
+
+  it("costs the same whether you have three accounts or five", async () => {
+    // me, accounts, overview, upcoming — and nothing per row.
+    expect(await requestsFor(3)).toBe(4);
+    expect(await requestsFor(5)).toBe(4);
   });
 });
 

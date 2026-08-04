@@ -370,6 +370,24 @@ describe("api service", () => {
       unrecordedTotalMinor: 17143, // 120000 over the 7 months to the due date
     });
 
+    // The same lines again, described well enough for the Overview's checklist
+    // to draw a row and prefill its box — which is the plan request per account
+    // this replaces. Only the unrecorded ones travel; the monthly bill is
+    // nobody's to record, so it shows up only in the count.
+    expect(summary.planSummary).toEqual({
+      unrecorded: [
+        {
+          paymentId: goal.id,
+          name: "Holiday",
+          fundedMonthlyMinor: 17143,
+          remainderMinor: 17143,
+        },
+      ],
+      lineCount: 2,
+      // Last in funding order, so the first thing a tighter month would cut.
+      lastFundedName: "Rent",
+    });
+
     // Part of the month's target recorded: the count stands, the total is only
     // what is still missing — the same figure the checklist would prefill.
     await app.inject({
@@ -384,6 +402,11 @@ describe("api service", () => {
     expect(partly.reservedMinor).toBe(5000);
     expect(partly.unrecordedCount).toBe(1);
     expect(partly.unrecordedTotalMinor).toBe(11429); // (120000 - 5000) / 7 - 5000
+    // The chip's figure is the descriptor's remainder, by construction: the row
+    // asks for the month's target and the box prefills only the gap.
+    expect(partly.planSummary.unrecorded).toEqual([
+      { paymentId: goal.id, name: "Holiday", fundedMonthlyMinor: 16429, remainderMinor: 11429 },
+    ]);
 
     // Covered: nothing left to record, and the monthly bill never counted.
     await app.inject({
@@ -397,6 +420,10 @@ describe("api service", () => {
     ).json().perCurrency[0].accounts[0];
     expect(covered.unrecordedCount).toBe(0);
     expect(covered.unrecordedTotalMinor).toBe(0);
+    expect(covered.planSummary.unrecorded).toEqual([]);
+    // Nothing left to record does not mean nothing left to cut: the count and
+    // the last funded line are what the fold's sentences read.
+    expect(covered.planSummary.lineCount).toBe(2);
   });
 
   it("reports one balance for an account, whichever screen asks", async () => {

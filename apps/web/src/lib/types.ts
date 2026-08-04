@@ -247,6 +247,34 @@ export interface PlanPreviewDto {
 }
 
 /**
+ * A save-up the plan funded this month with money still unrecorded against it,
+ * described well enough to act on: which payment, what to call it, what the
+ * month asked for, and what is still missing.
+ */
+export interface UnrecordedLineDto {
+  paymentId: string;
+  name: string;
+  /** The month's target — the row's figure. */
+  fundedMonthlyMinor: number;
+  /** What is still missing — the amount the record action prefills. */
+  remainderMinor: number;
+}
+
+/**
+ * What the checklist reads off an account plan's line list, derived by the API
+ * from the plan the overview already computes. The list itself never travels:
+ * only the lines something is being asked of, plus the two facts the fold's
+ * sentences count and name.
+ */
+export interface PlanLineSummaryDto {
+  unrecorded: UnrecordedLineDto[];
+  /** How many payment lines the plan has — "all N payments funded". */
+  lineCount: number;
+  /** The last line the plan still funds: what a tighter month would cut first. */
+  lastFundedName: string | null;
+}
+
+/**
  * One account inside the overview: the plan's numbers for it, plus the state
  * the accounts index leads with. Enough to answer "which account needs me
  * today" without a second request per row.
@@ -272,9 +300,15 @@ export interface OverviewAccountDto {
   reservedMinor: number;
   /** Save-up lines the plan funded this month with no contribution recorded
    *  against them yet, and how much of that money is still unrecorded. Same
-   *  definition of "covered" as the checklist's `record` rule. */
+   *  definition of "covered" as the checklist's `record` rule — the counts are
+   *  read off `planSummary.unrecorded`, so the chip and the rows agree. */
   unrecordedCount: number;
   unrecordedTotalMinor: number;
+  /** Those same lines as descriptors, plus what the fold's sentences need from
+   *  the rest of the list. Optional because it is additive: an API without it
+   *  simply leaves this account with no checklist rows rather than inventing
+   *  any. */
+  planSummary?: PlanLineSummaryDto;
 }
 
 export interface CurrencyOverviewDto {
