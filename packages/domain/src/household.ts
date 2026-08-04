@@ -1,4 +1,9 @@
-import type { AccountRole, PaymentCategory, PaymentScope } from "@finance-planner/contracts";
+import {
+  splitByShares,
+  type AccountRole,
+  type PaymentCategory,
+  type PaymentScope,
+} from "@finance-planner/contracts";
 import { parseISODate } from "./dates.js";
 import { monthlyIncomeMinor, requiredMonthlyForPayment } from "./engine.js";
 import type { IncomeInput, PaymentInput } from "./types.js";
@@ -113,7 +118,7 @@ export interface HouseholdAccountPlan {
   transferInMinor: number;
   transferOutMinor: number;
   /** What remains in the account after the month's flows (includes any buffer
-   *  reserve). */
+   *  reserve, and the pennies members rounded their shares up by). */
   leftoverMinor: number;
   shortfallMinor: number;
 }
@@ -145,27 +150,10 @@ export interface HouseholdPlan {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Split an integer `amount` across `weights` so the parts are whole minor units
- * that sum exactly to `amount` (largest-remainder method). Non-positive total
- * weight falls back to an equal split — defensive; the engine pre-normalises.
- */
-export function splitByShares(amount: number, weights: number[]): number[] {
-  const n = weights.length;
-  if (n === 0) return [];
-  const safe = weights.map((w) => Math.max(0, w));
-  const total = safe.reduce((s, w) => s + w, 0);
-  const effective = total > 0 ? safe : safe.map(() => 1);
-  const denom = total > 0 ? total : n;
-  const exact = effective.map((w) => (amount * w) / denom);
-  const parts = exact.map(Math.floor);
-  let remainder = amount - parts.reduce((s, p) => s + p, 0);
-  const order = exact
-    .map((e, i) => ({ i, frac: e - Math.floor(e) }))
-    .sort((a, b) => b.frac - a.frac || a.i - b.i);
-  for (let k = 0; remainder > 0 && k < n; k++, remainder--) parts[order[k]!.i]! += 1;
-  return parts;
-}
+/** The share split lives in `@finance-planner/contracts` so the web client can
+ *  promise exactly what this engine does without depending on the domain.
+ *  Re-exported here because it is part of the domain's public surface. */
+export { splitByShares };
 
 /** One unit of money a member must get into an account by a deadline. */
 interface Obligation {
@@ -187,7 +175,10 @@ interface Obligation {
  * Compute a household's pooled monthly plan as of `asOfDate`.
  *
  * Unlike the per-account plan, money is considered across all accounts at once:
- *   - Shared costs are split across members by their contribution share.
+ *   - Shared costs are split across members by their contribution share, each
+ *     member's slice rounded up (see `splitByShares`). The split happens once
+ *     per line, so a pot can end the month up to (lines × (members − 1)) minor
+ *     units over-funded — deliberately, so no bill is ever a penny short.
  *   - Personal costs are borne entirely by one member (their bearer / the
  *     owning member of a personal account).
  *   - Each member funds their attributed costs from their own income in global
@@ -394,14 +385,20 @@ export function computeHouseholdPlan(input: HouseholdInput, asOfDate: string): H
     transferIn.set(t.toAccountId, (transferIn.get(t.toAccountId) ?? 0) + t.amountMinor);
     transferOut.set(t.fromAccountId, (transferOut.get(t.fromAccountId) ?? 0) + t.amountMinor);
   }
-  // Bills (payment obligations) funded out of each account — buffer reserves do
-  // not leave the account, so they are excluded from outflow.
+  // Bills funded out of each account — the *bills*, taken off the lines rather
+  // than off the member obligations that pay for them. Buffer reserves never
+  // leave the account, and neither do the pennies members round up by: a bill
+  // costs what it costs, so the over-contribution stays as the pot's leftover
+  // instead of appearing as money the account paid out.
   const fundedOutflow = new Map<string, number>();
   const requiredOutflow = new Map<string, number>();
-  for (const o of obligations) {
-    if (o.lineIdx === undefined) continue; // skip buffer reserves
-    fundedOutflow.set(o.accountId, (fundedOutflow.get(o.accountId) ?? 0) + o.fundedMinor);
-    requiredOutflow.set(o.accountId, (requiredOutflow.get(o.accountId) ?? 0) + o.requiredMinor);
+  for (const line of lines) {
+    const paid = Math.min(line.fundedMonthlyMinor, line.requiredMonthlyMinor);
+    fundedOutflow.set(line.accountId, (fundedOutflow.get(line.accountId) ?? 0) + paid);
+    requiredOutflow.set(
+      line.accountId,
+      (requiredOutflow.get(line.accountId) ?? 0) + line.requiredMonthlyMinor,
+    );
   }
   const accountPlans: HouseholdAccountPlan[] = input.accounts.map((acc) => {
     const income = accountIncome.get(acc.accountId) ?? 0;

@@ -5,8 +5,12 @@ import { z } from "zod";
  * and the web client. Keeping them here removes drift between client and server.
  *
  * Money is always expressed in integer **minor units** (e.g. pennies). Never use
- * floats for currency.
+ * floats for currency. The arithmetic that shares money out lives next door in
+ * `./money.js`, re-exported below — it is also importable on its own, as
+ * `@finance-planner/contracts/money`, by anything that wants it without zod.
  */
+
+export * from "./money.js";
 
 /** ISO 4217 currency code, e.g. "GBP". */
 export const currencyCode = z.string().length(3).toUpperCase();

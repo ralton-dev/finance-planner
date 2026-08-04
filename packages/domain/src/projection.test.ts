@@ -759,15 +759,19 @@ describe("computeHouseholdProjection", () => {
 
   it("moves money into the shared account while the bill is being saved for", () => {
     // The whole 60/40 split of the shared bill has to reach the joint account.
+    // Both shares round up, so a month whose requirement does not divide by the
+    // split moves a penny more than it strictly needs (26_667 → 26_668).
     expect(p.months.map((m) => m.transfersTotalMinor)).toEqual([
-      40_000, 26_667, 26_667, 26_666, 0, 10_910, 10_909,
+      40_000, 26_668, 26_667, 26_665, 0, 10_910, 10_910,
     ]);
     expect(p.months.slice(0, 4).every((m) => m.transfersTotalMinor > 0)).toBe(true);
   });
 
   it("evolves the shared reserve and empties it in the due month", () => {
+    // Running a penny ahead early leaves less to find later: the reserve still
+    // lands exactly on the 120_000 the bill costs, one month's rounding sooner.
     expect(p.months.map((m) => m.reservedEndMinor)).toEqual([
-      40_000, 66_667, 93_334, 120_000, 0, 10_910, 21_819,
+      40_000, 66_668, 93_335, 120_000, 0, 10_910, 21_820,
     ]);
     expect(insurance(3)?.alreadySavedEndMinor).toBe(120_000);
     expect(insurance(4)?.dueThisMonth).toBe(true);

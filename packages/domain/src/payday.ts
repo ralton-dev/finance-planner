@@ -1,5 +1,5 @@
 import { occurrenceDatesInMonth, parseISODate, toISODate } from "./dates.js";
-import { splitByShares, type Transfer } from "./household.js";
+import type { Transfer } from "./household.js";
 import type { IncomeInput } from "./types.js";
 
 /**
@@ -70,6 +70,21 @@ function payDatesForIncome(income: IncomeInput, ref: Date): Date[] {
 }
 
 /**
+ * `amount` in `n` whole slices that sum back to it exactly, the odd minor units
+ * landing on the earliest slices — better slightly ahead than behind.
+ *
+ * Deliberately not `splitByShares`: that rounds every share up, because a
+ * member who contributes a penny short leaves a bill short. Here the amount is
+ * already settled and only its *timing* is in question, so rounding up would
+ * tell the member to move money the plan never asked them for.
+ */
+function spreadOverPaydays(amount: number, n: number): number[] {
+  const base = Math.floor(amount / n);
+  const extra = amount - base * n;
+  return Array.from({ length: n }, (_, i) => base + (i < extra ? 1 : 0));
+}
+
+/**
  * Every distinct payday a member has in the month of `ref`, ascending. Two
  * incomes landing on the same day merge into one event. With no paydays at all
  * the member still has to move money, so the month's first day stands in.
@@ -93,9 +108,8 @@ function payDates(incomes: IncomeInput[], ref: Date): string[] {
  *   - A member's paydays are derived from their incomes (see `payDatesForIncome`),
  *     de-duplicated by date and sorted ascending. No paydays → a single synthetic
  *     event on the first of the month.
- *   - Each transfer is split into equal shares across those events using the same
- *     largest-remainder discipline as the household split, so the slices sum to
- *     the transfer exactly. With equal weights the remainder pennies land on the
+ *   - Each transfer is split into equal shares across those events, the slices
+ *     summing to the transfer exactly and the odd pennies landing on the
  *     earliest events — better to be slightly ahead than behind.
  *   - Zero (or non-positive) slices are dropped, so a small transfer shows up on
  *     one payday rather than as a row of noise. An event left with nothing is
@@ -122,10 +136,9 @@ export function splitTransfersByPayday(
       transfers: [],
       totalMinor: 0,
     }));
-    const equalWeights = events.map(() => 1);
 
     for (const transfer of mine) {
-      splitByShares(transfer.amountMinor, equalWeights).forEach((amountMinor, i) => {
+      spreadOverPaydays(transfer.amountMinor, events.length).forEach((amountMinor, i) => {
         if (amountMinor <= 0) return;
         const event = events[i]!;
         event.transfers.push({

@@ -50,7 +50,8 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 
 - Shared-pot vs personal accounts, per-member contribution shares, and
   shared vs personal expenses. Shared costs split by share; personal costs land
-  on their bearer.
+  on their bearer. Each share is rounded **up** to the penny, so a pot ends the
+  month a few pence over rather than a bill ending it a penny short.
 - Derived **transfers**: who moves what into which account each month.
 - **Payday-anchored schedule** splits each transfer across that member's actual
   pay dates, derived from the incomes on their personal accounts.

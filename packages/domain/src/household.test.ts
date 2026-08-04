@@ -4,7 +4,6 @@ import {
   type HouseholdAccountInput,
   type HouseholdInput,
   type HouseholdPaymentInput,
-  splitByShares,
 } from "./household.js";
 
 const AS_OF = "2026-06-01";
@@ -52,34 +51,6 @@ const member = (userId: string, shareBp: number, displayName?: string) => ({
   userId,
   shareBp,
   displayName,
-});
-
-// --- splitByShares -----------------------------------------------------------
-
-describe("splitByShares", () => {
-  it("splits proportionally with whole minor units that sum exactly", () => {
-    expect(splitByShares(160_000, [6600, 3400])).toEqual([105_600, 54_400]);
-  });
-
-  it("distributes the rounding remainder by largest fractional part", () => {
-    // 100 / 3 = 33.33 each → [34, 33, 33], summing to 100.
-    const parts = splitByShares(100, [1, 1, 1]);
-    expect(parts.reduce((s, p) => s + p, 0)).toBe(100);
-    expect(parts).toEqual([34, 33, 33]);
-  });
-
-  it("falls back to an equal split when total weight is zero", () => {
-    expect(splitByShares(100, [0, 0])).toEqual([50, 50]);
-  });
-
-  it("handles a single weight and a zero amount", () => {
-    expect(splitByShares(500, [42])).toEqual([500]);
-    expect(splitByShares(0, [1, 2, 3])).toEqual([0, 0, 0]);
-  });
-
-  it("returns an empty array for no members", () => {
-    expect(splitByShares(100, [])).toEqual([]);
-  });
 });
 
 // --- the canonical scenario --------------------------------------------------
@@ -153,6 +124,110 @@ describe("computeHouseholdPlan — proportional shared costs", () => {
     const aliceCur = p.accounts.find((a) => a.accountId === "alice-cur")!;
     expect(aliceCur.transferOutMinor).toBe(105_600);
     expect(aliceCur.leftoverMinor).toBe(194_400);
+  });
+});
+
+// --- rounding up -------------------------------------------------------------
+
+describe("computeHouseholdPlan — shares round up, per line", () => {
+  it("asks both members for the penny rather than leaving the bill short", () => {
+    const p = plan({
+      members: [member("alice", 6600), member("bob", 3400)],
+      accounts: [
+        acc({
+          accountId: "alice-cur",
+          role: "personal",
+          memberUserId: "alice",
+          incomes: income(300_000),
+        }),
+        acc({
+          accountId: "bob-cur",
+          role: "personal",
+          memberUserId: "bob",
+          incomes: income(200_000),
+        }),
+        acc({
+          accountId: "bills",
+          role: "shared",
+          payments: [pay({ id: "rent", amountMinor: 100_001 })],
+        }),
+      ],
+    });
+    // 66000.66 and 34000.34 exactly; both round up, so the pot takes in a penny
+    // more than the bill costs.
+    const line = p.lines.find((l) => l.paymentId === "rent")!;
+    expect(line.allocations.map((a) => a.requiredMinor)).toEqual([66_001, 34_001]);
+    expect(p.accounts.find((a) => a.accountId === "bills")!.leftoverMinor).toBe(1);
+  });
+
+  /**
+   * A realistic month: twenty shared bills, none of which divides cleanly by the
+   * 66/34 split. The ceiling applies per line and therefore accumulates — this
+   * pins how far, and that the extra is real money taken out of discretionary
+   * leftover rather than a bookkeeping artefact.
+   */
+  describe("across a month of twenty awkward bills", () => {
+    const AMOUNTS = Array.from({ length: 20 }, (_, i) => 10_001 + i);
+    const REQUIRED = 200_210; // Σ AMOUNTS
+    const p = plan({
+      members: [member("alice", 6600), member("bob", 3400)],
+      accounts: [
+        acc({
+          accountId: "alice-cur",
+          role: "personal",
+          memberUserId: "alice",
+          incomes: income(300_000),
+        }),
+        acc({
+          accountId: "bob-cur",
+          role: "personal",
+          memberUserId: "bob",
+          incomes: income(300_000),
+        }),
+        acc({
+          accountId: "bills",
+          role: "shared",
+          payments: AMOUNTS.map((amountMinor, i) => pay({ id: `bill-${i}`, amountMinor })),
+        }),
+      ],
+    });
+    const alice = p.members.find((m) => m.userId === "alice")!;
+    const bob = p.members.find((m) => m.userId === "bob")!;
+    const asked = alice.obligationMinor + bob.obligationMinor;
+
+    it("overshoots by one minor unit per line, bounded by lines × (members − 1)", () => {
+      expect(p.lines.reduce((s, l) => s + l.requiredMonthlyMinor, 0)).toBe(REQUIRED);
+      // Splitting the total once would ask for 200_211; splitting each of the
+      // twenty lines asks for 20 more than the bills cost, not 1.
+      expect(asked).toBe(REQUIRED + 20);
+      expect(asked - REQUIRED).toBeLessThanOrEqual(p.lines.length * (p.members.length - 1));
+    });
+
+    it("never asks anyone below their exact share", () => {
+      expect(alice.obligationMinor).toBe(132_147); // exact share 132_138.6
+      expect(bob.obligationMinor).toBe(68_083); // exact share 68_071.4
+      expect(alice.obligationMinor).toBeGreaterThan((REQUIRED * 6600) / 10_000);
+      expect(bob.obligationMinor).toBeGreaterThan((REQUIRED * 3400) / 10_000);
+    });
+
+    it("leaves the surplus in the pot instead of inventing a shortfall", () => {
+      const bills = p.accounts.find((a) => a.accountId === "bills")!;
+      expect(bills.requiredOutflowMinor).toBe(REQUIRED); // the bills, not the contributions
+      expect(bills.fundedOutflowMinor).toBe(REQUIRED);
+      expect(bills.transferInMinor).toBe(asked);
+      expect(bills.leftoverMinor).toBe(20); // over-funded, and visibly so
+      expect(bills.shortfallMinor).toBe(0);
+      expect(p.shortfallMinor).toBe(0);
+      expect(p.lines.every((l) => l.onTrack)).toBe(true);
+    });
+
+    it("takes the extra out of discretionary leftover", () => {
+      // 600000 income − 200230 contributed; 20 less than an exact split leaves.
+      expect(p.leftoverMinor).toBe(399_770);
+      expect(alice.leftoverMinor + bob.leftoverMinor).toBe(399_770);
+      expect(alice.leftoverMinor).toBeGreaterThan(0);
+      expect(bob.leftoverMinor).toBeGreaterThan(0);
+    });
   });
 });
 
