@@ -107,7 +107,7 @@ export function TransferChecklist({ plan, confirmations, onConfirm, onUndo, mont
                   {done ? (
                     <span className="checklist-cell">
                       <span className="tag-status ok">
-                        done · {formatMinor(done.amountMinor, c)}
+                        done · <span className="amount">{formatMinor(done.amountMinor, c)}</span>
                       </span>
                       <button
                         type="button"
@@ -219,7 +219,7 @@ function PaydayPlan({
                 <span className="name">{memberName.get(member.memberUserId) ?? "member"}</span>
                 <span className="dim"> · {paydayLabel(event.date)}</span>
                 <span className="spacer" />
-                <b>{formatMinor(event.totalMinor, currency)}</b>
+                <b className="amount">{formatMinor(event.totalMinor, currency)}</b>
               </div>
               {event.transfers.length === 0 ? (
                 <div className="payday-slice muted">nothing to move on this one</div>

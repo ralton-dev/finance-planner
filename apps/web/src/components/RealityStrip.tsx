@@ -48,7 +48,7 @@ export function RealityStrip({ plan, canEdit = false, onSaved }: Props) {
         <span className="reality-item">
           {latest ? (
             <>
-              balance <b>{formatMinor(latest.balanceMinor, c)}</b>
+              balance <b className="amount">{formatMinor(latest.balanceMinor, c)}</b>
               <span className="dim"> · as of {latest.asOfDate}</span>
             </>
           ) : (
@@ -56,7 +56,7 @@ export function RealityStrip({ plan, canEdit = false, onSaved }: Props) {
           )}
         </span>
         <span className="reality-item">
-          reserved <b>{formatMinor(reserved, c)}</b>
+          reserved <b className="amount">{formatMinor(reserved, c)}</b>
         </span>
         <span className="spacer" />
         {canEdit && (
@@ -82,7 +82,8 @@ export function RealityStrip({ plan, canEdit = false, onSaved }: Props) {
       )}
       {latest && shortMinor > 0 && (
         <p className="reality-banner" role="status">
-          balance is {formatMinor(shortMinor, c)} short of what the plan has set aside
+          balance is <span className="amount">{formatMinor(shortMinor, c)}</span> short of what the
+          plan has set aside
         </p>
       )}
     </>

@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
+import { MemberTagBars } from "../components/MemberTagBars.js";
 import { MonthScorecard } from "../components/MonthScorecard.js";
 import { ProjectionView } from "../components/ProjectionView.js";
+import { TagBreakdown } from "../components/TagBreakdown.js";
 import { TransferChecklist } from "../components/TransferChecklist.js";
 import { api } from "../lib/api.js";
 import { currentMonth } from "../lib/months.js";
@@ -127,6 +129,10 @@ export function HouseholdPlanPage() {
           </tbody>
         </table>
       )}
+
+      <TagBreakdown lines={p.lines} currency={c} />
+
+      <MemberTagBars plan={p} />
 
       <ProjectionView
         load={(months) => api.householdProjection(id, months)}

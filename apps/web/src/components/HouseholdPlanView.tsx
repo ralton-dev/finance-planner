@@ -1,6 +1,8 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useRef } from "react";
 import { formatMinor } from "../lib/money.js";
 import type { HouseholdPlanDto } from "../lib/types.js";
+import { ChartFrame } from "./ChartFrame.js";
+import { DownloadButton } from "./DownloadButton.js";
 
 // Lazy so the charting library (recharts) stays in its own chunk — the Overview
 // is eagerly loaded, and solo users with no household never need the Sankey.
@@ -18,6 +20,7 @@ const pct = (bp: number): string => `${(bp / 100).toFixed(bp % 100 === 0 ? 0 : 1
 export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
   const c = plan.currency;
   const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName ?? "member"]));
+  const sankeyRef = useRef<HTMLDivElement>(null);
 
   return (
     <>
@@ -45,16 +48,20 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
       <div className="section-head">
         <h2>money flow</h2>
         <span className="meta">[income → accounts → transfers → spending]</span>
+        <span className="spacer" />
+        <DownloadButton targetRef={sankeyRef} name="money-flow" />
       </div>
-      <Suspense
-        fallback={
-          <p className="muted" style={{ fontSize: "12px" }}>
-            loading chart…
-          </p>
-        }
-      >
-        <HouseholdSankey plan={plan} />
-      </Suspense>
+      <ChartFrame ref={sankeyRef}>
+        <Suspense
+          fallback={
+            <p className="muted" style={{ fontSize: "12px" }}>
+              loading chart…
+            </p>
+          }
+        >
+          <HouseholdSankey plan={plan} />
+        </Suspense>
+      </ChartFrame>
 
       <div className="section-head">
         <h2>per account</h2>

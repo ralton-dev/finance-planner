@@ -1,6 +1,7 @@
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { HouseholdAccountPlanDto, HouseholdPlanDto, TransferDto } from "../lib/types.js";
-import { buildGraph } from "./HouseholdSankey.js";
+import { buildGraph, flowLabel, HouseholdSankey } from "./HouseholdSankey.js";
 
 function account(
   over: Partial<HouseholdAccountPlanDto> & { accountId: string },
@@ -90,5 +91,56 @@ describe("buildGraph", () => {
     const plan = makePlan([account({ accountId: "empty" })], []);
     const { links } = buildGraph(plan);
     expect(links).toHaveLength(0);
+  });
+});
+
+describe("flowLabel", () => {
+  it("writes amounts in the plan's currency", () => {
+    expect(flowLabel(120_000, 300_000, "amount", "GBP")).toBe("£1,200.00");
+  });
+
+  it("writes shares of total household income to one decimal", () => {
+    expect(flowLabel(120_000, 300_000, "share", "GBP")).toBe("40.0%");
+    expect(flowLabel(105_600, 300_000, "share", "GBP")).toBe("35.2%");
+  });
+
+  it("declines to divide by nothing", () => {
+    expect(flowLabel(120_000, 0, "share", "GBP")).toBe("—");
+  });
+});
+
+describe("HouseholdSankey", () => {
+  const plan = makePlan(
+    [
+      account({
+        accountId: "alice-cur",
+        monthlyIncomeMinor: 300_000,
+        fundedOutflowMinor: 120_000,
+        leftoverMinor: 180_000,
+      }),
+    ],
+    [],
+  );
+
+  it("reads in pounds by default and flips to shares on demand", () => {
+    render(<HouseholdSankey plan={{ ...plan, monthlyIncomeMinor: 300_000 }} />);
+
+    const pounds = screen.getByRole("button", { name: "£" });
+    const percent = screen.getByRole("button", { name: "%" });
+    expect(pounds).toHaveAttribute("aria-pressed", "true");
+    expect(percent).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(percent);
+    expect(percent).toHaveAttribute("aria-pressed", "true");
+    expect(pounds).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(pounds);
+    expect(pounds).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("offers no units toggle when there is no flow to chart", () => {
+    render(<HouseholdSankey plan={makePlan([account({ accountId: "empty" })], [])} />);
+    expect(screen.queryByRole("group", { name: "flow units" })).toBeNull();
+    expect(screen.getByText(/no money flow to chart yet/i)).toBeInTheDocument();
   });
 });

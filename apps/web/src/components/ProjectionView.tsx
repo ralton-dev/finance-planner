@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 import { formatMonth, formatMonthShort } from "../lib/months.js";
 import { formatCompactMinor, formatMinor } from "../lib/money.js";
 import {
@@ -10,6 +10,8 @@ import {
   type ProjectionMonthLike,
 } from "../lib/projection.js";
 import { useAsync } from "../lib/useAsync.js";
+import { ChartFrame } from "./ChartFrame.js";
+import { DownloadButton } from "./DownloadButton.js";
 
 // Keeps recharts out of the page chunks, as the Sankey and net-worth chart do.
 const ProjectionChart = lazy(() =>
@@ -49,6 +51,7 @@ interface Props {
 export function ProjectionView({ load, scopeKey, accountNames, hint }: Props) {
   const [windowMonths, setWindowMonths] = useState(DEFAULT_WINDOW);
   const projection = useAsync<ProjectionData>(() => load(windowMonths), [windowMonths, scopeKey]);
+  const chartRef = useRef<HTMLDivElement>(null);
 
   const data = projection.data;
   const months = data?.months ?? [];
@@ -77,6 +80,7 @@ export function ProjectionView({ load, scopeKey, accountNames, hint }: Props) {
             </button>
           ))}
         </span>
+        <DownloadButton targetRef={chartRef} name="projection" />
       </div>
 
       {hint && <p className="projection-hint">{hint}</p>}
@@ -95,20 +99,22 @@ export function ProjectionView({ load, scopeKey, accountNames, hint }: Props) {
         </p>
       ) : (
         <>
-          <Suspense
-            fallback={
-              <p className="muted" style={{ fontSize: "12px" }}>
-                loading chart…
-              </p>
-            }
-          >
-            <ProjectionChart
-              points={buildProjectionPoints(months)}
-              currency={currency}
-              showBalance={hasBalanceSeries(months)}
-              showShortfall={hasShortfallSeries(months)}
-            />
-          </Suspense>
+          <ChartFrame ref={chartRef}>
+            <Suspense
+              fallback={
+                <p className="muted" style={{ fontSize: "12px" }}>
+                  loading chart…
+                </p>
+              }
+            >
+              <ProjectionChart
+                points={buildProjectionPoints(months)}
+                currency={currency}
+                showBalance={hasBalanceSeries(months)}
+                showShortfall={hasShortfallSeries(months)}
+              />
+            </Suspense>
+          </ChartFrame>
           <MonthsGrid months={months} rows={rows} currency={currency} />
         </>
       )}

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Layer, Rectangle, ResponsiveContainer, Sankey, Tooltip } from "recharts";
 import { formatMinor } from "../lib/money.js";
 import type { HouseholdPlanDto } from "../lib/types.js";
@@ -14,6 +15,25 @@ import type { HouseholdPlanDto } from "../lib/types.js";
  */
 
 type LinkKind = "income" | "transfer" | "spending" | "leftover";
+
+/** Amounts, or each flow as a share of the household's monthly income. */
+export type FlowUnits = "amount" | "share";
+
+/**
+ * How a flow is written in labels and tooltips. In share mode everything is
+ * measured against the same denominator — total household income — so "38.5%"
+ * means the same thing wherever it appears on the diagram.
+ */
+export function flowLabel(
+  valueMinor: number,
+  totalMinor: number,
+  units: FlowUnits,
+  currency: string,
+): string {
+  if (units === "amount") return formatMinor(valueMinor, currency);
+  if (totalMinor <= 0) return "—";
+  return `${((valueMinor / totalMinor) * 100).toFixed(1)}%`;
+}
 
 const LINK_COLORS: Record<LinkKind, string> = {
   income: "#7be087", // --good
@@ -122,6 +142,8 @@ interface NodeProps {
   containerWidth?: number;
   payload?: SankeyNodeDatum & { value?: number };
   currency?: string;
+  units?: FlowUnits;
+  totalMinor?: number;
 }
 
 function FlowNode({
@@ -132,6 +154,8 @@ function FlowNode({
   containerWidth = 0,
   payload,
   currency = "GBP",
+  units = "amount",
+  totalMinor = 0,
 }: NodeProps) {
   const onLeft = x < containerWidth / 2;
   const isAccount = payload?.isAccount ?? false;
@@ -156,7 +180,7 @@ function FlowNode({
         fill={isAccount ? "#e8e6e0" : "#a09b91"}
       >
         {label}
-        {isAccount && value > 0 ? ` · ${formatMinor(value, currency)}` : ""}
+        {isAccount && value > 0 ? ` · ${flowLabel(value, totalMinor, units, currency)}` : ""}
       </text>
     </Layer>
   );
@@ -214,10 +238,14 @@ function FlowTooltip({
   active,
   payload,
   currency = "GBP",
+  units = "amount",
+  totalMinor = 0,
 }: {
   active?: boolean;
   payload?: TipEntry[];
   currency?: string;
+  units?: FlowUnits;
+  totalMinor?: number;
 }) {
   if (!active || !payload?.length) return null;
   const entry = payload[0]!;
@@ -238,13 +266,18 @@ function FlowTooltip({
       }}
     >
       <div style={{ color: "#a09b91", fontSize: 11 }}>{label}</div>
-      <div style={{ color: "#e8e6e0", fontWeight: 600 }}>{formatMinor(value, currency)}</div>
+      <div style={{ color: "#e8e6e0", fontWeight: 600 }}>
+        {flowLabel(value, totalMinor, units, currency)}
+      </div>
       {d.note ? <div style={{ color: "#a09b91", fontSize: 11 }}>via {d.note}</div> : null}
     </div>
   );
 }
 
 export function HouseholdSankey({ plan }: { plan: HouseholdPlanDto }) {
+  // Local to the chart: which units to read it in is a way of looking at one
+  // diagram, not a setting worth persisting or lifting into the page.
+  const [units, setUnits] = useState<FlowUnits>("amount");
   const data = buildGraph(plan);
   if (data.links.length === 0) {
     return (
@@ -253,23 +286,49 @@ export function HouseholdSankey({ plan }: { plan: HouseholdPlanDto }) {
       </p>
     );
   }
+  const totalMinor = plan.monthlyIncomeMinor;
   return (
-    <div style={{ width: "100%", height: 440 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <Sankey
-          data={data}
-          nodePadding={26}
-          nodeWidth={10}
-          margin={{ top: 12, right: 120, bottom: 12, left: 120 }}
-          node={<FlowNode currency={plan.currency} />}
-          link={<FlowLink />}
-        >
-          <Tooltip
-            content={<FlowTooltip currency={plan.currency} />}
-            cursor={{ fill: "#e8e6e0", fillOpacity: 0.06 }}
-          />
-        </Sankey>
-      </ResponsiveContainer>
-    </div>
+    <>
+      <div className="chart-toolbar">
+        <span className="months-select" role="group" aria-label="flow units">
+          <button
+            type="button"
+            className={`ghost tiny${units === "amount" ? " active" : ""}`}
+            aria-pressed={units === "amount"}
+            onClick={() => setUnits("amount")}
+          >
+            £
+          </button>
+          <button
+            type="button"
+            className={`ghost tiny${units === "share" ? " active" : ""}`}
+            aria-pressed={units === "share"}
+            onClick={() => setUnits("share")}
+            title="each flow as a share of total household income"
+          >
+            %
+          </button>
+        </span>
+      </div>
+      <div style={{ width: "100%", height: 440 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <Sankey
+            data={data}
+            nodePadding={26}
+            nodeWidth={10}
+            margin={{ top: 12, right: 120, bottom: 12, left: 120 }}
+            node={<FlowNode currency={plan.currency} units={units} totalMinor={totalMinor} />}
+            link={<FlowLink />}
+          >
+            <Tooltip
+              content={
+                <FlowTooltip currency={plan.currency} units={units} totalMinor={totalMinor} />
+              }
+              cursor={{ fill: "#e8e6e0", fillOpacity: 0.06 }}
+            />
+          </Sankey>
+        </ResponsiveContainer>
+      </div>
+    </>
   );
 }

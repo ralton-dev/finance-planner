@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
+import { usePrivacy } from "../contexts/PrivacyContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { useChordShortcuts } from "../lib/useChordShortcuts.js";
 
@@ -9,6 +10,7 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { openPayment, openIncome, openAccount } = useQuickAdd();
+  const { hidden, toggle: togglePrivacy } = usePrivacy();
 
   // On mobile the sidebar collapses behind a burger toggle. Following a link
   // (which changes the route) closes it again so it never covers the content.
@@ -29,6 +31,10 @@ export function Layout() {
       i: () => openIncome(),
       a: () => openAccount(),
     },
+    // "h a" — hide amounts. Its own leader so it never fights g/n.
+    h: {
+      a: togglePrivacy,
+    },
   });
 
   return (
@@ -38,6 +44,7 @@ export function Layout() {
           <span className="brand-dot" />
           finance-planner
         </span>
+        <PrivacyToggle hidden={hidden} onToggle={togglePrivacy} className="nav-toggle" />
         <button
           type="button"
           className="nav-toggle"
@@ -78,6 +85,22 @@ export function Layout() {
           <span className="label">settings</span>
           <span className="kbd-ish">g ,</span>
         </NavLink>
+
+        <div className="nav-section">view</div>
+        <button
+          type="button"
+          className={hidden ? "nav-item active" : "nav-item"}
+          aria-pressed={hidden}
+          onClick={togglePrivacy}
+        >
+          <span className="label">
+            <span aria-hidden="true" className="privacy-eye">
+              {hidden ? "◌" : "◉"}
+            </span>{" "}
+            {hidden ? "show amounts" : "hide amounts"}
+          </span>
+          <span className="kbd-ish">h a</span>
+        </button>
 
         <div className="nav-section">quick add</div>
         <button
@@ -146,6 +169,31 @@ export function Layout() {
 
 function navClass({ isActive }: { isActive: boolean }): string {
   return isActive ? "nav-item active" : "nav-item";
+}
+
+/** The eye. Present in the mobile bar too, because the sidebar it lives in is
+ *  collapsed exactly when someone is most likely reading over your shoulder. */
+function PrivacyToggle({
+  hidden,
+  onToggle,
+  className,
+}: {
+  hidden: boolean;
+  onToggle: () => void;
+  className: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={className}
+      aria-pressed={hidden}
+      aria-label={hidden ? "show amounts" : "hide amounts"}
+      title={hidden ? "show amounts" : "hide amounts"}
+      onClick={onToggle}
+    >
+      {hidden ? "◌" : "◉"}
+    </button>
+  );
 }
 
 function StatusBar() {

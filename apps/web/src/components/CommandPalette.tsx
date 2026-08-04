@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { usePrivacy } from "../contexts/PrivacyContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -23,6 +24,7 @@ export interface Command {
 export function CommandPalette() {
   const navigate = useNavigate();
   const { openPayment, openIncome, openAccount } = useQuickAdd();
+  const { hidden, toggle: togglePrivacy } = usePrivacy();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -138,6 +140,17 @@ export function CommandPalette() {
           close_();
         },
       },
+      {
+        id: "toggle-privacy",
+        label: hidden ? "show amounts" : "hide amounts",
+        hint: "h a",
+        group: "view",
+        keywords: "privacy blur shoulder screenshot",
+        action: () => {
+          togglePrivacy();
+          close_();
+        },
+      },
     ];
 
     // Per-account jump + add commands. Only include editable accounts in the
@@ -193,7 +206,16 @@ export function CommandPalette() {
     }
 
     return list;
-  }, [accounts.data, me.data, navigate, openAccount, openIncome, openPayment]);
+  }, [
+    accounts.data,
+    me.data,
+    navigate,
+    openAccount,
+    openIncome,
+    openPayment,
+    hidden,
+    togglePrivacy,
+  ]);
 
   const filtered = useMemo<Command[]>(() => {
     const q = query.trim().toLowerCase();

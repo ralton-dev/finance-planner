@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
+import { Amount } from "../components/Amount.js";
 import { MonthScorecard } from "../components/MonthScorecard.js";
 import { PlanSummary, PlanTable } from "../components/PlanTable.js";
 import { ProjectionView } from "../components/ProjectionView.js";
 import { RealityStrip } from "../components/RealityStrip.js";
+import { TagBreakdown } from "../components/TagBreakdown.js";
 import { api } from "../lib/api.js";
 import { currentMonth } from "../lib/months.js";
-import { formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import type {
@@ -122,6 +123,8 @@ export function AccountPage() {
         />
       )}
 
+      {plan.data && <TagBreakdown lines={plan.data.lines} currency={currency} />}
+
       <ProjectionView
         load={(months) => api.accountProjection(id, months)}
         scopeKey={id}
@@ -151,7 +154,7 @@ export function AccountPage() {
                   <span>
                     <span className="name">{i.name}</span>
                     <em>
-                      — {formatMinor(i.amountMinor, currency)} / {i.frequency}
+                      — <Amount minor={i.amountMinor} currency={currency} /> / {i.frequency}
                     </em>
                   </span>
                   {canEdit && (
@@ -215,8 +218,10 @@ export function AccountPage() {
                     <span>
                       <span className="name">{p.name}</span>
                       <em>
-                        — {formatMinor(p.amountMinor, currency)} ({p.category.replace(/_/g, " ")})
+                        — <Amount minor={p.amountMinor} currency={currency} /> (
+                        {p.category.replace(/_/g, " ")})
                       </em>
+                      {p.tag && <span className="shared">{p.tag}</span>}
                       {p.projectId &&
                         (() => {
                           const proj = (projects.data ?? []).find((x) => x.id === p.projectId);

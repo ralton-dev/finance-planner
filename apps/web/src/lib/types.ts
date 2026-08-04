@@ -135,6 +135,11 @@ export interface PaymentDto {
   projectId: string | null;
   scope: PaymentScope;
   bearerUserId: string | null;
+  /** Contribution-first goal: "set aside this much per month". fixed_point only;
+   *  with one set the due date is optional. */
+  fixedMonthlyMinor?: number | null;
+  /** Free-text grouping label ("housing", "car", …). Never drives the maths. */
+  tag?: string | null;
 }
 
 export interface ProjectDto {
@@ -177,6 +182,11 @@ export interface PlanLineDto {
   occurrencesThisMonth?: number;
   onTrack: boolean;
   projectedCompletionDate?: string;
+  /** Passthrough of the goal's monthly contribution cap (fixed_point only). */
+  fixedMonthlyMinor?: number | null;
+  /** Passthrough of the payment's grouping label, so charts can group without
+   *  refetching the payments. */
+  tag?: string | null;
 }
 
 /** Money already set aside toward a payment during the current month. */
@@ -207,6 +217,16 @@ export interface AccountPlanDto {
   latestBalance: LatestBalanceDto | null;
   /** Sum of every line's already-saved: what the plan believes is spoken for. */
   reservedMinor: number;
+}
+
+/**
+ * The answer to "what would this do to my plan?": the account's plan as it
+ * stands, alongside the plan it would have with the drafted payments/incomes
+ * added. Both computed for the same as-of date; nothing is persisted.
+ */
+export interface PlanPreviewDto {
+  base: AccountPlanDto;
+  preview: AccountPlanDto;
 }
 
 export interface CurrencyOverviewDto {
@@ -260,6 +280,8 @@ export interface HouseholdPlanLineDto {
   fundedMonthlyMinor: number;
   occurrencesThisMonth: number;
   onTrack: boolean;
+  /** Passthrough of the payment's grouping label, for charts. */
+  tag?: string | null;
   allocations: MemberAllocationDto[];
 }
 

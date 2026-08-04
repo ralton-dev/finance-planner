@@ -6,6 +6,7 @@ import { Layout, RequireAuth } from "./components/Layout.js";
 import { NewAccountDrawer } from "./components/NewAccountDrawer.js";
 import { NewIncomeDrawer } from "./components/NewIncomeDrawer.js";
 import { NewPaymentDrawer } from "./components/NewPaymentDrawer.js";
+import { PrivacyProvider } from "./contexts/PrivacyContext.js";
 import { QuickAddProvider } from "./contexts/QuickAddContext.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AccountsPage } from "./pages/AccountsPage.js";
@@ -29,48 +30,52 @@ const HouseholdPlanPage = lazy(() =>
 export function App() {
   return (
     <AuthProvider>
-      <QuickAddProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/register" element={<RegisterPage />} />
-            {/* Password reset is reachable while logged out, by definition. */}
-            <Route path="/forgot" element={<ForgotPasswordPage />} />
-            <Route path="/reset" element={<ResetPasswordPage />} />
-            <Route
-              element={
-                <RequireAuth>
-                  <Layout />
-                </RequireAuth>
-              }
-            >
-              <Route path="/" element={<OverviewPage />} />
-              <Route path="/accounts" element={<AccountsPage />} />
-              <Route path="/accounts/:id" element={<AccountPage />} />
-              <Route path="/projects" element={<ProjectsPage />} />
-              <Route path="/projects/:id" element={<ProjectDetailPage />} />
-              <Route path="/households" element={<HouseholdsPage />} />
-              <Route path="/households/:id" element={<HouseholdDetailPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
+      {/* Privacy wraps everything: the drawers and the palette render outside
+          the routes and must blur too. */}
+      <PrivacyProvider>
+        <QuickAddProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/register" element={<RegisterPage />} />
+              {/* Password reset is reachable while logged out, by definition. */}
+              <Route path="/forgot" element={<ForgotPasswordPage />} />
+              <Route path="/reset" element={<ResetPasswordPage />} />
               <Route
-                path="/households/:id/plan"
                 element={
-                  <Suspense fallback={<p className="muted">loading…</p>}>
-                    <HouseholdPlanPage />
-                  </Suspense>
+                  <RequireAuth>
+                    <Layout />
+                  </RequireAuth>
                 }
-              />
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-          {/* Global quick-add drawers — rendered once, opened via useQuickAdd(). */}
-          <NewAccountDrawer />
-          <NewIncomeDrawer />
-          <NewPaymentDrawer />
-          {/* Command palette — listens for ⌘K globally. */}
-          <CommandPalette />
-        </BrowserRouter>
-      </QuickAddProvider>
+              >
+                <Route path="/" element={<OverviewPage />} />
+                <Route path="/accounts" element={<AccountsPage />} />
+                <Route path="/accounts/:id" element={<AccountPage />} />
+                <Route path="/projects" element={<ProjectsPage />} />
+                <Route path="/projects/:id" element={<ProjectDetailPage />} />
+                <Route path="/households" element={<HouseholdsPage />} />
+                <Route path="/households/:id" element={<HouseholdDetailPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+                <Route
+                  path="/households/:id/plan"
+                  element={
+                    <Suspense fallback={<p className="muted">loading…</p>}>
+                      <HouseholdPlanPage />
+                    </Suspense>
+                  }
+                />
+              </Route>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+            {/* Global quick-add drawers — rendered once, opened via useQuickAdd(). */}
+            <NewAccountDrawer />
+            <NewIncomeDrawer />
+            <NewPaymentDrawer />
+            {/* Command palette — listens for ⌘K globally. */}
+            <CommandPalette />
+          </BrowserRouter>
+        </QuickAddProvider>
+      </PrivacyProvider>
     </AuthProvider>
   );
 }

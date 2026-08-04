@@ -1,5 +1,7 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
+import { ChartFrame } from "../components/ChartFrame.js";
+import { DownloadButton } from "../components/DownloadButton.js";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
 import { UpcomingDigest } from "../components/UpcomingDigest.js";
 import { api } from "../lib/api.js";
@@ -173,6 +175,7 @@ export function OverviewPage() {
 /** Net worth over time, from manual balance check-ins. */
 function NetWorth({ reality, loading }: { reality: AccountReality[]; loading: boolean }) {
   const points = buildNetWorthSeries(reality);
+  const chartRef = useRef<HTMLDivElement>(null);
 
   // Latest balance per account, summed per currency — never across currencies.
   const totals = new Map<string, { cash: number; reserved: number }>();
@@ -190,6 +193,8 @@ function NetWorth({ reality, loading }: { reality: AccountReality[]; loading: bo
       <div className="section-head">
         <h2>net worth</h2>
         <span className="meta">[from balance check-ins · carried forward]</span>
+        <span className="spacer" />
+        <DownloadButton targetRef={chartRef} name="net-worth" />
       </div>
 
       {loading ? (
@@ -206,21 +211,23 @@ function NetWorth({ reality, loading }: { reality: AccountReality[]; loading: bo
             {[...totals.entries()].map(([currency, t]) => (
               <span key={currency}>
                 {multi && <span className="dim">{currency} </span>}
-                cash <b>{formatMinor(t.cash, currency)}</b>
+                cash <b className="amount">{formatMinor(t.cash, currency)}</b>
                 <span className="dim"> · </span>
-                reserved <b>{formatMinor(t.reserved, currency)}</b>
+                reserved <b className="amount">{formatMinor(t.reserved, currency)}</b>
               </span>
             ))}
           </div>
-          <Suspense
-            fallback={
-              <p className="muted" style={{ fontSize: "12px" }}>
-                loading chart…
-              </p>
-            }
-          >
-            <NetWorthChart points={points} />
-          </Suspense>
+          <ChartFrame ref={chartRef}>
+            <Suspense
+              fallback={
+                <p className="muted" style={{ fontSize: "12px" }}>
+                  loading chart…
+                </p>
+              }
+            >
+              <NetWorthChart points={points} />
+            </Suspense>
+          </ChartFrame>
         </>
       )}
     </div>

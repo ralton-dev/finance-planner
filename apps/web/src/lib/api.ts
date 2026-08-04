@@ -18,6 +18,7 @@ import type {
   OidcMetaDto,
   OverviewDto,
   PaymentDto,
+  PlanPreviewDto,
   ProjectDetailDto,
   ProjectDto,
   TotpDisableDto,
@@ -208,6 +209,22 @@ export class ApiClient {
     return this.request<AccountPlanDto>(
       "GET",
       `/api/accounts/${id}/plan${asOf ? `?asOf=${asOf}` : ""}`,
+    );
+  }
+  /**
+   * What-if: the plan as it stands, next to the plan it would have with the
+   * drafted payments/incomes added (≤5 of each). Read-only — nothing is
+   * persisted, and view access is enough.
+   */
+  previewPlan(
+    accountId: string,
+    body: { addPayments?: unknown[]; addIncomes?: unknown[] },
+    asOf?: string,
+  ) {
+    return this.request<PlanPreviewDto>(
+      "POST",
+      `/api/accounts/${accountId}/plan/preview${query({ asOf })}`,
+      body,
     );
   }
   /** The plan month by month. `months` is clamped to 1..24 server-side (default 12). */

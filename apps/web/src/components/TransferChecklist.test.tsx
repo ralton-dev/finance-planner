@@ -134,7 +134,9 @@ describe("TransferChecklist", () => {
         onUndo={noop}
       />,
     );
-    expect(screen.getByText("done · £1,200.00")).toBeInTheDocument();
+    // The amount sits in its own span (privacy mode blurs `.amount`), so the
+    // chip is matched by its label and asserted on its full text.
+    expect(screen.getByText(/done ·/)).toHaveTextContent("done · £1,200.00");
     expect(screen.getAllByRole("button", { name: "mark done" })).toHaveLength(1);
     expect(screen.getByText(/1\/2 done/)).toBeInTheDocument();
   });
