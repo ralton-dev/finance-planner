@@ -139,6 +139,18 @@ export interface PlanLineDto {
   projectedCompletionDate?: string;
 }
 
+/** Money already set aside toward a payment during the current month. */
+export interface ContributionTotalDto {
+  paymentId: string;
+  amountMinor: number;
+}
+
+/** The most recent balance check-in on an account. */
+export interface LatestBalanceDto {
+  asOfDate: string;
+  balanceMinor: number;
+}
+
 export interface AccountPlanDto {
   accountId: string;
   currency: string;
@@ -149,6 +161,12 @@ export interface AccountPlanDto {
   leftoverMinor: number;
   shortfallMinor: number;
   lines: PlanLineDto[];
+  /** Per-payment totals contributed this month — the "reality" half of the plan. */
+  contributionsMTD: ContributionTotalDto[];
+  /** Last manual balance check-in, or null when the account has never been reconciled. */
+  latestBalance: LatestBalanceDto | null;
+  /** Sum of every line's already-saved: what the plan believes is spoken for. */
+  reservedMinor: number;
 }
 
 export interface CurrencyOverviewDto {
@@ -251,4 +269,64 @@ export interface HouseholdPlanDto {
   accounts: HouseholdAccountPlanDto[];
   lines: HouseholdPlanLineDto[];
   transfers: TransferDto[];
+}
+
+// --- the reality loop ------------------------------------------------------
+// Plans say what *should* happen; these record what *did*.
+
+/** A dated record of money set aside toward a payment. */
+export interface ContributionDto {
+  id: string;
+  paymentId: string;
+  accountId: string;
+  userId: string | null;
+  /** ISO date of the first day of the month it belongs to ("YYYY-MM-01"). */
+  month: string;
+  amountMinor: number;
+  note: string | null;
+  /** Set when the contribution was created by confirming a household transfer. */
+  transferConfirmationId: string | null;
+  createdAt: string;
+}
+
+/** A manual balance check-in. One per account per day; newest day wins. */
+export interface BalanceSnapshotDto {
+  id: string;
+  accountId: string;
+  asOfDate: string;
+  /** May be negative (overdraft). */
+  balanceMinor: number;
+  createdAt: string;
+}
+
+/** A member's confirmation that a planned monthly transfer was actually made. */
+export interface TransferConfirmationDto {
+  id: string;
+  householdId: string;
+  month: string;
+  fromAccountId: string;
+  toAccountId: string;
+  memberUserId: string;
+  amountMinor: number;
+  createdAt: string;
+}
+
+/** A frozen month scorecard for a household or a standalone account. */
+export interface MonthCloseDto {
+  id: string;
+  /** Exactly one of householdId / accountId is set. */
+  householdId: string | null;
+  accountId: string | null;
+  month: string;
+  incomeMinor: number;
+  plannedMinor: number;
+  contributedMinor: number;
+  closedBy: string | null;
+  closedAt: string;
+}
+
+/** POST /transfers/confirm returns the confirmation plus the contributions it booked. */
+export interface ConfirmTransferResultDto {
+  confirmation: TransferConfirmationDto;
+  contributions: ContributionDto[];
 }

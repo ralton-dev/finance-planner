@@ -1246,3 +1246,131 @@ td.row-actions-cell .row-edit:hover {
   color: var(--muted);
   font-size: 11px;
 }
+
+/* ============================================================================
+ * The reality loop — balance check-ins, recorded savings, transfer checklist,
+ * month scorecards, net worth. Plan-vs-reality surfaces across the app.
+ * ============================================================================ */
+
+/* Account detail: last real balance vs. what the plan reserved. */
+.reality-strip {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.85rem;
+  margin: 0 0 0.85rem;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.reality-strip .reality-item b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.reality-strip .dim {
+  color: var(--muted);
+}
+.reality-strip .spacer {
+  flex: 1;
+}
+.reality-update {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.reality-update input {
+  width: 7rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 12px;
+  text-align: right;
+}
+
+/* The whole point of the loop: real money is behind the plan. */
+.reality-banner {
+  background: rgba(246, 198, 107, 0.08);
+  border: 1px solid rgba(246, 198, 107, 0.3);
+  border-left: 2px solid var(--warn-amber);
+  border-radius: var(--radius);
+  color: var(--warn-amber);
+  padding: 0.5rem 0.85rem;
+  margin: 0 0 1rem;
+  font-size: 12px;
+}
+
+/* Plan table: per-row "record what you set aside". */
+.record-cell {
+  white-space: nowrap;
+}
+.mtd-tick {
+  color: var(--good);
+  font-size: 11px;
+  margin-right: 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+.record-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.record-form input {
+  width: 6rem;
+  padding: 0.2rem 0.45rem;
+  font-size: 11.5px;
+  text-align: right;
+}
+.record-error {
+  font-size: 10.5px;
+  margin-left: 0.35rem;
+}
+
+/* Household transfer checklist. */
+.checklist-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.checklist-error {
+  display: block;
+  font-size: 10.5px;
+  margin-top: 0.25rem;
+}
+
+/* Overview: net worth over time. */
+.networth-summary {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-bottom: 0.75rem;
+}
+.networth-summary b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.networth-summary .dim {
+  color: var(--muted);
+}
+.chart-legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 11px;
+  color: var(--ink-2);
+  margin-bottom: 0.4rem;
+}
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.chart-legend i {
+  width: 8px;
+  height: 2px;
+  border-radius: 1px;
+  display: inline-block;
+}

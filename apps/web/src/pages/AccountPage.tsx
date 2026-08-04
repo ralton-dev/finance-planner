@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
+import { MonthScorecard } from "../components/MonthScorecard.js";
 import { PlanSummary, PlanTable } from "../components/PlanTable.js";
-import { useQuickAdd } from "../contexts/QuickAddContext.js";
+import { RealityStrip } from "../components/RealityStrip.js";
 import { api } from "../lib/api.js";
+import { currentMonth } from "../lib/months.js";
 import { formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import type {
   AccountDto,
   AccountPlanDto,
   IncomeDto,
+  MonthCloseDto,
   PaymentDto,
   ProjectDto,
 } from "../lib/types.js";
@@ -25,6 +29,7 @@ export function AccountPage() {
   const payments = useAsync<PaymentDto[]>(() => api.listPayments(id), [id]);
   // Project labels for the chips next to payment names. Cheap call; no per-account scope.
   const projects = useAsync<ProjectDto[]>(() => api.listProjects(), []);
+  const closes = useAsync<MonthCloseDto[]>(() => api.listAccountCloses(id), [id]);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerFocus, setDrawerFocus] = useState<"monthlyBuffer" | undefined>(undefined);
@@ -84,6 +89,10 @@ export function AccountPage() {
       </div>
 
       {plan.data && (
+        <RealityStrip plan={plan.data} canEdit={canEdit} onSaved={() => plan.refetch()} />
+      )}
+
+      {plan.data && (
         <PlanSummary
           plan={plan.data}
           onEditBuffer={
@@ -101,7 +110,16 @@ export function AccountPage() {
         <h2>savings plan</h2>
         <span className="meta">[per-payment funding · priority asc]</span>
       </div>
-      {plan.data && <PlanTable plan={plan.data} />}
+      {plan.data && (
+        <PlanTable
+          plan={plan.data}
+          canRecord={canEdit}
+          onRecord={async (paymentId, amountMinor) => {
+            await api.recordContribution(paymentId, { amountMinor });
+            plan.refetch();
+          }}
+        />
+      )}
 
       <div className="two-col">
         <div>
@@ -271,6 +289,21 @@ export function AccountPage() {
           )}
         </div>
       </div>
+
+      <MonthScorecard
+        closes={closes.data ?? []}
+        currency={currency}
+        month={currentMonth()}
+        canClose={canEdit}
+        onClose={async (month) => {
+          await api.closeAccountMonth(id, month);
+          closes.refetch();
+        }}
+        onReopen={async (closeId) => {
+          await api.reopenAccountMonth(id, closeId);
+          closes.refetch();
+        }}
+      />
 
       <AccountSettingsDrawer
         account={drawerOpen ? account.data : null}

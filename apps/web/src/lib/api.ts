@@ -2,15 +2,20 @@ import type {
   AccountDto,
   AccountPlanDto,
   AccountRole,
+  BalanceSnapshotDto,
+  ConfirmTransferResultDto,
+  ContributionDto,
   HouseholdAccountAssignmentDto,
   HouseholdDetailDto,
   HouseholdPlanDto,
   HouseholdRole,
   IncomeDto,
+  MonthCloseDto,
   OverviewDto,
   PaymentDto,
   ProjectDetailDto,
   ProjectDto,
+  TransferConfirmationDto,
   UserDto,
 } from "./types.js";
 
@@ -144,6 +149,83 @@ export class ApiClient {
     return this.request<AccountPlanDto>(
       "GET",
       `/api/accounts/${id}/plan${asOf ? `?asOf=${asOf}` : ""}`,
+    );
+  }
+
+  // ---- contributions (money actually set aside) ----
+  /** Record money set aside toward a payment. Moves the plan without editing the payment. */
+  recordContribution(
+    paymentId: string,
+    body: { amountMinor: number; month?: string; note?: string },
+  ) {
+    return this.request<ContributionDto>("POST", `/api/payments/${paymentId}/contributions`, body);
+  }
+  listContributions(accountId: string, month?: string) {
+    return this.request<ContributionDto[]>(
+      "GET",
+      `/api/accounts/${accountId}/contributions${month ? `?month=${month}` : ""}`,
+    );
+  }
+  deleteContribution(contributionId: string) {
+    return this.request<void>("DELETE", `/api/contributions/${contributionId}`);
+  }
+
+  // ---- balance check-ins ----
+  /** Anchor the plan to real money. One snapshot per account per day; restating a day overwrites it. */
+  setBalance(accountId: string, body: { balanceMinor: number; asOfDate?: string }) {
+    return this.request<BalanceSnapshotDto>("PUT", `/api/accounts/${accountId}/balance`, body);
+  }
+  /** Oldest first. */
+  listBalances(accountId: string) {
+    return this.request<BalanceSnapshotDto[]>("GET", `/api/accounts/${accountId}/balances`);
+  }
+
+  // ---- month closes ----
+  closeAccountMonth(accountId: string, month: string) {
+    return this.request<MonthCloseDto>("POST", `/api/accounts/${accountId}/close`, { month });
+  }
+  /** Newest first. */
+  listAccountCloses(accountId: string) {
+    return this.request<MonthCloseDto[]>("GET", `/api/accounts/${accountId}/closes`);
+  }
+  reopenAccountMonth(accountId: string, closeId: string) {
+    return this.request<void>("DELETE", `/api/accounts/${accountId}/closes/${closeId}`);
+  }
+  closeHouseholdMonth(householdId: string, month: string) {
+    return this.request<MonthCloseDto>("POST", `/api/households/${householdId}/close`, { month });
+  }
+  listHouseholdCloses(householdId: string) {
+    return this.request<MonthCloseDto[]>("GET", `/api/households/${householdId}/closes`);
+  }
+  reopenHouseholdMonth(householdId: string, closeId: string) {
+    return this.request<void>("DELETE", `/api/households/${householdId}/closes/${closeId}`);
+  }
+
+  // ---- transfer confirmations ----
+  /** Confirm a planned transfer actually moved; books the member's funded slice
+   *  against each payment in the destination account. */
+  confirmTransfer(
+    householdId: string,
+    body: { fromAccountId: string; toAccountId: string; memberUserId: string; month?: string },
+  ) {
+    return this.request<ConfirmTransferResultDto>(
+      "POST",
+      `/api/households/${householdId}/transfers/confirm`,
+      body,
+    );
+  }
+  /** Defaults to the current month server-side. */
+  listTransferConfirmations(householdId: string, month?: string) {
+    return this.request<TransferConfirmationDto[]>(
+      "GET",
+      `/api/households/${householdId}/transfers/confirmations${month ? `?month=${month}` : ""}`,
+    );
+  }
+  /** Un-confirm: drops the confirmation and the contributions it created. */
+  unconfirmTransfer(householdId: string, confirmationId: string) {
+    return this.request<void>(
+      "DELETE",
+      `/api/households/${householdId}/transfers/confirmations/${confirmationId}`,
     );
   }
 

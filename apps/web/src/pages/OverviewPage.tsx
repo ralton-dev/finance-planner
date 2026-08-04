@@ -1,18 +1,32 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
-import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
+import { buildNetWorthSeries, type AccountBalanceHistory } from "../lib/networth.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import type {
   AccountDto,
+  BalanceSnapshotDto,
   CurrencyOverviewDto,
   HouseholdDto,
   HouseholdPlanDto,
   OverviewDto,
   UserDto,
 } from "../lib/types.js";
+
+// Keeps recharts out of the eagerly-loaded Overview chunk, as the Sankey does.
+const NetWorthChart = lazy(() =>
+  import("../components/NetWorthChart.js").then((m) => ({ default: m.NetWorthChart })),
+);
+
+/** Balances + reserved for one account. Reserved only exists on the *account*
+ *  plan (household plans don't expose it), so it is fetched alongside. */
+interface AccountReality extends AccountBalanceHistory {
+  account: AccountDto;
+  reservedMinor: number;
+}
 
 export function OverviewPage() {
   const { lastCreated } = useQuickAdd();
@@ -27,12 +41,32 @@ export function OverviewPage() {
     [householdKey],
   );
 
+  // One parallel batch across every accessible account: balance history for the
+  // chart, plan for `reservedMinor`. A single failing account degrades to
+  // "no data" instead of blanking the whole section.
+  const accountList = accounts.data ?? [];
+  const accountKey = accountList.map((a) => a.id).join(",");
+  const reality = useAsync<AccountReality[]>(
+    () =>
+      Promise.all(
+        accountList.map(async (account) => {
+          const [snapshots, plan] = await Promise.all([
+            api.listBalances(account.id).catch((): BalanceSnapshotDto[] => []),
+            api.getPlan(account.id).catch(() => null),
+          ]);
+          return { account, snapshots, reservedMinor: plan?.reservedMinor ?? 0 };
+        }),
+      ),
+    [accountKey],
+  );
+
   // Any quick-add creation can affect what the Overview shows.
   useEffect(() => {
     if (!lastCreated) return;
     overview.refetch();
     accounts.refetch();
     plans.refetch();
+    reality.refetch();
   }, [lastCreated]);
 
   if (me.loading || overview.loading || accounts.loading) return <p className="muted">loading…</p>;
@@ -115,7 +149,66 @@ export function OverviewPage() {
       ) : (
         buckets.map((c) => <CurrencyBlock key={c.currency} bucket={c} byId={byId} />)
       )}
+
+      {totalAccounts > 0 && <NetWorth reality={reality.data ?? []} loading={reality.loading} />}
     </section>
+  );
+}
+
+/** Net worth over time, from manual balance check-ins. */
+function NetWorth({ reality, loading }: { reality: AccountReality[]; loading: boolean }) {
+  const points = buildNetWorthSeries(reality);
+
+  // Latest balance per account, summed per currency — never across currencies.
+  const totals = new Map<string, { cash: number; reserved: number }>();
+  for (const r of reality) {
+    const entry = totals.get(r.account.currency) ?? { cash: 0, reserved: 0 };
+    const latest = [...r.snapshots].sort((a, b) => a.asOfDate.localeCompare(b.asOfDate)).at(-1);
+    entry.cash += latest?.balanceMinor ?? 0;
+    entry.reserved += r.reservedMinor;
+    totals.set(r.account.currency, entry);
+  }
+  const multi = totals.size > 1;
+
+  return (
+    <div className="scope-block">
+      <div className="section-head">
+        <h2>net worth</h2>
+        <span className="meta">[from balance check-ins · carried forward]</span>
+      </div>
+
+      {loading ? (
+        <p className="muted" style={{ fontSize: "12px" }}>
+          loading balances…
+        </p>
+      ) : points.length === 0 ? (
+        <p className="muted" style={{ fontSize: "12px" }}>
+          record balances on your accounts to see net worth over time
+        </p>
+      ) : (
+        <>
+          <div className="networth-summary">
+            {[...totals.entries()].map(([currency, t]) => (
+              <span key={currency}>
+                {multi && <span className="dim">{currency} </span>}
+                cash <b>{formatMinor(t.cash, currency)}</b>
+                <span className="dim"> · </span>
+                reserved <b>{formatMinor(t.reserved, currency)}</b>
+              </span>
+            ))}
+          </div>
+          <Suspense
+            fallback={
+              <p className="muted" style={{ fontSize: "12px" }}>
+                loading chart…
+              </p>
+            }
+          >
+            <NetWorthChart points={points} />
+          </Suspense>
+        </>
+      )}
+    </div>
   );
 }
 

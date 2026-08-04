@@ -1,17 +1,31 @@
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
-import { useQuickAdd } from "../contexts/QuickAddContext.js";
+import { MonthScorecard } from "../components/MonthScorecard.js";
+import { TransferChecklist } from "../components/TransferChecklist.js";
 import { api } from "../lib/api.js";
+import { currentMonth } from "../lib/months.js";
 import { formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
-import type { HouseholdDetailDto, HouseholdPlanDto } from "../lib/types.js";
+import { useQuickAdd } from "../contexts/QuickAddContext.js";
+import type {
+  HouseholdDetailDto,
+  HouseholdPlanDto,
+  MonthCloseDto,
+  TransferConfirmationDto,
+} from "../lib/types.js";
 
 export function HouseholdPlanPage() {
   const { id = "" } = useParams();
   const { lastCreated } = useQuickAdd();
+  const month = currentMonth();
   const plan = useAsync<HouseholdPlanDto>(() => api.householdPlan(id), [id]);
   const household = useAsync<HouseholdDetailDto>(() => api.getHousehold(id), [id]);
+  const confirmations = useAsync<TransferConfirmationDto[]>(
+    () => api.listTransferConfirmations(id, month),
+    [id, month],
+  );
+  const closes = useAsync<MonthCloseDto[]>(() => api.listHouseholdCloses(id), [id]);
 
   // Any income/payment change can move the household plan.
   useEffect(() => {
@@ -22,9 +36,10 @@ export function HouseholdPlanPage() {
   if (plan.loading || !plan.data) return <p className="muted">loading…</p>;
   const p = plan.data;
   const c = p.currency;
+  const role = household.data?.yourRole;
+  const canClose = role === "owner" || role === "admin";
 
   const accountName = new Map(p.accounts.map((a) => [a.accountId, a.name ?? "account"]));
-  const memberName = new Map(p.members.map((m) => [m.userId, m.displayName ?? "member"]));
 
   return (
     <section>
@@ -45,36 +60,26 @@ export function HouseholdPlanPage() {
 
       <HouseholdPlanView plan={p} />
 
-      <div className="section-head">
-        <h2>transfers</h2>
-        <span className="meta">[move each month]</span>
-      </div>
-      {p.transfers.length === 0 ? (
-        <p className="muted" style={{ fontSize: "12px" }}>
-          no transfers needed — income already lands where it's spent.
-        </p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>from</th>
-              <th>to</th>
-              <th>who</th>
-              <th className="num">amount / mo</th>
-            </tr>
-          </thead>
-          <tbody>
-            {p.transfers.map((t, i) => (
-              <tr key={`${t.fromAccountId}-${t.toAccountId}-${i}`}>
-                <td>{accountName.get(t.fromAccountId) ?? "account"}</td>
-                <td className="name">{accountName.get(t.toAccountId) ?? "account"}</td>
-                <td className="muted">{memberName.get(t.memberUserId) ?? "member"}</td>
-                <td className="num">{formatMinor(t.amountMinor, c)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <TransferChecklist
+        plan={p}
+        confirmations={confirmations.data ?? []}
+        month={month}
+        onConfirm={async (t) => {
+          await api.confirmTransfer(id, {
+            fromAccountId: t.fromAccountId,
+            toAccountId: t.toAccountId,
+            memberUserId: t.memberUserId,
+            month,
+          });
+          confirmations.refetch();
+          plan.refetch();
+        }}
+        onUndo={async (confirmationId) => {
+          await api.unconfirmTransfer(id, confirmationId);
+          confirmations.refetch();
+          plan.refetch();
+        }}
+      />
 
       <div className="section-head">
         <h2>cost breakdown</h2>
@@ -121,6 +126,21 @@ export function HouseholdPlanPage() {
           </tbody>
         </table>
       )}
+
+      <MonthScorecard
+        closes={closes.data ?? []}
+        currency={c}
+        month={month}
+        canClose={canClose}
+        onClose={async (m) => {
+          await api.closeHouseholdMonth(id, m);
+          closes.refetch();
+        }}
+        onReopen={async (closeId) => {
+          await api.reopenHouseholdMonth(id, closeId);
+          closes.refetch();
+        }}
+      />
     </section>
   );
 }
