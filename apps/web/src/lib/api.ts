@@ -7,6 +7,7 @@ import type {
   ConfirmTransferResultDto,
   ContributionDto,
   DemoSeedCountsDto,
+  FlowDto,
   HouseholdAccountAssignmentDto,
   HouseholdDetailDto,
   HouseholdPlanDto,
@@ -462,6 +463,23 @@ export class ApiClient {
     return this.request<PaymentDto[]>("PATCH", `/api/accounts/${accountId}/payments/reorder`, {
       orderedPaymentIds,
     });
+  }
+
+  // ---- money flow over any scope ----
+  /**
+   * Where money goes across a set of accounts — any set, spanning any number of
+   * households and none. The whole set is always asked for: hiding an account
+   * from the picture is presentation and must never reach here, because dropping
+   * it from the request would drop its money from the others' plans.
+   */
+  flow(accountIds: readonly string[], asOf?: string) {
+    // Built by hand rather than through `query()`: the set is comma-separated,
+    // and `URLSearchParams` percent-encodes a comma it does not have to, which
+    // makes the request unreadable in a log for no benefit at all.
+    return this.request<FlowDto>(
+      "GET",
+      `/api/flow?accounts=${accountIds.join(",")}${asOf ? `&asOf=${asOf}` : ""}`,
+    );
   }
 
   // ---- overview ----

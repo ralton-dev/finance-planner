@@ -381,6 +381,9 @@ export interface AccountPlanDto {
    * thing that can explain it.
    */
   fundingCycleAccountIds?: string[];
+  /** The one movement on that loop the plan ignored to break it — the edge that
+   *  funds nothing, and the one to delete or re-point. */
+  fundingCycleBrokenInflowId?: string;
 }
 
 /**
@@ -597,6 +600,52 @@ export interface HouseholdPlanDto {
   /** When to move the money, not just how much. Optional so a plan served by an
    *  older API (or built in a test) still satisfies the type. */
   paydaySchedule?: MemberPaydayScheduleDto[];
+}
+
+// --- money flow over any scope ----------------------------------------------
+// The diagram's model, mirroring the API's `Flow`. A scope is a set of accounts
+// the user chose; a household is one preset over that set, not the mechanism.
+
+/** What became of one edge, straight off `EstateMovement.status`. */
+export type FlowEdgeStatus = "funded" | "short" | "unfunded" | "broken_cycle" | "unknown_source";
+
+export interface FlowAccountDto {
+  accountId: string;
+  name: string;
+  /** Money entering from outside the estate — never what another account sent. */
+  incomeMinor: number;
+  /** Obligations funded out of this account this month. */
+  spendingMinor: number;
+  /** What stays put. A residual, so the node's ribbons meet. */
+  leftoverMinor: number;
+  shortfallMinor: number;
+}
+
+export interface FlowEdgeDto {
+  /** null means an account outside the scope — or, once hidden, outside the
+   *  picture. Money crossing that edge is still drawn crossing it. */
+  fromAccountId: string | null;
+  toAccountId: string | null;
+  amountMinor: number;
+  /** What the row asked for; more than `amountMinor` when it fell short. */
+  requestedMinor: number;
+  status: FlowEdgeStatus;
+  /** The authored movement, when the edge is one. */
+  inflowId?: string;
+  /** The member whose money moves, when the edge is a household transfer. */
+  memberUserId?: string;
+  /** That member's name, when the caller may be told it. */
+  memberName?: string;
+}
+
+export interface FlowDto {
+  asOfDate: string;
+  currency: string;
+  accounts: FlowAccountDto[];
+  edges: FlowEdgeDto[];
+  /** Money entering from outside — the denominator every share is measured
+   *  against. See `lib/flow.ts`. */
+  totalInflowMinor: number;
 }
 
 // --- projections ------------------------------------------------------------

@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { householdFlow } from "../lib/flow.js";
 import type { HouseholdAccountPlanDto, HouseholdPlanDto, TransferDto } from "../lib/types.js";
-import { buildGraph, flowLabel, HouseholdSankey } from "./HouseholdSankey.js";
+import { buildGraph } from "./FlowSankey.js";
+import { HouseholdSankey } from "./HouseholdSankey.js";
 
 function account(
   over: Partial<HouseholdAccountPlanDto> & { accountId: string },
@@ -39,7 +41,168 @@ function makePlan(accounts: HouseholdAccountPlanDto[], transfers: TransferDto[])
   };
 }
 
-describe("buildGraph", () => {
+describe("the household preset", () => {
+  /**
+   * The pin. `nodes` and `links` below are the literal output of the
+   * household-only `buildGraph(plan: HouseholdPlanDto)` as it stood before the
+   * diagram was generalised, captured from it verbatim. A household is now one
+   * preset over a set of accounts, drawn by the same component as any other
+   * scope — and it has to draw the same picture, node for node and link for
+   * link, in the same order.
+   */
+  it("draws exactly the diagram the household-only builder drew", () => {
+    const plan: HouseholdPlanDto = {
+      householdId: "hh",
+      asOfDate: "2026-08-04",
+      currency: "GBP",
+      monthlyIncomeMinor: 500_000,
+      totalRequiredMinor: 220_000,
+      totalFundedMinor: 220_000,
+      leftoverMinor: 280_000,
+      shortfallMinor: 0,
+      members: [
+        {
+          userId: "alice",
+          displayName: "Alice",
+          shareBp: 6000,
+          monthlyIncomeMinor: 300_000,
+          obligationMinor: 132_000,
+          fundedMinor: 132_000,
+          leftoverMinor: 168_000,
+          shortfallMinor: 0,
+        },
+        {
+          userId: "bob",
+          displayName: "Bob",
+          shareBp: 4000,
+          monthlyIncomeMinor: 200_000,
+          obligationMinor: 88_000,
+          fundedMinor: 88_000,
+          leftoverMinor: 112_000,
+          shortfallMinor: 0,
+        },
+      ],
+      accounts: [
+        account({
+          accountId: "alice-cur",
+          name: "alice current",
+          role: "personal",
+          memberUserId: "alice",
+          monthlyIncomeMinor: 300_000,
+          transferOutMinor: 132_000,
+          leftoverMinor: 168_000,
+        }),
+        account({
+          accountId: "bob-cur",
+          name: "bob current",
+          role: "personal",
+          memberUserId: "bob",
+          monthlyIncomeMinor: 200_000,
+          transferOutMinor: 88_000,
+          leftoverMinor: 112_000,
+        }),
+        account({
+          accountId: "bills",
+          name: "bills",
+          requiredOutflowMinor: 220_000,
+          fundedOutflowMinor: 220_000,
+          transferInMinor: 220_000,
+        }),
+      ],
+      lines: [],
+      transfers: [
+        {
+          fromAccountId: "alice-cur",
+          toAccountId: "bills",
+          memberUserId: "alice",
+          amountMinor: 132_000,
+        },
+        {
+          fromAccountId: "bob-cur",
+          toAccountId: "bills",
+          memberUserId: "bob",
+          amountMinor: 88_000,
+        },
+      ],
+    };
+
+    expect(buildGraph(householdFlow(plan))).toEqual({
+      nodes: [
+        { name: "alice current", isAccount: true },
+        { name: "bob current", isAccount: true },
+        { name: "bills", isAccount: true },
+        { name: "income", isAccount: false },
+        { name: "left over", isAccount: false },
+        { name: "income", isAccount: false },
+        { name: "left over", isAccount: false },
+        { name: "spending", isAccount: false },
+      ],
+      links: [
+        {
+          source: 3,
+          target: 0,
+          value: 300_000,
+          kind: "income",
+          fromName: "income",
+          toName: "alice current",
+        },
+        {
+          source: 0,
+          target: 4,
+          value: 168_000,
+          kind: "leftover",
+          fromName: "alice current",
+          toName: "left over",
+        },
+        {
+          source: 5,
+          target: 1,
+          value: 200_000,
+          kind: "income",
+          fromName: "income",
+          toName: "bob current",
+        },
+        {
+          source: 1,
+          target: 6,
+          value: 112_000,
+          kind: "leftover",
+          fromName: "bob current",
+          toName: "left over",
+        },
+        {
+          source: 2,
+          target: 7,
+          value: 220_000,
+          kind: "spending",
+          fromName: "bills",
+          toName: "spending",
+        },
+        {
+          source: 0,
+          target: 2,
+          value: 132_000,
+          kind: "transfer",
+          fromName: "alice current",
+          toName: "bills",
+          note: "Alice",
+        },
+        {
+          source: 1,
+          target: 2,
+          value: 88_000,
+          kind: "transfer",
+          fromName: "bob current",
+          toName: "bills",
+          note: "Bob",
+        },
+      ],
+    });
+
+    // ...and the household's own denominator is unchanged: total income.
+    expect(householdFlow(plan).totalInflowMinor).toBe(500_000);
+  });
+
   it("derives income, transfer, spending and leftover links", () => {
     const plan = makePlan(
       [
@@ -67,7 +230,7 @@ describe("buildGraph", () => {
         },
       ],
     );
-    const { nodes, links } = buildGraph(plan);
+    const { nodes, links } = buildGraph(householdFlow(plan));
 
     const aliceIdx = nodes.findIndex((n) => n.name === "alice-cur");
     const billsIdx = nodes.findIndex((n) => n.name === "bills");
@@ -88,24 +251,8 @@ describe("buildGraph", () => {
   });
 
   it("omits zero-value flows and reports an empty graph when nothing moves", () => {
-    const plan = makePlan([account({ accountId: "empty" })], []);
-    const { links } = buildGraph(plan);
+    const { links } = buildGraph(householdFlow(makePlan([account({ accountId: "empty" })], [])));
     expect(links).toHaveLength(0);
-  });
-});
-
-describe("flowLabel", () => {
-  it("writes amounts in the plan's currency", () => {
-    expect(flowLabel(120_000, 300_000, "amount", "GBP")).toBe("£1,200.00");
-  });
-
-  it("writes shares of total household income to one decimal", () => {
-    expect(flowLabel(120_000, 300_000, "share", "GBP")).toBe("40.0%");
-    expect(flowLabel(105_600, 300_000, "share", "GBP")).toBe("35.2%");
-  });
-
-  it("declines to divide by nothing", () => {
-    expect(flowLabel(120_000, 0, "share", "GBP")).toBe("—");
   });
 });
 
