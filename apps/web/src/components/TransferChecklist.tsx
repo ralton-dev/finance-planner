@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { ApiError } from "../lib/api.js";
-import { formatMonth } from "../lib/months.js";
+import { formatDayMonth, formatMonth } from "../lib/months.js";
 import { formatMinor } from "../lib/money.js";
-import type { HouseholdPlanDto, TransferConfirmationDto, TransferDto } from "../lib/types.js";
+import type {
+  HouseholdPlanDto,
+  MemberPaydayScheduleDto,
+  TransferConfirmationDto,
+  TransferDto,
+} from "../lib/types.js";
 
 interface Props {
   plan: HouseholdPlanDto;
@@ -17,6 +22,15 @@ interface Props {
 /** A transfer is identified by who moves money from where to where. */
 const keyOf = (t: { fromAccountId: string; toAccountId: string; memberUserId: string }): string =>
   `${t.fromAccountId}|${t.toAccountId}|${t.memberUserId}`;
+
+/**
+ * A member with no payday at all gets one synthetic event on the 1st, which is
+ * indistinguishable from a real first-of-the-month payday client-side — so any
+ * first-of-month event reads as "start of month" rather than a pay date.
+ */
+export function paydayLabel(date: string): string {
+  return date.endsWith("-01") ? "start of month" : `pay day ${formatDayMonth(date)}`;
+}
 
 /**
  * The month's move-money checklist. Each planned transfer is either waiting or
@@ -158,6 +172,72 @@ export function TransferChecklist({ plan, confirmations, onConfirm, onUndo, mont
           })}
         </tbody>
       </table>
+
+      <PaydayPlan
+        schedule={plan.paydaySchedule ?? []}
+        currency={c}
+        memberName={memberName}
+        accountName={accountName}
+      />
+    </>
+  );
+}
+
+/**
+ * When to move the money. The checklist above stays monthly — a confirmation
+ * covers a whole transfer, not one payday's slice — so this is a breakdown of
+ * the same plan, not a second set of things to tick off.
+ */
+function PaydayPlan({
+  schedule,
+  currency,
+  memberName,
+  accountName,
+}: {
+  schedule: MemberPaydayScheduleDto[];
+  currency: string;
+  memberName: Map<string, string>;
+  accountName: Map<string, string>;
+}) {
+  const withEvents = schedule.filter((m) => m.events.length > 0);
+  if (withEvents.length === 0) return null;
+  const eventCount = withEvents.reduce((n, m) => n + m.events.length, 0);
+
+  return (
+    <>
+      <div className="section-head">
+        <h2>payday plan</h2>
+        <span className="meta">
+          [{eventCount} {eventCount === 1 ? "payday" : "paydays"} · when to move it]
+        </span>
+      </div>
+      <div className="payday-list">
+        {withEvents.map((member) =>
+          member.events.map((event) => (
+            <div key={`${member.memberUserId}|${event.date}`} className="payday-event">
+              <div className="payday-head">
+                <span className="name">{memberName.get(member.memberUserId) ?? "member"}</span>
+                <span className="dim"> · {paydayLabel(event.date)}</span>
+                <span className="spacer" />
+                <b>{formatMinor(event.totalMinor, currency)}</b>
+              </div>
+              {event.transfers.length === 0 ? (
+                <div className="payday-slice muted">nothing to move on this one</div>
+              ) : (
+                event.transfers.map((t, i) => (
+                  <div key={`${t.fromAccountId}|${t.toAccountId}|${i}`} className="payday-slice">
+                    <span className="payday-route">
+                      {accountName.get(t.fromAccountId) ?? "account"} →{" "}
+                      {accountName.get(t.toAccountId) ?? "account"}
+                    </span>
+                    <span className="num">{formatMinor(t.amountMinor, currency)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          )),
+        )}
+      </div>
     </>
   );
 }

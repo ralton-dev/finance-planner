@@ -7,29 +7,14 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { formatMonth } from "../lib/months.js";
-import { formatMinor } from "../lib/money.js";
+import { formatMonth, formatMonthShort } from "../lib/months.js";
+import { formatCompactMinor, formatMinor } from "../lib/money.js";
 import { seriesCurrencies, type NetWorthPoint } from "../lib/networth.js";
 
 // Same palette the Sankey uses, so charts across the app read as one system.
 const SERIES_COLORS = ["#7be087", "#b89df0", "#7eb3f6", "#f6c66b", "#f47b6b"];
 const GRID = "#232321";
 const TICK = "#5e5a51";
-
-/** "aug 2026" → "aug 26": axis ticks stay legible when months get dense. */
-function shortMonth(month: string): string {
-  const [name, year] = formatMonth(month).split(" ");
-  return year ? `${name} ${year.slice(2)}` : month;
-}
-
-function compactMinor(minor: number, currency: string): string {
-  return new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency,
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(minor / 100);
-}
 
 interface TipEntry {
   dataKey?: string | number;
@@ -101,14 +86,14 @@ export function NetWorthChart({ points }: { points: NetWorthPoint[] }) {
             <CartesianGrid stroke={GRID} strokeDasharray="2 4" vertical={false} />
             <XAxis
               dataKey="month"
-              tickFormatter={shortMonth}
+              tickFormatter={formatMonthShort}
               tick={{ fill: TICK, fontSize: 11, fontFamily: "inherit" }}
               axisLine={{ stroke: GRID }}
               tickLine={false}
               minTickGap={24}
             />
             <YAxis
-              tickFormatter={(v: number) => compactMinor(v, axisCurrency)}
+              tickFormatter={(v: number) => formatCompactMinor(v, axisCurrency)}
               tick={{ fill: TICK, fontSize: 11, fontFamily: "inherit" }}
               axisLine={false}
               tickLine={false}

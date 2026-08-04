@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
 import { MonthScorecard } from "../components/MonthScorecard.js";
+import { ProjectionView } from "../components/ProjectionView.js";
 import { TransferChecklist } from "../components/TransferChecklist.js";
 import { api } from "../lib/api.js";
 import { currentMonth } from "../lib/months.js";
@@ -126,6 +127,12 @@ export function HouseholdPlanPage() {
           </tbody>
         </table>
       )}
+
+      <ProjectionView
+        load={(months) => api.householdProjection(id, months)}
+        scopeKey={id}
+        accountNames={Object.fromEntries(accountName)}
+      />
 
       <MonthScorecard
         closes={closes.data ?? []}

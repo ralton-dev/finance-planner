@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { MonthScorecard } from "../components/MonthScorecard.js";
 import { PlanSummary, PlanTable } from "../components/PlanTable.js";
+import { ProjectionView } from "../components/ProjectionView.js";
 import { RealityStrip } from "../components/RealityStrip.js";
 import { api } from "../lib/api.js";
 import { currentMonth } from "../lib/months.js";
@@ -120,6 +121,16 @@ export function AccountPage() {
           }}
         />
       )}
+
+      <ProjectionView
+        load={(months) => api.accountProjection(id, months)}
+        scopeKey={id}
+        hint={
+          plan.data && !plan.data.latestBalance
+            ? "no balance check-in — projected balance unavailable"
+            : undefined
+        }
+      />
 
       <div className="two-col">
         <div>

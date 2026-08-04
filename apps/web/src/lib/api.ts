@@ -1,6 +1,7 @@
 import type {
   AccountDto,
   AccountPlanDto,
+  AccountProjectionDto,
   AccountRole,
   BalanceSnapshotDto,
   ConfirmTransferResultDto,
@@ -8,6 +9,7 @@ import type {
   HouseholdAccountAssignmentDto,
   HouseholdDetailDto,
   HouseholdPlanDto,
+  HouseholdProjectionDto,
   HouseholdRole,
   IncomeDto,
   MonthCloseDto,
@@ -16,6 +18,7 @@ import type {
   ProjectDetailDto,
   ProjectDto,
   TransferConfirmationDto,
+  UpcomingDto,
   UserDto,
 } from "./types.js";
 
@@ -30,6 +33,16 @@ export class ApiError extends Error {
 }
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+/** Query string from the params that are actually set — never "?months=&asOf=". */
+function query(params: Record<string, string | number | undefined>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) qs.set(key, String(value));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
 
 /** Typed client for the API gateway. Holds the access token in memory and
  * transparently refreshes it once on a 401. */
@@ -151,6 +164,13 @@ export class ApiClient {
       `/api/accounts/${id}/plan${asOf ? `?asOf=${asOf}` : ""}`,
     );
   }
+  /** The plan month by month. `months` is clamped to 1..24 server-side (default 12). */
+  accountProjection(id: string, months?: number, asOf?: string) {
+    return this.request<AccountProjectionDto>(
+      "GET",
+      `/api/accounts/${id}/projection${query({ months, asOf })}`,
+    );
+  }
 
   // ---- contributions (money actually set aside) ----
   /** Record money set aside toward a payment. Moves the plan without editing the payment. */
@@ -266,6 +286,11 @@ export class ApiClient {
   overview(asOf?: string) {
     return this.request<OverviewDto>("GET", `/api/overview${asOf ? `?asOf=${asOf}` : ""}`);
   }
+  /** What falls due next across every visible account. `days` clamps to 1..90
+   *  (default 14); the server caps the feed at 50 rows. */
+  upcoming(days?: number, asOf?: string) {
+    return this.request<UpcomingDto>("GET", `/api/upcoming${query({ days, asOf })}`);
+  }
 
   // ---- households ----
   createHousehold(name: string) {
@@ -315,6 +340,13 @@ export class ApiClient {
     return this.request<HouseholdPlanDto>(
       "GET",
       `/api/households/${id}/plan${asOf ? `?asOf=${asOf}` : ""}`,
+    );
+  }
+  /** The pooled household plan month by month. Members only, as the plan is. */
+  householdProjection(id: string, months?: number, asOf?: string) {
+    return this.request<HouseholdProjectionDto>(
+      "GET",
+      `/api/households/${id}/projection${query({ months, asOf })}`,
     );
   }
   listHouseholdAccounts(id: string) {

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
+import { UpcomingDigest } from "../components/UpcomingDigest.js";
 import { api } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
 import { buildNetWorthSeries, type AccountBalanceHistory } from "../lib/networth.js";
@@ -13,8 +14,12 @@ import type {
   HouseholdDto,
   HouseholdPlanDto,
   OverviewDto,
+  UpcomingDto,
   UserDto,
 } from "../lib/types.js";
+
+/** Look-ahead for the "coming up" digest — a fortnight is one pay cycle. */
+const UPCOMING_DAYS = 14;
 
 // Keeps recharts out of the eagerly-loaded Overview chunk, as the Sankey does.
 const NetWorthChart = lazy(() =>
@@ -33,6 +38,7 @@ export function OverviewPage() {
   const me = useAsync<UserDto>(() => api.me(), []);
   const overview = useAsync<OverviewDto>(() => api.overview(), []);
   const accounts = useAsync<AccountDto[]>(() => api.listAccounts(), []);
+  const upcoming = useAsync<UpcomingDto>(() => api.upcoming(UPCOMING_DAYS), []);
 
   const households = me.data?.households ?? [];
   const householdKey = households.map((h) => h.id).join(",");
@@ -67,6 +73,7 @@ export function OverviewPage() {
     accounts.refetch();
     plans.refetch();
     reality.refetch();
+    upcoming.refetch();
   }, [lastCreated]);
 
   if (me.loading || overview.loading || accounts.loading) return <p className="muted">loading…</p>;
@@ -100,6 +107,14 @@ export function OverviewPage() {
           </>
         )}
       </div>
+
+      {totalAccounts > 0 && (
+        <UpcomingDigest
+          items={upcoming.data?.items ?? []}
+          days={upcoming.data?.days ?? UPCOMING_DAYS}
+          loading={upcoming.loading}
+        />
+      )}
 
       {totalAccounts === 0 ? (
         <div className="empty-state">

@@ -1,8 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api.js";
-import type { HouseholdPlanDto, TransferConfirmationDto } from "../lib/types.js";
-import { TransferChecklist } from "./TransferChecklist.js";
+import type {
+  HouseholdPlanDto,
+  MemberPaydayScheduleDto,
+  TransferConfirmationDto,
+} from "../lib/types.js";
+import { paydayLabel, TransferChecklist } from "./TransferChecklist.js";
 
 const plan: HouseholdPlanDto = {
   householdId: "h1",
@@ -223,5 +227,133 @@ describe("TransferChecklist", () => {
       />,
     );
     expect(screen.getByText(/no transfers needed/i)).toBeInTheDocument();
+  });
+
+  it("has no payday plan when the API sent no schedule", () => {
+    render(<TransferChecklist plan={plan} confirmations={[]} onConfirm={noop} onUndo={noop} />);
+    expect(screen.queryByText("payday plan")).toBeNull();
+  });
+});
+
+// --- payday plan ------------------------------------------------------------
+
+const schedule: MemberPaydayScheduleDto[] = [
+  {
+    memberUserId: "u1",
+    events: [
+      {
+        date: "2026-08-10",
+        transfers: [{ fromAccountId: "acc-ada", toAccountId: "acc-joint", amountMinor: 50_000 }],
+        totalMinor: 50_000,
+      },
+      {
+        date: "2026-08-25",
+        transfers: [{ fromAccountId: "acc-ada", toAccountId: "acc-joint", amountMinor: 70_000 }],
+        totalMinor: 70_000,
+      },
+    ],
+  },
+  {
+    // No payday of their own: the server stands in the first of the month.
+    memberUserId: "u2",
+    events: [
+      {
+        date: "2026-08-01",
+        transfers: [{ fromAccountId: "acc-bo", toAccountId: "acc-joint", amountMinor: 80_000 }],
+        totalMinor: 80_000,
+      },
+    ],
+  },
+];
+
+describe("paydayLabel", () => {
+  it("names the pay date", () => {
+    expect(paydayLabel("2026-08-25")).toBe("pay day 25 aug");
+    expect(paydayLabel("2026-12-07")).toBe("pay day 7 dec");
+  });
+
+  it("reads a first-of-month event as the stand-in it is", () => {
+    expect(paydayLabel("2026-08-01")).toBe("start of month");
+  });
+});
+
+describe("TransferChecklist payday plan", () => {
+  const withSchedule = (paydaySchedule: MemberPaydayScheduleDto[]): HouseholdPlanDto => ({
+    ...plan,
+    paydaySchedule,
+  });
+
+  it("breaks each member's transfers down by payday", () => {
+    render(
+      <TransferChecklist
+        plan={withSchedule(schedule)}
+        confirmations={[]}
+        onConfirm={noop}
+        onUndo={noop}
+      />,
+    );
+
+    expect(screen.getByText("payday plan")).toBeInTheDocument();
+    expect(screen.getByText(/pay day 10 aug/)).toBeInTheDocument();
+    expect(screen.getByText(/pay day 25 aug/)).toBeInTheDocument();
+    // Ada's name heads both of her paydays, on top of her checklist row.
+    expect(screen.getAllByText("Ada")).toHaveLength(3);
+    expect(screen.getAllByText("£700.00")).toHaveLength(2); // event total + its slice
+    // One slice of the same route on each of her two paydays.
+    expect(screen.getAllByText("Ada current → Joint bills")).toHaveLength(2);
+  });
+
+  it("labels a synthetic first-of-month event as the start of the month", () => {
+    render(
+      <TransferChecklist
+        plan={withSchedule(schedule)}
+        confirmations={[]}
+        onConfirm={noop}
+        onUndo={noop}
+      />,
+    );
+    expect(screen.getByText(/start of month/)).toBeInTheDocument();
+  });
+
+  it("leaves the per-transfer confirm at the transfer level, not the payday", () => {
+    render(
+      <TransferChecklist
+        plan={withSchedule(schedule)}
+        confirmations={[]}
+        onConfirm={noop}
+        onUndo={noop}
+      />,
+    );
+    // Two planned transfers, three paydays — still two things to tick off.
+    expect(screen.getAllByRole("button", { name: "mark done" })).toHaveLength(2);
+  });
+
+  it("renders nothing for a member with no transfers to make", () => {
+    render(
+      <TransferChecklist
+        plan={withSchedule([schedule[0]!, { memberUserId: "u2", events: [] }])}
+        confirmations={[]}
+        onConfirm={noop}
+        onUndo={noop}
+      />,
+    );
+    // Bo keeps his checklist row and gains no payday heading.
+    expect(screen.getAllByText("Bo")).toHaveLength(1);
+    expect(screen.queryByText(/start of month/)).toBeNull();
+    expect(screen.getByText(/2 paydays/)).toBeInTheDocument();
+  });
+
+  it("still reports a payday that nothing rounds onto", () => {
+    render(
+      <TransferChecklist
+        plan={withSchedule([
+          { memberUserId: "u1", events: [{ date: "2026-08-25", transfers: [], totalMinor: 0 }] },
+        ])}
+        confirmations={[]}
+        onConfirm={noop}
+        onUndo={noop}
+      />,
+    );
+    expect(screen.getByText(/nothing to move on this one/)).toBeInTheDocument();
   });
 });

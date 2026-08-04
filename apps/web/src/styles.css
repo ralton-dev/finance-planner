@@ -1374,3 +1374,244 @@ td.row-actions-cell .row-edit:hover {
   border-radius: 1px;
   display: inline-block;
 }
+
+/* Shared chart tooltip — one look for every chart in the app. */
+.chart-tip {
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.chart-tip-head {
+  color: var(--ink-2);
+  font-size: 11px;
+  margin-bottom: 0.15rem;
+}
+.chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.chart-tip-row i {
+  width: 8px;
+  height: 2px;
+  border-radius: 1px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.chart-tip-label {
+  color: var(--ink-2);
+  flex: 1;
+}
+.chart-tip-row b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+ * Forecasting — projection chart + months × payments grid, upcoming digest,
+ * payday plan. Where the money is going, not just where it is.
+ * ============================================================================ */
+
+/* 6 / 12 / 24-month window selector, in the projection section head. */
+.months-select {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+.months-select button.active {
+  background: var(--card);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.projection-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-bottom: 0.5rem;
+}
+
+/* The grid scrolls inside itself; the page never scrolls sideways. */
+.grid-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  margin-top: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.months-grid {
+  /* Wider than its container is the point — and `overflow: hidden` from the
+   * base table rule would break the sticky first column. */
+  width: auto;
+  min-width: 100%;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  font-size: 12px;
+}
+.months-grid th,
+.months-grid td {
+  white-space: nowrap;
+  padding: 0.4rem 0.7rem;
+}
+.months-grid thead th {
+  font-size: 10px;
+}
+/* Payment names and footer labels: the sticky rail down the left edge. */
+.months-grid .sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  text-align: left;
+  background: var(--bg-2);
+  /* box-shadow, not border-right: collapsed borders drop off sticky cells. */
+  box-shadow: 1px 0 0 var(--line);
+}
+.months-grid tbody th.sticky-col {
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  background: var(--card);
+}
+.months-grid tbody tr:hover th.sticky-col,
+.months-grid tbody tr:hover td {
+  background: var(--card-2);
+}
+/* A month this payment actually falls due in. */
+.months-grid td.due {
+  color: var(--ink);
+  font-weight: 600;
+  background: rgba(246, 198, 107, 0.07);
+}
+.due-dot {
+  color: var(--warn-amber);
+  margin-left: 0.2rem;
+}
+.months-grid tfoot th,
+.months-grid tfoot td {
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 0;
+  background: var(--bg-2);
+}
+.months-grid tfoot th.sticky-col {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.months-grid tfoot td.ok {
+  color: var(--good);
+}
+.months-grid tfoot td.warn {
+  color: var(--warn);
+  background: rgba(244, 123, 107, 0.08);
+}
+
+/* Overview: what lands in the next fortnight. */
+.upcoming-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.95rem 0.85rem;
+  margin-bottom: 1.75rem;
+}
+.upcoming-card .section-head {
+  margin: 0.6rem 0 0.5rem;
+}
+.upcoming-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.upcoming-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.28rem 0;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--line);
+}
+.upcoming-row:last-child {
+  border-bottom: 0;
+}
+.upcoming-row .when {
+  color: var(--ink-2);
+  min-width: 5.5rem;
+}
+.upcoming-row .name {
+  color: var(--ink);
+}
+.upcoming-row .amount {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.upcoming-row .where {
+  color: var(--muted);
+  margin-left: auto;
+  font-size: 11.5px;
+}
+.upcoming-row .sep,
+.upcoming-row .dim {
+  color: var(--muted);
+}
+/* Beyond the coming week: context, not a call to action. */
+.upcoming-row.far {
+  opacity: 0.62;
+}
+.upcoming-more {
+  font-size: 11.5px;
+  margin-top: 0.45rem;
+}
+
+/* Household: which payday each slice of a transfer rides on. */
+.payday-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.6rem;
+}
+.payday-event {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+  font-size: 12px;
+}
+.payday-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding-bottom: 0.35rem;
+  margin-bottom: 0.35rem;
+  border-bottom: 1px solid var(--line);
+}
+.payday-head .spacer {
+  flex: 1;
+}
+.payday-head b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.payday-head .dim {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.payday-slice {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--ink-2);
+  padding: 0.12rem 0;
+}
+.payday-slice .dim {
+  color: var(--muted);
+}
+.payday-slice .num {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}

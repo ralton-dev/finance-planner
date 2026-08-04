@@ -36,6 +36,19 @@ export function formatMonth(isoDateOrMonth: string): string {
   return name && year ? `${name} ${year}` : isoDateOrMonth;
 }
 
+/** "2026-08" → "aug 26". The dense form, for axis ticks and grid headers. */
+export function formatMonthShort(isoDateOrMonth: string): string {
+  const [name, year] = formatMonth(isoDateOrMonth).split(" ");
+  return name && year ? `${name} ${year.slice(2)}` : isoDateOrMonth;
+}
+
+/** "2026-08-25" → "25 aug". Day-level label for dated events (paydays, due dates). */
+export function formatDayMonth(isoDate: string): string {
+  const [, month, day] = isoDate.split("-");
+  const name = MONTH_NAMES[Number(month) - 1];
+  return name && day ? `${Number(day)} ${name}` : isoDate;
+}
+
 /** Advance a "YYYY-MM" by n months (n may be negative). */
 export function addMonths(month: string, n: number): string {
   const [y, m] = month.split("-").map(Number);

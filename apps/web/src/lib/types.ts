@@ -256,6 +256,21 @@ export interface TransferDto {
   amountMinor: number;
 }
 
+/** One payday, with the slices of the month's transfers that land on it. */
+export interface PayEventDto {
+  /** ISO date ("YYYY-MM-DD"). A member with no payday at all gets one synthetic
+   *  event on the 1st, which the UI labels "start of month". */
+  date: string;
+  transfers: { fromAccountId: string; toAccountId: string; amountMinor: number }[];
+  totalMinor: number;
+}
+
+/** Roster order; a member with no transfers to make has an empty `events`. */
+export interface MemberPaydayScheduleDto {
+  memberUserId: string;
+  events: PayEventDto[];
+}
+
 export interface HouseholdPlanDto {
   householdId: string;
   asOfDate: string;
@@ -269,6 +284,95 @@ export interface HouseholdPlanDto {
   accounts: HouseholdAccountPlanDto[];
   lines: HouseholdPlanLineDto[];
   transfers: TransferDto[];
+  /** When to move the money, not just how much. Optional so a plan served by an
+   *  older API (or built in a test) still satisfies the type. */
+  paydaySchedule?: MemberPaydayScheduleDto[];
+}
+
+// --- projections ------------------------------------------------------------
+// The plan simulated month by month, so the UI can show where the money lands
+// rather than only this month's slice.
+
+export interface ProjectionLineDto {
+  paymentId: string;
+  name: string;
+  category: PaymentCategory;
+  requiredMonthlyMinor: number;
+  fundedMonthlyMinor: number;
+  /** Set aside for this payment at the end of the month, after any bill it paid. */
+  alreadySavedEndMinor: number;
+  dueThisMonth: boolean;
+  /** amountMinor × occurrences this month; 0 when nothing falls due. */
+  dueAmountMinor: number;
+}
+
+export interface MonthProjectionDto {
+  /** "YYYY-MM". */
+  month: string;
+  monthlyIncomeMinor: number;
+  bufferMinor: number;
+  totalRequiredMinor: number;
+  totalFundedMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  reservedEndMinor: number;
+  /** null on every month when the account has no balance check-in to start from. */
+  projectedBalanceMinor: number | null;
+  lines: ProjectionLineDto[];
+}
+
+export interface AccountProjectionDto {
+  accountId: string;
+  currency: string;
+  asOfDate: string;
+  months: MonthProjectionDto[];
+}
+
+export interface HouseholdProjectionLineDto extends ProjectionLineDto {
+  accountId: string;
+}
+
+export interface HouseholdMonthProjectionDto {
+  month: string;
+  monthlyIncomeMinor: number;
+  totalRequiredMinor: number;
+  totalFundedMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  /** Money members must move between accounts this month. */
+  transfersTotalMinor: number;
+  reservedEndMinor: number;
+  lines: HouseholdProjectionLineDto[];
+}
+
+export interface HouseholdProjectionDto {
+  householdId: string;
+  currency: string;
+  asOfDate: string;
+  months: HouseholdMonthProjectionDto[];
+}
+
+// --- upcoming payments ------------------------------------------------------
+
+/** One dated hit of a payment inside the look-ahead window. */
+export interface UpcomingItemDto {
+  paymentId: string;
+  name: string;
+  category: PaymentCategory;
+  amountMinor: number;
+  dueDate: string;
+  /** Whole days from the as-of date; 0 means "today". */
+  daysUntil: number;
+  accountId: string;
+  accountName: string;
+  currency: string;
+}
+
+export interface UpcomingDto {
+  asOfDate: string;
+  /** The window the server actually used, after clamping. */
+  days: number;
+  items: UpcomingItemDto[];
 }
 
 // --- the reality loop ------------------------------------------------------
