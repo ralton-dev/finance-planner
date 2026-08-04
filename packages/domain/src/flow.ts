@@ -1,4 +1,5 @@
 import type { EstatePlan, EstateMovementStatus } from "./estate.js";
+import type { ScopePlan } from "./scope.js";
 
 /**
  * The money-flow picture, over **any set of accounts**.
@@ -30,9 +31,11 @@ import type { EstatePlan, EstateMovementStatus } from "./estate.js";
  * sends on nor raised by inflow it never spent, so that summing it across an
  * estate does not double-count (see `AccountPlan.leftoverMinor`). That is the
  * right answer for a rollup and the wrong one for a Sankey, where a node whose
- * ribbons do not meet is a drawing that lies. The residual is non-negative by
- * construction: it is the buffer, plus own income the bills and movements did
- * not reach, plus arrivals nothing spent.
+ * ribbons do not meet is a drawing that lies.
+ *
+ * Read off the one pass (`flowFromScope`) the residual is
+ * `ScopeAccountPlan.leftoverMinor` verbatim, and it is **signed**: see that
+ * field, and this module's note on the floor below.
  *
  * ## The scope has an edge, and money crosses it
  *
@@ -115,6 +118,15 @@ export interface FlowScopeAccount {
 /**
  * One member's transfer into an account, as a household plan derived it.
  *
+ * ## Superseded by `flowFromScope` (ONE-ENGINE.md, WP-Q)
+ *
+ * This type exists only because there were two derivations of "money crossing
+ * an account boundary" and `flowFromEstate` had to merge them. There is now
+ * one: `computeScopePlan` emits `DerivedTransfer` carrying the member, the
+ * currency and the confirmed amount directly, so there is nothing to attribute
+ * and nothing to clamp. Kept until WP-S deletes its last producer,
+ * `householdAllocations` (`apps/api/src/plan.ts:517`).
+ *
  * The two derivations of "money crossing an account boundary" are disjoint by
  * construction, so a scope containing both needs both. `computeEstatePlan`
  * settles movements the user *authored* between their own accounts; a household
@@ -146,6 +158,14 @@ export interface FlowAllocation {
  *
  * Nothing is derived here that `computeEstatePlan` or a household plan has not
  * already decided.
+ *
+ * ## Superseded by `flowFromScope` (ONE-ENGINE.md, WP-Q)
+ *
+ * Everything below the accounts loop is two-engine machinery: the `allocations`
+ * parameter, the unattributed remainder it is clamped against, and the floor on
+ * the residual that copes with an account promised to two plans at once. All
+ * three dissolve when there is one plan. Kept, unchanged, only because its last
+ * caller is `apps/api/src/server.ts:1230`, which WP-S rewrites.
  */
 export function flowFromEstate(
   estate: EstatePlan,
@@ -260,6 +280,106 @@ export function flowFromEstate(
     accounts: withResiduals,
     edges,
     totalInflowMinor: totalInflow(withResiduals, edges),
+  };
+}
+
+/**
+ * The one pass's answer as a flow over `scope`.
+ *
+ * One derivation, so nothing is merged, attributed or clamped. A
+ * `DerivedTransfer` is expense transport the pass worked out (decision 9) and
+ * carries the member whose money it is; a `ScopeMovement` is a savings movement
+ * the user authored and carries the row's id. They are drawn in that order,
+ * which is the order the pass funded them in: every expense, then everything
+ * left over.
+ *
+ * `plan` normally covers more than `scope` — planning one account can mean
+ * planning its household and its senders — and that is the point: an arrival
+ * from an account the user did not include in the picture is still money
+ * arriving, and it is drawn crossing the scope's edge with a `null` end.
+ *
+ * `memberNames` supplies display names for the members whose transfers are
+ * drawn, and only for those the caller may be told about: **names are gated,
+ * amounts are not**, which is the rule the API applies everywhere. Omit it and
+ * the ribbons are unnamed, which is what an arrival nobody may attribute is.
+ *
+ * ## No floor, on purpose
+ *
+ * `flowFromEstate` floors each node's residual at zero, because an account
+ * promised to two plans at once could be committed to sending more than it has.
+ * There is one plan now, and `ScopeAccountPlan.leftoverMinor` is already the
+ * signed residual `income + arriving − spending − leaving` — so for an account
+ * of a scope the ribbons meet exactly, by construction, and the floor could only
+ * ever fire on a figure that is *meaningful*: a negative residual means a member
+ * holds income in a personal account other than the one their transfers leave
+ * (decision 11) and must consolidate before the month works. Flooring hides the
+ * one thing the user has to do. The tests assert the balance directly instead.
+ */
+export function flowFromScope(
+  plan: ScopePlan,
+  scope: readonly FlowScopeAccount[],
+  currency: string,
+  memberNames?: ReadonlyMap<string, string>,
+): Flow {
+  const partition = plan.partitions.find((p) => p.currency === currency);
+  const planById = new Map((partition?.accounts ?? []).map((a) => [a.accountId, a]));
+  const inScope = new Set(scope.map((s) => s.accountId));
+
+  const accounts: FlowAccount[] = [];
+  for (const entry of scope) {
+    const account = planById.get(entry.accountId);
+    // An account the pass did not plan cannot be drawn — a node made of guesses
+    // would be worse than a node that is absent.
+    if (!account) continue;
+    accounts.push({
+      accountId: entry.accountId,
+      name: entry.name,
+      incomeMinor: account.monthlyIncomeMinor,
+      spendingMinor: account.fundedOutflowMinor,
+      leftoverMinor: account.leftoverMinor,
+      shortfallMinor: account.shortfallMinor,
+    });
+  }
+
+  const edges: FlowEdge[] = [];
+  const touches = (from: string, to: string): boolean => inScope.has(from) || inScope.has(to);
+
+  for (const transfer of partition?.transfers ?? []) {
+    // Two accounts the scope does not contain move money that is none of this
+    // diagram's business, however visible it is to the pass.
+    if (!touches(transfer.fromAccountId, transfer.toAccountId)) continue;
+    const name = memberNames?.get(transfer.memberUserId);
+    edges.push({
+      fromAccountId: inScope.has(transfer.fromAccountId) ? transfer.fromAccountId : null,
+      toAccountId: inScope.has(transfer.toAccountId) ? transfer.toAccountId : null,
+      amountMinor: transfer.amountMinor,
+      // A derived transfer is only ever derived at what it is needed for, so
+      // what it asks for and what it moves are the same figure by construction.
+      requestedMinor: transfer.amountMinor,
+      status: "funded",
+      memberUserId: transfer.memberUserId,
+      ...(name !== undefined ? { memberName: name } : {}),
+    });
+  }
+
+  for (const movement of partition?.movements ?? []) {
+    if (!touches(movement.fromAccountId, movement.toAccountId)) continue;
+    edges.push({
+      fromAccountId: inScope.has(movement.fromAccountId) ? movement.fromAccountId : null,
+      toAccountId: inScope.has(movement.toAccountId) ? movement.toAccountId : null,
+      amountMinor: movement.fundedMinor,
+      requestedMinor: movement.requestedMinor,
+      status: movement.status,
+      inflowId: movement.inflowId,
+    });
+  }
+
+  return {
+    asOfDate: plan.asOfDate,
+    currency,
+    accounts,
+    edges,
+    totalInflowMinor: totalInflow(accounts, edges),
   };
 }
 

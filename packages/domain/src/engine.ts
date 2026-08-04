@@ -9,6 +9,7 @@ import {
   parseISODate,
   toISODate,
 } from "./dates.js";
+import type { ScopeInput, ScopePlan } from "./scope.js";
 import type {
   AccountInput,
   AccountPlan,
@@ -166,6 +167,22 @@ export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredR
 
 /**
  * Compute the full savings plan for an account as of `asOfDate`.
+ *
+ * ## Superseded by `accountPlanFromScope` (ONE-ENGINE.md, WP-Q)
+ *
+ * This is the account-local funding loop, and it is the second of the two
+ * engines this work exists to remove: it plans one account from its own income
+ * plus a total somebody else worked out (`AllocatedInflow`), which is precisely
+ * the arrangement that let the household page and the flow diagram disagree
+ * about the same month of the same account.
+ *
+ * `accountPlanFromScope` produces the same `AccountPlan` from
+ * `computeScopePlan`'s decisions and does no funding arithmetic at all. This
+ * function survives WP-Q only because its remaining callers are in files WP-Q
+ * does not own — `computeEstatePlan` (`estate.ts:324`),
+ * `apps/api/src/plan.ts:683-684`, `apps/api/src/server.ts:1488-1489` and
+ * `apps/calc/src/server.ts` — and it is deleted with them in WP-S, together
+ * with `AllocatedInflow`, whose last producer dies at the same time.
  *
  * Funding rule (confirmed in discovery): prioritise + show shortfall. Payments
  * are funded in priority order from the month's money; whatever cannot be funded
@@ -360,6 +377,168 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
     internalInflowUsedMinor: internalInflowUsed,
     inflowArrivals: arrivals,
     outboundInflowMinor: outboundTotal,
+    outboundInflows,
+    fundingCycleAccountIds: account.fundingCycleAccountIds,
+    fundingCycleBrokenInflowId: account.fundingCycleBrokenInflowId,
+    lines,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The account plan, as a view of the one pass
+// ---------------------------------------------------------------------------
+
+/**
+ * One account's `AccountPlan`, read off a planned scope.
+ *
+ * Same shape on the wire as `computeAccountPlan`, and **no funding arithmetic**:
+ * every amount here was decided once, by `computeScopePlan`, in one global
+ * priority order over one set of member budgets. What is left to do is shape —
+ * pick this account's lines out of the pass's funding order, hand back the
+ * own/inflow split the pass already recorded, turn the confirmation overlay into
+ * `funded | awaiting_transfer | at_risk`, and work out the completion dates,
+ * which are a fact about a payment's pace rather than about anybody's money.
+ *
+ * Two things come from `input` rather than the plan, and only two: a payment's
+ * contribution cap (`fixedMonthlyMinor`), which the pass has no reason to carry
+ * because it never changes an answer. Passthroughs come from the input,
+ * decisions come from the pass, and nothing is derived twice.
+ *
+ * Throws when `accountId` is not in the plan. An account outside the scope has
+ * no plan to view, and inventing an empty one would report a funded month for an
+ * account nobody planned — the failure mode this whole package exists to end.
+ */
+export function accountPlanFromScope(
+  input: ScopeInput,
+  plan: ScopePlan,
+  accountId: string,
+): AccountPlan {
+  const account = plan.accounts.find((a) => a.accountId === accountId);
+  if (!account) {
+    throw new Error(`accountPlanFromScope: ${accountId} is not in the planned scope`);
+  }
+  const now = parseISODate(plan.asOfDate);
+  const payments = new Map<string, PaymentInput>();
+  for (const acc of input.accounts) {
+    if (acc.accountId !== accountId) continue;
+    for (const p of acc.payments) payments.set(p.id, p);
+  }
+
+  // How much of the arriving money the lines above have already leaned on.
+  // Confirmed money is spent before merely promised money, so a line rests on a
+  // transfer nobody has made exactly when its slice runs past the confirmed
+  // mark — the account engine's rule, over the pass's own split.
+  let inflowUsed = 0;
+  const lines: PaymentPlanLine[] = plan.lines
+    .filter((l) => l.accountId === accountId)
+    .map((l) => {
+      // The pass records the split against what the *bill* took, so this is the
+      // funded amount by construction and never exceeds what was required.
+      const funded = l.fundedFromOwnMinor + l.fundedFromInflowMinor;
+      const drewOnUnconfirmed =
+        l.fundedFromInflowMinor > 0 &&
+        inflowUsed + l.fundedFromInflowMinor > account.confirmedInflowMinor;
+      inflowUsed += l.fundedFromInflowMinor;
+      const status: PaymentPlanStatus = !l.onTrack
+        ? "at_risk"
+        : drewOnUnconfirmed
+          ? "awaiting_transfer"
+          : "funded";
+
+      const payment = payments.get(l.paymentId);
+      if (!payment) {
+        throw new Error(`accountPlanFromScope: ${l.paymentId} is not a payment of ${accountId}`);
+      }
+      const cap = contributionCapMinor(payment);
+      const remaining = Math.max(0, l.amountMinor - l.alreadySavedMinor);
+      let projectedCompletionDate: string | undefined;
+      if (!l.onTrack) {
+        projectedCompletionDate = toISODate(
+          addUnit(now, ceilDiv(remaining, Math.max(funded, 1)), "month"),
+        );
+      } else if (remaining > 0 && cap !== null) {
+        // On pace, but late: the cap sets the pace, so a capped goal can be
+        // fully funded every month and still land after the date it carries.
+        const finish = toISODate(addUnit(now, ceilDiv(remaining, l.requiredMonthlyMinor), "month"));
+        if (finish > l.targetDate) projectedCompletionDate = finish;
+      }
+
+      return {
+        paymentId: l.paymentId,
+        name: l.name,
+        category: l.category,
+        amountMinor: l.amountMinor,
+        dueDate: l.dueDate,
+        targetDate: l.targetDate,
+        dueDateIsDerived: l.dueDateIsDerived,
+        monthsUntilDue: l.monthsUntilDue,
+        requiredMonthlyMinor: l.requiredMonthlyMinor,
+        fundedMonthlyMinor: funded,
+        fundedFromOwnMinor: l.fundedFromOwnMinor,
+        fundedFromInflowMinor: l.fundedFromInflowMinor,
+        alreadySavedMinor: l.alreadySavedMinor,
+        occurrencesThisMonth: l.occurrencesThisMonth,
+        onTrack: l.onTrack,
+        status,
+        projectedCompletionDate,
+        fixedMonthlyMinor: payment.fixedMonthlyMinor ?? null,
+        tag: l.tag ?? null,
+      };
+    });
+
+  // Movements this account really sends. A loop's broken edge is not one of
+  // them — it is not happening — and neither is a movement whose *sender* the
+  // pass could not see, which can name an account in another currency partition
+  // and would otherwise be reported as that account's outbound plan.
+  const outboundInflows: OutboundInflowPlan[] = plan.movements
+    .filter(
+      (m) =>
+        m.fromAccountId === accountId &&
+        m.status !== "broken_cycle" &&
+        m.status !== "unknown_source",
+    )
+    .sort(
+      (a, b) =>
+        a.priority - b.priority ||
+        (a.toAccountId < b.toAccountId ? -1 : a.toAccountId > b.toAccountId ? 1 : 0) ||
+        (a.inflowId < b.inflowId ? -1 : a.inflowId > b.inflowId ? 1 : 0),
+    )
+    .map((m) => ({
+      inflowId: m.inflowId,
+      toAccountId: m.toAccountId,
+      requiredMonthlyMinor: m.requestedMinor,
+      fundedMonthlyMinor: m.fundedMinor,
+      fundedFromOwnMinor: m.fundedFromOwnMinor,
+      fundedFromInflowMinor: m.fundedFromInflowMinor,
+      onTrack: m.fundedMinor >= m.requestedMinor,
+    }));
+
+  return {
+    accountId,
+    asOfDate: plan.asOfDate,
+    currency: account.currency,
+    monthlyIncomeMinor: account.monthlyIncomeMinor,
+    allocatedInflowMinor: account.allocatedInflowMinor,
+    confirmedInflowMinor: account.confirmedInflowMinor,
+    bufferMinor: account.bufferMinor,
+    totalRequiredMinor: account.requiredOutflowMinor,
+    totalFundedMinor: account.fundedOutflowMinor,
+    // The account's own income after its own bills and its owner's derived
+    // transfers — `AccountPlan.leftoverMinor`'s meaning, unchanged (decision 13).
+    // The signed residual a diagram needs is `ScopeAccountPlan.leftoverMinor`,
+    // and it is deliberately a different figure.
+    leftoverMinor: account.ownLeftoverMinor,
+    // The signed residual, so the account page, the household page and the flow
+    // diagram print one number rather than three derivations of it.
+    residualMinor: account.leftoverMinor,
+    shortfallMinor: account.shortfallMinor,
+    // Every pound arriving at an account of a scope came from another account of
+    // that scope — a derived transfer or an authored movement, both planned
+    // here — so the inflow the bills consumed *is* the intra-scope movement, and
+    // there is nothing left to reconstruct from an ordering assumption.
+    internalInflowUsedMinor: inflowUsed,
+    inflowArrivals: account.inflowArrivals,
+    outboundInflowMinor: account.committedMinor,
     outboundInflows,
     fundingCycleAccountIds: account.fundingCycleAccountIds,
     fundingCycleBrokenInflowId: account.fundingCycleBrokenInflowId,

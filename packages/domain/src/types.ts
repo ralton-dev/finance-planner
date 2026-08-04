@@ -340,6 +340,29 @@ export interface AccountPlan {
    * `fundedFromInflowMinor` over the lines.
    */
   leftoverMinor: number;
+  /**
+   * What is actually left in the account once the month's flows have happened:
+   *
+   *     income + arriving − spending − leaving
+   *
+   * The figure the flow diagram draws as "stays put" and the household page
+   * prints in the account's "left over" column — one number, on every surface
+   * (ONE-ENGINE.md). `leftoverMinor` above is deliberately a *different* figure,
+   * and keeps its meaning (decision 13): the account's own income after its own
+   * obligations, which is the right answer for a rollup and the wrong one for a
+   * picture, because summing residuals across an estate counts a transferred
+   * pound at both ends.
+   *
+   * **Signed.** Negative means a member is committed to moving more out of this
+   * account than reaches it, which happens exactly when they hold income in a
+   * personal account other than the one their transfers leave (decision 11) and
+   * have to consolidate first. Flooring it would hide the thing to do.
+   *
+   * Absent from a plan the superseded `computeAccountPlan` built: it has no term
+   * for money leaving on a transfer nobody authored, which is the defect this
+   * field exists to close.
+   */
+  residualMinor?: number;
   /** Gap the month's money — own income plus allocated inflow — cannot cover
    *  (>= 0). Inflow that covers the gap takes this to 0. */
   shortfallMinor: number;

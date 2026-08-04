@@ -1,7 +1,7 @@
 import type { PaymentCategory, Recurrence } from "@finance-planner/contracts";
 import { addUnit, occurrencesInMonth, parseISODate, toISODate } from "./dates.js";
 import {
-  computeAccountPlan,
+  accountPlanFromScope,
   computeOverview,
   contributionCapMinor,
   type CurrencyOverview,
@@ -13,6 +13,12 @@ import {
   type EstatePlan,
 } from "./estate.js";
 import { computeHouseholdPlan, type HouseholdInput } from "./household.js";
+import {
+  computeScopePlan,
+  type DerivedTransfer,
+  type ScopeInput,
+  type ScopeMovement,
+} from "./scope.js";
 import type { AccountInput, AccountPlan, AllocatedInflow, PaymentInput } from "./types.js";
 
 const DEFAULT_MONTHS = 12;
@@ -26,12 +32,6 @@ const MAX_MONTHS = 24;
 export interface ProjectionOptions {
   /** Months to simulate, including the as-of month. Clamped to 1..24 (default 12). */
   months?: number;
-  /**
-   * Opening balance of the money already sitting in the account. `null` (the
-   * default) means "unknown" — every month then reports a null balance rather
-   * than a fabricated one.
-   */
-  startingBalanceMinor?: number | null;
 }
 
 export interface EstateProjectionOptions {
@@ -41,6 +41,9 @@ export interface EstateProjectionOptions {
    *  and that account reports a null balance in every month. */
   startingBalancesMinor?: Record<string, number | null>;
 }
+
+/** Options for the scope walk — the same two, over a scope's accounts. */
+export type ScopeProjectionOptions = EstateProjectionOptions;
 
 // ---------------------------------------------------------------------------
 // Outputs
@@ -141,6 +144,49 @@ export interface EstateProjection {
   months: EstateMonthProjection[];
   /** Funding loops as of the as-of month; empty in the normal case. A loop is
    *  broken the same way in every simulated month, so it is reported once. */
+  cycles: EstateCycle[];
+}
+
+/** One currency's totals for one simulated month, straight off the pass. */
+export interface ScopeCurrencyMonth {
+  currency: string;
+  /** External money only, in every month of the horizon — the pass never counts
+   *  a transferred pound as income, so there is nothing to net back out. */
+  monthlyIncomeMinor: number;
+  totalRequiredMinor: number;
+  totalFundedMinor: number;
+  leftoverMinor: number;
+  /** Of that leftover, what funded savings movements have spoken for
+   *  (decision 13). Alongside, never netted. */
+  committedMinor: number;
+  shortfallMinor: number;
+}
+
+/** One simulated month of a whole scope, as the pass planned it. */
+export interface ScopeMonthProjection {
+  /** Calendar month as "YYYY-MM". */
+  month: string;
+  perCurrency: ScopeCurrencyMonth[];
+  /** The transfers the pass derived this month — expense transport, authored by
+   *  nobody, and recomputed against this month's obligations rather than held at
+   *  the as-of month's figure. */
+  transfers: DerivedTransfer[];
+  /** Every authored savings movement this month, including the ones the senders
+   *  could not afford. */
+  movements: ScopeMovement[];
+}
+
+export interface ScopeProjection {
+  scopeId: string;
+  householdId: string | null;
+  asOfDate: string;
+  /** One projection per account, in the scope's own account order. */
+  accounts: AccountProjection[];
+  /** The scope as a whole, month by month. */
+  months: ScopeMonthProjection[];
+  /** Authored-movement loops as of the as-of month; empty in the normal case. A
+   *  loop is broken the same way in every simulated month, so it is reported
+   *  once. */
   cycles: EstateCycle[];
 }
 
@@ -311,18 +357,28 @@ function unconfirmed(inflow: AllocatedInflow | null | undefined): AllocatedInflo
 // One account's walk through the simulation
 // ---------------------------------------------------------------------------
 
+/** The least a walk needs of an account: what it is, and what it owes. Both
+ *  `AccountInput` and the scope pass's account satisfy it. */
+interface ProjectedAccount {
+  accountId: string;
+  currency: string;
+  payments: PaymentInput[];
+}
+
 /** Everything that evolves as one account is walked forward. */
 interface AccountSim {
-  account: AccountInput;
+  accountId: string;
+  currency: string;
   byId: Map<string, PaymentInput>;
   states: Map<string, PaymentState>;
   balance: number | null;
   months: MonthProjection[];
 }
 
-function newSim(account: AccountInput, startingBalanceMinor: number | null): AccountSim {
+function newSim(account: ProjectedAccount, startingBalanceMinor: number | null): AccountSim {
   return {
-    account,
+    accountId: account.accountId,
+    currency: account.currency,
     byId: new Map(account.payments.map((p) => [p.id, p] as const)),
     states: new Map(account.payments.map((p) => [p.id, initialState(p)] as const)),
     balance: startingBalanceMinor,
@@ -335,13 +391,13 @@ function newSim(account: AccountInput, startingBalanceMinor: number | null): Acc
  * state built up so far overlaid on it, and — after the first month — nothing
  * confirmed. Inputs are never mutated; this is always a copy.
  */
-function workingInput(sim: AccountSim, firstMonth: boolean): AccountInput {
-  const payments = sim.account.payments.map((p) => withState(p, sim.states.get(p.id)!));
-  if (firstMonth) return { ...sim.account, payments };
+function workingInput(account: AccountInput, sim: AccountSim, firstMonth: boolean): AccountInput {
+  const payments = account.payments.map((p) => withState(p, sim.states.get(p.id)!));
+  if (firstMonth) return { ...account, payments };
   return {
-    ...sim.account,
+    ...account,
     payments,
-    inflow: unconfirmed(sim.account.inflow),
+    inflow: unconfirmed(account.inflow),
     confirmedArrivals: [],
   };
 }
@@ -398,81 +454,141 @@ function advance(sim: AccountSim, plan: AccountPlan, refDate: Date, monthKey: st
 }
 
 // ---------------------------------------------------------------------------
-// Account projection
+// Scope projection — every month is a pass, every account is a view of it
 // ---------------------------------------------------------------------------
 
 /**
- * Simulate one account's plan month by month, re-running `computeAccountPlan`
- * against the savings state built up so far.
+ * The scope as it should be planned for one simulated month: each account's
+ * savings state overlaid, and — after the first month — nothing confirmed.
+ * Inputs are never mutated; this is always a copy.
+ */
+function workingScope(
+  input: ScopeInput,
+  sims: ReadonlyMap<string, AccountSim>,
+  firstMonth: boolean,
+): ScopeInput {
+  return {
+    ...input,
+    confirmedTransfers: firstMonth ? input.confirmedTransfers : [],
+    accounts: input.accounts.map((account) => {
+      const states = sims.get(account.accountId)!.states;
+      return {
+        ...account,
+        payments: account.payments.map((p) => withState(p, states.get(p.id)!)),
+        confirmedArrivals: firstMonth ? account.confirmedArrivals : [],
+      };
+    }),
+  };
+}
+
+/**
+ * Simulate a whole scope month by month: one `computeScopePlan` per simulated
+ * month, over every account at once, and each account's month read off it as a
+ * view.
  *
- * ## Arriving money recurs
+ * This replaces the single-account walk, and the reason is the one this whole
+ * package exists for. Walking one account forward on a total somebody else
+ * worked out could only ever hold that total flat: what arrives in month 7 is
+ * month 7's obligation, funded out of month 7's income, and one account's input
+ * does not contain the member whose money it is. So the old walk documented
+ * three approximations it could not avoid — an expired transfer that kept
+ * arriving, a sender whose goal completed and never passed the money on, a
+ * sender whose income fell away and kept sending. None of them survives here,
+ * because a **sending account's projection is the same pass as the receiving
+ * account's** and cannot diverge from it:
  *
- * A movement into an account is a **standing instruction**, not a one-off: the
- * user authored "£300 a month into the bills pot", the same way they authored a
- * salary. So it is projected every month, and a pot funded from elsewhere holds
- * a stable or rising reserve instead of draining to nothing — which is the whole
- * defect this exists to fix. The alternative reading, "money arrived once", is
- * not a thing anyone authors; a genuinely one-off movement says so in its
- * frequency, and the estate walk below honours that.
+ *  - a derived feed is re-derived each month against that month's obligations,
+ *    so a pot whose bill is nearly saved for is fed less, not the same;
+ *  - a goal that completes upstream stops consuming, and the money flows on;
+ *  - an authored movement with a `one_off` cadence stops when its anchor passes;
+ *  - a loop is broken at the same edge every month, deterministically, so
+ *    `cycles` is reported once.
  *
- * ## What this function cannot know, said out loud
- *
- * `account.inflow` is what the ordered pass settled for the **as-of month**, and
- * it is held flat across the horizon. That is right whenever the sending
- * account's month is the same shape every month — which is the normal case, a
- * salary and standing bills — and it is an approximation otherwise:
- *
- *  - a movement whose own cadence expires (a `one_off` transfer) keeps arriving;
- *  - a sender whose goal completes mid-horizon never passes on the money it
- *    frees;
- *  - a sender whose income falls away keeps sending what it could afford in
- *    month 0.
- *
- * The reason is structural, not an omission: what arrives in month 7 is month
- * 7's surplus of another account, and one account's input does not contain the
- * other account. **`computeEstateProjection` is the correct answer** and walks
- * every account forward together; this function is the single-account view, and
- * keeps its exact behaviour for an account nothing moves into.
- *
- * Confirmations are the one thing not held flat — see `unconfirmed`.
+ * Confirmations are the one thing not carried forward: a confirmation is a
+ * statement about the month it was made in, and holding it flat would assert
+ * that you have already made twelve transfers you have not made.
  *
  * ## Balance premise
  *
- * Only money that is *set aside* moves the balance. Each month the balance grows
- * by what was funded into non-monthly goals and falls by the full amount of any
- * non-monthly bill that fell due — the plan's premise is that the bill gets
- * paid, so an under-reserved bill can drive the balance negative and make the
- * crunch visible. Monthly bills, the buffer, the leftover and money sent on to
- * another account are assumed paid or spent out of the same month's money and
- * are balance-neutral. A dateless contribution-capped goal never falls due, so
- * completing it takes nothing back out: the balance keeps the money it
- * accumulated.
+ * Unchanged, and per account. Only money that is *set aside* moves the balance:
+ * it grows by what was funded into non-monthly goals and falls by the full
+ * amount of any non-monthly bill that fell due, so an under-reserved bill drives
+ * the balance negative and makes the crunch visible. Monthly bills, the buffer,
+ * the leftover, derived transfers and authored movements are all assumed paid or
+ * moved out of the same month's money and are balance-neutral. A dateless
+ * contribution-capped goal never falls due, so completing it takes nothing back
+ * out.
  *
  * Inputs are never mutated: the evolving payment state is held separately and
  * overlaid onto copies.
  */
-export function computeAccountProjection(
-  account: AccountInput,
+export function computeScopeProjection(
+  input: ScopeInput,
   asOfDate: string,
-  opts: ProjectionOptions = {},
-): AccountProjection {
+  opts: ScopeProjectionOptions = {},
+): ScopeProjection {
   const refs = monthReferences(asOfDate, clampMonths(opts.months));
-  const sim = newSim(account, opts.startingBalanceMinor ?? null);
+  const sims = new Map<string, AccountSim>(
+    input.accounts.map((a) => [
+      a.accountId,
+      newSim(a, opts.startingBalancesMinor?.[a.accountId] ?? null),
+    ]),
+  );
+
+  const months: ScopeMonthProjection[] = [];
+  let cycles: EstateCycle[] = [];
 
   for (const [index, ref] of refs.entries()) {
-    advance(
-      sim,
-      computeAccountPlan(workingInput(sim, index === 0), ref),
-      parseISODate(ref),
-      ref.slice(0, 7),
-    );
+    const refDate = parseISODate(ref);
+    const monthKey = ref.slice(0, 7);
+    const working = workingScope(input, sims, index === 0);
+    const plan = computeScopePlan(working, ref);
+    if (index === 0) cycles = plan.cycles;
+
+    for (const account of input.accounts) {
+      advance(
+        sims.get(account.accountId)!,
+        accountPlanFromScope(working, plan, account.accountId),
+        refDate,
+        monthKey,
+      );
+    }
+
+    months.push({
+      month: monthKey,
+      // Read straight off the partitions rather than summed here: the pass has
+      // already decided what the month cost and what it left, and a second
+      // arithmetic over the same accounts is exactly the thing that used to need
+      // netting to agree with itself.
+      perCurrency: plan.partitions.map((p) => ({
+        currency: p.currency,
+        monthlyIncomeMinor: p.monthlyIncomeMinor,
+        totalRequiredMinor: p.totalRequiredMinor,
+        totalFundedMinor: p.totalFundedMinor,
+        leftoverMinor: p.leftoverMinor,
+        committedMinor: p.committedMinor,
+        shortfallMinor: p.shortfallMinor,
+      })),
+      transfers: plan.transfers,
+      movements: plan.movements,
+    });
   }
 
   return {
-    accountId: account.accountId,
-    currency: account.currency,
+    scopeId: input.scopeId,
+    householdId: input.householdId ?? null,
     asOfDate,
-    months: sim.months,
+    accounts: input.accounts.map((account) => {
+      const sim = sims.get(account.accountId)!;
+      return {
+        accountId: sim.accountId,
+        currency: sim.currency,
+        asOfDate,
+        months: sim.months,
+      };
+    }),
+    months,
+    cycles,
   };
 }
 
@@ -505,8 +621,16 @@ export function computeAccountProjection(
  * takes, not the inputs it hands back. Feeding the pass its own outputs would
  * add every household allocation to itself once per month.
  *
- * Cost: months × accounts calls to `computeAccountPlan`, against months × 1 for
- * the single-account projection. Inputs are never mutated.
+ * Inputs are never mutated.
+ *
+ * ## Superseded by `computeScopeProjection` (ONE-ENGINE.md, WP-Q)
+ *
+ * It walks the *estate* — the accounts one person owns — which is a scope with
+ * the members left out, so it plans each account from its own income plus a
+ * total another engine worked out. `computeScopeProjection` walks the scope and
+ * reaches every one of the answers above by the same route, plus the transfers
+ * a household derives, which this cannot see at all. Kept only because its last
+ * caller is `apps/api/src/server.ts:635`, which WP-S rewrites.
  */
 export function computeEstateProjection(
   accounts: AccountInput[],
@@ -527,7 +651,7 @@ export function computeEstateProjection(
   for (const [index, ref] of refs.entries()) {
     const refDate = parseISODate(ref);
     const monthKey = ref.slice(0, 7);
-    const working = accounts.map((a) => workingInput(sims.get(a.accountId)!, index === 0));
+    const working = accounts.map((a) => workingInput(a, sims.get(a.accountId)!, index === 0));
     const estate = computeEstatePlan(working, ref);
     first ??= estate;
 
@@ -552,7 +676,7 @@ export function computeEstateProjection(
       const sim = sims.get(accountId)!;
       return {
         accountId,
-        currency: sim.account.currency,
+        currency: sim.currency,
         asOfDate,
         months: sim.months,
       };
@@ -580,6 +704,13 @@ function lineKey(accountId: string, paymentId: string): string {
  * is no balance trajectory here: household money sits across several accounts,
  * so the meaningful monthly figure is what has to move between them
  * (`transfersTotalMinor`). Inputs are never mutated.
+ *
+ * ## Superseded by `computeScopeProjection` (ONE-ENGINE.md, WP-Q)
+ *
+ * The other half of the split: this walks the household and cannot see money
+ * leaving one of its accounts, exactly as `computeHouseholdPlan` cannot. One
+ * scope walk answers both. Kept only because its last caller is
+ * `apps/api/src/server.ts:1279`, which WP-S rewrites.
  */
 export function computeHouseholdProjection(
   input: HouseholdInput,
