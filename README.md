@@ -24,7 +24,7 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 
 - **Operations / runbook:** [`OPERATIONS.md`](./OPERATIONS.md)
 - **Deferred backlog:** [`BACKLOG.md`](./BACKLOG.md)
-- **UI redesign plan (in flight):** [`REDESIGN.md`](./REDESIGN.md)
+- **UI redesign plan (delivered, WP-0…WP-8):** [`REDESIGN.md`](./REDESIGN.md)
 - **Contributing:** [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - **Licence:** [MIT](./LICENSE)
 
@@ -82,13 +82,22 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 
 **Insight**
 
-- Tag **treemap** ("where the month goes") and per-member **stacked bars**
-  ("who carries what").
+- Tag **bar list** ("where the month goes") — one row per tag, ranked biggest
+  first, colour carrying the ranking — and per-member **stacked bars** ("who
+  carries what").
 - Household **Sankey** — income → accounts → transfers → spending/left over —
   with a **£ / %** toggle.
 - **PNG export** on every chart.
-- **Privacy mode** blurs every amount on screen and veils charts; toggle from
-  the sidebar, the command palette, or the `a` shortcut. Remembered locally.
+- **Light and dark themes.** A new install follows your OS; the sidebar toggle
+  (or `t t`) walks system → light → dark, and an explicit choice is remembered
+  locally and outranks the OS in both directions. Nothing has to run before the
+  first paint, so the app never flashes the wrong theme. One semantic token set
+  drives both — every ink and status colour clears WCAG AA against every surface
+  it sits on, in either theme — and the charts re-read those tokens when the
+  theme changes, so a light-theme PNG exports light.
+- **Privacy mode** blurs every amount on screen and veils charts, including
+  figures written into prose ("£540.00 is short this month"); toggle from the
+  sidebar, the command palette, or the `h a` shortcut. Remembered locally.
 
 **Platform / auth**
 

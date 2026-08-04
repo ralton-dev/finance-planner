@@ -108,6 +108,15 @@ endorsement.
   since (contributions, check-ins, transfer confirmations, 2FA enrolment,
   import/export) have browser-level coverage; they're tested at the unit and
   service level only.
+- **Wide tables overflow the page at phone width.** Found by WP-8's screenshot
+  pass, and pre-existing: at a 390px viewport the account page's eight-column
+  `.plan-table` measures 676px, so the whole document scrolls sideways rather
+  than the table scrolling inside itself. The projection grid already solves
+  this properly — `.grid-scroll` wraps it in an `overflow-x: auto` container
+  with a sticky first column — so the fix is to give the plan table (and the
+  accounts index's) the same wrapper, not a new mechanism. Deliberately not
+  bundled into the contrast pass: it is a layout change with a sticky-column
+  interaction of its own.
 - **Inline edit affordance for amounts.** Today changing an income/payment
   amount opens the full drawer; a click-to-edit on the row would be slicker.
   Same for moving a payment to a project or another account — both work in the
