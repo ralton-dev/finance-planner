@@ -1,9 +1,11 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PRIVACY_CLASS, PRIVACY_STORAGE_KEY, PrivacyProvider } from "../contexts/PrivacyContext.js";
+import { findChartSvg } from "../lib/downloadChart.js";
 import type { PlanLineDto } from "../lib/types.js";
 import { TagBreakdown } from "./TagBreakdown.js";
 
-// Nothing is stubbed here any more: the bar list is plain DOM, so it renders in
+// Nothing is stubbed here: the bar list is hand-drawn SVG, so it renders in
 // jsdom exactly as it does on screen. (The treemap it replaced was recharts
 // inside a ResponsiveContainer, which measures nothing without a layout engine.)
 
@@ -22,6 +24,20 @@ function line(over: Partial<PlanLineDto> & { paymentId: string }): PlanLineDto {
     ...over,
   };
 }
+
+/** Two tagged lines, which is the smallest breakdown worth charting. */
+function twoTags(): PlanLineDto[] {
+  return [
+    line({ paymentId: "rent", tag: "housing", requiredMonthlyMinor: 90_000 }),
+    line({ paymentId: "mot", tag: "car", requiredMonthlyMinor: 10_000 }),
+  ];
+}
+
+beforeEach(() => localStorage.clear());
+afterEach(() => {
+  localStorage.clear();
+  document.documentElement.classList.remove(PRIVACY_CLASS);
+});
 
 describe("TagBreakdown", () => {
   it("renders nothing when there are no lines", () => {
@@ -87,5 +103,27 @@ describe("TagBreakdown", () => {
       />,
     );
     expect(screen.getByText("untagged")).toBeInTheDocument();
+  });
+
+  it("offers the png export back — the bar list is a real chart to serialize", async () => {
+    const { container } = render(<TagBreakdown lines={twoTags()} currency="GBP" />);
+
+    // The regression that lost the export: nothing here was an <svg>, so the
+    // download button had nothing to find and hid itself for good.
+    expect(findChartSvg(container)).not.toBeNull();
+    expect(await screen.findByRole("button", { name: "png ↓" })).toBeInTheDocument();
+  });
+
+  it("keeps the export out of privacy mode, where the figures are blurred", () => {
+    localStorage.setItem(PRIVACY_STORAGE_KEY, "1");
+    render(
+      <PrivacyProvider>
+        <TagBreakdown lines={twoTags()} currency="GBP" />
+      </PrivacyProvider>,
+    );
+
+    expect(screen.queryByRole("button")).toBeNull();
+    // The amounts are still marked for the stylesheet to blur.
+    expect(screen.getByRole("list").querySelectorAll(".amount")).toHaveLength(2);
   });
 });
