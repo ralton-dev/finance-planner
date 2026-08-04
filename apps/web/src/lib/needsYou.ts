@@ -1,11 +1,14 @@
 import { formatDayMonth, formatMonth, monthOf } from "./months.js";
 import { money, type Phrase, type PhrasePart } from "./money.js";
 import { tagKey, UNTAGGED } from "./tags.js";
+import { lineStatus } from "./types.js";
 import type {
   ContributionTotalDto,
   HouseholdPlanDto,
   HouseholdPlanLineDto,
+  InflowArrivalDto,
   LatestBalanceDto,
+  PlanInflowSourceDto,
   PlanLineDto,
   TransferConfirmationDto,
   UpcomingItemDto,
@@ -88,6 +91,27 @@ export interface NeedsYouAccountPlan {
   lines?: readonly PlanLineDto[];
   /** Per-payment totals contributed this month — read alongside `lines`. */
   contributionsMTD?: readonly ContributionTotalDto[];
+  /** Money arriving from anywhere but this account's own income. Amounts only,
+   *  and never folded into income — it is here so a shortfall can name the right
+   *  cause, not so it can be added to anything. */
+  allocatedInflowMinor?: number;
+  /**
+   * What each movement from another account you own delivered into this account
+   * this month. A whole `AccountPlanDto` carries it; a caller holding only the
+   * overview's per-account summary has none, and draws no movement rows.
+   *
+   * Household allocations are deliberately *not* in here — they arrive as
+   * member transfers on the household's own plan and have their own rows — so
+   * an account can never be prompted twice for the same arriving money.
+   */
+  inflowArrivals?: readonly InflowArrivalDto[];
+  /**
+   * Where the arriving money comes from, when the caller may be told. The only
+   * carrier of a sending account's *name*, and the API withholds it from anyone
+   * who cannot see that account — so an absent name is rendered as an absence
+   * rather than as an id.
+   */
+  inflowSources?: readonly PlanInflowSourceDto[] | null;
 }
 
 /**
@@ -123,11 +147,33 @@ export interface NeedsYouInput {
   upcoming?: readonly UpcomingItemDto[];
   /** Defaults to {@link DEFAULT_STALE_AFTER_DAYS}. */
   staleAfterDays?: number;
+  /**
+   * Per currency, money that left one of these accounts and was spent by
+   * another of them — `CurrencyOverviewDto.intraEstateMovementMinor`, straight
+   * off the overview, which is the only thing that computes it.
+   *
+   * The headline's left-over is a sum of per-account surpluses, and a pound that
+   * moved between two accounts you own sits in the sender's surplus *and* in the
+   * receiver's funded total. A chain (current → pot → ISA) counts it again at
+   * every hop, so the error is invisible on a two-account fixture and grows
+   * without bound on a real estate. Keyed by currency because the input spans
+   * currencies and the headline is only ever counted in one of them.
+   */
+  intraEstateMovementMinor?: Readonly<Record<string, number>>;
 }
 
 // --- output ----------------------------------------------------------------
 
-/** Priority order, and the order items are returned in. */
+/**
+ * Priority order, and the order items are returned in.
+ *
+ * `transfer` covers both producers of "money the plan counts on that nobody has
+ * moved yet": a household asking a member to transfer their share, and a
+ * movement between two accounts you own. They are one thing to a reader — the
+ * money is where it should not be — and giving them separate kinds would only
+ * split one queue into two that always interleave. What differs is the action,
+ * and that is {@link NeedsYouAction}'s business.
+ */
 export type NeedsYouKind = "shortfall" | "transfer" | "record" | "checkin";
 
 /** What the row's button does, in terms the UI maps onto existing endpoints. */
@@ -138,6 +184,18 @@ export type NeedsYouAction =
       fromAccountId: string;
       toAccountId: string;
       memberUserId: string;
+      /** "YYYY-MM". */
+      month: string;
+      amountMinor: number;
+    }
+  | {
+      /**
+       * The standalone twin of `confirmTransfer`, with no household anywhere:
+       * the authored inflow is the whole identity of a movement, which is also
+       * why it is the only thing the endpoint asks for.
+       */
+      kind: "confirmMovement";
+      inflowId: string;
       /** "YYYY-MM". */
       month: string;
       amountMinor: number;
@@ -264,9 +322,10 @@ function lastFundedForMember(plan: HouseholdPlanDto, userId: string): string | n
  * caller has: the pre-derived summary, or the lines themselves.
  *
  * The two branches are one rule stated twice — a non-monthly line the plan
- * funded is outstanding until this month's contributions reach it — because the
- * API states it too, for the callers that hold no lines. Change it here and in
- * `api/src/server.ts`'s `summarisePlanLines` together.
+ * funded is outstanding until this month's contributions reach it, unless it is
+ * still waiting on a transfer — because the API states it too, for the callers
+ * that hold no lines. Change it here and in `api/src/server.ts`'s
+ * `summarisePlanLines` together.
  */
 function accountLines(entry: NeedsYouAccountInput): NeedsYouLineSummary {
   if (entry.lineSummary) return entry.lineSummary;
@@ -281,6 +340,12 @@ function accountLines(entry: NeedsYouAccountInput): NeedsYouLineSummary {
     // cut first to free the money.
     if (line.fundedMonthlyMinor > 0) lastFundedName = line.name;
     if (line.category === "monthly_recurring" || line.fundedMonthlyMinor <= 0) continue;
+    // A line the plan funds with money nobody has moved yet is not money you
+    // can set aside, so asking to record it is the wrong way round: the
+    // outstanding thing is the transfer, and that has a row of its own. The
+    // straddling line — part own income, part unconfirmed inflow — is deferred
+    // whole rather than split, for the same reason at smaller scale.
+    if (lineStatus(line) === "awaiting_transfer") continue;
     const contributed = mtd.get(line.paymentId) ?? 0;
     if (contributed >= line.fundedMonthlyMinor) continue;
     unrecorded.push({
@@ -330,6 +395,14 @@ function accountShortfall(entry: NeedsYouAccountInput): ShortfallFact | null {
   if (plan.shortfallMinor <= 0) return null;
   const cut = accountLines(entry).lastFundedName;
   const amount = money(plan.shortfallMinor, plan.currency);
+  // An account living on its own income is short of income. One partly fed from
+  // elsewhere — a household's allocation, or a movement from another account you
+  // own — is not: its own income was never meant to cover the plan, so blaming
+  // it points at the wrong thing to fix.
+  const fed = (plan.allocatedInflowMinor ?? 0) > 0;
+  const gap: Phrase = fed
+    ? ["the plan needs ", amount, " more than arrives here"]
+    : ["income is ", amount, " short"];
 
   return {
     amountMinor: plan.shortfallMinor,
@@ -341,8 +414,8 @@ function accountShortfall(entry: NeedsYouAccountInput): ShortfallFact | null {
       amountMinor: plan.shortfallMinor,
       currency: plan.currency,
       meta: cut
-        ? ["income is ", amount, " short — trim the plan, or move ", amount, ` from ${cut}`]
-        : ["income is ", amount, " short of what the plan needs this month"],
+        ? [...gap, " — trim the plan, or move ", amount, ` from ${cut}`]
+        : [...gap, fed ? " this month" : " of what the plan needs this month"],
       href: `/accounts/${plan.accountId}`,
     },
   };
@@ -391,6 +464,75 @@ function transferItems(entry: NeedsYouHouseholdInput, month: string): NeedsYouIt
           month,
           amountMinor: t.amountMinor,
         },
+      };
+    });
+}
+
+// --- movements -------------------------------------------------------------
+
+/**
+ * What a sending account is called when access control withholds its name. The
+ * same words `PlanTable`'s `senderName` uses, and for the same reason: the
+ * honest answer is the *kind* of sender, never a made-up name and never an id —
+ * and deliberately not "another of *your* accounts", since a caller who cannot
+ * see the sender has not been told whose it is. Restated rather than imported
+ * because this module is pure and knows nothing about components.
+ */
+const UNNAMED_SENDER = "another account";
+
+/** What is still to move on one arrival: what it delivers, less what somebody
+ *  has already said moved. */
+const outstandingOf = (a: InflowArrivalDto): number => a.amountMinor - (a.confirmedMinor ?? 0);
+
+/**
+ * Money the plan moves between two accounts you own that nobody has said they
+ * moved yet.
+ *
+ * The household transfers above are one producer of "the plan counts on money
+ * being somewhere it is not"; this is the other, and until now it had no prompt
+ * at all. A pot fed by your current account loses its red shortfall row the
+ * moment the plan funds it from inflow — correctly — and used to gain nothing
+ * in its place, leaving an `awaiting_transfer` line nothing in the app asked
+ * about. The daily digest fixed the same blind spot one layer down; this is its
+ * twin on the screen.
+ *
+ * Derived from the *receiving* account's arrivals, which is the side the app
+ * holds a plan for. One authored inflow yields one row however many of the
+ * accounts it touches are in the input, so the two ends can never both ask.
+ */
+function movementItems(entry: NeedsYouAccountInput, month: string): NeedsYouItem[] {
+  const { plan } = entry;
+  const arrivals = (plan.inflowArrivals ?? []).filter((a) => a.amountMinor > 0);
+  // The sending account's name, for the movements this caller may be told about.
+  const senderName = new Map(
+    (plan.inflowSources ?? [])
+      .filter((s) => s.kind === "account")
+      .map((s) => [s.inflowId, s.accountName]),
+  );
+
+  const done = arrivals.filter((a) => outstandingOf(a) <= 0).length;
+
+  return arrivals
+    .filter((a) => outstandingOf(a) > 0)
+    .map((a) => {
+      const amountMinor = outstandingOf(a);
+      return {
+        // The inflow, never the pair of accounts: several distinct movements can
+        // run between the same two accounts — a holiday pot and an ISA sweep out
+        // of one current account — and the list has to tell them apart. Same key
+        // a standalone confirmation is scoped by, minus the month the whole
+        // derivation is already in.
+        key: `movement:${a.inflowId}`,
+        kind: "transfer" as const,
+        label: `${senderName.get(a.inflowId) ?? UNNAMED_SENDER} → ${entry.name}`,
+        amountMinor,
+        currency: plan.currency,
+        meta: [
+          `between your own accounts · ${formatMonth(month)} · ` +
+            `${done} of ${arrivals.length} done`,
+        ],
+        href: `/accounts/${plan.accountId}`,
+        action: { kind: "confirmMovement" as const, inflowId: a.inflowId, month, amountMinor },
       };
     });
 }
@@ -521,6 +663,11 @@ function standaloneAccounts(input: NeedsYouInput): readonly NeedsYouAccountInput
  * The checklist: every outstanding thing, in fixed kind order — money that is
  * missing, then money that has not moved, then money that moved but was never
  * recorded, then balances nobody has confirmed.
+ *
+ * "Money that has not moved" has two producers and one kind: a household member
+ * asked to transfer their share, and a movement between two of your own
+ * accounts. Exactly one row per outstanding thing is the whole contract here, so
+ * neither may draw the other's.
  */
 export function deriveNeedsYou(input: NeedsYouInput): NeedsYouItem[] {
   const month = monthOf(input.asOfDate);
@@ -540,6 +687,10 @@ export function deriveNeedsYou(input: NeedsYouInput): NeedsYouItem[] {
   }
 
   for (const account of accounts) {
+    // Every account, not just the standalone ones: an account inside a household
+    // can also be fed by another account you own, and that movement is nobody
+    // else's story — the household's member rows do not know about it.
+    items.push(...movementItems(account, month));
     items.push(...recordItems(account, month));
     const checkin = checkinItem(account, input.asOfDate, staleAfterDays, upcoming);
     if (checkin) items.push(checkin);
@@ -596,7 +747,15 @@ export function deriveHeadline(
     standalone.reduce((n, a) => n + pick(a.plan), 0);
 
   const shortfallMinor = sum((p) => p.shortfallMinor);
-  const leftoverMinor = sum((p) => p.leftoverMinor);
+  // A pound that moved between two of these accounts is in the sender's surplus
+  // *and* in the receiver's funded total, so a plain sum counts it once per hop
+  // of the chain that carried it. `computeOverview` nets exactly this term out
+  // of the estate's total and floors the result at zero — an estate can be
+  // handed more money than it earns, and a negative surplus would be an
+  // alarming way to say "somebody else is paying". This is the same total, so
+  // it does the same thing to it.
+  const movedInternally = input.intraEstateMovementMinor?.[currency] ?? 0;
+  const leftoverMinor = Math.max(0, sum((p) => p.leftoverMinor) - movedInternally);
   const paymentCount =
     households.reduce((n, h) => n + h.plan.lines.length, 0) +
     standalone.reduce((n, a) => n + accountLines(a).lineCount, 0);
@@ -639,13 +798,26 @@ export function deriveHeadline(
     };
   }
 
+  // Everything that had to move for the month to be clear: the households' asks
+  // of their members, and the movements between your own accounts. Counted in
+  // the headline's currency and across every account, household or not, because
+  // the rows they settled were drawn the same way.
+  const settledTransfers =
+    households.reduce((n, h) => n + h.plan.transfers.length, 0) +
+    (input.accounts ?? [])
+      .filter((a) => a.plan.currency === currency)
+      .reduce(
+        (n, a) => n + (a.plan.inflowArrivals ?? []).filter((x) => x.amountMinor > 0).length,
+        0,
+      );
+
   const outstanding = items.length;
   const sentence =
     outstanding > 0
       ? `All ${plural(paymentCount, "payment")} funded. ` +
         `${plural(outstanding, "thing")} still waiting on a human — see the list.`
       : `All ${plural(paymentCount, "payment")} funded` +
-        `${transfersClause(households.reduce((n, h) => n + h.plan.transfers.length, 0))}, ` +
+        `${transfersClause(settledTransfers)}, ` +
         `balances current. Nothing is waiting on you.`;
 
   // The left-over sentence never names a figure — the headline above it is the

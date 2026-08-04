@@ -13,6 +13,8 @@ import type {
   HouseholdMemberPlanDto,
   HouseholdPlanDto,
   HouseholdPlanLineDto,
+  InflowArrivalDto,
+  PlanInflowSourceDto,
   PlanLineDto,
   TransferConfirmationDto,
   UpcomingItemDto,
@@ -428,6 +430,388 @@ describe("deriveNeedsYou · transfer", () => {
   });
 });
 
+// --- movements between two accounts you own ---------------------------------
+
+/** One authored movement, as the receiving account's plan itemises it. */
+function arrival(over: Partial<InflowArrivalDto> & { inflowId: string }): InflowArrivalDto {
+  return { fromAccountId: "current", amountMinor: 30_000, ...over };
+}
+
+/** The same movement seen from the access-gated side, where the name lives. */
+function fromAccount(
+  over: Partial<Extract<PlanInflowSourceDto, { kind: "account" }>> & { inflowId: string },
+): PlanInflowSourceDto {
+  return {
+    kind: "account",
+    fromAccountId: "current",
+    accountName: "Current account",
+    amountMinor: 30_000,
+    confirmedMinor: 0,
+    ...over,
+  };
+}
+
+/**
+ * A holiday pot fed by a current account of your own, with no household
+ * anywhere. The plan funds it out of the arriving money, so it is short of
+ * nothing and its line is waiting on the move rather than at risk — which is
+ * exactly the state that used to produce no prompt at all.
+ */
+function holidayPot(over: Partial<AccountPlanDto> = {}): NeedsYouAccountInput {
+  return {
+    name: "Holiday pot",
+    plan: accountPlan({
+      accountId: "holiday",
+      monthlyIncomeMinor: 0,
+      allocatedInflowMinor: 30_000,
+      totalRequiredMinor: 30_000,
+      totalFundedMinor: 30_000,
+      lines: [
+        accLine({
+          paymentId: "flights",
+          name: "Flights",
+          fundedMonthlyMinor: 30_000,
+          status: "awaiting_transfer",
+        }),
+      ],
+      inflowArrivals: [arrival({ inflowId: "inf-1" })],
+      inflowSources: [fromAccount({ inflowId: "inf-1" })],
+      ...over,
+    }),
+  };
+}
+
+describe("deriveNeedsYou · movement", () => {
+  it("is the one row a standalone pot's unmoved money produces", () => {
+    const items = deriveNeedsYou({ asOfDate: AS_OF, accounts: [holidayPot()] });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      key: "movement:inf-1",
+      kind: "transfer",
+      label: "Current account → Holiday pot",
+      amountMinor: 30_000,
+      currency: "GBP",
+      href: "/accounts/holiday",
+      action: {
+        kind: "confirmMovement",
+        inflowId: "inf-1",
+        month: "2026-08",
+        amountMinor: 30_000,
+      },
+    });
+    expect(phraseText(items[0]!.meta)).toBe("between your own accounts · aug 2026 · 0 of 1 done");
+  });
+
+  it("goes once the movement is confirmed, and puts nothing in its place", () => {
+    // Confirming books what the movement delivered against the payments it
+    // funded, so the line is funded *and* recorded — no shortfall row, no
+    // record row, nothing left outstanding.
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        holidayPot({
+          lines: [
+            accLine({
+              paymentId: "flights",
+              name: "Flights",
+              fundedMonthlyMinor: 30_000,
+              status: "funded",
+            }),
+          ],
+          contributionsMTD: [{ paymentId: "flights", amountMinor: 30_000 }],
+          inflowArrivals: [arrival({ inflowId: "inf-1", confirmedMinor: 30_000 })],
+          inflowSources: [fromAccount({ inflowId: "inf-1", confirmedMinor: 30_000 })],
+        }),
+      ],
+    });
+    expect(items).toEqual([]);
+  });
+
+  it("says 'another account' rather than an id when the name is withheld", () => {
+    // The API gates the sending account's *name* on being able to see it. An
+    // absence is rendered as one; the amount and the action are unaffected.
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [holidayPot({ inflowSources: [] })],
+    });
+    expect(items[0]!.label).toBe("another account → Holiday pot");
+    expect(items[0]!.action).toMatchObject({ kind: "confirmMovement", inflowId: "inf-1" });
+  });
+
+  it("tells two movements between the same pair of accounts apart", () => {
+    // A holiday pot and an ISA sweep out of one current account: same two ends,
+    // two rows, and keys that survive a recomputation.
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      accounts: [
+        holidayPot({
+          allocatedInflowMinor: 50_000,
+          inflowArrivals: [
+            arrival({ inflowId: "inf-holiday" }),
+            arrival({ inflowId: "inf-isa", amountMinor: 20_000 }),
+          ],
+          inflowSources: [
+            fromAccount({ inflowId: "inf-holiday" }),
+            fromAccount({ inflowId: "inf-isa", amountMinor: 20_000 }),
+          ],
+        }),
+      ],
+    };
+    const items = deriveNeedsYou(input);
+
+    expect(items.map((i) => i.key)).toEqual(["movement:inf-holiday", "movement:inf-isa"]);
+    expect(items.map((i) => i.amountMinor)).toEqual([30_000, 20_000]);
+    expect(deriveNeedsYou(input).map((i) => i.key)).toEqual(items.map((i) => i.key));
+    expect(new Set(items.map((i) => i.key)).size).toBe(2);
+    expect(items.every((i) => phraseText(i.meta).endsWith("0 of 2 done"))).toBe(true);
+  });
+
+  it("counts what has already moved without asking for it again", () => {
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        holidayPot({
+          inflowArrivals: [
+            arrival({ inflowId: "inf-holiday", confirmedMinor: 30_000 }),
+            arrival({ inflowId: "inf-isa", amountMinor: 20_000 }),
+          ],
+          inflowSources: [
+            fromAccount({ inflowId: "inf-holiday", confirmedMinor: 30_000 }),
+            fromAccount({ inflowId: "inf-isa", amountMinor: 20_000 }),
+          ],
+        }),
+      ],
+    });
+    expect(items.map((i) => i.key)).toEqual(["movement:inf-isa"]);
+    expect(phraseText(items[0]!.meta)).toBe("between your own accounts · aug 2026 · 1 of 2 done");
+  });
+
+  it("asks only for the part still to move when some of it already has", () => {
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        holidayPot({ inflowArrivals: [arrival({ inflowId: "inf-1", confirmedMinor: 10_000 })] }),
+      ],
+    });
+    expect(items[0]!.amountMinor).toBe(20_000);
+    expect(items[0]!.action).toMatchObject({ amountMinor: 20_000 });
+  });
+
+  it("draws nothing for an arrival the sending account could not afford", () => {
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [holidayPot({ inflowArrivals: [arrival({ inflowId: "inf-1", amountMinor: 0 })] })],
+    });
+    expect(items).toEqual([]);
+  });
+
+  it("asks the receiving end only, however many of the accounts are in the input", () => {
+    // One authored row, read from both sides. The sending account has no
+    // arrival of its own, so it draws nothing and the pair cannot both prompt.
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        holidayPot(),
+        {
+          name: "Current account",
+          plan: accountPlan({ accountId: "current", leftoverMinor: 100_000 }),
+        },
+      ],
+    });
+    expect(items.map((i) => i.key)).toEqual(["movement:inf-1"]);
+  });
+
+  it("draws the row for an account inside a household too", () => {
+    // Household membership is an attribution layer, not a boundary on money
+    // movement: the household's member rows know nothing about a movement from
+    // another account you own, so nobody else would ask.
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      households: [household({ plan: householdPlan({ transfers: [] }) })],
+      accounts: [{ ...holidayPot(), householdId: "hh" }],
+    });
+    expect(items.map((i) => i.key)).toContain("movement:inf-1");
+  });
+
+  it("draws no movement row for a caller holding only the overview's summary", () => {
+    const items = deriveNeedsYou({ asOfDate: AS_OF, accounts: [benCurrent()] });
+    expect(items.filter((i) => i.key.startsWith("movement:"))).toEqual([]);
+  });
+});
+
+/**
+ * WP-E's original acceptance, kept whole: the screenshot was a household-funded
+ * bills pot nagging twice — once in red for a shortfall the plan no longer has,
+ * once for the transfer that is the real outstanding thing.
+ */
+describe("deriveNeedsYou · a household-funded pot nags exactly once", () => {
+  /** The screenshot: Ben's household funds the joint account and nobody has
+   *  moved the money yet. The pot's own plan is short of nothing. */
+  function screenshot(over: Partial<NeedsYouInput> = {}): NeedsYouInput {
+    const plan = householdPlan({
+      shortfallMinor: 0,
+      members: [
+        member({
+          userId: "ben",
+          displayName: "Ben",
+          shareBp: 10_000,
+          monthlyIncomeMinor: 400_000,
+          obligationMinor: 219_000,
+          fundedMinor: 219_000,
+          leftoverMinor: 181_000,
+        }),
+      ],
+      lines: [
+        hhLine({
+          paymentId: "rent",
+          name: "Rent",
+          tag: "housing",
+          requiredMonthlyMinor: 219_000,
+          fundedMonthlyMinor: 219_000,
+          allocations: [{ userId: "ben", requiredMinor: 219_000, fundedMinor: 219_000 }],
+        }),
+      ],
+      transfers: [
+        {
+          fromAccountId: "ben-current",
+          toAccountId: "bills",
+          memberUserId: "ben",
+          amountMinor: 219_000,
+        },
+      ],
+    });
+
+    return {
+      asOfDate: AS_OF,
+      households: [{ plan, confirmations: [] }],
+      accounts: [
+        {
+          name: "Bills joint",
+          householdId: "hh",
+          plan: accountPlan({
+            accountId: "bills",
+            monthlyIncomeMinor: 0,
+            // WP-A/B: the allocation funds the plan, so nothing is short.
+            allocatedInflowMinor: 219_000,
+            totalRequiredMinor: 219_000,
+            totalFundedMinor: 219_000,
+            shortfallMinor: 0,
+            lines: [
+              accLine({
+                paymentId: "rent",
+                name: "Rent",
+                category: "yearly_recurring",
+                fundedMonthlyMinor: 219_000,
+                status: "awaiting_transfer",
+              }),
+            ],
+          }),
+        },
+      ],
+      ...over,
+    };
+  }
+
+  it("yields the transfer and nothing else", () => {
+    const items = deriveNeedsYou(screenshot());
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      key: "transfer:hh:ben-current|bills|ben",
+      kind: "transfer",
+      amountMinor: 219_000,
+      action: { kind: "confirmTransfer", householdId: "hh" },
+    });
+  });
+
+  it("has no shortfall row because the plan has no shortfall, not because it is hidden", () => {
+    // Verified rather than assumed: the same input with a pot the plan really
+    // cannot cover does draw the red row, so its absence above is the engine's
+    // answer coming through — see the API's own assertion that a household-
+    // funded pot plans to `shortfallMinor: 0` before and after confirmation
+    // (`api/src/server.test.ts`, "funds a household pot from the household's
+    // allocation").
+    const base = screenshot();
+    const pot = base.accounts![0]!;
+    const short = deriveNeedsYou({
+      ...base,
+      accounts: [{ ...pot, householdId: undefined, plan: { ...pot.plan, shortfallMinor: 4_000 } }],
+    });
+    expect(short.map((i) => i.key)).toContain("shortfall:account:bills");
+
+    expect(deriveNeedsYou(base).filter((i) => i.kind === "shortfall")).toEqual([]);
+  });
+
+  it("asks nothing at all once the transfer is confirmed", () => {
+    const base = screenshot();
+    const pot = base.accounts![0]!;
+    const items = deriveNeedsYou({
+      ...base,
+      households: [
+        {
+          plan: base.households![0]!.plan,
+          confirmations: [
+            confirmation({
+              fromAccountId: "ben-current",
+              toAccountId: "bills",
+              amountMinor: 219_000,
+            }),
+          ],
+        },
+      ],
+      accounts: [
+        {
+          ...pot,
+          plan: {
+            ...pot.plan,
+            lines: [{ ...pot.plan.lines![0]!, status: "funded" }],
+            contributionsMTD: [{ paymentId: "rent", amountMinor: 219_000 }],
+          },
+        },
+      ],
+    });
+    expect(items).toEqual([]);
+  });
+
+  it("blames the plan rather than income when a fed account is genuinely short", () => {
+    // A pot with no income of its own cannot be told to earn more. The remedy
+    // is the plan or the allocation, and the sentence has to say so.
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        {
+          name: "Bills joint",
+          plan: accountPlan({
+            accountId: "bills",
+            monthlyIncomeMinor: 0,
+            allocatedInflowMinor: 200_000,
+            shortfallMinor: 19_000,
+            lines: [accLine({ paymentId: "rent", name: "Rent", fundedMonthlyMinor: 200_000 })],
+          }),
+        },
+      ],
+    });
+    expect(phraseText(items[0]!.meta)).toBe(
+      "the plan needs £190.00 more than arrives here — trim the plan, or move £190.00 from Rent",
+    );
+  });
+
+  it("keeps 'income is short' for an account that lives on its own income", () => {
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        {
+          name: "Side hustle",
+          plan: accountPlan({ accountId: "side", shortfallMinor: 12_500 }),
+        },
+      ],
+    });
+    expect(phraseText(items[0]!.meta)).toBe(
+      "income is £125.00 short of what the plan needs this month",
+    );
+  });
+});
+
 describe("deriveNeedsYou · record", () => {
   it("asks for the save-up lines this month has funded but nobody set aside", () => {
     const items = deriveNeedsYou(fullInput()).filter((i) => i.kind === "record");
@@ -489,6 +873,59 @@ describe("deriveNeedsYou · record", () => {
       ],
     });
     expect(items.filter((i) => i.kind === "record")).toEqual([]);
+  });
+
+  it("never asks to record a line the money has not reached yet", () => {
+    // Wrong way round: the plan funds this out of money still sitting in
+    // another account, so there is nothing to set aside until it moves. The
+    // outstanding thing is the transfer and it has a row of its own — the same
+    // rule the API states in `summarisePlanLines` for callers holding no lines.
+    const waiting = accLine({
+      paymentId: "rainy",
+      name: "Rainy day",
+      fundedMonthlyMinor: 20_000,
+      status: "awaiting_transfer",
+    });
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        { name: "Bills joint", plan: accountPlan({ accountId: "bills", lines: [waiting] }) },
+      ],
+    });
+    expect(items.filter((i) => i.kind === "record")).toEqual([]);
+
+    // …and the very same line asks the moment the money is really there.
+    const arrived = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        {
+          name: "Bills joint",
+          plan: accountPlan({
+            accountId: "bills",
+            lines: [{ ...waiting, status: "funded" }],
+          }),
+        },
+      ],
+    });
+    expect(arrived.map((i) => i.key)).toEqual(["record:rainy"]);
+  });
+
+  it("still asks on a payload that carries no status at all", () => {
+    // `lineStatus`'s fallback: an older API, a household line, a fixture. Read
+    // as funded when on track, which is exactly what those payloads meant.
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      accounts: [
+        {
+          name: "Bills joint",
+          plan: accountPlan({
+            accountId: "bills",
+            lines: [accLine({ paymentId: "rainy", name: "Rainy day", fundedMonthlyMinor: 20_000 })],
+          }),
+        },
+      ],
+    });
+    expect(items.map((i) => i.key)).toEqual(["record:rainy"]);
   });
 });
 
@@ -983,5 +1420,102 @@ describe("deriveHeadline", () => {
     expect(headline.amountMinor).toBe(5_000);
     expect(phraseText(headline.sentence)).toContain("across 3 payments");
     expect(phraseText(headline.sentence)).toContain("£3,331.62");
+  });
+
+  /**
+   * current → pot → ISA. Each account's own left-over is right: the sender's
+   * surplus is its own income after its own obligations, and an account's
+   * left-over is deliberately never reduced by what it sends on. Summed, the
+   * pound that travelled is counted at every hop it made — invisible on a
+   * two-account fixture, unbounded on a real estate.
+   */
+  describe("a three-account chain", () => {
+    /** £1,000 in at the top; £200 spent in the pot, £400 in the ISA. */
+    const chain = (over: Partial<NeedsYouInput> = {}): NeedsYouInput => ({
+      asOfDate: AS_OF,
+      accounts: [
+        {
+          name: "Current",
+          plan: accountPlan({
+            accountId: "current",
+            monthlyIncomeMinor: 100_000,
+            leftoverMinor: 100_000,
+            lines: [accLine({ paymentId: "phone", name: "Phone", fundedMonthlyMinor: 1 })],
+          }),
+        },
+        {
+          name: "Pot",
+          plan: accountPlan({
+            accountId: "pot",
+            monthlyIncomeMinor: 0,
+            allocatedInflowMinor: 60_000,
+            leftoverMinor: 0,
+            lines: [accLine({ paymentId: "car", name: "Car", fundedMonthlyMinor: 20_000 })],
+            contributionsMTD: [{ paymentId: "car", amountMinor: 20_000 }],
+          }),
+        },
+        {
+          name: "ISA",
+          plan: accountPlan({
+            accountId: "isa",
+            monthlyIncomeMinor: 0,
+            allocatedInflowMinor: 40_000,
+            leftoverMinor: 0,
+            lines: [accLine({ paymentId: "isa-goal", name: "ISA", fundedMonthlyMinor: 40_000 })],
+            contributionsMTD: [{ paymentId: "isa-goal", amountMinor: 40_000 }],
+          }),
+        },
+      ],
+      ...over,
+    });
+
+    it("counts the same pound once per hop without the netting term", () => {
+      const input = chain();
+      expect(deriveHeadline(input, deriveNeedsYou(input)).amountMinor).toBe(100_000);
+    });
+
+    it("reports what the estate actually has left once it is netted", () => {
+      // £1,000 earned, £600 of it spent downstream — £400 genuinely free, which
+      // is what GET /overview's own `leftoverMinor` says for the same estate.
+      const input = chain({ intraEstateMovementMinor: { GBP: 60_000 } });
+      const headline = deriveHeadline(input, deriveNeedsYou(input));
+      expect(headline.kind).toBe("leftover");
+      expect(headline.amountMinor).toBe(40_000);
+    });
+
+    it("floors at zero when somebody else is paying, as the estate rollup does", () => {
+      const input = chain({ intraEstateMovementMinor: { GBP: 250_000 } });
+      expect(deriveHeadline(input, deriveNeedsYou(input)).amountMinor).toBe(0);
+    });
+
+    it("nets only the currency the headline is counted in", () => {
+      const input = chain({ intraEstateMovementMinor: { EUR: 60_000 } });
+      expect(deriveHeadline(input, deriveNeedsYou(input)).amountMinor).toBe(100_000);
+    });
+  });
+
+  it("counts settled movements alongside settled transfers in the clear-month line", () => {
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      accounts: [
+        holidayPot({
+          lines: [
+            accLine({
+              paymentId: "flights",
+              name: "Flights",
+              fundedMonthlyMinor: 30_000,
+              status: "funded",
+            }),
+          ],
+          contributionsMTD: [{ paymentId: "flights", amountMinor: 30_000 }],
+          inflowArrivals: [arrival({ inflowId: "inf-1", confirmedMinor: 30_000 })],
+          inflowSources: [fromAccount({ inflowId: "inf-1", confirmedMinor: 30_000 })],
+        }),
+      ],
+    };
+    const headline = deriveHeadline(input, deriveNeedsYou(input));
+    expect(phraseText(headline.sentence)).toBe(
+      "All 1 payment funded, the transfer settled, balances current. Nothing is waiting on you.",
+    );
   });
 });
