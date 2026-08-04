@@ -373,6 +373,32 @@ const exportIncome = z.object({
   active: z.boolean().default(true),
 });
 
+/**
+ * Money arriving from another of the exporter's own accounts.
+ *
+ * Its own array rather than a flag on `incomes`, so a file written before
+ * movements existed still reads exactly as it did: `incomes` is, and stays, the
+ * external inflows.
+ *
+ * The source account travels **by name**, not by id: ids are minted fresh on
+ * import, so an id would land on the far side as a dangling reference — the same
+ * reasoning that drops `bearerUserId` from a payment. A movement whose source
+ * account is not in the same file is dropped on import rather than imported
+ * pointing at nothing.
+ */
+const exportAccountInflow = z.object({
+  name: z.string().min(1),
+  /** The exported account this money leaves. */
+  fromAccountName: z.string().min(1),
+  amountMinor,
+  frequency,
+  recurrence: recurrence.nullable().default(null),
+  anchorDate: isoDate,
+  /** Rank among the sending account's movements, lower first. */
+  priority: z.number().int().default(100),
+  active: z.boolean().default(true),
+});
+
 const exportBalanceSnapshot = z.object({
   asOfDate: isoDate,
   /** May be negative (overdraft). */
@@ -394,6 +420,7 @@ const exportAccount = z.object({
   openingBalanceMinor: amountMinor.default(0),
   monthlyBufferMinor: amountMinor.default(0),
   incomes: z.array(exportIncome).default([]),
+  accountInflows: z.array(exportAccountInflow).default([]),
   payments: z.array(exportPayment).default([]),
   balanceSnapshots: z.array(exportBalanceSnapshot).default([]),
   closes: z.array(exportMonthClose).default([]),

@@ -2558,6 +2558,7 @@ describe("export / import", () => {
     expect(res.json()).toEqual({
       accounts: 1,
       incomes: 1,
+      accountInflows: 0,
       payments: 1,
       contributions: 1,
       balanceSnapshots: 1,

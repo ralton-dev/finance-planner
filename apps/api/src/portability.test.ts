@@ -1,0 +1,340 @@
+import { MemoryStore, type Account, type Store } from "@finance-planner/data";
+import { exportFileSchema } from "@finance-planner/contracts";
+import { beforeEach, describe, expect, it } from "vitest";
+import { buildExport, importExport } from "./portability.js";
+
+/**
+ * Portability's job is to lose nothing. Account-sourced inflows were read
+ * through `listIncomes`, which projects the external rows only — so a movement
+ * between two of the user's own accounts vanished from the export, and from the
+ * import that reads it back. These pin that it survives the round trip.
+ */
+
+let store: Store;
+
+beforeEach(() => {
+  store = new MemoryStore();
+});
+
+async function seedUser(email = "owner@example.com") {
+  const user = await store.createUser({ email, passwordHash: null, displayName: "Owner" });
+  return user.id;
+}
+
+const account = (userId: string, name: string): Promise<Account> =>
+  store.createAccount({ ownerUserId: userId, name, currency: "GBP" });
+
+async function movement(from: Account, to: Account, amountMinor: number, priority = 50) {
+  return store.createInflow({
+    accountId: to.id,
+    name: `${from.name} top-up`,
+    source: "account",
+    sourceAccountId: from.id,
+    amountMinor,
+    frequency: "monthly",
+    recurrence: null,
+    anchorDate: "2026-08-25",
+    priority,
+    active: true,
+  });
+}
+
+async function salary(target: Account, amountMinor: number) {
+  return store.createIncome({
+    accountId: target.id,
+    name: "Salary",
+    amountMinor,
+    frequency: "monthly",
+    recurrence: null,
+    anchorDate: "2026-08-25",
+    active: true,
+  });
+}
+
+describe("buildExport — movements between your own accounts", () => {
+  it("exports a movement, naming the account it leaves by name", async () => {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Holiday pot");
+    await salary(current, 300_000);
+    await movement(current, pot, 40_000, 20);
+
+    const file = await buildExport(store, userId);
+    const exported = file.accounts.find((a) => a.name === "Holiday pot")!;
+
+    expect(exported.incomes).toEqual([]);
+    expect(exported.accountInflows).toEqual([
+      {
+        name: "Current top-up",
+        fromAccountName: "Current",
+        amountMinor: 40_000,
+        frequency: "monthly",
+        recurrence: null,
+        anchorDate: "2026-08-25",
+        priority: 20,
+        active: true,
+      },
+    ]);
+
+    // The sending account still exports its salary, and does not export the
+    // movement a second time: one row, one place in the file.
+    const sender = file.accounts.find((a) => a.name === "Current")!;
+    expect(sender.incomes.map((i) => i.name)).toEqual(["Salary"]);
+    expect(sender.accountInflows).toEqual([]);
+  });
+
+  it("keeps external inflows out of the movements and vice versa", async () => {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Pot");
+    await salary(pot, 10_000);
+    await movement(current, pot, 40_000);
+
+    const exported = (await buildExport(store, userId)).accounts.find((a) => a.name === "Pot")!;
+    expect(exported.incomes.map((i) => i.name)).toEqual(["Salary"]);
+    expect(exported.accountInflows.map((i) => i.name)).toEqual(["Current top-up"]);
+  });
+
+  it("drops a movement out of an account the file does not carry", async () => {
+    // Somebody else's account: exporting a movement out of it would produce a
+    // name the importer cannot resolve to anything.
+    const userId = await seedUser();
+    const otherId = await seedUser("other@example.com");
+    const theirs = await account(otherId, "Their current");
+    const mine = await account(userId, "My pot");
+    await movement(theirs, mine, 40_000);
+
+    const file = await buildExport(store, userId);
+    expect(file.accounts).toHaveLength(1);
+    expect(file.accounts[0]!.accountInflows).toEqual([]);
+  });
+
+  it("produces a file the import schema accepts", async () => {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Pot");
+    await salary(current, 300_000);
+    await movement(current, pot, 40_000);
+
+    const file = await buildExport(store, userId);
+    expect(() => exportFileSchema.parse(file)).not.toThrow();
+  });
+});
+
+describe("importExport — movements survive the round trip", () => {
+  it("recreates a movement pointing at the freshly created account", async () => {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Pot");
+    await salary(current, 300_000);
+    await movement(current, pot, 40_000, 20);
+
+    const targetId = await seedUser("restore@example.com");
+    const counts = await importExport(store, targetId, await buildExport(store, userId));
+    expect(counts).toMatchObject({ accounts: 2, incomes: 1, accountInflows: 1 });
+
+    const restored = await store.listAccountsForOwner(targetId);
+    const newPot = restored.find((a) => a.name === "Pot")!;
+    const newCurrent = restored.find((a) => a.name === "Current")!;
+    const [inflow] = await store.listInflows(newPot.id);
+    expect(inflow).toMatchObject({
+      name: "Current top-up",
+      source: "account",
+      sourceAccountId: newCurrent.id,
+      amountMinor: 40_000,
+      priority: 20,
+    });
+    // Fresh ids throughout: the movement points into the restored estate, not
+    // back at the one it came from.
+    expect(inflow!.sourceAccountId).not.toBe(current.id);
+    expect(newPot.id).not.toBe(pot.id);
+
+    // And it is the same row from the sending end.
+    expect((await store.listOutboundInflows(newCurrent.id)).map((i) => i.id)).toEqual([inflow!.id]);
+  });
+
+  it("restores a chain whatever order the accounts appear in", async () => {
+    // The account a movement comes from can appear after the account it pays
+    // into — which is why accounts are all created before anything inside them.
+    const userId = await seedUser();
+    const a = await account(userId, "A");
+    const b = await account(userId, "B");
+    const c = await account(userId, "C");
+    await movement(a, b, 30_000);
+    await movement(b, c, 20_000);
+
+    const file = await buildExport(store, userId);
+    file.accounts.reverse();
+
+    const targetId = await seedUser("restore@example.com");
+    expect(await importExport(store, targetId, file)).toMatchObject({ accountInflows: 2 });
+
+    const restored = await store.listAccountsForOwner(targetId);
+    const byName = new Map(restored.map((r) => [r.name, r.id]));
+    expect((await store.listInflows(byName.get("B")!))[0]!.sourceAccountId).toBe(byName.get("A"));
+    expect((await store.listInflows(byName.get("C")!))[0]!.sourceAccountId).toBe(byName.get("B"));
+    // Nothing dangles: the ids point at accounts that exist.
+    expect(byName.size).toBe(3);
+  });
+
+  it("drops a movement whose source account is missing from the file", async () => {
+    const userId = await seedUser();
+    const file = exportFileSchema.parse({
+      version: 1,
+      exportedAt: "2026-08-04T00:00:00.000Z",
+      accounts: [
+        {
+          name: "Pot",
+          currency: "GBP",
+          accountInflows: [
+            {
+              name: "Ghost",
+              fromAccountName: "An account that is not here",
+              amountMinor: 10_000,
+              frequency: "monthly",
+              anchorDate: "2026-08-25",
+            },
+          ],
+        },
+      ],
+    });
+    expect(await importExport(store, userId, file)).toMatchObject({
+      accounts: 1,
+      accountInflows: 0,
+    });
+    const [pot] = await store.listAccountsForOwner(userId);
+    expect(await store.listInflows(pot!.id)).toEqual([]);
+  });
+
+  it("drops a movement an account makes to itself", async () => {
+    // The store refuses a self-funding inflow, and a hand-edited file must not
+    // be able to take the whole import down with one bad row.
+    const userId = await seedUser();
+    const file = exportFileSchema.parse({
+      version: 1,
+      exportedAt: "2026-08-04T00:00:00.000Z",
+      accounts: [
+        {
+          name: "Pot",
+          currency: "GBP",
+          accountInflows: [
+            {
+              name: "Itself",
+              fromAccountName: "Pot",
+              amountMinor: 10_000,
+              frequency: "monthly",
+              anchorDate: "2026-08-25",
+            },
+          ],
+        },
+      ],
+    });
+    expect(await importExport(store, userId, file)).toMatchObject({ accountInflows: 0 });
+  });
+
+  it("resolves a repeated account name to the first of them", async () => {
+    const userId = await seedUser();
+    const file = exportFileSchema.parse({
+      version: 1,
+      exportedAt: "2026-08-04T00:00:00.000Z",
+      accounts: [
+        { name: "Twin", currency: "GBP" },
+        { name: "Twin", currency: "GBP" },
+        {
+          name: "Pot",
+          currency: "GBP",
+          accountInflows: [
+            {
+              name: "Top-up",
+              fromAccountName: "Twin",
+              amountMinor: 10_000,
+              frequency: "monthly",
+              anchorDate: "2026-08-25",
+            },
+          ],
+        },
+      ],
+    });
+    await importExport(store, userId, file);
+    const restored = await store.listAccountsForOwner(userId);
+    const twins = restored.filter((a) => a.name === "Twin");
+    const pot = restored.find((a) => a.name === "Pot")!;
+    expect((await store.listInflows(pot.id))[0]!.sourceAccountId).toBe(twins[0]!.id);
+  });
+
+  it("imports a file written before movements existed", async () => {
+    const userId = await seedUser();
+    const file = exportFileSchema.parse({
+      version: 1,
+      exportedAt: "2026-08-04T00:00:00.000Z",
+      accounts: [
+        {
+          name: "Current",
+          currency: "GBP",
+          incomes: [
+            {
+              name: "Salary",
+              amountMinor: 300_000,
+              frequency: "monthly",
+              anchorDate: "2026-08-25",
+            },
+          ],
+        },
+      ],
+    });
+    expect(await importExport(store, userId, file)).toMatchObject({
+      accounts: 1,
+      incomes: 1,
+      accountInflows: 0,
+    });
+  });
+
+  it("round-trips everything else it always did", async () => {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    await salary(current, 300_000);
+    const payment = await store.createPayment({
+      accountId: current.id,
+      name: "Rent",
+      category: "monthly_recurring",
+      amountMinor: 100_000,
+      dueDate: null,
+      recurrence: null,
+      targetDate: null,
+      priority: 1,
+      alreadySavedMinor: 0,
+      autoRenew: true,
+      active: true,
+      notes: null,
+      projectId: null,
+      scope: "shared",
+      bearerUserId: null,
+      fixedMonthlyMinor: null,
+      tag: null,
+    });
+    await store.createContribution({
+      paymentId: payment.id,
+      accountId: current.id,
+      userId,
+      month: "2026-07-01",
+      amountMinor: 5_000,
+      note: null,
+      transferConfirmationId: null,
+    });
+    await store.upsertBalanceSnapshot({
+      accountId: current.id,
+      asOfDate: "2026-08-01",
+      balanceMinor: 12_345,
+    });
+
+    const targetId = await seedUser("restore@example.com");
+    expect(await importExport(store, targetId, await buildExport(store, userId))).toMatchObject({
+      accounts: 1,
+      incomes: 1,
+      accountInflows: 0,
+      payments: 1,
+      contributions: 1,
+      balanceSnapshots: 1,
+    });
+  });
+});

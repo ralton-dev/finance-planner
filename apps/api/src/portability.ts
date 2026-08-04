@@ -1,10 +1,12 @@
 import type { ExportFile } from "@finance-planner/contracts";
-import type { Store } from "@finance-planner/data";
+import type { Account, Store } from "@finance-planner/data";
 
 /** What an import created, so the caller can show "imported N accounts, …". */
 export interface ImportCounts {
   accounts: number;
   incomes: number;
+  /** Movements between two of the imported accounts. */
+  accountInflows: number;
   payments: number;
   contributions: number;
   balanceSnapshots: number;
@@ -23,19 +25,32 @@ export interface ImportCounts {
  * Household-level data (memberships, shares, transfer confirmations, household
  * month closes) is likewise absent: it describes an arrangement between people,
  * not one person's records.
+ *
+ * Money arriving is read from `inflows`, both faces of it. Reading it through
+ * `listIncomes` — which projects the external rows only — silently dropped every
+ * movement between the user's own accounts the moment they authored one, from
+ * export *and* from the import that reads it back: a backup that quietly loses
+ * part of the plan it claims to hold.
  */
 export async function buildExport(store: Store, userId: string): Promise<ExportFile> {
   const owned = await store.listAccountsForOwner(userId);
+  // Movements name their source account by name, so a source outside this
+  // export cannot be represented — see `exportAccountInflow`.
+  const nameById = new Map(owned.map((a) => [a.id, a.name]));
 
   const accounts: ExportFile["accounts"] = [];
   for (const account of owned) {
-    const [incomes, payments, contributions, balances, closes] = await Promise.all([
-      store.listIncomes(account.id),
+    const [inflows, payments, contributions, balances, closes] = await Promise.all([
+      store.listInflows(account.id),
       store.listPayments(account.id),
       store.listContributionsForAccount(account.id),
       store.listBalanceSnapshots(account.id),
       store.listMonthCloses({ accountId: account.id }),
     ]);
+    const incomes = inflows.filter((i) => i.source === "external");
+    const movements = inflows.filter(
+      (i) => i.source === "account" && i.sourceAccountId && nameById.has(i.sourceAccountId),
+    );
 
     const byPayment = new Map<string, typeof contributions>();
     for (const c of contributions) {
@@ -56,6 +71,16 @@ export async function buildExport(store: Store, userId: string): Promise<ExportF
         frequency: i.frequency,
         recurrence: i.recurrence,
         anchorDate: i.anchorDate,
+        active: i.active,
+      })),
+      accountInflows: movements.map((i) => ({
+        name: i.name,
+        fromAccountName: nameById.get(i.sourceAccountId!)!,
+        amountMinor: i.amountMinor,
+        frequency: i.frequency,
+        recurrence: i.recurrence,
+        anchorDate: i.anchorDate,
+        priority: i.priority,
         active: i.active,
       })),
       payments: payments.map((p) => ({
@@ -117,6 +142,11 @@ export async function buildExport(store: Store, userId: string): Promise<ExportF
  * Imported contributions are attributed to the importing user and carry no
  * transfer confirmation: the household transfer they may once have recorded
  * doesn't exist on this side of the import.
+ *
+ * Accounts are all created first, before anything inside them, because a
+ * movement names the account it comes from and that account may appear later in
+ * the file than the account it pays into — or, in a chain, may pay into it.
+ * There is no ordering of one pass that always works, so there are two.
  */
 export async function importExport(
   store: Store,
@@ -126,6 +156,7 @@ export async function importExport(
   const counts: ImportCounts = {
     accounts: 0,
     incomes: 0,
+    accountInflows: 0,
     payments: 0,
     contributions: 0,
     balanceSnapshots: 0,
@@ -133,6 +164,12 @@ export async function importExport(
     projects: 0,
   };
 
+  // Pass one: the accounts themselves, and the name → id map a movement needs.
+  // A file naming two accounts the same keeps the first, which is the same rule
+  // `accountPlacements` uses for an account assigned twice: deterministic, and
+  // never a reference to nothing.
+  const created = new Map<string, string>();
+  const accounts: { input: ExportFile["accounts"][number]; account: Account }[] = [];
   for (const a of file.accounts) {
     const account = await store.createAccount({
       ownerUserId: userId,
@@ -143,6 +180,31 @@ export async function importExport(
       monthlyBufferMinor: a.monthlyBufferMinor,
     });
     counts.accounts += 1;
+    if (!created.has(a.name)) created.set(a.name, account.id);
+    accounts.push({ input: a, account });
+  }
+
+  for (const { input: a, account } of accounts) {
+    for (const m of a.accountInflows) {
+      const sourceAccountId = created.get(m.fromAccountName);
+      // A movement out of an account this file does not carry, or out of the
+      // account it arrives in, cannot be recreated: it would be a reference to
+      // nothing, or a row the store refuses. Dropped rather than mangled.
+      if (!sourceAccountId || sourceAccountId === account.id) continue;
+      await store.createInflow({
+        accountId: account.id,
+        name: m.name,
+        source: "account",
+        sourceAccountId,
+        amountMinor: m.amountMinor,
+        frequency: m.frequency,
+        recurrence: m.recurrence,
+        anchorDate: m.anchorDate,
+        priority: m.priority,
+        active: m.active,
+      });
+      counts.accountInflows += 1;
+    }
 
     for (const i of a.incomes) {
       await store.createIncome({
