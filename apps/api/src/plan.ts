@@ -8,13 +8,14 @@ import {
   type HouseholdInput,
   type HouseholdPlan,
   type IncomeInput,
+  type InflowInput,
   type MemberPaydaySchedule,
   type PaymentInput,
   splitTransfersByPayday,
   type UpcomingPayment,
   upcomingPayments,
 } from "@finance-planner/domain";
-import type { Account, Income, Payment, Store, TransferConfirmation } from "@finance-planner/data";
+import type { Account, Inflow, Payment, Store, TransferConfirmation } from "@finance-planner/data";
 
 /**
  * A payment's effective already-saved: its manual base plus every contribution
@@ -26,7 +27,15 @@ async function savedByPayment(store: Store, accountId: string): Promise<Map<stri
   return new Map(totals.map((t) => [t.paymentId, t.totalMinor]));
 }
 
-function toIncomeInput(i: Income): IncomeInput {
+/**
+ * The engine's income input, read off an inflow record.
+ *
+ * Every read of "what arrives here" now comes from `inflows`; `core.incomes` is
+ * a table nothing consults. Only `source: "external"` reaches this — an inflow
+ * out of another account you own is not income, and counting it as such would
+ * inflate the estate's money in by every internal movement.
+ */
+function toIncomeInput(i: Inflow): IncomeInput {
   return {
     id: i.id,
     amountMinor: i.amountMinor,
@@ -36,6 +45,26 @@ function toIncomeInput(i: Income): IncomeInput {
     active: i.active,
   };
 }
+
+/** An authored inflow, carried through to the engine whole. Inert until WP-G
+ *  reads it; the external ones are what `toIncomeInput` plans from today. */
+function toInflowInput(i: Inflow): InflowInput {
+  return {
+    id: i.id,
+    amountMinor: i.amountMinor,
+    frequency: i.frequency,
+    recurrence: i.recurrence,
+    anchorDate: i.anchorDate,
+    active: i.active,
+    source: i.source,
+    sourceAccountId: i.sourceAccountId,
+    priority: i.priority,
+  };
+}
+
+/** External inflows only — see `toIncomeInput`. */
+const externalOf = (inflows: Inflow[]): IncomeInput[] =>
+  inflows.filter((i) => i.source === "external").map(toIncomeInput);
 
 function toPaymentInput(p: Payment, saved: Map<string, number>): PaymentInput {
   return {
@@ -238,8 +267,8 @@ export async function buildAccountInput(
   asOfDate: string,
   ctx: PlanContext = createPlanContext(),
 ): Promise<AccountInput> {
-  const [incomes, payments, saved, inflow] = await Promise.all([
-    store.listIncomes(account.id),
+  const [inflows, payments, saved, inflow] = await Promise.all([
+    store.listInflows(account.id),
     store.listPayments(account.id),
     savedByPayment(store, account.id),
     resolveAccountInflow(store, account, asOfDate, ctx),
@@ -249,7 +278,8 @@ export async function buildAccountInput(
     accountId: account.id,
     currency: account.currency,
     monthlyBufferMinor: account.monthlyBufferMinor,
-    incomes: incomes.map(toIncomeInput),
+    incomes: externalOf(inflows),
+    inflows: inflows.map(toInflowInput),
     payments: payments.map((p) => toPaymentInput(p, saved)),
     // Only the amounts: the engine never learns who sent it, so no plan
     // response can leak a household member's name by accident.
@@ -430,8 +460,8 @@ export async function buildHouseholdInput(
   for (const asg of assignments) {
     const account = await store.getAccount(asg.accountId);
     if (!account) continue;
-    const [incomes, payments, saved] = await Promise.all([
-      store.listIncomes(account.id),
+    const [inflows, payments, saved] = await Promise.all([
+      store.listInflows(account.id),
       store.listPayments(account.id),
       savedByPayment(store, account.id),
     ]);
@@ -442,7 +472,7 @@ export async function buildHouseholdInput(
       memberUserId: asg.memberUserId,
       currency: account.currency,
       monthlyBufferMinor: account.monthlyBufferMinor,
-      incomes: incomes.map(toIncomeInput),
+      incomes: externalOf(inflows),
       payments: payments.map((p) => ({
         ...toPaymentInput(p, saved),
         scope: p.scope,

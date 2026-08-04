@@ -11,6 +11,46 @@ export interface IncomeInput {
   active?: boolean;
 }
 
+/**
+ * Where money arriving into an account comes from.
+ *
+ * Only `external` is money entering the estate. `account` is the user moving
+ * their own money, which nets to zero across everything they own — so any figure
+ * that sums "money in" over more than one account must count `external` alone.
+ */
+export type InflowSourceKind = "external" | "account";
+
+/**
+ * Money arriving into an account, as the user authored it.
+ *
+ * An `account`-sourced inflow is one record with two faces: it arrives on the
+ * account that owns it and leaves `sourceAccountId`. It is not two records — two
+ * could drift apart, one cannot.
+ *
+ * **The engine does not read this yet.** `computeAccountPlan` still plans from
+ * `incomes`, and an account-sourced inflow has no effect on any figure until
+ * WP-G teaches the engine to walk the accounts in dependency order. It is
+ * carried on `AccountInput` so the records reach the engine unchanged when that
+ * lands; setting it today is inert, not wrong.
+ */
+export interface InflowInput {
+  id: string;
+  amountMinor: number;
+  frequency: Frequency;
+  recurrence?: Recurrence | null;
+  /** ISO date (YYYY-MM-DD) of the first/next occurrence. */
+  anchorDate: string;
+  active?: boolean;
+  source: InflowSourceKind;
+  /** The account the money leaves. Set exactly when `source === "account"`, and
+   *  never this account — an account cannot fund itself. */
+  sourceAccountId?: string | null;
+  /** Rank among the *sending* account's outbound inflows, lower first. It only
+   *  ever ranks against other outbound inflows: every expense on the sending
+   *  account is funded first, whatever this says (decision 6). */
+  priority?: number;
+}
+
 /** A payment (outgoing) on an account. Amounts in integer minor units. */
 export interface PaymentInput {
   id: string;
@@ -63,11 +103,16 @@ export interface AccountInput {
   currency: string;
   /** Optional monthly amount reserved off the top before funding goals. */
   monthlyBufferMinor?: number;
+  /** The account's external inflows, in the shape the engine has always read.
+   *  Every row here is also in `inflows` with `source: "external"`. */
   incomes: IncomeInput[];
   payments: PaymentInput[];
   /** What the household has allocated into this account. Absent for a
    *  standalone account, which is funded entirely by its own income. */
   inflow?: AllocatedInflow | null;
+  /** Every inflow authored on this account, external and account-sourced alike.
+   *  Not read by the engine yet — see `InflowInput`. */
+  inflows?: InflowInput[];
 }
 
 /**
