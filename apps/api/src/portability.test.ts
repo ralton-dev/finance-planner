@@ -21,6 +21,11 @@ async function seedUser(email = "owner@example.com") {
   return user.id;
 }
 
+/** Every export in here is taken on one fixed day: the months a confirmation
+ *  is looked for are relative to it (see `buildExport`), and a clock-dependent
+ *  fixture would be a fixture that fails on the first of some month. */
+const ASOF = "2026-08-04";
+
 const account = (userId: string, name: string): Promise<Account> =>
   store.createAccount({ ownerUserId: userId, name, currency: "GBP" });
 
@@ -59,7 +64,7 @@ describe("buildExport — movements between your own accounts", () => {
     await salary(current, 300_000);
     await movement(current, pot, 40_000, 20);
 
-    const file = await buildExport(store, userId);
+    const file = await buildExport(store, userId, ASOF);
     const exported = file.accounts.find((a) => a.name === "Holiday pot")!;
 
     expect(exported.incomes).toEqual([]);
@@ -73,6 +78,8 @@ describe("buildExport — movements between your own accounts", () => {
         anchorDate: "2026-08-25",
         priority: 20,
         active: true,
+        // Nobody has said this one moved yet.
+        confirmations: [],
       },
     ]);
 
@@ -90,7 +97,9 @@ describe("buildExport — movements between your own accounts", () => {
     await salary(pot, 10_000);
     await movement(current, pot, 40_000);
 
-    const exported = (await buildExport(store, userId)).accounts.find((a) => a.name === "Pot")!;
+    const exported = (await buildExport(store, userId, ASOF)).accounts.find(
+      (a) => a.name === "Pot",
+    )!;
     expect(exported.incomes.map((i) => i.name)).toEqual(["Salary"]);
     expect(exported.accountInflows.map((i) => i.name)).toEqual(["Current top-up"]);
   });
@@ -104,7 +113,7 @@ describe("buildExport — movements between your own accounts", () => {
     const mine = await account(userId, "My pot");
     await movement(theirs, mine, 40_000);
 
-    const file = await buildExport(store, userId);
+    const file = await buildExport(store, userId, ASOF);
     expect(file.accounts).toHaveLength(1);
     expect(file.accounts[0]!.accountInflows).toEqual([]);
   });
@@ -116,7 +125,7 @@ describe("buildExport — movements between your own accounts", () => {
     await salary(current, 300_000);
     await movement(current, pot, 40_000);
 
-    const file = await buildExport(store, userId);
+    const file = await buildExport(store, userId, ASOF);
     expect(() => exportFileSchema.parse(file)).not.toThrow();
   });
 });
@@ -130,7 +139,7 @@ describe("importExport — movements survive the round trip", () => {
     await movement(current, pot, 40_000, 20);
 
     const targetId = await seedUser("restore@example.com");
-    const counts = await importExport(store, targetId, await buildExport(store, userId));
+    const counts = await importExport(store, targetId, await buildExport(store, userId, ASOF));
     expect(counts).toMatchObject({ accounts: 2, incomes: 1, accountInflows: 1 });
 
     const restored = await store.listAccountsForOwner(targetId);
@@ -153,6 +162,66 @@ describe("importExport — movements survive the round trip", () => {
     expect((await store.listOutboundInflows(newCurrent.id)).map((i) => i.id)).toEqual([inflow!.id]);
   });
 
+  /**
+   * A standalone confirmation is not household data. It is a fact about two
+   * accounts one person owns, and since WP-H it decides whether a line reads
+   * funded or still awaiting a transfer — so a backup that dropped it would
+   * quietly un-move money that moved.
+   */
+  it("carries a standalone confirmation, and not a household one", async () => {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Pot");
+    await salary(current, 300_000);
+    const moved = await movement(current, pot, 40_000, 20);
+    await store.createTransferConfirmation({
+      householdId: null,
+      inflowId: moved.id,
+      month: "2026-08-01",
+      fromAccountId: current.id,
+      toAccountId: pot.id,
+      memberUserId: userId,
+      amountMinor: 40_000,
+    });
+    // A household transfer between the same two accounts stays behind: it
+    // describes an arrangement between people.
+    const household = await store.createHousehold("Home", userId);
+    await store.createTransferConfirmation({
+      householdId: household.id,
+      inflowId: null,
+      month: "2026-08-01",
+      fromAccountId: current.id,
+      toAccountId: pot.id,
+      memberUserId: userId,
+      amountMinor: 1_000,
+    });
+
+    const file = await buildExport(store, userId, ASOF);
+    const exported = file.accounts.find((a) => a.name === "Pot")!;
+    expect(exported.accountInflows[0]!.confirmations).toEqual([
+      { month: "2026-08-01", amountMinor: 40_000 },
+    ]);
+
+    const targetId = await seedUser("restore@example.com");
+    expect(await importExport(store, targetId, file)).toMatchObject({
+      accountInflows: 1,
+      accountInflowConfirmations: 1,
+    });
+    const restored = await store.listAccountsForOwner(targetId);
+    const newPot = restored.find((a) => a.name === "Pot")!;
+    const [inflow] = await store.listInflows(newPot.id);
+    const [confirmation] = await store.listTransferConfirmationsForAccount(newPot.id, "2026-08-01");
+    expect(confirmation).toMatchObject({
+      householdId: null,
+      inflowId: inflow!.id,
+      toAccountId: newPot.id,
+      memberUserId: targetId,
+      amountMinor: 40_000,
+    });
+    // The household row did not come with it, under any scope.
+    expect(await store.listTransferConfirmations(household.id, "2026-08-01")).toHaveLength(1);
+  });
+
   it("restores a chain whatever order the accounts appear in", async () => {
     // The account a movement comes from can appear after the account it pays
     // into — which is why accounts are all created before anything inside them.
@@ -163,7 +232,7 @@ describe("importExport — movements survive the round trip", () => {
     await movement(a, b, 30_000);
     await movement(b, c, 20_000);
 
-    const file = await buildExport(store, userId);
+    const file = await buildExport(store, userId, ASOF);
     file.accounts.reverse();
 
     const targetId = await seedUser("restore@example.com");
@@ -328,7 +397,9 @@ describe("importExport — movements survive the round trip", () => {
     });
 
     const targetId = await seedUser("restore@example.com");
-    expect(await importExport(store, targetId, await buildExport(store, userId))).toMatchObject({
+    expect(
+      await importExport(store, targetId, await buildExport(store, userId, ASOF)),
+    ).toMatchObject({
       accounts: 1,
       incomes: 1,
       accountInflows: 0,

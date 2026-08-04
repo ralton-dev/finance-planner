@@ -1,12 +1,17 @@
 import type { ExportFile } from "@finance-planner/contracts";
 import type { Account, Store } from "@finance-planner/data";
 
+/** The ISO first-of-month a date falls in — how a confirmation is keyed. */
+const monthStart = (isoDate: string): string => `${isoDate.slice(0, 7)}-01`;
+
 /** What an import created, so the caller can show "imported N accounts, …". */
 export interface ImportCounts {
   accounts: number;
   incomes: number;
   /** Movements between two of the imported accounts. */
   accountInflows: number;
+  /** "I moved the money", restored against those movements. */
+  accountInflowConfirmations: number;
   payments: number;
   contributions: number;
   balanceSnapshots: number;
@@ -22,9 +27,16 @@ export interface ImportCounts {
  * member a copy of another member's finances, and importing it back would fork
  * a second, silently diverging copy. The owner exports their own.
  *
- * Household-level data (memberships, shares, transfer confirmations, household
- * month closes) is likewise absent: it describes an arrangement between people,
- * not one person's records.
+ * Household-level data (memberships, shares, household transfer confirmations,
+ * household month closes) is likewise absent: it describes an arrangement
+ * between people, not one person's records.
+ *
+ * A **standalone** confirmation is not household-level and does travel. "I moved
+ * this money" between two accounts you own is a fact about two of your own rows,
+ * and since WP-H it drives `confirmedInflowMinor` and whether a line reads
+ * funded or `awaiting_transfer` — so leaving it behind meant a restore silently
+ * un-moved money that had moved. See `inflowConfirmations` for which months are
+ * carried.
  *
  * Money arriving is read from `inflows`, both faces of it. Reading it through
  * `listIncomes` — which projects the external rows only — silently dropped every
@@ -32,7 +44,11 @@ export interface ImportCounts {
  * export *and* from the import that reads it back: a backup that quietly loses
  * part of the plan it claims to hold.
  */
-export async function buildExport(store: Store, userId: string): Promise<ExportFile> {
+export async function buildExport(
+  store: Store,
+  userId: string,
+  asOfDate: string,
+): Promise<ExportFile> {
   const owned = await store.listAccountsForOwner(userId);
   // Movements name their source account by name, so a source outside this
   // export cannot be represented — see `exportAccountInflow`.
@@ -59,6 +75,35 @@ export async function buildExport(store: Store, userId: string): Promise<ExportF
       byPayment.set(c.paymentId, list);
     }
 
+    // Which months to look in. The store reads confirmations one month at a
+    // time — it is a "has this happened *this* month" question everywhere else
+    // — so the export asks about the months this file already describes: every
+    // month it carries a contribution or a close for, plus the month it is
+    // being taken in. That covers everything a restore can act on; the current
+    // month is the one that decides whether a line comes back funded or
+    // awaiting a transfer, and a closed month is frozen history either way. A
+    // confirmation in a month with no other trace at all is not carried, which
+    // is a limit of asking month by month rather than a decision about it.
+    const months = new Set<string>([monthStart(asOfDate)]);
+    for (const c of contributions) months.add(c.month);
+    for (const c of closes) months.add(c.month);
+    const confirmedByInflow = new Map<string, { month: string; amountMinor: number }[]>();
+    // Skipped entirely for an account with no movements, which is every account
+    // until the user authors one.
+    if (movements.length > 0) {
+      for (const month of [...months].sort()) {
+        for (const c of await store.listTransferConfirmationsForAccount(account.id, month)) {
+          // Only the arriving side: a movement's confirmation is exported once,
+          // under the account the money lands in, which is the account the row
+          // itself lives on.
+          if (!c.inflowId || c.householdId !== null || c.toAccountId !== account.id) continue;
+          const list = confirmedByInflow.get(c.inflowId) ?? [];
+          list.push({ month: c.month, amountMinor: c.amountMinor });
+          confirmedByInflow.set(c.inflowId, list);
+        }
+      }
+    }
+
     accounts.push({
       name: account.name,
       description: account.description,
@@ -82,6 +127,7 @@ export async function buildExport(store: Store, userId: string): Promise<ExportF
         anchorDate: i.anchorDate,
         priority: i.priority,
         active: i.active,
+        confirmations: confirmedByInflow.get(i.id) ?? [],
       })),
       payments: payments.map((p) => ({
         name: p.name,
@@ -157,6 +203,7 @@ export async function importExport(
     accounts: 0,
     incomes: 0,
     accountInflows: 0,
+    accountInflowConfirmations: 0,
     payments: 0,
     contributions: 0,
     balanceSnapshots: 0,
@@ -191,7 +238,7 @@ export async function importExport(
       // account it arrives in, cannot be recreated: it would be a reference to
       // nothing, or a row the store refuses. Dropped rather than mangled.
       if (!sourceAccountId || sourceAccountId === account.id) continue;
-      await store.createInflow({
+      const inflow = await store.createInflow({
         accountId: account.id,
         name: m.name,
         source: "account",
@@ -204,6 +251,34 @@ export async function importExport(
         active: m.active,
       });
       counts.accountInflows += 1;
+
+      // Standalone, so `householdId` is null and the confirming member is the
+      // importing user: there is nobody else in a movement between two of your
+      // own accounts. One per month is the store's rule, so a hand-edited file
+      // repeating a month keeps its first entry — the same treatment a repeated
+      // month close gets.
+      //
+      // The contributions a confirmation once created are imported separately,
+      // under the payments they were booked against, and arrive unlinked
+      // (`transferConfirmationId: null`, as every imported contribution does).
+      // Both facts survive the trip; what does not is the tie between them, so
+      // un-confirming an imported movement leaves its imported contributions
+      // where they are rather than taking them with it.
+      const seenMonths = new Set<string>();
+      for (const c of m.confirmations) {
+        if (seenMonths.has(c.month)) continue;
+        seenMonths.add(c.month);
+        await store.createTransferConfirmation({
+          householdId: null,
+          inflowId: inflow.id,
+          month: c.month,
+          fromAccountId: sourceAccountId,
+          toAccountId: account.id,
+          memberUserId: userId,
+          amountMinor: c.amountMinor,
+        });
+        counts.accountInflowConfirmations += 1;
+      }
     }
 
     for (const i of a.incomes) {

@@ -174,6 +174,63 @@ describe("buildDailyDigest", () => {
     expect(bobDigest).not.toContain("Alice current");
   });
 
+  /**
+   * The "what to move" section asked `listHouseholdsForUser` and nothing else,
+   * so a movement between two accounts one person owns — plannable since WP-F,
+   * confirmable since WP-H — could never appear in it however overdue. The
+   * standalone user's whole to-do list was invisible.
+   */
+  it("lists a movement between your own accounts, with no household anywhere", async () => {
+    const user = await seedUser(store, "solo@example.com");
+    const current = await store.createAccount({
+      ownerUserId: user.id,
+      name: "Current",
+      currency: "GBP",
+    });
+    const pot = await store.createAccount({ ownerUserId: user.id, name: "Pot", currency: "GBP" });
+    await store.createIncome({
+      accountId: current.id,
+      name: "Salary",
+      amountMinor: 300_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+    const movement = await store.createInflow({
+      accountId: pot.id,
+      name: "Top-up",
+      source: "account",
+      sourceAccountId: current.id,
+      amountMinor: 20_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 50,
+      active: true,
+    });
+
+    const digest = await buildDailyDigest(store, user.id, AS_OF);
+    expect(digest).toContain("Money to move between your own accounts");
+    expect(digest).toContain("- 200.00 GBP from Current to Pot");
+    // Nothing is due, and there is no household: this section alone is reason
+    // enough to send the mail.
+    expect(digest).not.toContain("Due in the next 7 days");
+    expect(digest).not.toContain("Transfers for the next 7 days");
+
+    // Once it is confirmed it stops being asked for.
+    await store.createTransferConfirmation({
+      householdId: null,
+      inflowId: movement.id,
+      month: "2026-08-01",
+      fromAccountId: current.id,
+      toAccountId: pot.id,
+      memberUserId: user.id,
+      amountMinor: 20_000,
+    });
+    expect(await buildDailyDigest(store, user.id, AS_OF)).toBeNull();
+  });
+
   it("drops transfers scheduled outside the window", async () => {
     const alice = await seedUser(store, "late@example.com");
     const household = await store.createHousehold("Home", alice.id);
