@@ -65,7 +65,10 @@ function monthlyHits(day: number, start: Date, end: Date): Date[] {
  * When a payment needs money inside [start, end], per category:
  *   fixed_point       → its target (or due) date, if it lands in the window. An
  *                       already-overdue goal is excluded: the plan already flags
- *                       it off-track, and a feed of past dates is noise.
+ *                       it off-track, and a feed of past dates is noise. A
+ *                       contribution-first goal with no date at all has nothing
+ *                       to pin to a day and is skipped — it is a monthly habit,
+ *                       not an upcoming bill.
  *   monthly_recurring → its due date's day-of-month, recurring every month and
  *                       clamped to short ones (31st → 30th in April). With no due
  *                       date there is no calendar day to pin it to, so it is

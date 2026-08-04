@@ -144,6 +144,12 @@ export interface Payment {
   /** When scope === "personal": the member who bears it. Null falls back to the
    *  owning member of a personal account at compute time. */
   bearerUserId: string | null;
+  /** Contribution-first goals: the monthly amount the user commits to setting
+   *  aside. Only meaningful for category "fixed_point"; the engine ignores it
+   *  elsewhere. Null = derive the contribution from the date, as before. */
+  fixedMonthlyMinor: number | null;
+  /** Free-text grouping label ("housing", "car", …) for charts. */
+  tag: string | null;
   createdAt: string;
   updatedAt: string;
 }

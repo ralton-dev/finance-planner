@@ -273,6 +273,129 @@ describe("computeHouseholdPlan — personal expenses", () => {
   });
 });
 
+// --- contribution-first goals ------------------------------------------------
+
+describe("computeHouseholdPlan — contribution-first goals", () => {
+  const goal = pay({
+    id: "bike",
+    name: "New bike",
+    category: "fixed_point",
+    amountMinor: 100_000,
+    fixedMonthlyMinor: 10_000,
+    tag: "toys",
+  });
+
+  it("splits the monthly contribution, not the whole goal", () => {
+    const p = plan({
+      members: [member("alice", 6600), member("bob", 3400)],
+      accounts: [
+        acc({
+          accountId: "alice-cur",
+          role: "personal",
+          memberUserId: "alice",
+          incomes: income(300_000),
+        }),
+        acc({
+          accountId: "bob-cur",
+          role: "personal",
+          memberUserId: "bob",
+          incomes: income(200_000),
+        }),
+        acc({ accountId: "bills", role: "shared", payments: [goal] }),
+      ],
+    });
+    const line = p.lines.find((l) => l.paymentId === "bike")!;
+    expect(line.requiredMonthlyMinor).toBe(10_000); // the cap, not 100000
+    expect(line.targetDate).toBe("2027-04-01"); // 10 months of pace from 2026-06
+    expect(line.allocations.map((a) => a.requiredMinor)).toEqual([6_600, 3_400]);
+    expect(line.onTrack).toBe(true);
+    expect(transfer(p, "alice-cur", "bills")).toBe(6_600);
+    expect(transfer(p, "bob-cur", "bills")).toBe(3_400);
+  });
+
+  it("carries the tag onto the line so charts can group without a refetch", () => {
+    const p = plan({
+      members: [member("alice", 10_000)],
+      accounts: [
+        acc({
+          accountId: "cur",
+          role: "personal",
+          memberUserId: "alice",
+          incomes: income(100_000),
+        }),
+        acc({
+          accountId: "bills",
+          role: "shared",
+          payments: [goal, pay({ id: "rent", amountMinor: 50_000 })],
+        }),
+      ],
+    });
+    expect(p.lines.find((l) => l.paymentId === "bike")?.tag).toBe("toys");
+    expect(p.lines.find((l) => l.paymentId === "rent")?.tag).toBeNull();
+  });
+
+  it("charges a personal capped goal wholly to its bearer", () => {
+    const p = plan({
+      members: [member("alice", 5000), member("bob", 5000)],
+      accounts: [
+        acc({
+          accountId: "alice-cur",
+          role: "personal",
+          memberUserId: "alice",
+          incomes: income(300_000),
+        }),
+        acc({
+          accountId: "bob-cur",
+          role: "personal",
+          memberUserId: "bob",
+          incomes: income(200_000),
+        }),
+        acc({
+          accountId: "bills",
+          role: "shared",
+          payments: [{ ...goal, scope: "personal", bearerUserId: "bob" }],
+        }),
+      ],
+    });
+    const line = p.lines.find((l) => l.paymentId === "bike")!;
+    expect(line.requiredMonthlyMinor).toBe(10_000);
+    expect(line.allocations).toEqual([
+      { userId: "alice", requiredMinor: 0, fundedMinor: 0 },
+      { userId: "bob", requiredMinor: 10_000, fundedMinor: 10_000 },
+    ]);
+    expect(transfer(p, "bob-cur", "bills")).toBe(10_000);
+    expect(p.transfers).toHaveLength(1);
+  });
+
+  it("asks only for the remainder once the goal is nearly there", () => {
+    const p = plan({
+      members: [member("alice", 6600), member("bob", 3400)],
+      accounts: [
+        acc({
+          accountId: "alice-cur",
+          role: "personal",
+          memberUserId: "alice",
+          incomes: income(300_000),
+        }),
+        acc({
+          accountId: "bob-cur",
+          role: "personal",
+          memberUserId: "bob",
+          incomes: income(200_000),
+        }),
+        acc({
+          accountId: "bills",
+          role: "shared",
+          payments: [{ ...goal, alreadySavedMinor: 96_000 }],
+        }),
+      ],
+    });
+    const line = p.lines.find((l) => l.paymentId === "bike")!;
+    expect(line.requiredMonthlyMinor).toBe(4_000);
+    expect(line.allocations.map((a) => a.requiredMinor)).toEqual([2_640, 1_360]);
+  });
+});
+
 // --- priority + shortfall across accounts -----------------------------------
 
 describe("computeHouseholdPlan — global priority funding", () => {

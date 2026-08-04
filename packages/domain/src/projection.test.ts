@@ -280,6 +280,114 @@ describe("computeAccountProjection — fixed_point goals", () => {
   });
 });
 
+// --- contribution-first goals ------------------------------------------------
+
+describe("computeAccountProjection — dateless contribution-first goal", () => {
+  const goal: PaymentInput = {
+    id: "bike",
+    name: "New bike",
+    category: "fixed_point",
+    amountMinor: 60_000,
+    fixedMonthlyMinor: 20_000,
+  };
+  const p = project(account([goal]), { months: 5, startingBalanceMinor: 0 });
+
+  it("asks for the cap each month until the target is reached", () => {
+    expect(p.months.map((m) => only(m)?.requiredMonthlyMinor)).toEqual([
+      20_000,
+      20_000,
+      20_000,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("accumulates the reserve month by month", () => {
+    expect(p.months.map((m) => only(m)?.alreadySavedEndMinor)).toEqual([
+      20_000,
+      40_000,
+      60_000,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("never falls due — there is no date on which to pay it out", () => {
+    for (const month of p.months) {
+      expect(only(month)?.dueThisMonth ?? false).toBe(false);
+      expect(only(month)?.dueAmountMinor ?? 0).toBe(0);
+    }
+  });
+
+  it("drops out of later months once complete", () => {
+    expect(p.months[2]?.lines).toHaveLength(1);
+    expect(p.months[3]?.lines).toEqual([]);
+    expect(p.months[3]?.totalRequiredMinor).toBe(0);
+    expect(p.months[3]?.leftoverMinor).toBe(200_000);
+  });
+
+  it("keeps the money: completion is not a payout", () => {
+    // The reserve stays counted, and the balance only ever grows by it.
+    expect(p.months.map((m) => m.reservedEndMinor)).toEqual([
+      20_000, 40_000, 60_000, 60_000, 60_000,
+    ]);
+    expect(p.months.map((m) => m.projectedBalanceMinor)).toEqual([
+      20_000, 40_000, 60_000, 60_000, 60_000,
+    ]);
+  });
+
+  it("asks only for the remainder in a ragged final month", () => {
+    const ragged = project(account([{ ...goal, amountMinor: 50_000 }]), { months: 4 });
+    expect(ragged.months.map((m) => only(m)?.requiredMonthlyMinor)).toEqual([
+      20_000,
+      20_000,
+      10_000,
+      undefined,
+    ]);
+    expect(only(ragged.months[2]!)?.alreadySavedEndMinor).toBe(50_000);
+  });
+
+  it("keeps going for as long as the money is short", () => {
+    // 5,000 a month of income against a 20,000 cap: the goal never completes
+    // inside the window, so it stays in every month.
+    const starved = project(account([goal], {}, [income(5_000)]), { months: 4 });
+    expect(starved.months.every((m) => m.lines.length === 1)).toBe(true);
+    expect(starved.months.map((m) => only(m)?.fundedMonthlyMinor)).toEqual([
+      5_000, 5_000, 5_000, 5_000,
+    ]);
+    expect(starved.months[3]?.shortfallMinor).toBe(15_000);
+  });
+});
+
+describe("computeAccountProjection — dated contribution-first goal", () => {
+  const p = project(
+    account([
+      {
+        id: "bike",
+        name: "New bike",
+        category: "fixed_point",
+        amountMinor: 60_000,
+        dueDate: "2026-10-01",
+        fixedMonthlyMinor: 20_000,
+      },
+    ]),
+    { months: 4, startingBalanceMinor: 0 },
+  );
+
+  it("still pays out in its due month, like any dated goal", () => {
+    const due = p.months[2]!;
+    expect(due.month).toBe("2026-10");
+    expect(only(due)?.dueThisMonth).toBe(true);
+    expect(only(due)?.dueAmountMinor).toBe(60_000);
+    expect(only(due)?.alreadySavedEndMinor).toBe(0);
+    expect(p.months[3]?.lines).toEqual([]);
+  });
+
+  it("spends the reserve rather than keeping it", () => {
+    expect(p.months.map((m) => m.projectedBalanceMinor)).toEqual([20_000, 40_000, 0, 0]);
+  });
+});
+
 // --- shortfalls --------------------------------------------------------------
 
 describe("computeAccountProjection — underfunded account", () => {

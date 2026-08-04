@@ -1,3 +1,4 @@
+import type { CreateIncomeBody, CreatePaymentBody } from "@finance-planner/contracts";
 import {
   type AccountInput,
   type AccountPlan,
@@ -47,6 +48,8 @@ function toPaymentInput(p: Payment, saved: Map<string, number>): PaymentInput {
     alreadySavedMinor: p.alreadySavedMinor + (saved.get(p.id) ?? 0),
     autoRenew: p.autoRenew,
     active: p.active,
+    fixedMonthlyMinor: p.fixedMonthlyMinor,
+    tag: p.tag,
   };
 }
 
@@ -86,6 +89,79 @@ export async function computePlanForAccount(
   asOfDate: string,
 ): Promise<AccountPlan> {
   return computeAccountPlan(await buildAccountInput(store, account), asOfDate);
+}
+
+// ---------------------------------------------------------------------------
+// What-if preview
+// ---------------------------------------------------------------------------
+
+/** Hypothetical additions to overlay on an account before computing its plan. */
+export interface PlanOverlay {
+  addPayments?: CreatePaymentBody[];
+  addIncomes?: CreateIncomeBody[];
+}
+
+/** The same account, planned twice: as it is, and as it would be. */
+export interface PlanPreview {
+  base: AccountPlan;
+  preview: AccountPlan;
+}
+
+/** Overlay ids are synthetic and local to the request — nothing is stored, so
+ *  they only need to be unique within the computation. */
+function toOverlayIncome(i: CreateIncomeBody, index: number): IncomeInput {
+  return {
+    id: `preview-income-${index + 1}`,
+    amountMinor: i.amountMinor,
+    frequency: i.frequency,
+    recurrence: i.recurrence ?? null,
+    anchorDate: i.anchorDate,
+    active: i.active,
+  };
+}
+
+function toOverlayPayment(p: CreatePaymentBody, index: number): PaymentInput {
+  return {
+    id: `preview-payment-${index + 1}`,
+    name: p.name,
+    category: p.category,
+    amountMinor: p.amountMinor,
+    dueDate: p.dueDate ?? null,
+    recurrence: p.recurrence ?? null,
+    targetDate: p.targetDate ?? null,
+    priority: p.priority,
+    alreadySavedMinor: p.alreadySavedMinor,
+    autoRenew: p.autoRenew,
+    active: p.active,
+    fixedMonthlyMinor: p.fixedMonthlyMinor ?? null,
+    tag: p.tag ?? null,
+  };
+}
+
+/**
+ * "What would this do to my plan?" — the account's current plan alongside the
+ * plan it would have with `overlay` added, both computed for the same as-of date
+ * so the two are directly comparable.
+ *
+ * Strictly read-only: the overlay never reaches the store, and the store is only
+ * queried for the account's real incomes, payments and contributions.
+ */
+export async function previewPlanForAccount(
+  store: Store,
+  account: Account,
+  asOfDate: string,
+  overlay: PlanOverlay,
+): Promise<PlanPreview> {
+  const input = await buildAccountInput(store, account);
+  const withOverlay: AccountInput = {
+    ...input,
+    incomes: [...input.incomes, ...(overlay.addIncomes ?? []).map(toOverlayIncome)],
+    payments: [...input.payments, ...(overlay.addPayments ?? []).map(toOverlayPayment)],
+  };
+  return {
+    base: computeAccountPlan(input, asOfDate),
+    preview: computeAccountPlan(withOverlay, asOfDate),
+  };
 }
 
 /**

@@ -117,6 +117,8 @@ export async function exerciseStore(store: Store): Promise<void> {
     projectId: null,
     scope: "shared",
     bearerUserId: null,
+    fixedMonthlyMinor: 20_000,
+    tag: "travel",
   });
   const p2 = await store.createPayment({
     accountId: account.id,
@@ -134,8 +136,27 @@ export async function exerciseStore(store: Store): Promise<void> {
     projectId: null,
     scope: "shared",
     bearerUserId: null,
+    fixedMonthlyMinor: null,
+    tag: null,
   });
   expect((await store.listPayments(account.id)).length).toBe(2);
+
+  // Contribution-first pace + grouping tag survive the round trip, and both are
+  // optional (a plain bill carries neither).
+  const storedGoal = await store.getPayment(p1.id);
+  expect(storedGoal?.fixedMonthlyMinor).toBe(20_000);
+  expect(storedGoal?.tag).toBe("travel");
+  const storedBill = await store.getPayment(p2.id);
+  expect(storedBill?.fixedMonthlyMinor).toBeNull();
+  expect(storedBill?.tag).toBeNull();
+
+  // …and both are patchable, including back to null.
+  const retagged = await store.updatePayment(p2.id, { tag: "phone", fixedMonthlyMinor: 5_000 });
+  expect(retagged?.tag).toBe("phone");
+  expect(retagged?.fixedMonthlyMinor).toBe(5_000);
+  const untagged = await store.updatePayment(p2.id, { tag: null, fixedMonthlyMinor: null });
+  expect(untagged?.tag).toBeNull();
+  expect(untagged?.fixedMonthlyMinor).toBeNull();
 
   await store.reorderPayments(account.id, [p2.id, p1.id]);
   expect((await store.getPayment(p2.id))?.priority).toBe(1);
@@ -449,6 +470,8 @@ export async function exerciseStore(store: Store): Promise<void> {
     projectId: null,
     scope: "personal",
     bearerUserId: user.id,
+    fixedMonthlyMinor: null,
+    tag: "fitness",
   });
   const doomedContribution = await store.createContribution({
     paymentId: doomedPayment.id,

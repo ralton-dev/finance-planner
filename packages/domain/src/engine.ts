@@ -60,15 +60,40 @@ interface RequiredResult {
 }
 
 /**
+ * The monthly contribution cap governing a payment, or null when none applies.
+ *
+ * Only a fixed_point goal can be contribution-first ("I'll put by £200 a month
+ * until it's done"); the other categories are bills with real deadlines, so a
+ * cap there would be a promise the calendar doesn't keep — it is ignored. A
+ * non-positive cap is treated as absent (defensive: contracts require > 0).
+ */
+export function contributionCapMinor(p: PaymentInput): number | null {
+  if (p.category !== "fixed_point") return null;
+  const cap = p.fixedMonthlyMinor ?? null;
+  return cap !== null && cap > 0 ? cap : null;
+}
+
+/**
  * Required monthly contribution to have a payment funded by its target date.
  * Per-category formulas:
  *   monthly_recurring → full amount due each month (nothing to "save up")
- *   fixed_point       → ceilDiv(amount - alreadySaved, monthsUntil(targetDate))
+ *   fixed_point       → ceilDiv(amount - alreadySaved, monthsUntil(targetDate)),
+ *                       or, when contribution-first (see below), the cap itself
  *   yearly_recurring  → ceilDiv(remaining, monthsUntil(nextOccurrence))
  *   custom_recurring  → if it falls due this month, (occurrences this month) ×
  *                       amount (a sub-monthly cadence like every-2-weeks can hit
  *                       2–3 times); otherwise save up toward the next occurrence
  * monthsUntil() floors at 1 to avoid divide-by-zero on past / this-month dates.
+ *
+ * Contribution-first goals (fixed_point + fixedMonthlyMinor):
+ *   requiredMinor = min(cap, remaining) — the pace is chosen, not derived, and
+ *   the final month asks only for what is left.
+ *   With a dueDate:    the date no longer drives the amount (the cap does), but
+ *                      it stays the effectiveDate, and monthsUntilDue still
+ *                      counts to it — so the plan can still say "you'll be late".
+ *   Without a dueDate: monthsUntilDue = ceilDiv(remaining, cap) (min 1) and the
+ *                      effectiveDate is that many months on from the as-of date:
+ *                      the goal's finish date is a consequence of the pace.
  */
 export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredResult {
   const alreadySaved = p.alreadySavedMinor ?? 0;
@@ -80,6 +105,22 @@ export function requiredMonthlyForPayment(p: PaymentInput, now: Date): RequiredR
       requiredMinor: p.amountMinor,
       effectiveDate: toISODate(due),
       monthsUntilDue: 1,
+      occurrencesThisMonth: 1,
+    };
+  }
+
+  const cap = contributionCapMinor(p);
+  if (cap !== null) {
+    const remaining = Math.max(0, p.amountMinor - alreadySaved);
+    const target = p.targetDate ?? p.dueDate ?? null;
+    // Dated: keep the promised date, count the months to it. Dateless: the pace
+    // sets the date — as many whole months as the remaining amount needs.
+    const paceMonths = Math.max(1, ceilDiv(remaining, cap));
+    const dated = target ? parseISODate(target) : null;
+    return {
+      requiredMinor: Math.min(cap, remaining),
+      effectiveDate: toISODate(dated ?? addUnit(now, paceMonths, "month")),
+      monthsUntilDue: dated ? monthsUntil(now, dated) : paceMonths,
       occurrencesThisMonth: 1,
     };
   }
@@ -161,11 +202,19 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
     totalFunded += funded;
 
     const onTrack = funded >= req.requiredMinor;
+    const remaining = Math.max(0, p.amountMinor - (p.alreadySavedMinor ?? 0));
     let projectedCompletionDate: string | undefined;
     if (!onTrack) {
-      const remaining = Math.max(0, p.amountMinor - (p.alreadySavedMinor ?? 0));
       const monthsNeeded = ceilDiv(remaining, Math.max(funded, 1));
       projectedCompletionDate = toISODate(addUnit(now, monthsNeeded, "month"));
+    } else if (remaining > 0 && contributionCapMinor(p) !== null) {
+      // A contribution-capped goal can be fully funded and still miss its date:
+      // the cap, not the calendar, sets the pace. Surface the real finish date
+      // when it lands after the date the goal carries — "on pace, but late", two
+      // facts the UI can show side by side. For a dateless goal the finish date
+      // *is* the effective date, so this never fires.
+      const finish = toISODate(addUnit(now, ceilDiv(remaining, req.requiredMinor), "month"));
+      if (finish > req.effectiveDate) projectedCompletionDate = finish;
     }
 
     return {
@@ -182,6 +231,8 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
       occurrencesThisMonth: req.occurrencesThisMonth,
       onTrack,
       projectedCompletionDate,
+      fixedMonthlyMinor: p.fixedMonthlyMinor ?? null,
+      tag: p.tag ?? null,
     };
   });
 

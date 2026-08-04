@@ -123,6 +123,8 @@ export const payments = coreSchema.table("payments", {
   projectId: uuid("project_id"),
   scope: text("scope").notNull().default("shared"),
   bearerUserId: uuid("bearer_user_id"),
+  fixedMonthlyMinor: bigint("fixed_monthly_minor", { mode: "number" }),
+  tag: text("tag"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

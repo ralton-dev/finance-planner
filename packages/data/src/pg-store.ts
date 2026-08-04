@@ -643,6 +643,8 @@ export class PgStore implements Store {
         projectId: input.projectId,
         scope: input.scope,
         bearerUserId: input.bearerUserId,
+        fixedMonthlyMinor: input.fixedMonthlyMinor,
+        tag: input.tag,
       })
       .returning();
     return this.mapPayment(row!);
@@ -921,6 +923,8 @@ export class PgStore implements Store {
       projectId: r.projectId,
       scope: r.scope as PaymentScope,
       bearerUserId: r.bearerUserId,
+      fixedMonthlyMinor: r.fixedMonthlyMinor,
+      tag: r.tag,
       createdAt: r.createdAt.toISOString(),
       updatedAt: r.updatedAt.toISOString(),
     };

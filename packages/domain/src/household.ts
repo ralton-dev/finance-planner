@@ -78,6 +78,9 @@ export interface HouseholdPlanLine {
   fundedMonthlyMinor: number;
   occurrencesThisMonth: number;
   onTrack: boolean;
+  /** Passthrough of the payment's grouping label, so charts can group without
+   *  refetching the payments. */
+  tag?: string | null;
   allocations: MemberAllocation[];
 }
 
@@ -273,6 +276,7 @@ export function computeHouseholdPlan(input: HouseholdInput, asOfDate: string): H
         fundedMonthlyMinor: 0,
         occurrencesThisMonth: req.occurrencesThisMonth,
         onTrack: false,
+        tag: p.tag ?? null,
         allocations: members.map((m) => ({ userId: m.userId, requiredMinor: 0, fundedMinor: 0 })),
       });
       for (let i = 0; i < members.length; i++) {

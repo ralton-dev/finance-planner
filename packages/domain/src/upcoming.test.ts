@@ -79,6 +79,18 @@ describe("upcomingPayments — window", () => {
   it("skips a dateless goal", () => {
     expect(feed([pay({ id: "g", category: "fixed_point" })])).toEqual([]);
   });
+
+  it("skips a dateless contribution-first goal — it is a habit, not a bill", () => {
+    const bike = pay({
+      id: "bike",
+      category: "fixed_point",
+      amountMinor: 60_000,
+      fixedMonthlyMinor: 20_000,
+    });
+    expect(feed([bike], 90)).toEqual([]);
+    // Give it a date and it shows up like any other goal.
+    expect(due([{ ...bike, dueDate: "2026-08-20" }], 90)).toEqual(["2026-08-20"]);
+  });
 });
 
 // --- cadences ----------------------------------------------------------------

@@ -8,6 +8,7 @@ import {
   createPaymentBody,
   createProjectBody,
   type HealthResponse,
+  planPreviewBody,
   type ReadinessResponse,
   reorderPaymentsBody,
   shareAccountBody,
@@ -37,6 +38,7 @@ import {
   computeHouseholdPlanFor,
   computeHouseholdPlanWithSchedule,
   computePlanForAccount,
+  previewPlanForAccount,
 } from "./plan.js";
 
 const SERVICE = "api";
@@ -299,6 +301,30 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   });
 
   /**
+   * What-if: the account's plan as it stands, and as it would stand with some
+   * hypothetical payments/incomes added. Nothing is written — the overlay is
+   * built into the engine input, given synthetic ids, and thrown away with the
+   * request.
+   *
+   * "view" access is enough, and it is a POST only because the overlay is a
+   * body: the response reveals nothing GET /plan doesn't already, and the
+   * hypothetical is the caller's own.
+   *
+   * A household equivalent is deliberately not built this round. A household
+   * overlay would have to say which account each hypothetical payment lands in
+   * and who bears it, then re-derive the transfers — a design question of its
+   * own rather than a second call site for this one.
+   */
+  app.post("/api/accounts/:id/plan/preview", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { asOf } = req.query as { asOf?: string };
+    const { account } = await requireAccess(userId, id, "view");
+    const body = planPreviewBody.parse(req.body);
+    return previewPlanForAccount(store, account, asOf ?? today(), body);
+  });
+
+  /**
    * Month-by-month simulation of the account's plan, so the UI can show where
    * the money lands rather than just this month's slice. The balance trajectory
    * starts from the latest real balance check-in; with no check-in there is no
@@ -508,6 +534,8 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       projectId: body.projectId ?? null,
       scope: body.scope,
       bearerUserId: body.bearerUserId ?? null,
+      fixedMonthlyMinor: body.fixedMonthlyMinor ?? null,
+      tag: body.tag ?? null,
     });
     return reply.code(201).send(payment);
   });

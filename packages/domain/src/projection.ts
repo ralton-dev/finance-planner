@@ -1,6 +1,6 @@
 import type { PaymentCategory, Recurrence } from "@finance-planner/contracts";
 import { addUnit, occurrencesInMonth, parseISODate, toISODate } from "./dates.js";
-import { computeAccountPlan } from "./engine.js";
+import { computeAccountPlan, contributionCapMinor } from "./engine.js";
 import { computeHouseholdPlan, type HouseholdInput } from "./household.js";
 import type { AccountInput, PaymentInput } from "./types.js";
 
@@ -129,18 +129,28 @@ function resolveRecurrence(p: PaymentInput): Recurrence | null {
   return null;
 }
 
+/** A contribution-first goal with no date: it is never "due", only finished —
+ *  there is no day on which the money is assumed to leave the account. */
+function isDatelessCappedGoal(p: PaymentInput): boolean {
+  return contributionCapMinor(p) !== null && !p.targetDate && !p.dueDate;
+}
+
 /**
  * How many times a payment actually falls due in the calendar month of `ref`.
  *   monthly_recurring → 1, every month, by definition
  *   fixed_point       → 1 in its target month; an already-overdue goal counts as
  *                       due immediately (the engine likewise demands the whole
- *                       remaining amount at once once the date has passed)
+ *                       remaining amount at once once the date has passed). A
+ *                       dateless contribution-capped goal is the exception: it
+ *                       has no deadline to fall due on, so it never pays out —
+ *                       see `evolvePayment`.
  *   yearly / custom    → occurrencesInMonth against the resolved cadence, so a
  *                       fortnightly bill lands 2–3 times in some months
  */
 function dueOccurrences(p: PaymentInput, ref: Date, monthKey: string): number {
   if (p.category === "monthly_recurring") return 1;
   if (p.category === "fixed_point") {
+    if (isDatelessCappedGoal(p)) return 0;
     const target = p.targetDate ?? p.dueDate ?? null;
     return target === null || target.slice(0, 7) <= monthKey ? 1 : 0;
   }
@@ -161,6 +171,12 @@ interface DueResult {
  * goes into its pot, then anything falling due is paid out of that pot. A
  * fixed_point goal is spent when its month arrives and takes no further part in
  * the simulation (autoRenew is a data-entry convenience, not a second goal).
+ *
+ * A dateless contribution-capped goal retires differently: it accumulates until
+ * the target amount is reached and then drops out — completed, not spent. Its
+ * reserve is left in place, so `reservedEndMinor` and the balance keep counting
+ * the money (it is sitting in the account waiting to be used, and the plan has
+ * no date on which to assume it leaves).
  */
 function evolvePayment(
   p: PaymentInput,
@@ -173,7 +189,12 @@ function evolvePayment(
   const dueAmountMinor = occurrences > 0 ? p.amountMinor * occurrences : 0;
   if (p.category !== "monthly_recurring") {
     state.alreadySavedMinor = Math.max(0, state.alreadySavedMinor + fundedMinor - dueAmountMinor);
-    if (p.category === "fixed_point" && occurrences > 0) state.active = false;
+    if (p.category === "fixed_point") {
+      if (occurrences > 0) state.active = false;
+      else if (isDatelessCappedGoal(p) && state.alreadySavedMinor >= p.amountMinor) {
+        state.active = false;
+      }
+    }
   }
   return { dueThisMonth: occurrences > 0, dueAmountMinor };
 }
@@ -207,6 +228,8 @@ function totalReserved(states: Iterable<PaymentState>): number {
  * the bill gets paid, so an under-reserved bill can drive the balance negative
  * and make the crunch visible. Monthly bills, the buffer and the leftover are
  * assumed paid or spent out of the same month's income and are balance-neutral.
+ * A dateless contribution-capped goal never falls due, so completing it takes
+ * nothing back out: the balance keeps the money it accumulated.
  *
  * Inputs are never mutated: the evolving payment state is held separately and
  * overlaid onto copies.

@@ -165,10 +165,22 @@ const paymentObject = z.object({
   /** When scope === "personal": the member who bears it. Defaults at compute
    *  time to the owning member of a personal account. */
   bearerUserId: z.string().uuid().nullish(),
+  /**
+   * Contribution-first goals: "I will set aside this much per month". Honoured
+   * only for category "fixed_point" — a recurring bill has a real deadline, so
+   * the engine ignores the cap there. With one set, a dueDate is optional: the
+   * goal's finish date is derived from the pace instead.
+   */
+  fixedMonthlyMinor: z.number().int().positive().nullish(),
+  /** Free-text label for grouping payments in charts ("housing", "car", …). */
+  tag: z.string().trim().min(1).max(40).nullish(),
 });
 export const createPaymentBody = paymentObject.refine(
-  (p) => p.category !== "fixed_point" || !!p.dueDate,
-  { message: "fixed_point payments require a dueDate", path: ["dueDate"] },
+  (p) => p.category !== "fixed_point" || !!p.dueDate || !!p.fixedMonthlyMinor,
+  {
+    message: "fixed_point payments require a dueDate or fixedMonthlyMinor",
+    path: ["dueDate"],
+  },
 );
 export type CreatePaymentBody = z.infer<typeof createPaymentBody>;
 /** Updates may also move the payment to another account via `accountId`
@@ -180,6 +192,23 @@ export const updatePaymentBody = paymentObject.partial().extend({
 export const reorderPaymentsBody = z.object({
   orderedPaymentIds: z.array(z.string().uuid()),
 });
+
+/**
+ * A what-if overlay for the plan preview: payments and/or incomes to add on top
+ * of the account as it stands. Nothing is persisted — the overlay lives for one
+ * request. Capped at five of each so a preview stays a glance, not a bulk import;
+ * at least one addition is required (an empty overlay is just GET /plan).
+ */
+export const planPreviewBody = z
+  .object({
+    addPayments: z.array(createPaymentBody).max(5).optional(),
+    addIncomes: z.array(createIncomeBody).max(5).optional(),
+  })
+  .refine((b) => (b.addPayments?.length ?? 0) + (b.addIncomes?.length ?? 0) > 0, {
+    message: "provide at least one payment or income to preview",
+    path: ["addPayments"],
+  });
+export type PlanPreviewBody = z.infer<typeof planPreviewBody>;
 
 export const createHouseholdBody = z.object({ name: z.string().min(1) });
 export const addMemberBody = z.object({

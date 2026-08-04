@@ -1496,4 +1496,297 @@ describe("api service", () => {
     const unauthenticated = await app.inject({ method: "GET", url: "/api/upcoming" });
     expect(unauthenticated.statusCode).toBe(401);
   });
+
+  // ---- contribution-first goals + tags ----
+
+  /** An account with a £3,000/month salary, ready for goal + preview tests. */
+  async function seedFundedAccount(auth: Record<string, string>, name = "Everyday") {
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name, currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    return account;
+  }
+
+  it("accepts a fixed_point goal with a monthly amount and no due date", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedFundedAccount(auth);
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: {
+        name: "New bike",
+        category: "fixed_point",
+        amountMinor: 120000,
+        fixedMonthlyMinor: 20000,
+        tag: "toys",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().fixedMonthlyMinor).toBe(20000);
+    expect(created.json().dueDate).toBeNull();
+
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan?asOf=2026-01-01`,
+        headers: auth,
+      })
+    ).json();
+    // The cap sets the contribution, and the pace sets the finish date.
+    expect(plan.lines[0].requiredMonthlyMinor).toBe(20000);
+    expect(plan.lines[0].fixedMonthlyMinor).toBe(20000);
+    expect(plan.lines[0].targetDate).toBe("2026-07-01");
+    expect(plan.leftoverMinor).toBe(280000);
+  });
+
+  it("rejects a fixed_point payment with neither a date nor a monthly amount (422)", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedFundedAccount(auth);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: { name: "Vague", category: "fixed_point", amountMinor: 120000 },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("validation_error");
+  });
+
+  it("round-trips a payment tag and carries it onto the plan line", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedFundedAccount(auth);
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: "Rent",
+          category: "monthly_recurring",
+          amountMinor: 100000,
+          tag: "housing",
+        },
+      })
+    ).json();
+    expect(payment.tag).toBe("housing");
+
+    const listed = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+      })
+    ).json();
+    expect(listed[0].tag).toBe("housing");
+
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan?asOf=2026-01-01`,
+        headers: auth,
+      })
+    ).json();
+    expect(plan.lines[0].tag).toBe("housing");
+
+    // Both fields are patchable, including back off again.
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/api/payments/${payment.id}`,
+      headers: auth,
+      payload: { tag: "home", fixedMonthlyMinor: 5000 },
+    });
+    expect(patched.json().tag).toBe("home");
+    expect(patched.json().fixedMonthlyMinor).toBe(5000);
+    const cleared = await app.inject({
+      method: "PATCH",
+      url: `/api/payments/${payment.id}`,
+      headers: auth,
+      payload: { tag: null, fixedMonthlyMinor: null },
+    });
+    expect(cleared.json().tag).toBeNull();
+    expect(cleared.json().fixedMonthlyMinor).toBeNull();
+  });
+
+  it("carries payment tags onto household plan lines too", async () => {
+    const h = await seedHousehold(store, app);
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${h.bills.id}/payments`,
+      headers: h.auth,
+      payload: {
+        name: "Broadband",
+        category: "monthly_recurring",
+        amountMinor: 4000,
+        scope: "shared",
+        tag: "utilities",
+      },
+    });
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${h.household.id}/plan?asOf=2026-06-15`,
+        headers: h.auth,
+      })
+    ).json();
+    const broadband = plan.lines.find((l: { name: string }) => l.name === "Broadband");
+    expect(broadband.tag).toBe("utilities");
+    expect(plan.lines.find((l: { name: string }) => l.name === "Rent").tag).toBeNull();
+  });
+
+  // ---- what-if plan preview ----
+
+  it("previews a plan with extra payments without persisting anything", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedFundedAccount(auth);
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
+    });
+    const before = await store.listPayments(account.id);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/plan/preview?asOf=2026-01-01`,
+      headers: auth,
+      payload: {
+        addPayments: [{ name: "Gym", category: "monthly_recurring", amountMinor: 5000 }],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const { base, preview } = res.json();
+    expect(base.leftoverMinor).toBe(200000);
+    expect(preview.leftoverMinor).toBe(195000);
+    expect(base.lines).toHaveLength(1);
+    expect(preview.lines).toHaveLength(2);
+    expect(preview.lines.map((l: { paymentId: string }) => l.paymentId)).toContain(
+      "preview-payment-1",
+    );
+
+    // Nothing was written: the account still holds exactly what it did.
+    expect(await store.listPayments(account.id)).toEqual(before);
+  });
+
+  it("previews extra income too, and both overlays at once", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedFundedAccount(auth);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/plan/preview?asOf=2026-01-01`,
+      headers: auth,
+      payload: {
+        addIncomes: [
+          { name: "Side gig", amountMinor: 50000, frequency: "monthly", anchorDate: "2026-01-01" },
+        ],
+        addPayments: [
+          {
+            name: "New bike",
+            category: "fixed_point",
+            amountMinor: 120000,
+            fixedMonthlyMinor: 20000,
+            tag: "toys",
+          },
+        ],
+      },
+    });
+    const { base, preview } = res.json();
+    expect(base.monthlyIncomeMinor).toBe(300000);
+    expect(preview.monthlyIncomeMinor).toBe(350000);
+    expect(preview.leftoverMinor).toBe(330000); // 350000 income − the 20000 cap
+    expect(preview.lines[0]).toMatchObject({
+      paymentId: "preview-payment-1",
+      requiredMonthlyMinor: 20000,
+      fixedMonthlyMinor: 20000,
+      tag: "toys",
+    });
+    expect(await store.listIncomes(account.id)).toHaveLength(1);
+  });
+
+  it("rejects an empty or oversized preview overlay (422)", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedFundedAccount(auth);
+    const url = `/api/accounts/${account.id}/plan/preview`;
+
+    const empty = await app.inject({ method: "POST", url, headers: auth, payload: {} });
+    expect(empty.statusCode).toBe(422);
+    const emptyArrays = await app.inject({
+      method: "POST",
+      url,
+      headers: auth,
+      payload: { addPayments: [], addIncomes: [] },
+    });
+    expect(emptyArrays.statusCode).toBe(422);
+
+    const tooMany = await app.inject({
+      method: "POST",
+      url,
+      headers: auth,
+      payload: {
+        addPayments: Array.from({ length: 6 }, (_, i) => ({
+          name: `Bill ${i}`,
+          category: "monthly_recurring",
+          amountMinor: 1000,
+        })),
+      },
+    });
+    expect(tooMany.statusCode).toBe(422);
+
+    // Overlay entries are validated like real payments.
+    const invalid = await app.inject({
+      method: "POST",
+      url,
+      headers: auth,
+      payload: { addPayments: [{ name: "Vague", category: "fixed_point", amountMinor: 1000 }] },
+    });
+    expect(invalid.statusCode).toBe(422);
+  });
+
+  it("lets a view-only member preview a shared account but hides it from strangers", async () => {
+    const { user, auth } = await seedUser(store, "owner-prev@example.com");
+    const { user: partner, auth: partnerAuth } = await seedUser(store, "partner-prev@example.com");
+    const { auth: strangerAuth } = await seedUser(store, "stranger-prev@example.com");
+    const account = await seedFundedAccount(auth);
+
+    const household = await store.createHousehold("Home", user.id);
+    await store.addMembership(household.id, partner.id, "member");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/shares`,
+      headers: auth,
+      payload: { householdId: household.id, permission: "view" },
+    });
+
+    const url = `/api/accounts/${account.id}/plan/preview?asOf=2026-01-01`;
+    const payload = {
+      addPayments: [{ name: "Gym", category: "monthly_recurring", amountMinor: 5000 }],
+    };
+    const seen = await app.inject({ method: "POST", url, headers: partnerAuth, payload });
+    expect(seen.statusCode).toBe(200);
+    expect(seen.json().preview.leftoverMinor).toBe(295000);
+
+    const hidden = await app.inject({ method: "POST", url, headers: strangerAuth, payload });
+    expect(hidden.statusCode).toBe(404);
+
+    const unauthenticated = await app.inject({ method: "POST", url, payload });
+    expect(unauthenticated.statusCode).toBe(401);
+  });
 });
