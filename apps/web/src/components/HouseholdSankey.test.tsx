@@ -43,14 +43,30 @@ function makePlan(accounts: HouseholdAccountPlanDto[], transfers: TransferDto[])
 
 describe("the household preset", () => {
   /**
-   * The pin. `nodes` and `links` below are the literal output of the
-   * household-only `buildGraph(plan: HouseholdPlanDto)` as it stood before the
-   * diagram was generalised, captured from it verbatim. A household is now one
-   * preset over a set of accounts, drawn by the same component as any other
-   * scope — and it has to draw the same picture, node for node and link for
-   * link, in the same order.
+   * The pin, **deliberately re-pinned once** — ONE-ENGINE.md, WP-T.
+   *
+   * What it held before: the literal output of the household-only
+   * `buildGraph(plan: HouseholdPlanDto)` as it stood before the diagram was
+   * generalised, captured verbatim, so that drawing a household through the
+   * scope-shaped component produced the same picture node for node.
+   *
+   * What changed, and why it had to: a household plan had never heard of a
+   * movement leaving one of its own accounts, so `leftoverMinor` was the whole
+   * residual and drawing it straight was right. One pass funds savings too, and
+   * that field now means the residual *before* them (decision 13). Drawn
+   * unchanged it would over-draw every sending node by its `committedMinor` and
+   * put the household page back to disagreeing with the account page by exactly
+   * one movement — which is the defect the whole plan exists to end. So the
+   * picture gains the movements, and this capture is taken again on a fixture
+   * that has one: Alice sweeps £500 a month into the household's holiday pot.
+   *
+   * The committed money leaves for `elsewhere` and the same £500 arrives from
+   * `elsewhere`, because a household reports its movements as one bucket and
+   * never itemises them — the flow page draws them movement by movement. Both
+   * halves are true and every node's ribbons meet, which is the property a
+   * diagram lives or dies by.
    */
-  it("draws exactly the diagram the household-only builder drew", () => {
+  it("draws the household's committed movements, and every node's ribbons meet", () => {
     const plan: HouseholdPlanDto = {
       householdId: "hh",
       asOfDate: "2026-08-04",
@@ -59,6 +75,7 @@ describe("the household preset", () => {
       totalRequiredMinor: 220_000,
       totalFundedMinor: 220_000,
       leftoverMinor: 280_000,
+      committedMinor: 50_000,
       shortfallMinor: 0,
       members: [
         {
@@ -69,6 +86,7 @@ describe("the household preset", () => {
           obligationMinor: 132_000,
           fundedMinor: 132_000,
           leftoverMinor: 168_000,
+          committedMinor: 50_000,
           shortfallMinor: 0,
         },
         {
@@ -90,7 +108,10 @@ describe("the household preset", () => {
           memberUserId: "alice",
           monthlyIncomeMinor: 300_000,
           transferOutMinor: 132_000,
+          // Keeps its meaning to the penny (decision 13): income − transfers
+          // out, before the savings movement below.
           leftoverMinor: 168_000,
+          committedMinor: 50_000,
         }),
         account({
           accountId: "bob-cur",
@@ -107,6 +128,15 @@ describe("the household preset", () => {
           requiredOutflowMinor: 220_000,
           fundedOutflowMinor: 220_000,
           transferInMinor: 220_000,
+        }),
+        // Where the £500 lands. The household plan reports the arrival only as
+        // this account's left-over being larger than anything else explains —
+        // it has no row for a movement — which is exactly what `arrivingMinor`
+        // reads back out of it.
+        account({
+          accountId: "holiday",
+          name: "holiday",
+          leftoverMinor: 50_000,
         }),
       ],
       lines: [],
@@ -131,15 +161,21 @@ describe("the household preset", () => {
         { name: "alice current", isAccount: true },
         { name: "bob current", isAccount: true },
         { name: "bills", isAccount: true },
+        { name: "holiday", isAccount: true },
         { name: "income", isAccount: false },
         { name: "left over", isAccount: false },
         { name: "income", isAccount: false },
         { name: "left over", isAccount: false },
         { name: "spending", isAccount: false },
+        { name: "left over", isAccount: false },
+        // One node per off-picture end, never shared: two of them here, and
+        // merging them would make the graph circular and stop it laying out.
+        { name: "elsewhere", isAccount: false },
+        { name: "elsewhere", isAccount: false },
       ],
       links: [
         {
-          source: 3,
+          source: 4,
           target: 0,
           value: 300_000,
           kind: "income",
@@ -147,15 +183,17 @@ describe("the household preset", () => {
           toName: "alice current",
         },
         {
+          // £1,680 left over, less the £500 committed: what actually stays put,
+          // and the figure Alice's account page prints as its residual.
           source: 0,
-          target: 4,
-          value: 168_000,
+          target: 5,
+          value: 118_000,
           kind: "leftover",
           fromName: "alice current",
           toName: "left over",
         },
         {
-          source: 5,
+          source: 6,
           target: 1,
           value: 200_000,
           kind: "income",
@@ -164,7 +202,7 @@ describe("the household preset", () => {
         },
         {
           source: 1,
-          target: 6,
+          target: 7,
           value: 112_000,
           kind: "leftover",
           fromName: "bob current",
@@ -172,11 +210,19 @@ describe("the household preset", () => {
         },
         {
           source: 2,
-          target: 7,
+          target: 8,
           value: 220_000,
           kind: "spending",
           fromName: "bills",
           toName: "spending",
+        },
+        {
+          source: 3,
+          target: 9,
+          value: 50_000,
+          kind: "leftover",
+          fromName: "holiday",
+          toName: "left over",
         },
         {
           source: 0,
@@ -196,8 +242,36 @@ describe("the household preset", () => {
           toName: "bills",
           note: "Bob",
         },
+        {
+          // The committed bucket, leaving. Not itemised: the household plan has
+          // no row saying where it went, and the flow page is where that
+          // question is answered.
+          source: 0,
+          target: 10,
+          value: 50_000,
+          kind: "transfer",
+          fromName: "alice current",
+          toName: "elsewhere",
+        },
+        {
+          source: 11,
+          target: 3,
+          value: 50_000,
+          kind: "transfer",
+          fromName: "elsewhere",
+          toName: "holiday",
+        },
       ],
     });
+
+    // Every node's ribbons meet, which is the property the picture lives on.
+    const { nodes, links } = buildGraph(householdFlow(plan));
+    for (const [index, node] of nodes.entries()) {
+      if (!node.isAccount) continue;
+      const inMinor = links.filter((l) => l.target === index).reduce((s, l) => s + l.value, 0);
+      const outMinor = links.filter((l) => l.source === index).reduce((s, l) => s + l.value, 0);
+      expect([node.name, inMinor]).toEqual([node.name, outMinor]);
+    }
 
     // ...and the household's own denominator is unchanged: total income.
     expect(householdFlow(plan).totalInflowMinor).toBe(500_000);

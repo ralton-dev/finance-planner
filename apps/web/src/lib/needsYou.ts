@@ -147,19 +147,6 @@ export interface NeedsYouInput {
   upcoming?: readonly UpcomingItemDto[];
   /** Defaults to {@link DEFAULT_STALE_AFTER_DAYS}. */
   staleAfterDays?: number;
-  /**
-   * Per currency, money that left one of these accounts and was spent by
-   * another of them — `CurrencyOverviewDto.intraEstateMovementMinor`, straight
-   * off the overview, which is the only thing that computes it.
-   *
-   * The headline's left-over is a sum of per-account surpluses, and a pound that
-   * moved between two accounts you own sits in the sender's surplus *and* in the
-   * receiver's funded total. A chain (current → pot → ISA) counts it again at
-   * every hop, so the error is invisible on a two-account fixture and grows
-   * without bound on a real estate. Keyed by currency because the input spans
-   * currencies and the headline is only ever counted in one of them.
-   */
-  intraEstateMovementMinor?: Readonly<Record<string, number>>;
 }
 
 // --- output ----------------------------------------------------------------
@@ -468,6 +455,61 @@ function transferItems(entry: NeedsYouHouseholdInput, month: string): NeedsYouIt
     });
 }
 
+// --- derived transfers -----------------------------------------------------
+
+/**
+ * A transfer the plan **derived** into an account nobody's household plan in
+ * this input speaks for.
+ *
+ * The third producer of "the plan counts on money being somewhere it is not",
+ * and the one that had no prompt at all. Decision 9 moved expense transport out
+ * of the authoring primitive and into the pass: a standalone pot with a rent
+ * bill and no income is fed by a transfer the plan works out, with no household
+ * anywhere and nobody having written a movement down. Its lines read
+ * `awaiting_transfer` — correctly, no red — and until now nothing in the app
+ * asked about it.
+ *
+ * One row per member sending, not one per bill: the pot's whole feed is one
+ * transfer to make. The pot is also not short — the plan funds it — so
+ * {@link accountShortfall} draws nothing, and the WP-E property holds through
+ * the new producer: exactly one row, and it is a transfer.
+ *
+ * Drawn only for accounts {@link standaloneAccounts} keeps, because a household
+ * in the input already draws its own transfers off its plan and neither may draw
+ * the other's.
+ */
+function derivedTransferItems(entry: NeedsYouAccountInput, month: string): NeedsYouItem[] {
+  const { plan } = entry;
+  const sources = (plan.inflowSources ?? []).filter(
+    (s) => s.kind === "member" && s.amountMinor > 0,
+  ) as Extract<PlanInflowSourceDto, { kind: "member" }>[];
+  const done = sources.filter((s) => s.confirmedMinor >= s.amountMinor).length;
+
+  return sources
+    .filter((s) => s.confirmedMinor < s.amountMinor)
+    .map((s) => {
+      const who = s.displayName ?? "a household member";
+      return {
+        key: `derived:${plan.accountId}:${s.memberUserId}`,
+        kind: "transfer" as const,
+        label: `${who} → ${entry.name}`,
+        amountMinor: s.amountMinor - s.confirmedMinor,
+        currency: plan.currency,
+        meta: [
+          `the plan derives this feed · ${formatMonth(month)} · ` +
+            `${done} of ${sources.length} done · nobody authored it`,
+        ],
+        href: `/accounts/${plan.accountId}`,
+        // No action. Confirming one is `POST /accounts/:id/transfers/confirm`,
+        // which needs the *sending* account — and an account plan's
+        // `inflowSources` names the member and not the account they send from,
+        // so there is nothing here to post. Reported with this package; until
+        // the wire carries it the row opens the account rather than lying about
+        // a button that cannot work.
+      };
+    });
+}
+
 // --- movements -------------------------------------------------------------
 
 /**
@@ -664,10 +706,13 @@ function standaloneAccounts(input: NeedsYouInput): readonly NeedsYouAccountInput
  * missing, then money that has not moved, then money that moved but was never
  * recorded, then balances nobody has confirmed.
  *
- * "Money that has not moved" has two producers and one kind: a household member
- * asked to transfer their share, and a movement between two of your own
- * accounts. Exactly one row per outstanding thing is the whole contract here, so
- * neither may draw the other's.
+ * "Money that has not moved" has three producers and one kind: a household
+ * member asked to transfer their share, a transfer the plan derived for an
+ * account no household in this input speaks for, and a movement between two of
+ * your own accounts that somebody authored. Exactly one row per outstanding
+ * thing is the whole contract here, so none of them may draw another's — the
+ * first two are split by {@link standaloneAccounts} and the third is keyed by
+ * the authored inflow, which the other two do not have.
  */
 export function deriveNeedsYou(input: NeedsYouInput): NeedsYouItem[] {
   const month = monthOf(input.asOfDate);
@@ -684,6 +729,9 @@ export function deriveNeedsYou(input: NeedsYouInput): NeedsYouItem[] {
   for (const account of standaloneAccounts(input)) {
     const fact = accountShortfall(account);
     if (fact) items.push(fact.item);
+    // The household loop above draws these off `plan.transfers`; an account no
+    // household in this input speaks for has to draw its own.
+    items.push(...derivedTransferItems(account, month));
   }
 
   for (const account of accounts) {
@@ -747,15 +795,28 @@ export function deriveHeadline(
     standalone.reduce((n, a) => n + pick(a.plan), 0);
 
   const shortfallMinor = sum((p) => p.shortfallMinor);
-  // A pound that moved between two of these accounts is in the sender's surplus
-  // *and* in the receiver's funded total, so a plain sum counts it once per hop
-  // of the chain that carried it. `computeOverview` nets exactly this term out
-  // of the estate's total and floors the result at zero — an estate can be
-  // handed more money than it earns, and a negative surplus would be an
-  // alarming way to say "somebody else is paying". This is the same total, so
-  // it does the same thing to it.
-  const movedInternally = input.intraEstateMovementMinor?.[currency] ?? 0;
-  const leftoverMinor = Math.max(0, sum((p) => p.leftoverMinor) - movedInternally);
+  // A plain sum, less what the households have committed to savings.
+  //
+  // **The netting term is gone with the engine that needed it.** Two
+  // derivations of the same money each counted a transferred pound — once in
+  // the sender's surplus, again in the receiver's funded total — so a chain
+  // inflated the estate at every hop and the total had to subtract the
+  // difference. One pass settles it in the accounts instead: `leftoverMinor` is
+  // an account's own income after its own bills *and* after the transfers its
+  // owner must make, so every pound is counted once before this sees it, and
+  // `computeOverview`, which computed the term, no longer exists
+  // (ONE-ENGINE.md).
+  //
+  // What is subtracted now is decision 13's, and only for a household, which is
+  // the one input here that reports it: `leftoverMinor` is surplus *before* the
+  // month's savings movements everywhere, and this figure sits directly above
+  // the household page's LEFT OVER, which shows free-after-committed. A
+  // standalone account's summary carries no committed figure at all, so its
+  // surplus is counted as the account page prints it — before its savings, with
+  // the movements section saying so. Floored, because a movement can be funded
+  // out of money that arrived rather than out of the surplus.
+  const committedMinor = households.reduce((n, h) => n + (h.plan.committedMinor ?? 0), 0);
+  const leftoverMinor = Math.max(0, sum((p) => p.leftoverMinor) - committedMinor);
   const paymentCount =
     households.reduce((n, h) => n + h.plan.lines.length, 0) +
     standalone.reduce((n, a) => n + accountLines(a).lineCount, 0);

@@ -1423,11 +1423,17 @@ describe("deriveHeadline", () => {
   });
 
   /**
-   * current → pot → ISA. Each account's own left-over is right: the sender's
-   * surplus is its own income after its own obligations, and an account's
-   * left-over is deliberately never reduced by what it sends on. Summed, the
-   * pound that travelled is counted at every hop it made — invisible on a
-   * two-account fixture, unbounded on a real estate.
+   * current → pot → ISA, and the netting term that used to be subtracted here.
+   *
+   * The premise is gone, not the fixture. Two engines each counted the pound
+   * that travelled — once in the sender's surplus, again in the receiver's
+   * funded total — so a chain inflated the estate at every hop and the total had
+   * to subtract `intraEstateMovementMinor` to compensate. One pass counts it
+   * once, in the accounts, before any rollup sees it: `leftoverMinor` is an
+   * account's own income after its own bills and after the transfers its owner
+   * must make, and money that merely arrived is nobody's surplus. The term is
+   * deleted along with `computeOverview`, which was the only thing that computed
+   * it (ONE-ENGINE.md).
    */
   describe("a three-account chain", () => {
     /** £1,000 in at the top; £200 spent in the pot, £400 in the ISA. */
@@ -1469,28 +1475,15 @@ describe("deriveHeadline", () => {
       ...over,
     });
 
-    it("counts the same pound once per hop without the netting term", () => {
+    it("counts the pound once however many hops it makes, with nothing to net", () => {
+      // £1,000 earned at the top and £600 of it moved on. The two accounts
+      // downstream report no surplus of their own — the money that reached them
+      // is the sender's, counted there — so the estate's figure is the £1,000
+      // it actually earns, and no term is subtracted from it.
       const input = chain();
-      expect(deriveHeadline(input, deriveNeedsYou(input)).amountMinor).toBe(100_000);
-    });
-
-    it("reports what the estate actually has left once it is netted", () => {
-      // £1,000 earned, £600 of it spent downstream — £400 genuinely free, which
-      // is what GET /overview's own `leftoverMinor` says for the same estate.
-      const input = chain({ intraEstateMovementMinor: { GBP: 60_000 } });
       const headline = deriveHeadline(input, deriveNeedsYou(input));
       expect(headline.kind).toBe("leftover");
-      expect(headline.amountMinor).toBe(40_000);
-    });
-
-    it("floors at zero when somebody else is paying, as the estate rollup does", () => {
-      const input = chain({ intraEstateMovementMinor: { GBP: 250_000 } });
-      expect(deriveHeadline(input, deriveNeedsYou(input)).amountMinor).toBe(0);
-    });
-
-    it("nets only the currency the headline is counted in", () => {
-      const input = chain({ intraEstateMovementMinor: { EUR: 60_000 } });
-      expect(deriveHeadline(input, deriveNeedsYou(input)).amountMinor).toBe(100_000);
+      expect(headline.amountMinor).toBe(100_000);
     });
   });
 
@@ -1517,5 +1510,154 @@ describe("deriveHeadline", () => {
     expect(phraseText(headline.sentence)).toBe(
       "All 1 payment funded, the transfer settled, balances current. Nothing is waiting on you.",
     );
+  });
+});
+
+/**
+ * Decision 9's pot, and the WP-E property re-asserted for the new producer.
+ *
+ * A standalone pot with a £303.20 rent bill and no income of its own is fed by
+ * a transfer the pass derives — nobody authored it, no household exists, and
+ * its line reads `awaiting_transfer` rather than at risk. Before this, the
+ * checklist said nothing at all about it: the shortfall row was gone (rightly,
+ * the plan funds it) and no transfer row had ever been drawn for a feed nobody
+ * wrote down.
+ */
+describe("a solo pot fed by a transfer the plan derived", () => {
+  const soloPot = (over: Partial<AccountPlanDto> = {}): NeedsYouInput => ({
+    asOfDate: AS_OF,
+    accounts: [
+      {
+        name: "Rent pot",
+        plan: accountPlan({
+          accountId: "rent-pot",
+          monthlyIncomeMinor: 0,
+          allocatedInflowMinor: 30_320,
+          leftoverMinor: 0,
+          shortfallMinor: 0,
+          lines: [
+            accLine({
+              paymentId: "rent",
+              name: "Rent",
+              category: "monthly_recurring",
+              requiredMonthlyMinor: 30_320,
+              fundedMonthlyMinor: 30_320,
+              status: "awaiting_transfer",
+            }),
+          ],
+          inflowSources: [
+            {
+              kind: "member",
+              memberUserId: "ben",
+              displayName: "Ben",
+              amountMinor: 30_320,
+              confirmedMinor: 0,
+            },
+          ],
+          ...over,
+        }),
+      },
+    ],
+  });
+
+  it("draws exactly one row, and it is the transfer", () => {
+    const items = deriveNeedsYou(soloPot());
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      key: "derived:rent-pot:ben",
+      kind: "transfer",
+      label: "Ben → Rent pot",
+      amountMinor: 30_320,
+      href: "/accounts/rent-pot",
+    });
+    expect(phraseText(items[0]!.meta)).toBe(
+      "the plan derives this feed · aug 2026 · 0 of 1 done · nobody authored it",
+    );
+  });
+
+  it("draws no shortfall row: the plan funds the pot, it is only unmoved", () => {
+    expect(deriveNeedsYou(soloPot()).filter((i) => i.kind === "shortfall")).toEqual([]);
+  });
+
+  it("asks for nothing to be recorded until the money has actually moved", () => {
+    // The `record` rule, re-checked for the new producer: a line the plan funds
+    // with money nobody has moved yet is not money you can set aside, and the
+    // outstanding thing is the transfer. Once it is confirmed the feed's row
+    // goes and the line's own rule takes over.
+    const funded = soloPot({
+      lines: [
+        accLine({
+          paymentId: "rent",
+          name: "Rent",
+          category: "yearly_recurring",
+          fundedMonthlyMinor: 30_320,
+          status: "awaiting_transfer",
+        }),
+      ],
+    });
+    expect(deriveNeedsYou(funded).map((i) => i.kind)).toEqual(["transfer"]);
+
+    const moved: NeedsYouInput = {
+      ...funded,
+      accounts: [
+        {
+          ...funded.accounts![0]!,
+          plan: {
+            ...funded.accounts![0]!.plan,
+            lines: [
+              accLine({
+                paymentId: "rent",
+                name: "Rent",
+                category: "yearly_recurring",
+                fundedMonthlyMinor: 30_320,
+                status: "funded",
+              }),
+            ],
+            inflowSources: [
+              {
+                kind: "member",
+                memberUserId: "ben",
+                displayName: "Ben",
+                amountMinor: 30_320,
+                confirmedMinor: 30_320,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    expect(deriveNeedsYou(moved).map((i) => i.kind)).toEqual(["record"]);
+  });
+
+  it("leaves the row to the household when one in this input already draws it", () => {
+    // Two producers, one kind, and neither may draw the other's: the household
+    // loop reads `plan.transfers`, so an account it speaks for must not also
+    // read its own `inflowSources`.
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      households: [household()],
+      accounts: [
+        {
+          name: "Bills joint",
+          householdId: "hh",
+          plan: accountPlan({
+            accountId: "bills",
+            monthlyIncomeMinor: 0,
+            allocatedInflowMinor: 219_000,
+            inflowSources: [
+              {
+                kind: "member",
+                memberUserId: "alex",
+                displayName: "Alex",
+                amountMinor: 87_600,
+                confirmedMinor: 0,
+              },
+            ],
+          }),
+        },
+      ],
+    };
+    const transfers = deriveNeedsYou(input).filter((i) => i.kind === "transfer");
+    expect(transfers.map((t) => t.key)).toEqual(["transfer:hh:alex-current|bills|alex"]);
   });
 });

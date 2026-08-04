@@ -271,15 +271,50 @@ describe("AccountMovements — authoring", () => {
 });
 
 describe("outboundNote", () => {
-  it("says what LEFT OVER does not net off, and stays quiet when nothing leaves", () => {
-    // Both figures are right; side by side without a word between them they
-    // read as a contradiction.
-    expect(outboundNote({ outboundInflowMinor: 55_000 } as AccountPlanDto, CURRENT)).toEqual([
+  it("puts LEFT OVER on the far side of the movement, not the near one", () => {
+    // The note used to say `leftover − outbound` out loud, which is the right
+    // answer only for an account nothing arrives at: money arriving is not in
+    // LEFT OVER at all. The KPI now prints `residualMinor`, which has the
+    // movement in it, so the note says which side of it that figure is on and
+    // quotes nothing it would only restate.
+    expect(
+      outboundNote(
+        { outboundInflowMinor: 55_000, residualMinor: 12_000 } as AccountPlanDto,
+        CURRENT,
+      ),
+    ).toEqual([
       { minor: 55_000, currency: "GBP" },
-      " a month is already committed to leave. left over above is what this account has before any of it moves on, not after.",
+      " a month is already committed to leave.",
+      " left over above is what stays once it has.",
     ]);
     expect(outboundNote({ outboundInflowMinor: 0 } as AccountPlanDto, CURRENT)).toBeNull();
     expect(outboundNote(undefined, CURRENT)).toBeNull();
+  });
+
+  it("names the consolidation a negative residual means, rather than hiding it", () => {
+    // Decision 11: more is committed to leave this account than reaches it,
+    // which happens when a member holds income somewhere other than the account
+    // their transfers leave. Flooring it would hide the thing to do.
+    expect(
+      outboundNote(
+        { outboundInflowMinor: 90_000, residualMinor: -20_000 } as AccountPlanDto,
+        CURRENT,
+      ),
+    ).toEqual([
+      { minor: 90_000, currency: "GBP" },
+      " a month is already committed to leave.",
+      " that is ",
+      { minor: 20_000, currency: "GBP" },
+      " more than reaches this account — consolidate your income here first, or the month cannot happen.",
+    ]);
+  });
+
+  it("says the old sentence when the wire is too old to carry a residual", () => {
+    expect(outboundNote({ outboundInflowMinor: 55_000 } as AccountPlanDto, CURRENT)).toEqual([
+      { minor: 55_000, currency: "GBP" },
+      " a month is already committed to leave.",
+      " left over above is what this account has before any of it moves on, not after.",
+    ]);
   });
 });
 
@@ -345,5 +380,149 @@ describe("movementError", () => {
     expect(movementError(new ApiError(403, "forbidden", "edit access required"))).toBe(
       "moving money between two accounts needs edit access to both of them.",
     );
+  });
+});
+
+/**
+ * Decision 9: an account with bills and no income of its own is fed by a
+ * transfer the *pass* derives, with nobody authoring anything. `listInflows`
+ * only ever knew about authored rows, so a pot funded entirely that way read
+ * "nothing moves into this account" while three hundred pounds a month arrived.
+ */
+describe("AccountMovements — the movements nobody authored", () => {
+  const derivedPlan = (over: Partial<AccountPlanDto> = {}): AccountPlanDto =>
+    ({
+      accountId: "pot",
+      currency: "GBP",
+      monthlyIncomeMinor: 0,
+      totalRequiredMinor: 30_320,
+      totalFundedMinor: 30_320,
+      allocatedInflowMinor: 30_320,
+      confirmedInflowMinor: 0,
+      outboundInflowMinor: 0,
+      residualMinor: 0,
+      inflowArrivals: [],
+      inflowSources: [
+        {
+          kind: "member",
+          memberUserId: "me",
+          displayName: "Ben",
+          amountMinor: 30_320,
+          confirmedMinor: 0,
+        },
+      ],
+      ...over,
+    }) as AccountPlanDto;
+
+  it("lists the derived feed arriving, with no edit or remove on it", async () => {
+    renderFor(POT, {}, { plan: derivedPlan() });
+
+    const row = await screen.findByText("derived transfer");
+    const item = row.closest("li")!;
+    expect(item).toHaveTextContent("£303.20");
+    expect(item).toHaveTextContent("Ben →");
+    expect(within(item).queryByRole("button")).toBeNull();
+    expect(screen.getByText(/the plan derives this for the bills here/)).toBeInTheDocument();
+  });
+
+  it("stops claiming nothing moves in, and says the narrower true thing instead", async () => {
+    renderFor(POT, {}, { plan: derivedPlan() });
+    await screen.findByText("derived transfer");
+    expect(screen.queryByText(/nothing moves into this account/)).toBeNull();
+    expect(screen.getByText(/nothing you authored/)).toBeInTheDocument();
+  });
+
+  it("says the derived transfers leaving a member's own account, which left over already lost", async () => {
+    // £1,000 in, £220 of it derived away to the household's bills pot, £780
+    // actually staying. Nothing authored anywhere.
+    renderFor(
+      CURRENT,
+      {},
+      {
+        plan: derivedPlan({
+          accountId: "current",
+          monthlyIncomeMinor: 100_000,
+          totalRequiredMinor: 0,
+          totalFundedMinor: 0,
+          allocatedInflowMinor: 0,
+          outboundInflowMinor: 0,
+          residualMinor: 78_000,
+          inflowSources: [],
+        }),
+      },
+    );
+
+    const row = await screen.findByText("derived transfer");
+    const item = row.closest("li")!;
+    expect(item).toHaveTextContent("£220.00");
+    expect(item).toHaveTextContent("→ your bills");
+    expect(screen.getByText(/already taken out of left over above/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * Decision 12, as the screen says it. A £400 bill in a pot with a £400 authored
+ * movement into it is neither short nor double-funded: the pass derives £400 to
+ * cover the bill and lands the movement on top as savings, so £800 arrives and
+ * £400 stays. The flag offers deletion of the redundant row — it never warns of
+ * a shortfall, because there is not one.
+ */
+describe("AccountMovements — a movement that duplicates the derived feed", () => {
+  const bothPlan = {
+    accountId: "pot",
+    currency: "GBP",
+    monthlyIncomeMinor: 0,
+    totalRequiredMinor: 40_000,
+    totalFundedMinor: 40_000,
+    // £400 derived for the bill, £400 the user authored on top.
+    allocatedInflowMinor: 80_000,
+    confirmedInflowMinor: 0,
+    outboundInflowMinor: 0,
+    residualMinor: 40_000,
+    inflowArrivals: [{ inflowId: "inf-1", fromAccountId: "current", amountMinor: 40_000 }],
+    inflowSources: [
+      {
+        kind: "member",
+        memberUserId: "me",
+        displayName: "Ben",
+        amountMinor: 40_000,
+        confirmedMinor: 0,
+      },
+    ],
+  } as AccountPlanDto;
+
+  it("names the derived half and offers deletion of the authored one", async () => {
+    renderFor(
+      POT,
+      { "GET /api/accounts/pot/inflows": { body: [movement({ id: "inf-1", accountId: "pot" })] } },
+      { plan: bothPlan },
+    );
+
+    expect(
+      await screen.findByText(
+        /a month already arrives here as a transfer the plan derives for these bills/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/if it was meant to cover the bills, delete it/)).toBeInTheDocument();
+    // The action it offers is the remove button already on the authored row.
+    const authored = screen.getByText("Monthly top-up").closest("li")!;
+    expect(within(authored).getByRole("button", { name: "✕" })).toBeInTheDocument();
+  });
+
+  it("says nothing about a shortfall, because the plan funds both", async () => {
+    renderFor(
+      POT,
+      { "GET /api/accounts/pot/inflows": { body: [movement({ id: "inf-1", accountId: "pot" })] } },
+      { plan: bothPlan },
+    );
+    await screen.findByText(/a month already arrives here/);
+    expect(screen.queryByText(/short/i)).toBeNull();
+  });
+
+  it("stays quiet when only one of the two feeds an account", async () => {
+    // Derived only.
+    renderFor(POT, {}, { plan: { ...bothPlan, allocatedInflowMinor: 40_000, inflowArrivals: [] } });
+    await screen.findByText("derived transfer");
+    expect(screen.queryByText(/a month already arrives here/)).toBeNull();
   });
 });

@@ -662,3 +662,62 @@ describe("daysUntilNextMonthly", () => {
     expect(daysUntilNextMonthly("2026-08-01", "")).toBeNull();
   });
 });
+
+/**
+ * The last place the two-engine disagreement survived, and the one this whole
+ * plan is named after.
+ *
+ * Measured in a browser: an account whose household page and flow diagram both
+ * read £1,822.60 had this KPI reading £2,625.80 — the same account, the same
+ * month, one £803.20 savings movement apart. LEFT OVER prints `residualMinor`
+ * now, which is what is actually in the account once everything has moved, and
+ * is the figure `packages/domain/src/parity.test.ts` asserts equal across all
+ * three surfaces.
+ */
+describe("PlanSummary — one number, on every surface", () => {
+  const sender = {
+    ...plan,
+    monthlyIncomeMinor: 400_000,
+    totalRequiredMinor: 0,
+    totalFundedMinor: 0,
+    shortfallMinor: 0,
+    // Own income after own bills and the transfers its owner must make. Keeps
+    // its meaning on the wire (decision 13) and is not what a reader wants.
+    leftoverMinor: 262_580,
+    outboundInflowMinor: 80_320,
+    residualMinor: 182_260,
+    lines: [],
+  };
+
+  it("prints what stays put, not the surplus before the savings left", () => {
+    render(<PlanSummary plan={sender} />);
+    expect(screen.getByText("left over").parentElement).toHaveTextContent("£1,822.60");
+    expect(screen.queryByText("£2,625.80")).toBeNull();
+  });
+
+  it("names the consolidation a negative residual means", () => {
+    // Decision 11: more is committed to leave than reaches this account, which
+    // happens when a member holds income somewhere other than the account their
+    // transfers leave. A silent minus figure would be the one thing worse than
+    // flooring it.
+    const { container } = render(
+      <PlanSummary plan={{ ...sender, residualMinor: -20_000, outboundInflowMinor: 300_000 }} />,
+    );
+    expect(screen.getByText("left over").parentElement).toHaveTextContent("-£200.00");
+    expect(container.querySelector(".kpi.warn")).not.toBeNull();
+    expect(
+      screen.getByText("more leaves this account than reaches it — consolidate first"),
+    ).toBeInTheDocument();
+  });
+
+  it("still says nothing at all for a pot that ends the month empty", () => {
+    render(<PlanSummary plan={billsPot} />);
+    expect(screen.getByText("left over").parentElement).toHaveTextContent("—");
+  });
+
+  it("falls back to leftoverMinor when the wire carries no residual", () => {
+    const older: AccountPlanDto = { ...sender, residualMinor: undefined };
+    render(<PlanSummary plan={older} />);
+    expect(screen.getByText("left over").parentElement).toHaveTextContent("£2,625.80");
+  });
+});

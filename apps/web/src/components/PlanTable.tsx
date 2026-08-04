@@ -360,6 +360,31 @@ export function inflowNote(plan: AccountPlanDto): Phrase | null {
   return [lead, money(arriving, plan.currency), ` arriving${from} this month`];
 }
 
+/**
+ * What LEFT OVER shows, and why it is not `leftoverMinor`.
+ *
+ * Measured in a browser at 1280px: this KPI read **£2,625.80** for an account
+ * whose household page and flow diagram both read **£1,822.60** — the same
+ * account, the same month, one savings movement apart. That is the defect
+ * ONE-ENGINE.md exists to end, surviving in the last place it could: the page
+ * that prints the plan's own field rather than what is left in the account.
+ *
+ * `residualMinor` is `income + arriving − spending − leaving`, signed, and it is
+ * the one figure the pass publishes for all three surfaces (decision 13's
+ * free-after-committed, at account scale). `leftoverMinor` keeps its meaning on
+ * the wire and is the right answer for a *rollup*; it is the wrong one for a
+ * person looking at one account.
+ *
+ * Null when there is nothing to report: an account with no income of its own and
+ * nothing left in it never had a surplus, and "£0.00 left over" claims there was
+ * one and it is gone.
+ */
+export function leftOverMinor(plan: AccountPlanDto): number | null {
+  const residual = plan.residualMinor ?? plan.leftoverMinor;
+  if (residual === 0 && plan.monthlyIncomeMinor === 0) return null;
+  return residual;
+}
+
 /** How much of what is arriving has actually moved — the amber KPI's sub-line. */
 function movedNote(plan: AccountPlanDto): Phrase | null {
   const arriving = plan.allocatedInflowMinor ?? 0;
@@ -395,10 +420,10 @@ export function PlanSummary({
   const c = plan.currency;
   const arriving = plan.allocatedInflowMinor ?? 0;
   const moved = plan.confirmedInflowMinor ?? 0;
-  // An account with no income of its own has no surplus of its own either.
-  // "£0.00 left over" claims there was something and it is gone; there never
-  // was. The em dash says so, and — the point of the exercise — SHORTFALL does
-  // not appear at all, because the plan covers these bills.
+  // An account with no income of its own and nothing left in it had no surplus
+  // to begin with. The em dash says so, and — the point of the exercise —
+  // SHORTFALL does not appear at all, because the plan covers these bills.
+  const left = leftOverMinor(plan);
   const nothingOfItsOwn = plan.monthlyIncomeMinor === 0 && arriving > 0;
   const note = inflowNote(plan);
   const moving = movedNote(plan);
@@ -431,11 +456,18 @@ export function PlanSummary({
           value={
             plan.shortfallMinor > 0
               ? formatMinor(plan.shortfallMinor, c)
-              : nothingOfItsOwn
+              : left === null
                 ? "—"
-                : formatMinor(plan.leftoverMinor, c)
+                : formatMinor(left, c)
           }
-          tone={plan.shortfallMinor > 0 ? "warn" : "ok"}
+          tone={plan.shortfallMinor > 0 || (left ?? 0) < 0 ? "warn" : "ok"}
+          // A negative residual is decision 11's consolidation, and the one
+          // thing a left-over figure must never be printed silently.
+          delta={
+            plan.shortfallMinor === 0 && (left ?? 0) < 0
+              ? ["more leaves this account than reaches it — consolidate first"]
+              : undefined
+          }
         />
       </div>
       {(note || loop) && (

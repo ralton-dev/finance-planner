@@ -51,6 +51,17 @@ export function MemberTagBars({ plan }: { plan: HouseholdPlanDto }) {
                       title={`${s.tag} · ${formatMinor(s.valueMinor, c)}`}
                     />
                   ))}
+                  {/* Costs this household's lines do not account for, funded on
+                      an account outside it. Quiet, and before the red: it is
+                      money that is there. */}
+                  {bar.elsewhereMinor > 0 && (
+                    <span
+                      className="member-bar-seg elsewhere"
+                      data-tag="elsewhere"
+                      style={{ width: `${bar.elsewherePct.toFixed(3)}%` }}
+                      title={`elsewhere in your plan · ${formatMinor(bar.elsewhereMinor, c)}`}
+                    />
+                  )}
                   {bar.unfundedMinor > 0 && (
                     <span
                       className="member-bar-seg unfunded"
@@ -68,6 +79,13 @@ export function MemberTagBars({ plan }: { plan: HouseholdPlanDto }) {
                       {s.tag} <span className="amount">{formatMinor(s.valueMinor, c)}</span>
                     </li>
                   ))}
+                  {bar.elsewhereMinor > 0 && (
+                    <li className="dim">
+                      <i className="elsewhere" />
+                      elsewhere in your plan{" "}
+                      <span className="amount">{formatMinor(bar.elsewhereMinor, c)}</span>
+                    </li>
+                  )}
                   {bar.unfundedMinor > 0 && (
                     <li className="warn">
                       <i className="unfunded" />

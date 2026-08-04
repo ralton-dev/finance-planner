@@ -104,3 +104,41 @@ describe("ApiClient.tryRefresh", () => {
     expect(client.getToken()).toBe("fresh");
   });
 });
+
+/**
+ * The third shape of "I moved the money", and the one the client could not
+ * speak until now.
+ *
+ * A transfer the pass derives for a scope no household applies to (decision 9)
+ * carries neither a household nor an inflow — migration 0010 is what made it
+ * storable at all — so it is confirmed against the *receiving* account and
+ * scoped by its two accounts, its month and the member who moves it. The other
+ * two shapes keep their own routes and their own rules.
+ */
+describe("ApiClient · confirming a derived transfer", () => {
+  let client: ApiClient;
+  beforeEach(() => {
+    client = new ApiClient();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts to the receiving account, naming the sender and the member", async () => {
+    const { calls } = stubFetch(() => json({ confirmation: { id: "conf-1" }, contributions: [] }));
+    const result = await client.confirmDerivedTransfer(
+      "pot",
+      { fromAccountId: "current", toAccountId: "pot", memberUserId: "ben" },
+      "2026-08",
+    );
+
+    expect(calls[0]!.url).toContain("/api/accounts/pot/transfers/confirm?month=2026-08");
+    expect(result.confirmation.id).toBe("conf-1");
+  });
+
+  it("un-confirms under the receiving account, never under a household", async () => {
+    const { calls } = stubFetch(() => new Response(null, { status: 204 }));
+    await client.unconfirmDerivedTransfer("pot", "conf-1");
+    expect(calls[0]!.url).toContain("/api/accounts/pot/transfers/confirmations/conf-1");
+  });
+});

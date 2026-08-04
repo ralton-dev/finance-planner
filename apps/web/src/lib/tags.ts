@@ -107,14 +107,33 @@ export interface MemberBar {
   /** Obligation their income can't cover — the warn-coloured tail. */
   unfundedMinor: number;
   unfundedPct: number;
+  /** Obligation this household's own lines do not account for, and which is not
+   *  short either: costs the same pass funds on an account outside this
+   *  household. Quiet, never red — see {@link buildMemberBars}. */
+  elsewhereMinor: number;
+  elsewherePct: number;
   segments: MemberBarSegment[];
 }
 
 /**
  * One bar per household member: their funded allocations grouped by the tag of
- * the payment they fund, with whatever is left of their obligation as an
- * unfunded remainder. Widths are percentages of the member's obligation, so the
- * segments plus the remainder always fill the bar exactly.
+ * the payment they fund, with whatever is left of their obligation as a
+ * remainder. Widths are percentages of the member's obligation, so the segments
+ * plus the remainders always fill the bar exactly.
+ *
+ * ## Why the remainder is two things
+ *
+ * `obligationMinor` is what the member owes across the whole **scope** the pass
+ * planned; `plan.lines` are only the household's own accounts. Those used to be
+ * the same set, and are not any more: decision 9 has the pass derive the feed
+ * for a standalone pot too, so a member with a bill outside the household has an
+ * obligation these lines cannot explain — and the whole of it was painting red
+ * as "unfunded" on a month with no shortfall in it at all.
+ *
+ * So the tail is split. What the member's income genuinely cannot cover is
+ * `shortfallMinor`, straight off the plan, and that is the red. Everything else
+ * the lines do not reach is funded — somewhere this page is not showing — and
+ * gets a quiet segment saying so.
  */
 export function buildMemberBars(plan: HouseholdPlanDto): MemberBar[] {
   return plan.members.map((member) => {
@@ -139,17 +158,25 @@ export function buildMemberBars(plan: HouseholdPlanDto): MemberBar[] {
         color: tagShade(tag, i),
       }));
 
-    const unfundedMinor = Math.max(0, member.obligationMinor - fundedMinor);
+    const remainder = Math.max(0, member.obligationMinor - fundedMinor);
+    // Never more than the remainder: a shortfall on a line outside this
+    // household would otherwise widen the bar past what it is measuring.
+    const unfundedMinor = Math.min(remainder, Math.max(0, member.shortfallMinor));
+    const elsewhereMinor = remainder - unfundedMinor;
     // Derived from the segments rather than computed independently, so the bar
     // always adds up to exactly 100% however the divisions rounded.
     const segmentsPct = segments.reduce((sum, s) => sum + s.widthPct, 0);
+    const remainderPct = Math.max(0, 100 - segmentsPct);
+    const unfundedPct = remainder > 0 ? (remainderPct * unfundedMinor) / remainder : 0;
     return {
       userId: member.userId,
       displayName: member.displayName ?? "member",
       obligationMinor: member.obligationMinor,
       fundedMinor,
       unfundedMinor,
-      unfundedPct: unfundedMinor > 0 ? Math.max(0, 100 - segmentsPct) : 0,
+      unfundedPct,
+      elsewhereMinor,
+      elsewherePct: Math.max(0, remainderPct - unfundedPct),
       segments,
     };
   });

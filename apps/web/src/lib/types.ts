@@ -344,6 +344,24 @@ export interface AccountPlanDto {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /**
+   * What is actually left in the account once the month's flows have happened:
+   *
+   *     income + arriving − spending − leaving
+   *
+   * The one number the account page, the household page and the flow diagram all
+   * print (ONE-ENGINE.md). `leftoverMinor` above is deliberately a *different*
+   * figure and keeps its meaning (decision 13): the account's own income after
+   * its own obligations, which is the right answer for a rollup and the wrong
+   * one for a picture, because summing residuals counts a transferred pound at
+   * both ends.
+   *
+   * **Signed.** Negative means more is committed to leave this account than
+   * reaches it, which happens when a member holds income in a personal account
+   * other than the one their transfers leave (decision 11) and has to
+   * consolidate first. Optional: a payload from before the one pass has none.
+   */
+  residualMinor?: number;
   shortfallMinor: number;
   lines: PlanLineDto[];
   /** Per-payment totals contributed this month — the "reality" half of the plan. */
@@ -484,14 +502,18 @@ export interface CurrencyOverviewDto {
   bufferMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
-  leftoverMinor: number;
   /**
-   * Money that left one account in this rollup and was spent by another. It is
-   * why the rows do not add up to `leftoverMinor`: the sender still reports the
-   * pound as its surplus and the receiver reports the same pound as funded, so
-   * the total nets it out and the rows do not.
+   * Surplus across the rollup: the per-account `leftoverMinor`s, summed, with
+   * nothing netted out of it.
+   *
+   * There used to be an `intraEstateMovementMinor` term here, because two
+   * engines disagreed about whose money a transferred pound was and a chain
+   * inflated the estate once per hop. One pass settles that in the accounts
+   * instead: `leftoverMinor` is an account's own income after its own bills and
+   * after the transfers its owner has to make, so every pound is counted once
+   * before this rollup sees it (ONE-ENGINE.md).
    */
-  intraEstateMovementMinor?: number;
+  leftoverMinor: number;
   shortfallMinor: number;
   accounts: OverviewAccountDto[];
 }
@@ -536,6 +558,15 @@ export interface HouseholdPlanLineDto {
   allocations: MemberAllocationDto[];
 }
 
+/**
+ * Decision 13, on the wire: `leftoverMinor` keeps its meaning everywhere and
+ * `committedMinor` is added alongside it, never netted into it. Free-after-
+ * committed is the difference, and it is the figure a headline shows.
+ *
+ * Optional throughout, the way every additive field here is: a payload from an
+ * older API — or a fixture — reads as "nothing committed", which is what those
+ * payloads meant.
+ */
 export interface HouseholdMemberPlanDto {
   userId: string;
   displayName?: string;
@@ -544,6 +575,9 @@ export interface HouseholdMemberPlanDto {
   obligationMinor: number;
   fundedMinor: number;
   leftoverMinor: number;
+  /** Of that leftover, what funded savings movements out of this member's own
+   *  household accounts have spoken for. */
+  committedMinor?: number;
   shortfallMinor: number;
 }
 
@@ -556,9 +590,17 @@ export interface HouseholdAccountPlanDto {
   monthlyIncomeMinor: number;
   requiredOutflowMinor: number;
   fundedOutflowMinor: number;
+  /** Derived transfers in and out — expense transport, authored by nobody. */
   transferInMinor: number;
   transferOutMinor: number;
+  /** What remains after the month's flows but **before** the savings movements
+   *  leaving this account. Free-after-committed — the figure the account page
+   *  and the flow diagram print — is this minus `committedMinor`. */
   leftoverMinor: number;
+  /** What funded savings movements take out of this account (decision 13).
+   *  A single bucket, deliberately not itemised: which pot each pound went to is
+   *  the account page's and the flow diagram's question, not the household's. */
+  committedMinor?: number;
   shortfallMinor: number;
 }
 
@@ -592,6 +634,9 @@ export interface HouseholdPlanDto {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /** Of that leftover, what the household's funded savings movements have
+   *  spoken for (decision 13). */
+  committedMinor?: number;
   shortfallMinor: number;
   members: HouseholdMemberPlanDto[];
   accounts: HouseholdAccountPlanDto[];

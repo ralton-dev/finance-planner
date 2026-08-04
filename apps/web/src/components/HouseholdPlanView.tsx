@@ -14,14 +14,48 @@ const HouseholdSankey = lazy(() =>
 const pct = (bp: number): string => `${(bp / 100).toFixed(bp % 100 === 0 ? 0 : 1)}%`;
 
 /**
+ * Free after committed — the figure every headline and every LEFT OVER cell on
+ * this page shows.
+ *
+ * Decision 13: `leftoverMinor` keeps its meaning to the penny wherever it
+ * appears on the wire, and `committedMinor` sits alongside it rather than being
+ * netted into it. What a *reader* wants is the difference, because money already
+ * committed to a savings movement is not money they can spend — and because the
+ * difference is the number the account page and the flow diagram print for the
+ * same account. Printing `leftoverMinor` raw is how the household page came to
+ * read £2,793 against the diagram's £2,093 (ONE-ENGINE.md).
+ */
+export function freeMinor(of: { leftoverMinor: number; committedMinor?: number }): number {
+  return of.leftoverMinor - (of.committedMinor ?? 0);
+}
+
+/**
+ * The class a LEFT OVER cell takes. Green is a month that works; a negative
+ * residual is not one.
+ *
+ * Measured in a browser: an account committed to sending out more than reaches
+ * it — a member holding income somewhere other than the account their transfers
+ * leave (decision 11) — printed **-£244.00 in green**, which is the one reading
+ * a figure like that must never get. The pass stopped flooring it so the screen
+ * could say the thing to do, and a green minus says the opposite.
+ */
+const leftOverClass = (minor: number): string => `num ${minor < 0 ? "warn" : "ok"}`;
+
+/**
  * The reconciled household picture: KPIs, the money-flow Sankey, a per-account
  * table (transfers + true balances) and a per-person table (share + funding).
  * Shared by the full household plan page and the Overview's household blocks.
+ *
+ * A household's savings movements are shown as **one committed bucket, not
+ * itemised** — per member, per account and in the KPI row. Which pot each pound
+ * went to is the account page's question and the flow diagram's; the household's
+ * is only how much of the month's surplus is already spoken for.
  */
 export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
   const c = plan.currency;
   const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName ?? "member"]));
   const sankeyRef = useRef<HTMLDivElement>(null);
+  const committed = plan.committedMinor ?? 0;
 
   return (
     <>
@@ -34,9 +68,20 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
           <div className="kpi-label">required / mo</div>
           <div className="kpi-value">{formatMinor(plan.totalRequiredMinor, c)}</div>
         </div>
-        <div className="kpi ok">
+        {/* Only when there is one. A household nobody has authored a movement
+            in has nothing committed, and an em dash in a KPI of its own would
+            be a column asking to be understood for no reason. */}
+        {committed > 0 && (
+          <div className="kpi">
+            <div className="kpi-label">committed</div>
+            <div className="kpi-value">{formatMinor(committed, c)}</div>
+            <div className="kpi-delta">to savings movements out</div>
+          </div>
+        )}
+        <div className={freeMinor(plan) < 0 ? "kpi warn" : "kpi ok"}>
           <div className="kpi-label">left over</div>
-          <div className="kpi-value">{formatMinor(plan.leftoverMinor, c)}</div>
+          <div className="kpi-value">{formatMinor(freeMinor(plan), c)}</div>
+          {committed > 0 && <div className="kpi-delta">after what is committed</div>}
         </div>
         <div className={plan.shortfallMinor > 0 ? "kpi warn" : "kpi"}>
           <div className="kpi-label">shortfall</div>
@@ -48,7 +93,7 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
 
       <div className="section-head">
         <h2>money flow</h2>
-        <span className="meta">[income → accounts → transfers → spending]</span>
+        <span className="meta">[income → accounts → movements → spending]</span>
         <span className="spacer" />
         <DownloadButton targetRef={sankeyRef} name="money-flow" />
       </div>
@@ -72,7 +117,10 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
           describe the account rather than move its money — whose it is, and
           whether income lands in it — fold into a sub-line under the name. What
           is left is the section's own promise: what comes in, what goes out,
-          and whether it covers the bills. The wrapper scrolls the remainder. */}
+          and whether it covers the bills. The wrapper scrolls the remainder.
+          COMMITTED is an eighth, and only appears for a household that has
+          authored a movement out of one of these accounts — otherwise it is a
+          column of em dashes explaining a concept nothing here uses. */}
       <div className="table-scroll">
         <table>
           <thead>
@@ -82,6 +130,7 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
               <th className="num wide-only">income</th>
               <th className="num">transfer in</th>
               <th className="num">transfer out</th>
+              {committed > 0 && <th className="num">committed</th>}
               <th className="num">left over</th>
               <th className="num">shortfall</th>
             </tr>
@@ -126,7 +175,14 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
                 <td className="num">
                   {a.transferOutMinor > 0 ? formatMinor(a.transferOutMinor, c) : "—"}
                 </td>
-                <td className="num ok">{formatMinor(a.leftoverMinor, c)}</td>
+                {committed > 0 && (
+                  <td className="num">
+                    {(a.committedMinor ?? 0) > 0 ? formatMinor(a.committedMinor ?? 0, c) : "—"}
+                  </td>
+                )}
+                {/* Free after committed — the same number the account page's
+                    residual and the flow diagram print for this account. */}
+                <td className={leftOverClass(freeMinor(a))}>{formatMinor(freeMinor(a), c)}</td>
                 <td className={`num${a.shortfallMinor > 0 ? " warn" : " dim"}`}>
                   {a.shortfallMinor > 0 ? formatMinor(a.shortfallMinor, c) : "—"}
                 </td>
@@ -152,6 +208,7 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
               <th className="num wide-only">share</th>
               <th className="num">income</th>
               <th className="num">their costs</th>
+              {committed > 0 && <th className="num">committed</th>}
               <th className="num">left over</th>
               <th className="num">shortfall</th>
             </tr>
@@ -166,7 +223,12 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
                 <td className="num wide-only">{pct(m.shareBp)}</td>
                 <td className="num">{formatMinor(m.monthlyIncomeMinor, c)}</td>
                 <td className="num">{formatMinor(m.obligationMinor, c)}</td>
-                <td className="num ok">{formatMinor(m.leftoverMinor, c)}</td>
+                {committed > 0 && (
+                  <td className="num">
+                    {(m.committedMinor ?? 0) > 0 ? formatMinor(m.committedMinor ?? 0, c) : "—"}
+                  </td>
+                )}
+                <td className={leftOverClass(freeMinor(m))}>{formatMinor(freeMinor(m), c)}</td>
                 <td className={`num${m.shortfallMinor > 0 ? " warn" : " dim"}`}>
                   {m.shortfallMinor > 0 ? formatMinor(m.shortfallMinor, c) : "—"}
                 </td>

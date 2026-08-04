@@ -19,7 +19,7 @@ import type { FlowDto, FlowEdgeDto } from "../lib/types.js";
  * the two things that project into one — see `lib/flow.ts`.
  */
 
-type LinkKind = "income" | "transfer" | "spending" | "leftover";
+type LinkKind = "income" | "transfer" | "spending" | "leftover" | "consolidate";
 
 /** Amounts, or each flow as a share of the money entering the picture. */
 export type FlowUnits = "amount" | "share";
@@ -51,13 +51,29 @@ export function flowLabel(
 const LINK_OPACITY = 0.7;
 
 /** What each kind of flow is drawn in. Income arrives, spending leaves, a
- *  transfer is a move you make, and left over is what survives. */
+ *  transfer is a move you make, left over is what survives — and money still to
+ *  be consolidated is the one flow that has not happened, so it takes the alert
+ *  colour rather than any of the four that describe a month that works. */
 function linkColor(kind: LinkKind, colors: ChartColors): string {
   if (kind === "income") return colors.funded;
   if (kind === "spending") return colors.needsYou;
   if (kind === "leftover") return colors.link;
+  if (kind === "consolidate") return colors.alert;
   return colors.accent;
 }
+
+/**
+ * Where a negative residual's ribbon comes from.
+ *
+ * A node whose ribbons do not meet is a drawing that lies, and an account can
+ * genuinely be committed to sending out more than reaches it: that is a member
+ * holding income in a personal account other than the one their transfers leave
+ * (decision 11), who has to move it across before the month works. The pass
+ * reports it signed rather than flooring it, so the picture draws it — as money
+ * arriving from an account of theirs the diagram has no row for, which is
+ * exactly what has to happen.
+ */
+const TO_CONSOLIDATE = "to consolidate";
 
 /**
  * The phone breakpoint, and the one place in the app that has to know it in
@@ -198,6 +214,19 @@ export function buildGraph(flow: FlowDto): {
         kind: "leftover",
         fromName: a.name,
         toName: "left over",
+      });
+    } else if (a.leftoverMinor < 0) {
+      // Drawn, not dropped. `> 0` used to be the whole test, which silently
+      // omitted the one case a residual is worth reading twice — see
+      // `TO_CONSOLIDATE`.
+      links.push({
+        source: addNode(TO_CONSOLIDATE, false),
+        target: idx,
+        value: -a.leftoverMinor,
+        kind: "consolidate",
+        fromName: TO_CONSOLIDATE,
+        toName: a.name,
+        note: "more is committed to leave here than reaches it",
       });
     }
   }

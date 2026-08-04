@@ -232,12 +232,6 @@ export function OverviewPage() {
       }),
     ),
     upcoming: upcoming.data?.items ?? [],
-    // The netting term the API already computes and nothing read until now: the
-    // headline sums per-account surpluses, and a pound moved between two of them
-    // is in both.
-    intraEstateMovementMinor: Object.fromEntries(
-      buckets.map((c) => [c.currency, c.intraEstateMovementMinor ?? 0]),
-    ),
   };
 
   return (

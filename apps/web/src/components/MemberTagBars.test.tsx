@@ -106,7 +106,14 @@ describe("MemberTagBars", () => {
 
   it("tops the bar up with a warn-coloured unfunded tail", () => {
     const short = plan({
-      members: [member({ userId: "bob", displayName: "Bob", obligationMinor: 100_000 })],
+      members: [
+        member({
+          userId: "bob",
+          displayName: "Bob",
+          obligationMinor: 100_000,
+          shortfallMinor: 70_000,
+        }),
+      ],
       lines: [
         line({
           paymentId: "rent",
@@ -123,6 +130,72 @@ describe("MemberTagBars", () => {
     expect(tail).not.toBeNull();
     expect(tail.getAttribute("title")).toBe("unfunded · £700.00");
     expect(bar).toHaveTextContent("unfunded");
+  });
+
+  /**
+   * Measured in a browser: Ben's bar read "unfunded £303.20" in red on a
+   * household with a shortfall of zero. His obligation covers the whole scope
+   * the pass planned; this page's lines cover only the household's own accounts,
+   * and decision 9 has the same pass fund a standalone pot for him too. Every
+   * penny of it was there — none of it was on a line this page draws.
+   */
+  it("does not paint an obligation funded outside this household as unfunded", () => {
+    const elsewhere = plan({
+      members: [
+        member({
+          userId: "ben",
+          displayName: "Ben",
+          obligationMinor: 137_420,
+          shortfallMinor: 0,
+        }),
+      ],
+      lines: [
+        line({
+          paymentId: "rent",
+          tag: "housing",
+          allocations: [{ userId: "ben", requiredMinor: 107_100, fundedMinor: 107_100 }],
+        }),
+      ],
+    });
+    render(<MemberTagBars plan={elsewhere} />);
+    const bar = screen.getByTestId("member-bar-ben");
+
+    expect(bar.querySelector(".member-bar-seg.unfunded")).toBeNull();
+    expect(bar).not.toHaveTextContent("unfunded");
+    const rest = bar.querySelector<HTMLElement>(".member-bar-seg.elsewhere")!;
+    expect(rest.getAttribute("title")).toBe("elsewhere in your plan · £303.20");
+    // ...and the bar still fills exactly.
+    expect(widths(bar).reduce((a, b) => a + b, 0)).toBeCloseTo(100);
+  });
+
+  it("splits the tail when a member is both short and funded elsewhere", () => {
+    const both = plan({
+      members: [
+        member({
+          userId: "cass",
+          displayName: "Cass",
+          obligationMinor: 100_000,
+          shortfallMinor: 20_000,
+        }),
+      ],
+      lines: [
+        line({
+          paymentId: "rent",
+          tag: "housing",
+          allocations: [{ userId: "cass", requiredMinor: 60_000, fundedMinor: 50_000 }],
+        }),
+      ],
+    });
+    render(<MemberTagBars plan={both} />);
+    const bar = screen.getByTestId("member-bar-cass");
+
+    expect(bar.querySelector<HTMLElement>(".member-bar-seg.unfunded")!.getAttribute("title")).toBe(
+      "unfunded · £200.00",
+    );
+    expect(bar.querySelector<HTMLElement>(".member-bar-seg.elsewhere")!.getAttribute("title")).toBe(
+      "elsewhere in your plan · £300.00",
+    );
+    expect(widths(bar).reduce((a, b) => a + b, 0)).toBeCloseTo(100);
   });
 
   it("describes the bar for anyone who can't see it", () => {

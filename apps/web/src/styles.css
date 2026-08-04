@@ -2872,6 +2872,12 @@ summary > h3 {
     color-mix(in srgb, var(--alert) 25%, transparent) 6px
   );
 }
+.member-bar-seg.elsewhere {
+  /* Solid and quiet: this money is there, it is simply funded on an account
+   * this household's lines do not cover. Nothing to act on, so nothing that
+   * competes with the tag colours beside it or the hatch after it. */
+  background: var(--tag-untagged);
+}
 .member-bar-legend {
   list-style: none;
   margin: 0.45rem 0 0;
@@ -2890,6 +2896,9 @@ summary > h3 {
 .member-bar-legend li.warn {
   color: var(--alert);
 }
+.member-bar-legend li.dim {
+  color: var(--ink-3);
+}
 .member-bar-legend i {
   width: 7px;
   height: 7px;
@@ -2898,6 +2907,9 @@ summary > h3 {
 }
 .member-bar-legend i.unfunded {
   background: color-mix(in srgb, var(--alert) 70%, transparent);
+}
+.member-bar-legend i.elsewhere {
+  background: var(--tag-untagged);
 }
 .member-bar-legend .amount {
   color: var(--ink);

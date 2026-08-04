@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../lib/api.js";
 import { money, type Phrase } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
-import type { AccountDto, AccountPlanDto, InflowDto } from "../lib/types.js";
+import type { AccountDto, AccountPlanDto, InflowDto, PlanInflowSourceDto } from "../lib/types.js";
 import { Amount, Sentence } from "./Amount.js";
 import { MovementDrawer, type MovementTarget } from "./MovementDrawer.js";
 
@@ -18,6 +18,17 @@ const NO_ACCOUNTS = Object.freeze([]) as readonly AccountDto[];
  * the far end has not been told whose it is.
  */
 const UNNAMED = "another account";
+
+/** One end of a movement the plan derived: authored by nobody, so it has no id
+ *  to edit, no priority to reorder and no row to remove. */
+export interface DerivedRow {
+  key: string;
+  /** The member the plan asks, or the honest absence when it may not be named. */
+  name: string;
+  amountMinor: number;
+  /** Whether somebody has said this month's transfer actually moved. */
+  settled: boolean;
+}
 
 /** How a movement's cadence reads on one line. */
 function cadence(inflow: InflowDto): string {
@@ -104,14 +115,22 @@ export function AccountMovements({
   };
 
   const loop = loopNote(plan, known, account);
-  const nothing = arriving.length === 0 && leaving.length === 0;
+  // Every movement touching this account, whichever plan derives it: the rows
+  // somebody authored, and the transfers the pass works out for the bills.
+  const arrivingDerived = derivedArrivals(plan);
+  const leavingDerived = derivedTransferOutMinor(plan);
+  const nothing =
+    arriving.length === 0 &&
+    leaving.length === 0 &&
+    arrivingDerived.length === 0 &&
+    leavingDerived === 0;
   if (nothing && !canEdit) return null;
 
   return (
     <>
       <div className="section-head">
         <h2>movements</h2>
-        <span className="meta">[between accounts you own · funded after every bill]</span>
+        <span className="meta">[everything in and out · authored or derived]</span>
       </div>
 
       {loop && <p className="movement-loop">{loop}</p>}
@@ -122,6 +141,9 @@ export function AccountMovements({
           empty="nothing moves into this account."
           addLabel="+ money in"
           rows={arriving}
+          derived={arrivingDerived}
+          derivedArrow={(name) => `${name} →`}
+          derivedNote="the plan derives this for the bills here — nobody authored it"
           account={account}
           canEdit={canEdit}
           canChange={canChange}
@@ -130,12 +152,31 @@ export function AccountMovements({
           onAdd={() => setTarget({ direction: "in" })}
           onEdit={(editing) => setTarget({ direction: "in", editing })}
           onRemove={remove}
+          note={duplicateFeedNote(plan, account)}
         />
         <MovementList
           heading="leaving here"
           empty="this account sends nothing on."
           addLabel="+ money out"
           rows={leaving}
+          derived={
+            leavingDerived > 0
+              ? [
+                  {
+                    key: "derived-out",
+                    // Short on purpose: the far end is a set of accounts, not
+                    // one, and `.movement-end` ellipsises anything longer than
+                    // a name — measured at 1280px, where "the bills these
+                    // transfers fund" arrived as "the bills these transfe…".
+                    name: "your bills",
+                    amountMinor: leavingDerived,
+                    settled: false,
+                  },
+                ]
+              : []
+          }
+          derivedArrow={(name) => `→ ${name}`}
+          derivedNote="already taken out of left over above"
           account={account}
           canEdit={canEdit}
           canChange={canChange}
@@ -164,6 +205,9 @@ function MovementList({
   empty,
   addLabel,
   rows,
+  derived,
+  derivedArrow,
+  derivedNote,
   account,
   canEdit,
   canChange,
@@ -178,6 +222,10 @@ function MovementList({
   empty: string;
   addLabel: string;
   rows: readonly InflowDto[];
+  /** Movements the plan derived, which have no row to edit or remove. */
+  derived: readonly DerivedRow[];
+  derivedArrow: (name: string) => string;
+  derivedNote: string;
   account: AccountDto;
   canEdit: boolean;
   canChange: (inflow: InflowDto) => boolean;
@@ -193,7 +241,7 @@ function MovementList({
     <div>
       <div className="section-head">
         <h2>{heading}</h2>
-        <span className="meta">[{rows.length}]</span>
+        <span className="meta">[{rows.length + derived.length}]</span>
         <span className="spacer" />
         {canEdit && (
           <button type="button" className="action" onClick={onAdd}>
@@ -204,6 +252,33 @@ function MovementList({
       {note && (
         <p className="plan-notes">
           <Sentence phrase={note} />
+        </p>
+      )}
+      {derived.length > 0 && (
+        <ul className="entity-list">
+          {derived.map((row) => (
+            <li key={`derived:${row.key}`}>
+              <span>
+                {/* No name of its own: nobody wrote it down, so what it is
+                    called is what it is — the plan's own feed. */}
+                <span className="name">derived transfer</span>
+                <em>
+                  — <Amount minor={row.amountMinor} currency={account.currency} /> / monthly
+                </em>
+                <span className="shared movement-end" title={row.name}>
+                  {derivedArrow(row.name)}
+                </span>
+                <span className={`tag-status ${row.settled ? "ok" : "idle"}`}>
+                  {row.settled ? "moved" : "derived"}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {derived.length > 0 && (
+        <p className="muted" style={{ fontSize: "11.5px" }}>
+          {derivedNote}
         </p>
       )}
       {rows.length > 0 ? (
@@ -254,7 +329,10 @@ function MovementList({
         </ul>
       ) : (
         <p className="muted" style={{ fontSize: "12px" }}>
-          {empty}
+          {/* "nothing moves into this account" is only true when nothing does.
+              A derived feed is money moving, so the empty state stands down to
+              the narrower thing that is still true. */}
+          {derived.length > 0 ? "nothing you authored." : empty}
           {canEdit && (
             <>
               {" "}
@@ -273,18 +351,122 @@ function MovementList({
  * What LEFT OVER above does not know.
  *
  * `outboundInflowMinor` is deliberately *not* subtracted from `leftoverMinor` —
- * an account genuinely does have that surplus before it moves any of it on, and
- * the estate rollup nets the pound once, centrally, rather than at both ends.
- * Both figures are right; read side by side without a word between them they
- * look like a contradiction. This is the word.
+ * an account genuinely does have that surplus before it moves any of it on
+ * (decision 13), and the field keeps that meaning everywhere. Both figures are
+ * right; read side by side without a word between them they look like a
+ * contradiction. This is the word.
+ *
+ * The word used to spell out `leftover − outbound`, which is the right answer
+ * only for an account nothing arrives at. Money arriving is not in LEFT OVER at
+ * all, so on a pot that is fed and then sweeps on, that subtraction was simply a
+ * wrong number — and LEFT OVER now prints `residualMinor`, which has the sweep
+ * in it already (see `PlanTable.leftOverMinor`). So the note says which side of
+ * the movement that figure is on, and quotes nothing it would only restate.
  */
 export function outboundNote(plan: AccountPlanDto | undefined, account: AccountDto): Phrase | null {
   const leaving = plan?.outboundInflowMinor ?? 0;
   if (leaving <= 0) return null;
+  const c = account.currency;
+  const residual = plan?.residualMinor;
+  const tail: Phrase =
+    residual === undefined
+      ? [" left over above is what this account has before any of it moves on, not after."]
+      : residual < 0
+        ? [
+            " that is ",
+            money(-residual, c),
+            " more than reaches this account — consolidate your income here first, or the month cannot happen.",
+          ]
+        : [" left over above is what stays once it has."];
+  return [money(leaving, c), " a month is already committed to leave.", ...tail];
+}
+
+/**
+ * Decision 12, as the screen says it.
+ *
+ * A pot with a £400 bill and a £400 authored movement into it is **not** short
+ * and **not** double-funded: the pass derives a £400 transfer to cover the bill
+ * and then lands the movement on top as savings, so £800 arrives and £400 stays.
+ * That is the engine working — netting the two would put savings money inside
+ * expense arithmetic, which was rejected — and it is also almost certainly not
+ * what whoever wrote the movement meant. So the flag's job is to offer deletion
+ * of the redundant row, never to warn of a shortfall there is not.
+ *
+ * The signature is `transferInMinor > 0 && movementInMinor > 0` on one account.
+ * Neither is on the wire by name, and both are exact: what authored movements
+ * delivered is the sum of `inflowArrivals`, and what the derived feed delivered
+ * is the rest of `allocatedInflowMinor`. Nothing is gated — the arrivals ride on
+ * this very plan — so the flag reads the same for every caller who can see the
+ * account.
+ */
+export function duplicateFeedNote(
+  plan: AccountPlanDto | undefined,
+  account: AccountDto,
+): Phrase | null {
+  if (!plan) return null;
+  const authored = (plan.inflowArrivals ?? []).reduce((sum, a) => sum + a.amountMinor, 0);
+  const derived = (plan.allocatedInflowMinor ?? 0) - authored;
+  if (authored <= 0 || derived <= 0) return null;
   return [
-    money(leaving, account.currency),
-    " a month is already committed to leave. left over above is what this account has before any of it moves on, not after.",
+    money(derived, account.currency),
+    " a month already arrives here as a transfer the plan derives for these bills. a movement you authored lands on top of it as savings, not instead of it — if it was meant to cover the bills, delete it.",
   ];
+}
+
+/**
+ * The transfers the plan asks this account's owner to make out of it.
+ *
+ * The other half of "every movement touching this account, in and out". A
+ * member's current account sends its share of every household bill and every
+ * standalone pot's rent, all of it derived and none of it authored — and LEFT
+ * OVER already has it taken out, so without a word here the page reports a
+ * surplus hundreds of pounds smaller than the income above it with nothing
+ * saying why.
+ *
+ * Recovered from the plan's own published identity, not derived a second time:
+ *
+ *     residual = income + arriving − spending − (transfersOut + committed)
+ *
+ * — `ScopeAccountPlan.leftoverMinor`, of which every term but `transfersOut` is
+ * on `AccountPlanDto` by name. Carrying it directly would be better and the DTO
+ * does not; see the note routed with this package. Zero when the wire is too old
+ * to carry `residualMinor`, which is honest: nothing is claimed rather than
+ * something guessed.
+ */
+export function derivedTransferOutMinor(plan: AccountPlanDto | undefined): number {
+  if (!plan || plan.residualMinor === undefined) return 0;
+  return Math.max(
+    0,
+    plan.monthlyIncomeMinor +
+      (plan.allocatedInflowMinor ?? 0) -
+      plan.totalFundedMinor -
+      (plan.outboundInflowMinor ?? 0) -
+      plan.residualMinor,
+  );
+}
+
+/**
+ * The feed nobody wrote down, from this account's side.
+ *
+ * `listInflows` only ever knew about authored rows, so an account fed entirely
+ * by the pass showed "nothing moves into this account" while £303.20 a month
+ * arrived. These are the same transfers the household plan lists and the flow
+ * diagram draws, read off the account's own plan — one derivation, three
+ * surfaces.
+ */
+export function derivedArrivals(plan: AccountPlanDto | undefined): DerivedRow[] {
+  return (plan?.inflowSources ?? [])
+    .filter((s) => s.kind === "member" && s.amountMinor > 0)
+    .map((s) => {
+      const source = s as Extract<PlanInflowSourceDto, { kind: "member" }>;
+      return {
+        key: source.memberUserId,
+        // Access-gated on the wire; an absence is rendered as an absence.
+        name: source.displayName ?? "a household member",
+        amountMinor: source.amountMinor,
+        settled: source.confirmedMinor >= source.amountMinor,
+      };
+    });
 }
 
 /**

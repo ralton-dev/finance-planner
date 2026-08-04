@@ -510,9 +510,10 @@ describe("OverviewPage — money moving between your own accounts", () => {
               bufferMinor: 0,
               totalRequiredMinor: 30_000,
               totalFundedMinor: 30_000,
-              // The API's own netted total; the rows below do not add up to it.
-              leftoverMinor: 40_000,
-              intraEstateMovementMinor: 60_000,
+              // A plain sum of the rows now: one pass counts the pound that
+              // moved in the sender's surplus and nowhere else, so there is
+              // nothing left to net (ONE-ENGINE.md).
+              leftoverMinor: 100_000,
               shortfallMinor: 0,
               accounts: [
                 state({
@@ -589,13 +590,16 @@ describe("OverviewPage — money moving between your own accounts", () => {
     expect(await screen.findByText("another account → Holiday pot")).toBeInTheDocument();
   });
 
-  it("nets the movement out of the headline instead of counting it twice", async () => {
-    // £1,000 in, £600 of it spent in the pot: £400 left, which is what the
-    // overview's own `leftoverMinor` says. Summing the rows would say £1,000.
+  it("counts the pound that moved once, with no term to net out of the headline", async () => {
+    // £1,000 earned; £300 of it moved into the pot and spent there. The pot
+    // reports no surplus of its own — the money that reached it is the current
+    // account's, counted there — so the headline is the estate's own £1,000,
+    // and it agrees with `GET /overview`'s `leftoverMinor` by being the same
+    // sum rather than by subtracting a correction from it.
     const { container } = renderEstate();
 
     await waitFor(() =>
-      expect(container.querySelector(".fold-figure")).toHaveTextContent("£400.00"),
+      expect(container.querySelector(".fold-figure")).toHaveTextContent("£1,000.00"),
     );
   });
 });

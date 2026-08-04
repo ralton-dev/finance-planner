@@ -187,6 +187,67 @@ describe("householdFlow", () => {
     });
     expect(unnamed.accounts[0]!.name).toBe("account");
   });
+
+  it("takes the committed savings out of what stays put, and gives them a ribbon", () => {
+    // £3,000 in, £1,000 derived away to the bills pot, £500 swept to an ISA
+    // outside the household. `leftoverMinor` keeps its meaning on the wire
+    // (decision 13); what stays put is what is left after the sweep.
+    const saving = householdFlow({
+      ...plan,
+      committedMinor: 50_000,
+      accounts: [{ ...plan.accounts[0]!, committedMinor: 50_000 }],
+    });
+
+    expect(saving.accounts[0]!.leftoverMinor).toBe(150_000);
+    expect(saving.edges).toContainEqual({
+      fromAccountId: "cur",
+      toAccountId: null,
+      amountMinor: 50_000,
+      requestedMinor: 50_000,
+      status: "funded",
+    });
+  });
+
+  it("reads an authored arrival back out of the plan's own identity", () => {
+    // A household plan has no row for a movement landing in one of its
+    // accounts — it reports the effect and not the cause — so the pot's
+    // left-over is larger than income, transfers and spending explain, and the
+    // difference is what arrived.
+    const fed = householdFlow({
+      ...plan,
+      accounts: [
+        ...plan.accounts,
+        {
+          accountId: "holiday",
+          name: "holiday",
+          role: "shared",
+          memberUserId: null,
+          currency: "GBP",
+          monthlyIncomeMinor: 0,
+          requiredOutflowMinor: 0,
+          fundedOutflowMinor: 0,
+          transferInMinor: 0,
+          transferOutMinor: 0,
+          leftoverMinor: 50_000,
+          shortfallMinor: 0,
+        },
+      ],
+    });
+
+    expect(fed.edges).toContainEqual({
+      fromAccountId: null,
+      toAccountId: "holiday",
+      amountMinor: 50_000,
+      requestedMinor: 50_000,
+      status: "funded",
+    });
+  });
+
+  it("draws neither extra ribbon for a household nobody has authored a movement in", () => {
+    // The ordinary case, and the one every existing figure has to survive: no
+    // committed bucket, nothing arriving, and the picture as it always was.
+    expect(householdFlow(plan).edges).toHaveLength(1);
+  });
 });
 
 describe("totalInflowMinor", () => {

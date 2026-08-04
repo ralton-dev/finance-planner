@@ -154,3 +154,100 @@ describe("HouseholdPlanView · narrow layout", () => {
     expect([...subs].map((s) => s.textContent)).toEqual(["60% share", "40% share"]);
   });
 });
+
+/**
+ * Decision 13 on screen: `leftoverMinor` keeps its meaning on the wire, and
+ * every figure a person reads here is free-after-committed — which is also the
+ * number the account page and the flow diagram print for the same account.
+ * Printing the raw field is how this page came to read £2,793 against the
+ * diagram's £2,093 (ONE-ENGINE.md).
+ */
+describe("HouseholdPlanView · the committed bucket", () => {
+  /** Alex sweeps £400 a month into an ISA outside the household. */
+  const WITH_SAVINGS: HouseholdPlanDto = {
+    ...PLAN,
+    committedMinor: 40_000,
+    members: PLAN.members.map((m) =>
+      m.userId === "alex" ? { ...m, committedMinor: 40_000 } : { ...m, committedMinor: 0 },
+    ),
+    accounts: PLAN.accounts.map((a) =>
+      a.accountId === "alex-current"
+        ? { ...a, committedMinor: 40_000 }
+        : { ...a, committedMinor: 0 },
+    ),
+  };
+
+  /** The cells of one table row, by the header above each. */
+  function cells(table: HTMLTableElement, rowIndex: number): Record<string, string> {
+    const heads = [...table.querySelectorAll("thead th")].map((h) => h.textContent ?? "");
+    const row = [...table.querySelectorAll("tbody tr")][rowIndex]!;
+    return Object.fromEntries(
+      [...row.querySelectorAll("td")].map((td, i) => [heads[i]!, td.textContent ?? ""]),
+    );
+  }
+
+  it("leads with what is free after committed, and names the committed alongside", () => {
+    const { container } = render(<HouseholdPlanView plan={WITH_SAVINGS} />);
+    const kpis = [...container.querySelectorAll(".kpi")].map((k) => k.textContent ?? "");
+
+    expect(kpis).toContainEqual(expect.stringContaining("committed£400.00"));
+    // £2,410 left over on the wire, £400 of it already spoken for.
+    expect(kpis).toContainEqual(expect.stringContaining("left over£2,010.00"));
+    expect(kpis.join(" ")).not.toContain("£2,410.00");
+  });
+
+  it("shows the same subtraction per account and per member", () => {
+    const { container } = render(<HouseholdPlanView plan={WITH_SAVINGS} />);
+    const [perAccount, perPerson] = tables(container);
+
+    expect(cells(perAccount!, 1)).toMatchObject({
+      account: expect.stringContaining("Alex current"),
+      committed: "£400.00",
+      "left over": "£886.00",
+    });
+    // The pot commits nothing, so its row says so rather than repeating a zero.
+    expect(cells(perAccount!, 0)).toMatchObject({ committed: "—", "left over": "£0.00" });
+    expect(cells(perPerson!, 0)).toMatchObject({ committed: "£400.00", "left over": "£886.00" });
+    expect(cells(perPerson!, 1)).toMatchObject({ committed: "—", "left over": "£1,124.00" });
+  });
+
+  it("leaves the column out entirely for a household that has committed nothing", () => {
+    const { container } = render(<HouseholdPlanView plan={PLAN} />);
+    for (const table of tables(container)) {
+      expect(headers(table).all).not.toContain("committed");
+    }
+    // ...and the headline is the plain figure, unchanged to the penny.
+    expect([...container.querySelectorAll(".kpi")].map((k) => k.textContent)).toContainEqual(
+      expect.stringContaining("left over£2,410.00"),
+    );
+  });
+});
+
+/**
+ * The residual the pass stopped flooring, in a table cell.
+ *
+ * Measured in a browser: an account committed to sending out more than reaches
+ * it — decision 11's member holding income somewhere other than the account
+ * their transfers leave — printed **-£244.00 in green**. The pass reports the
+ * sign so the screen can say the thing to do; a green minus says the opposite.
+ */
+describe("HouseholdPlanView · an account that has to be consolidated into", () => {
+  const consolidating: HouseholdPlanDto = {
+    ...PLAN,
+    accounts: PLAN.accounts.map((a) =>
+      a.accountId === "alex-current"
+        ? { ...a, monthlyIncomeMinor: 50_000, transferOutMinor: 74_400, leftoverMinor: -24_400 }
+        : a,
+    ),
+  };
+
+  it("colours a negative left-over as a warning, never as a month that works", () => {
+    const { container } = render(<HouseholdPlanView plan={consolidating} />);
+    const row = [...tables(container)[0]!.querySelectorAll("tbody tr")][1]!;
+    const cell = [...row.querySelectorAll("td")].find((td) =>
+      td.textContent?.includes("-£244.00"),
+    )!;
+    expect(cell).toHaveClass("warn");
+    expect(cell).not.toHaveClass("ok");
+  });
+});

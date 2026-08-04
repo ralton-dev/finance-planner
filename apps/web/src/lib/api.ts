@@ -445,6 +445,35 @@ export class ApiClient {
   unconfirmMovement(inflowId: string, confirmationId: string) {
     return this.request<void>("DELETE", `/api/inflows/${inflowId}/confirmations/${confirmationId}`);
   }
+  /**
+   * "I moved the money" for a transfer the plan **derived** with no household
+   * anywhere — the feed into a pot nobody authored a movement for (decision 9).
+   *
+   * The third shape, and the one migration 0010 made storable: it carries
+   * neither a household nor an inflow, and is scoped by its two accounts, its
+   * month and the member who moves it. Posted against the *receiving* account,
+   * which is the side the app holds a plan for.
+   */
+  confirmDerivedTransfer(
+    accountId: string,
+    body: { fromAccountId: string; toAccountId: string; memberUserId: string },
+    month?: string,
+  ) {
+    return this.request<ConfirmTransferResultDto>(
+      "POST",
+      `/api/accounts/${accountId}/transfers/confirm${month ? `?month=${month}` : ""}`,
+      body,
+    );
+  }
+  /** Nested under the receiving account, so it can only ever reach a
+   *  confirmation with no household and no inflow — the household route keeps
+   *  its own rule about whose transfers a plain member may un-confirm. */
+  unconfirmDerivedTransfer(accountId: string, confirmationId: string) {
+    return this.request<void>(
+      "DELETE",
+      `/api/accounts/${accountId}/transfers/confirmations/${confirmationId}`,
+    );
+  }
 
   // ---- payments ----
   listPayments(accountId: string) {

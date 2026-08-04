@@ -208,3 +208,54 @@ describe("FlowSankey", () => {
     expect(screen.getByText(/no money flow to chart yet/i)).toBeInTheDocument();
   });
 });
+
+/**
+ * The residual the pass stopped flooring, and the picture stopped omitting.
+ *
+ * WP-Q deliberately made `ScopeAccountPlan.leftoverMinor` signed: negative means
+ * more is committed to leave an account than reaches it, which happens exactly
+ * when a member holds income in a personal account other than the one their
+ * transfers leave (decision 11) and has to consolidate before the month works.
+ * `if (leftoverMinor > 0)` drew nothing for that account at all, so the one node
+ * worth reading twice was the one node with no ribbon on it.
+ */
+describe("buildGraph — an account that has to be consolidated into", () => {
+  it("draws the gap as money still to arrive, rather than omitting it", () => {
+    const { nodes, links } = buildGraph(
+      flow({
+        accounts: [node("cur", { incomeMinor: 100_000, leftoverMinor: -20_000 })],
+        edges: [
+          edge({
+            fromAccountId: "cur",
+            toAccountId: null,
+            amountMinor: 120_000,
+            requestedMinor: 120_000,
+          }),
+        ],
+      }),
+    );
+
+    const gap = links.find((l) => l.kind === "consolidate");
+    expect(gap).toMatchObject({
+      value: 20_000,
+      target: 0,
+      fromName: "to consolidate",
+      toName: "cur",
+      note: "more is committed to leave here than reaches it",
+    });
+    expect(nodes[gap!.source]).toEqual({ name: "to consolidate", isAccount: false });
+
+    // ...and with it drawn, the node's ribbons meet: £1,000 in and £200 to
+    // find against £1,200 committed out.
+    const inMinor = links.filter((l) => l.target === 0).reduce((s, l) => s + l.value, 0);
+    const outMinor = links.filter((l) => l.source === 0).reduce((s, l) => s + l.value, 0);
+    expect(inMinor).toBe(outMinor);
+  });
+
+  it("draws neither ribbon for an account that ends the month at exactly zero", () => {
+    const { links } = buildGraph(
+      flow({ accounts: [node("pot", { incomeMinor: 0, spendingMinor: 0, leftoverMinor: 0 })] }),
+    );
+    expect(links).toEqual([]);
+  });
+});
