@@ -4,7 +4,6 @@ import { Amount } from "../components/Amount.js";
 import { ChartFrame } from "../components/ChartFrame.js";
 import { DownloadButton } from "../components/DownloadButton.js";
 import { Fold } from "../components/Fold.js";
-import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
 import { UpcomingDigest } from "../components/UpcomingDigest.js";
 import { api, ApiError } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
@@ -36,6 +35,17 @@ import type {
  * done here a second time in a smaller box. What a landing page owes you is the
  * one number, the list of things waiting on a human, and a way through to the
  * screen that can do something about each of them.
+ *
+ * The household plans are still read, because the fold's shortfall and transfer
+ * rows are derived from them and the link cards print totals that same read
+ * already carries. Nothing here renders their lines.
+ *
+ * `UpcomingDigest` stays a section of its own, directly beneath the fold,
+ * rather than folding into the checklist. A bill that falls due next Tuesday is
+ * not waiting on a human — it will be paid whether or not anyone ticks
+ * anything — and the fold's contract is that every row on it is something to
+ * do. Keeping them apart keeps "what needs you" honest; the check-in rows
+ * already carry the due payment that dates them as their own meta.
  */
 
 /** Look-ahead for the "coming up" digest — a fortnight is one pay cycle. */
@@ -158,14 +168,6 @@ export function OverviewPage() {
     upcoming: upcoming.data?.items ?? [],
   };
 
-  // --- superseded blocks, still rendered until the subtractive commit --------
-  const pooledIds = new Set(
-    householdPlans.flatMap(({ plan }) => plan.accounts.map((a) => a.accountId)),
-  );
-  const legacy = buckets
-    .map((c) => ({ ...c, accounts: c.accounts.filter((sa) => !pooledIds.has(sa.accountId)) }))
-    .filter((c) => c.accounts.length > 0);
-
   return (
     <section>
       <h1>
@@ -216,40 +218,6 @@ export function OverviewPage() {
             />
           ))}
 
-          {households.length === 0 ? (
-            buckets.map((c) => <CurrencyBlock key={c.currency} bucket={c} byId={byId} />)
-          ) : (
-            <>
-              {householdPlans.map(({ household, plan }) => (
-                <div key={household.id} className="scope-block">
-                  <div className="scope-block-head">
-                    household · {household.name}
-                    <Link
-                      to={`/households/${household.id}/plan`}
-                      className="action"
-                      style={{ marginLeft: "0.75rem" }}
-                    >
-                      full plan →
-                    </Link>
-                  </div>
-                  {plan.accounts.length === 0 ? (
-                    <p className="muted" style={{ fontSize: "12px" }}>
-                      no accounts in this household's plan yet —{" "}
-                      <Link to={`/households/${household.id}`} className="action">
-                        set it up →
-                      </Link>
-                    </p>
-                  ) : (
-                    <HouseholdPlanView plan={plan} />
-                  )}
-                </div>
-              ))}
-              {legacy.map((c) => (
-                <LegacyAccounts key={c.currency} bucket={c} byId={byId} />
-              ))}
-            </>
-          )}
-
           <NetWorth buckets={buckets} reality={reality.data ?? []} loading={reality.loading} />
         </>
       )}
@@ -261,7 +229,7 @@ export function OverviewPage() {
 
 /** A card's state chips, in the accounts index's vocabulary. */
 export interface HouseholdChip {
-  tone: "alert" | "needs-you" | "funded";
+  tone: "alert" | "needs-you" | "funded" | "neutral";
   label: string;
   amountMinor?: number;
 }
@@ -276,6 +244,10 @@ export interface HouseholdChip {
  */
 export function householdChips(entry: HouseholdEntry, asOfDate: string): HouseholdChip[] {
   const chips: HouseholdChip[] = [];
+
+  // A household with nothing in it is not "on track", it is unstarted — and
+  // the card sends you to the setup screen rather than to an empty plan.
+  if (entry.plan.accounts.length === 0) return [{ tone: "neutral", label: "no accounts yet" }];
 
   if (entry.plan.shortfallMinor > 0) {
     chips.push({ tone: "alert", label: "unfunded", amountMinor: entry.plan.shortfallMinor });
@@ -336,13 +308,19 @@ function HouseholdCard({ entry, asOfDate }: { entry: HouseholdEntry; asOfDate: s
   const c = plan.currency;
   const members = plan.members.length;
   const accounts = plan.accounts.length;
+  // Nothing assigned yet: the plan page would be blank, so the door goes to the
+  // screen that can fix that.
+  const started = accounts > 0;
 
   return (
-    <Link to={`/households/${household.id}/plan`} className="household-card">
+    <Link
+      to={started ? `/households/${household.id}/plan` : `/households/${household.id}`}
+      className="household-card"
+    >
       <div className="household-card-head">
         <span className="name">{household.name}</span>
         <span className="spacer" />
-        <span className="action">full plan →</span>
+        <span className="action">{started ? "full plan →" : "set it up →"}</span>
       </div>
       <div className="household-card-meta">
         {members} {members === 1 ? "member" : "members"} · {accounts}{" "}
@@ -642,141 +620,4 @@ function useDemoSeedEnabled(): boolean {
     };
   }, []);
   return enabled;
-}
-
-// --- superseded by the sections above, removed in the subtractive commit ------
-
-/** A standalone (not-in-a-plan) account table — names + per-account status. */
-function LegacyAccounts({
-  bucket,
-  byId,
-}: {
-  bucket: CurrencyOverviewDto;
-  byId: Map<string, AccountDto>;
-}) {
-  return (
-    <div className="scope-block">
-      <div className="section-head">
-        <h2>other accounts</h2>
-        <span className="meta">
-          [{bucket.accounts.length} · {bucket.currency} · not in a plan]
-        </span>
-        <span className="spacer" />
-        <Link to="/accounts" className="action">
-          manage →
-        </Link>
-      </div>
-      <AccountsTable bucket={bucket} byId={byId} />
-    </div>
-  );
-}
-
-/** The original per-currency block (KPIs + accounts) — used when the user is in
- *  no household, so solo planning is unchanged. */
-function CurrencyBlock({
-  bucket,
-  byId,
-}: {
-  bucket: CurrencyOverviewDto;
-  byId: Map<string, AccountDto>;
-}) {
-  const c = bucket;
-  const atRisk = c.accounts.reduce((n, a) => n + a.atRiskCount, 0);
-  return (
-    <div className="scope-block">
-      <div className="scope-block-head">currency · {c.currency}</div>
-      <div className="kpis">
-        <div className="kpi">
-          <div className="kpi-label">monthly income</div>
-          <div className="kpi-value">{formatMinor(c.monthlyIncomeMinor, c.currency)}</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-label">buffer</div>
-          <div className="kpi-value">{formatMinor(c.bufferMinor, c.currency)}</div>
-        </div>
-        <div className="kpi">
-          <div className="kpi-label">required / mo</div>
-          <div className="kpi-value">{formatMinor(c.totalRequiredMinor, c.currency)}</div>
-        </div>
-        <div className="kpi ok">
-          <div className="kpi-label">left over</div>
-          <div className="kpi-value">{formatMinor(c.leftoverMinor, c.currency)}</div>
-        </div>
-        <div className={c.shortfallMinor > 0 ? "kpi warn" : "kpi"}>
-          <div className="kpi-label">shortfall</div>
-          <div className="kpi-value">{formatMinor(c.shortfallMinor, c.currency)}</div>
-          {atRisk > 0 && (
-            <div className="kpi-delta warn">
-              {atRisk} {atRisk === 1 ? "goal" : "goals"} at risk
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="section-head">
-        <h2>accounts</h2>
-        <span className="meta">[{c.accounts.length} rows]</span>
-        <span className="spacer" />
-        <Link to="/accounts" className="action">
-          manage →
-        </Link>
-      </div>
-      <AccountsTable bucket={c} byId={byId} />
-    </div>
-  );
-}
-
-function AccountsTable({
-  bucket,
-  byId,
-}: {
-  bucket: CurrencyOverviewDto;
-  byId: Map<string, AccountDto>;
-}) {
-  return (
-    <table>
-      <thead>
-        <tr>
-          <th>name</th>
-          <th>status</th>
-          <th className="num">left over</th>
-          <th className="num">shortfall</th>
-          <th className="num">at risk</th>
-        </tr>
-      </thead>
-      <tbody>
-        {bucket.accounts.map((sa) => {
-          const acct = byId.get(sa.accountId);
-          const status =
-            sa.shortfallMinor > 0 ? "shortfall" : sa.atRiskCount > 0 ? "at_risk" : "ok";
-          return (
-            <tr key={sa.accountId}>
-              <td>
-                <Link to={`/accounts/${sa.accountId}`} className="name">
-                  {acct?.name ?? "account"}
-                </Link>
-                {acct && !acct.owner ? <span className="shared">shared</span> : null}
-              </td>
-              <td>
-                {status === "ok" ? (
-                  <span className="tag-status ok">on_track</span>
-                ) : status === "shortfall" ? (
-                  <span className="tag-status warn">shortfall</span>
-                ) : (
-                  <span className="tag-status warn">at_risk</span>
-                )}
-              </td>
-              <td className="num ok">{formatMinor(sa.leftoverMinor, bucket.currency)}</td>
-              <td className={`num${sa.shortfallMinor > 0 ? " warn" : " dim"}`}>
-                {sa.shortfallMinor > 0 ? formatMinor(sa.shortfallMinor, bucket.currency) : "—"}
-              </td>
-              <td className={`num${sa.atRiskCount > 0 ? " warn" : " dim"}`}>
-                {sa.atRiskCount > 0 ? sa.atRiskCount : "—"}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
 }

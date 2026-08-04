@@ -116,7 +116,7 @@ describe("OverviewPage — demo seed", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /load demo data/i }));
 
-    expect((await screen.findAllByText("Everyday Account"))[0]).toBeInTheDocument();
+    expect(await screen.findByText("Everyday Account")).toBeInTheDocument();
     expect(screen.queryByText(/no accounts yet/i)).toBeNull();
     expect(stub.calls("POST /api/demo/seed")).toBe(1);
     // The empty state's fetches ran again rather than the page guessing.
@@ -138,7 +138,7 @@ describe("OverviewPage — demo seed", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /load demo data/i }));
 
-    expect((await screen.findAllByText("Everyday Account"))[0]).toBeInTheDocument();
+    expect(await screen.findByText("Everyday Account")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
@@ -364,7 +364,7 @@ describe("OverviewPage — fold + doorways", () => {
   it("gives each household a card that opens its own plan", async () => {
     renderPlanned();
 
-    const card = (await screen.findAllByRole("link", { name: /Chestnut Road/ }))[0]!;
+    const card = await screen.findByRole("link", { name: /Chestnut Road/ });
     expect(card).toHaveAttribute("href", "/households/hh/plan");
     expect(card).toHaveTextContent("2 members · 2 accounts");
     expect(card).toHaveTextContent("£6,300.00 in");
@@ -376,7 +376,7 @@ describe("OverviewPage — fold + doorways", () => {
   it("tables only the accounts no household plans, in the index's own columns", async () => {
     renderPlanned();
 
-    const table = (await screen.findAllByRole("table"))[0]!;
+    const table = await screen.findByRole("table");
     expect(table).toHaveTextContent("Side hustle");
     expect(table).not.toHaveTextContent("Bills joint");
     // WP-4's cells, verbatim: the balance and how long ago anyone said so.
@@ -394,6 +394,39 @@ describe("OverviewPage — fold + doorways", () => {
     ).toBeInTheDocument();
     // The trend is a disclosure now, not the section's headline.
     expect(screen.getByText("net worth over time").tagName).toBe("SUMMARY");
+  });
+
+  it("does not render the household plan a second time", async () => {
+    renderPlanned();
+    await screen.findByRole("link", { name: /Chestnut Road/ });
+
+    // The plan page owns all of this: the Sankey, the reconciliation tables,
+    // and every line the plan is made of.
+    expect(screen.queryByText("money flow")).toBeNull();
+    expect(screen.queryByText("per account")).toBeNull();
+    expect(screen.queryByText("per person")).toBeNull();
+    expect(screen.queryByText("Council flat rent")).toBeNull();
+    // One table on the page, and it is the standalone accounts'.
+    expect(screen.getAllByRole("table")).toHaveLength(1);
+  });
+
+  it("reads each household plan once, for the fold and the card that quotes it", async () => {
+    renderPlanned();
+    await screen.findByRole("link", { name: /Chestnut Road/ });
+
+    await waitFor(() => expect(stub.calls("GET /api/households/hh/plan")).toBe(1));
+  });
+
+  it("sends an empty household to the screen that can fill it", async () => {
+    renderPlanned({
+      "GET /api/households/hh/plan": {
+        body: { ...HOUSEHOLD_PLAN, accounts: [], transfers: [], lines: [] },
+      },
+    });
+
+    const card = await screen.findByRole("link", { name: /Chestnut Road/ });
+    expect(card).toHaveAttribute("href", "/households/hh");
+    expect(card).toHaveTextContent("no accounts yet");
   });
 });
 
@@ -433,6 +466,11 @@ describe("householdChips", () => {
   it("says so plainly when neither applies", () => {
     const settled = { ...entry(), plan: { ...HOUSEHOLD_PLAN, shortfallMinor: 0, transfers: [] } };
     expect(householdChips(settled, AS_OF)).toEqual([{ tone: "funded", label: "on track" }]);
+  });
+
+  it("calls an unstarted household unstarted rather than on track", () => {
+    const empty = { ...entry(), plan: { ...HOUSEHOLD_PLAN, accounts: [], transfers: [] } };
+    expect(householdChips(empty, AS_OF)).toEqual([{ tone: "neutral", label: "no accounts yet" }]);
   });
 });
 
