@@ -258,17 +258,24 @@ export interface BalanceSnapshot {
 /**
  * "I moved this month's money" — one recorded movement between two accounts.
  *
- * It comes in two shapes, and the pair of nullable scope fields is which:
+ * It comes in three shapes, and the pair of nullable attribution fields is
+ * which:
  *
  * - **Household**: `householdId` set, `inflowId` null. One member's share of a
  *   transfer the household plan derived.
- * - **Standalone**: `inflowId` set, `householdId` null. An account-sourced
+ * - **Authored**: `inflowId` set, `householdId` null. An account-sourced
  *   inflow (`Inflow.source === "account"`) you authored and then acted on —
  *   money moved between two accounts you own, which no household is part of.
+ * - **Derived**: both null. A transfer the plan derived for a scope with no
+ *   household — an expense pot fed from the member's source account, which
+ *   nobody authored and no household attributes.
  *
- * At least one of the two is always set; a movement attributed to a household
- * *and* authored as an inflow may set both. `memberUserId` is never null: it is
- * the actor, and a solo movement still has one.
+ * A movement attributed to a household *and* authored as an inflow may set
+ * both. Neither field locates the movement, though: every row is scoped by
+ * `(fromAccountId, toAccountId, month, memberUserId)`, which is what the
+ * derived shape leans on and what the database's `transfer_confirmation_scope`
+ * constraint states since 0010. `memberUserId` is never null: it is the actor,
+ * and a solo movement still has one.
  */
 export interface TransferConfirmation {
   id: string;

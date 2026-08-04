@@ -186,8 +186,10 @@ export const projects = coreSchema.table("projects", {
 
 export const transferConfirmations = coreSchema.table("transfer_confirmations", {
   id: uuid("id").defaultRandom().primaryKey(),
-  // Nullable since 0009: a movement between two accounts you own has no
-  // household in it. `inflow_id` is the scope in that case.
+  // Both nullable, and both merely attribution: a movement between two accounts
+  // you own has no household in it, and a movement the plan derived was
+  // authored by nobody, so it has no inflow either. What always identifies the
+  // row is (from_account_id, to_account_id, month, member_user_id) — see 0010.
   householdId: uuid("household_id"),
   inflowId: uuid("inflow_id"),
   month: date("month").notNull(),

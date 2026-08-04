@@ -563,6 +563,87 @@ export async function exerciseStore(store: Store): Promise<void> {
   // The household confirmation is untouched by any of it.
   expect(await store.getTransferConfirmation(confirmation.id)).not.toBeNull();
 
+  // --- derived confirmations: a feed the plan worked out, with no household ---
+  // An expense pot with no income of its own is fed by the plan rather than by
+  // anything the user authored: no inflow row to point at, and no household
+  // either. The row is scoped by what every row already carries — the two
+  // accounts, the month, and whoever moved it.
+  const derivedInput = {
+    householdId: null,
+    inflowId: null,
+    month: "2026-08-01",
+    fromAccountId: account.id,
+    toAccountId: pot.id,
+    memberUserId: user.id,
+    amountMinor: 30_320,
+  };
+  const derived = await store.createTransferConfirmation(derivedInput);
+  expect((await store.getTransferConfirmation(derived.id))?.householdId).toBeNull();
+  expect((await store.getTransferConfirmation(derived.id))?.inflowId).toBeNull();
+  // Read from both ends, like any other movement.
+  expect(
+    (await store.listDerivedTransferConfirmationsForAccount(pot.id, "2026-08-01")).map((t) => t.id),
+  ).toEqual([derived.id]);
+  expect(
+    (await store.listDerivedTransferConfirmationsForAccount(account.id, "2026-08-01")).map(
+      (t) => t.id,
+    ),
+  ).toEqual([derived.id]);
+  expect(
+    (await store.listDerivedTransferConfirmationsForAccount(pot.id, "2026-09-01")).length,
+  ).toBe(0);
+  // `moved` is an authored movement between these very same two accounts in the
+  // same month. The two coexist and are read apart, because a feed the plan
+  // derived and a movement someone authored are two different movements.
+  expect(
+    (await store.listTransferConfirmationsForAccount(pot.id, "2026-08-01")).map((t) => t.id),
+  ).toEqual([moved.id]);
+  // Nor does the derived row show up in the household's list.
+  expect(await store.listTransferConfirmations(household.id, "2026-08-01")).toHaveLength(1);
+  // One feed, one confirmation a month — the hole neither older unique key can
+  // see, both of its scope columns being null.
+  await expect(store.createTransferConfirmation(derivedInput)).rejects.toThrow();
+  // A different destination, a different actor and a different month are each a
+  // different movement.
+  const derivedElsewhere = await store.createTransferConfirmation({
+    ...derivedInput,
+    toAccountId: currentAccount.id,
+  });
+  const derivedByAnother = await store.createTransferConfirmation({
+    ...derivedInput,
+    memberUserId: federated.id,
+  });
+  const derivedSeptember = await store.createTransferConfirmation({
+    ...derivedInput,
+    month: "2026-09-01",
+  });
+  expect(
+    (await store.listDerivedTransferConfirmationsForAccount(account.id, "2026-08-01")).map(
+      (t) => t.id,
+    ),
+  ).toEqual([derived.id, derivedElsewhere.id, derivedByAnother.id]);
+  for (const spare of [derivedElsewhere, derivedByAnother, derivedSeptember]) {
+    await store.deleteTransferConfirmation(spare.id);
+  }
+
+  // Un-confirming a derived feed cleans up its contributions, exactly as the
+  // other two shapes do.
+  const derivedContribution = await store.createContribution({
+    paymentId: p2.id,
+    accountId: account.id,
+    userId: user.id,
+    month: "2026-08-01",
+    amountMinor: 30_320,
+    note: null,
+    transferConfirmationId: derived.id,
+  });
+  await store.deleteTransferConfirmation(derived.id);
+  expect(await store.getTransferConfirmation(derived.id)).toBeNull();
+  expect(await store.getContribution(derivedContribution.id)).toBeNull();
+  expect(
+    (await store.listDerivedTransferConfirmationsForAccount(pot.id, "2026-08-01")).length,
+  ).toBe(0);
+
   // Un-confirming a standalone movement cleans up its contributions, exactly as
   // the household path does.
   const movedContribution = await store.createContribution({

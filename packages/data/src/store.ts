@@ -300,9 +300,11 @@ export interface Store {
   /**
    * Record a movement. Rejects a second confirmation of the same thing in the
    * same month: for a household row that is the same member's same transfer,
-   * for a standalone row the same inflow — the two unique keys the database
-   * enforces (`transfer_confirmation_unique` and
-   * `transfer_confirmations_inflow_month_unique`).
+   * for an authored row the same inflow, for a derived row (no household, no
+   * inflow) the same `(from, to, month, member)` — the three unique keys the
+   * database enforces (`transfer_confirmation_unique`,
+   * `transfer_confirmations_inflow_month_unique` and
+   * `transfer_confirmations_derived_month_unique`).
    */
   createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation>;
   getTransferConfirmation(id: string): Promise<TransferConfirmation | null>;
@@ -320,6 +322,25 @@ export interface Store {
    * about two accounts.
    */
   listTransferConfirmationsForAccount(
+    accountId: string,
+    month: string,
+  ): Promise<TransferConfirmation[]>;
+  /**
+   * Confirmations of **derived transfers** touching an account in one month,
+   * from either side — the rows carrying neither a household nor an inflow.
+   *
+   * These are the feeds the plan works out for itself: an expense pot with no
+   * income of its own, fed from the member's source account, for a scope no
+   * household applies to. Nobody authored the movement, so there is no inflow
+   * to ask about; the question is the same one `listTransferConfirmationsForAccount`
+   * asks and the answer is a fact about two accounts and a month.
+   *
+   * Deliberately its own method rather than a widening of the authored list: a
+   * derived feed and an authored movement between the same two accounts are
+   * two different movements, each confirmed on its own, and a caller totalling
+   * both must be able to see them apart.
+   */
+  listDerivedTransferConfirmationsForAccount(
     accountId: string,
     month: string,
   ): Promise<TransferConfirmation[]>;

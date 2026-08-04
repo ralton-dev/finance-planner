@@ -666,17 +666,26 @@ export class MemoryStore implements Store {
   async createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation> {
     for (const t of this.transferConfirmations.values()) {
       if (t.month !== input.month) continue;
-      // Two keys, mirroring the two unique indexes in the database. A movement
-      // with no household is one authored inflow, confirmed at most once a
-      // month. A household transfer is one *member's* share of a transfer the
-      // plan derived, so it is keyed by who moved it and between which accounts.
+      // Three keys, mirroring the three unique indexes in the database. A
+      // household transfer is one *member's* share of a transfer the plan
+      // derived, so it is keyed by who moved it and between which accounts. An
+      // authored movement with no household is one inflow, confirmed at most
+      // once a month. A movement with neither — one the plan derived for a
+      // scope no household applies to — is keyed by what locates every row
+      // anyway: the two accounts, the month and the actor.
       const duplicate =
-        input.householdId === null
-          ? t.householdId === null && t.inflowId === input.inflowId
-          : t.householdId === input.householdId &&
+        input.householdId !== null
+          ? t.householdId === input.householdId &&
             t.fromAccountId === input.fromAccountId &&
             t.toAccountId === input.toAccountId &&
-            t.memberUserId === input.memberUserId;
+            t.memberUserId === input.memberUserId
+          : input.inflowId !== null
+            ? t.householdId === null && t.inflowId === input.inflowId
+            : t.householdId === null &&
+              t.inflowId === null &&
+              t.fromAccountId === input.fromAccountId &&
+              t.toAccountId === input.toAccountId &&
+              t.memberUserId === input.memberUserId;
       if (duplicate) throw new Error("transfer already confirmed");
     }
     const t: TransferConfirmation = { ...input, id: randomUUID(), createdAt: now() };
@@ -705,6 +714,21 @@ export class MemoryStore implements Store {
       .filter(
         (t) =>
           t.inflowId !== null &&
+          t.month === month &&
+          (t.fromAccountId === accountId || t.toAccountId === accountId),
+      )
+      .sort(byCreatedAt);
+  }
+
+  async listDerivedTransferConfirmationsForAccount(
+    accountId: string,
+    month: string,
+  ): Promise<TransferConfirmation[]> {
+    return [...this.transferConfirmations.values()]
+      .filter(
+        (t) =>
+          t.householdId === null &&
+          t.inflowId === null &&
           t.month === month &&
           (t.fromAccountId === accountId || t.toAccountId === accountId),
       )

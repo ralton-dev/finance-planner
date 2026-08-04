@@ -971,6 +971,28 @@ export class PgStore implements Store {
     return rows.map(mapTransferConfirmation);
   }
 
+  async listDerivedTransferConfirmationsForAccount(
+    accountId: string,
+    month: string,
+  ): Promise<TransferConfirmation[]> {
+    const rows = await this.db
+      .select()
+      .from(s.transferConfirmations)
+      .where(
+        and(
+          isNull(s.transferConfirmations.householdId),
+          isNull(s.transferConfirmations.inflowId),
+          eq(s.transferConfirmations.month, month),
+          or(
+            eq(s.transferConfirmations.fromAccountId, accountId),
+            eq(s.transferConfirmations.toAccountId, accountId),
+          ),
+        ),
+      )
+      .orderBy(asc(s.transferConfirmations.createdAt));
+    return rows.map(mapTransferConfirmation);
+  }
+
   async deleteTransferConfirmation(id: string): Promise<void> {
     // Linked contributions cascade via FK; stay explicit for parity with
     // MemoryStore semantics.
