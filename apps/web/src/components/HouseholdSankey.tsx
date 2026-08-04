@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Layer, Rectangle, ResponsiveContainer, Sankey, Tooltip } from "recharts";
+import { type ChartColors, useChartColors } from "../lib/chartColors.js";
 import { formatMinor } from "../lib/money.js";
 import type { HouseholdPlanDto } from "../lib/types.js";
 
@@ -35,12 +36,14 @@ export function flowLabel(
   return `${((valueMinor / totalMinor) * 100).toFixed(1)}%`;
 }
 
-const LINK_COLORS: Record<LinkKind, string> = {
-  income: "#7be087", // --good
-  transfer: "#b89df0", // --accent
-  spending: "#f6c66b", // --warn-amber
-  leftover: "#7eb3f6", // --link
-};
+/** What each kind of flow is drawn in. Income arrives, spending leaves, a
+ *  transfer is a move you make, and left over is what survives. */
+function linkColor(kind: LinkKind, colors: ChartColors): string {
+  if (kind === "income") return colors.funded;
+  if (kind === "spending") return colors.needsYou;
+  if (kind === "leftover") return colors.link;
+  return colors.accent;
+}
 
 interface SankeyNodeDatum {
   name: string;
@@ -157,6 +160,7 @@ function FlowNode({
   units = "amount",
   totalMinor = 0,
 }: NodeProps) {
+  const colors = useChartColors();
   const onLeft = x < containerWidth / 2;
   const isAccount = payload?.isAccount ?? false;
   const label = payload?.name ?? "";
@@ -168,7 +172,7 @@ function FlowNode({
         y={y}
         width={width}
         height={Math.max(height, 1)}
-        fill={isAccount ? "#b89df0" : "#2e2e2c"}
+        fill={isAccount ? colors.accent : colors.ruleStrong}
         fillOpacity={isAccount ? 0.85 : 0.6}
       />
       <text
@@ -177,7 +181,7 @@ function FlowNode({
         textAnchor={onLeft ? "start" : "end"}
         dy="0.32em"
         fontSize={11}
-        fill={isAccount ? "#e8e6e0" : "#a09b91"}
+        fill={isAccount ? colors.ink : colors.ink2}
       >
         {label}
         {isAccount && value > 0 ? ` · ${flowLabel(value, totalMinor, units, currency)}` : ""}
@@ -207,7 +211,8 @@ function FlowLink({
   linkWidth = 0,
   payload,
 }: LinkProps) {
-  const color = LINK_COLORS[payload?.kind ?? "transfer"];
+  const colors = useChartColors();
+  const color = linkColor(payload?.kind ?? "transfer", colors);
   return (
     <path
       d={`M${sourceX},${sourceY}C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`}
@@ -247,6 +252,7 @@ function FlowTooltip({
   units?: FlowUnits;
   totalMinor?: number;
 }) {
+  const colors = useChartColors();
   if (!active || !payload?.length) return null;
   const entry = payload[0]!;
   const d = entry.payload ?? {};
@@ -256,25 +262,26 @@ function FlowTooltip({
   return (
     <div
       style={{
-        background: "#181818",
-        border: "1px solid #2e2e2c",
+        background: colors.panel,
+        border: `1px solid ${colors.ruleStrong}`,
         borderRadius: 3,
         padding: "6px 9px",
         fontSize: 12,
         lineHeight: 1.5,
-        boxShadow: "0 4px 14px rgba(0, 0, 0, 0.45)",
+        boxShadow: colors.tipShadow,
       }}
     >
-      <div style={{ color: "#a09b91", fontSize: 11 }}>{label}</div>
-      <div style={{ color: "#e8e6e0", fontWeight: 600 }}>
+      <div style={{ color: colors.ink2, fontSize: 11 }}>{label}</div>
+      <div style={{ color: colors.ink, fontWeight: 600 }}>
         {flowLabel(value, totalMinor, units, currency)}
       </div>
-      {d.note ? <div style={{ color: "#a09b91", fontSize: 11 }}>via {d.note}</div> : null}
+      {d.note ? <div style={{ color: colors.ink2, fontSize: 11 }}>via {d.note}</div> : null}
     </div>
   );
 }
 
 export function HouseholdSankey({ plan }: { plan: HouseholdPlanDto }) {
+  const colors = useChartColors();
   // Local to the chart: which units to read it in is a way of looking at one
   // diagram, not a setting worth persisting or lifting into the page.
   const [units, setUnits] = useState<FlowUnits>("amount");
@@ -324,7 +331,7 @@ export function HouseholdSankey({ plan }: { plan: HouseholdPlanDto }) {
               content={
                 <FlowTooltip currency={plan.currency} units={units} totalMinor={totalMinor} />
               }
-              cursor={{ fill: "#e8e6e0", fillOpacity: 0.06 }}
+              cursor={{ fill: colors.ink, fillOpacity: 0.06 }}
             />
           </Sankey>
         </ResponsiveContainer>

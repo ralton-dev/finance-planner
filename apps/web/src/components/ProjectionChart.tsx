@@ -7,18 +7,10 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { useChartColors } from "../lib/chartColors.js";
 import { formatMonth, formatMonthShort } from "../lib/months.js";
 import { formatCompactMinor, formatMinor } from "../lib/money.js";
 import type { ProjectionPoint } from "../lib/projection.js";
-
-// The app's chart palette (shared with the Sankey and the net-worth chart), used
-// by meaning here: reserved is the plan, balance is real money, shortfall is a
-// status colour and only ever means "short".
-const RESERVED = "#b89df0";
-const BALANCE = "#7be087";
-const SHORTFALL = "#f47b6b";
-const GRID = "#232321";
-const TICK = "#5e5a51";
 
 interface SeriesSpec {
   key: "reserved" | "balance" | "shortfall";
@@ -47,6 +39,7 @@ function ProjectionTooltip({
   currency: string;
   series: SeriesSpec[];
 }) {
+  const colors = useChartColors();
   if (!active || !payload?.length) return null;
   const labels = new Map<string, string>(series.map((s) => [s.key, s.label]));
   // Transfers ride along on the row rather than as a fourth line: it is a
@@ -57,7 +50,7 @@ function ProjectionTooltip({
       <div className="chart-tip-head">{label ? formatMonth(label) : ""}</div>
       {payload.map((entry) => (
         <div key={String(entry.dataKey)} className="chart-tip-row">
-          <i style={{ background: entry.color ?? TICK }} />
+          <i style={{ background: entry.color ?? colors.ink3 }} />
           <span className="chart-tip-label">{labels.get(String(entry.dataKey)) ?? ""}</span>
           <b>{formatMinor(Number(entry.value ?? 0), currency)}</b>
         </div>
@@ -89,12 +82,16 @@ export function ProjectionChart({
   showBalance: boolean;
   showShortfall: boolean;
 }) {
+  const colors = useChartColors();
   if (points.length === 0) return null;
 
-  const series: SeriesSpec[] = [{ key: "reserved", label: "reserved", color: RESERVED }];
-  if (showBalance) series.push({ key: "balance", label: "balance", color: BALANCE });
+  // The app's chart palette (shared with the Sankey and the net-worth chart),
+  // taken by meaning here: reserved is the plan, balance is real money, and
+  // shortfall is a status colour that only ever means "short".
+  const series: SeriesSpec[] = [{ key: "reserved", label: "reserved", color: colors.accent }];
+  if (showBalance) series.push({ key: "balance", label: "balance", color: colors.funded });
   if (showShortfall)
-    series.push({ key: "shortfall", label: "shortfall", color: SHORTFALL, dashed: true });
+    series.push({ key: "shortfall", label: "shortfall", color: colors.alert, dashed: true });
 
   return (
     <>
@@ -111,25 +108,25 @@ export function ProjectionChart({
       <div style={{ width: "100%", height: 220 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={points} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
-            <CartesianGrid stroke={GRID} strokeDasharray="2 4" vertical={false} />
+            <CartesianGrid stroke={colors.rule} strokeDasharray="2 4" vertical={false} />
             <XAxis
               dataKey="month"
               tickFormatter={formatMonthShort}
-              tick={{ fill: TICK, fontSize: 11, fontFamily: "inherit" }}
-              axisLine={{ stroke: GRID }}
+              tick={{ fill: colors.ink3, fontSize: 11, fontFamily: "inherit" }}
+              axisLine={{ stroke: colors.rule }}
               tickLine={false}
               minTickGap={16}
             />
             <YAxis
               tickFormatter={(v: number) => formatCompactMinor(v, currency)}
-              tick={{ fill: TICK, fontSize: 11, fontFamily: "inherit" }}
+              tick={{ fill: colors.ink3, fontSize: 11, fontFamily: "inherit" }}
               axisLine={false}
               tickLine={false}
               width={64}
             />
             <Tooltip
               content={<ProjectionTooltip currency={currency} series={series} />}
-              cursor={{ stroke: GRID }}
+              cursor={{ stroke: colors.rule }}
             />
             {series.map((s) => (
               <Line

@@ -11,11 +11,19 @@ import type { HouseholdPlanDto } from "./types.js";
 /** Bucket for lines the user never labelled. Not a real tag — never sent back. */
 export const UNTAGGED = "untagged";
 
-/** Accent purple stepped down toward the card background, plus a grey for the
- *  untagged bucket. Monochrome-ish on purpose: the hue carries no meaning, so
- *  it must not read as a status colour next to the app's green/amber/red. */
-const TAG_SHADES = ["#b89df0", "#9c84cf", "#816cae", "#67558e", "#4e3f6d", "#37294e"] as const;
-const UNTAGGED_SHADE = "#4a463f";
+/** The ramp lives in the stylesheet (`--tag-1`…`--tag-6`, `--tag-untagged`) so
+ *  each theme brings its own. These are the token *references*: a DOM consumer
+ *  can drop one straight into a style, and chart code — where an SVG attribute
+ *  can't hold a `var()` — resolves it with `resolveToken()`. */
+const TAG_SHADES = [
+  "var(--tag-1)",
+  "var(--tag-2)",
+  "var(--tag-3)",
+  "var(--tag-4)",
+  "var(--tag-5)",
+  "var(--tag-6)",
+] as const;
+const UNTAGGED_SHADE = "var(--tag-untagged)";
 
 export interface TagGroup {
   tag: string;

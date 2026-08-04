@@ -58,25 +58,176 @@
 }
 
 /* ============================================================================
- * Console design system — dark, monospace, dense.
+ * Console design system — monospace, dense, dark by default.
  * Tokens, layout primitives, and component styles for the Finance Planner SPA.
  * ============================================================================ */
 
-:root {
-  --bg: #0c0c0c;
-  --bg-2: #131313;
-  --card: #181818;
-  --card-2: #1f1f1f;
-  --line: #232321;
-  --line-strong: #2e2e2c;
+/* ----------------------------------------------------------------------------
+ * Design tokens.
+ *
+ * One semantic set drives both themes. Names say what a colour *means* — a
+ * surface, an ink, a state — so a rule never has to know which theme is on:
+ *
+ *   surfaces   --ground / --ground-2 / --panel / --panel-2 / --rule / --rule-2
+ *              plus --shade (a neutral wash) and --scrim (what modals darken).
+ *   inks       --ink / --ink-2 / --ink-3, and --derived for inferred values.
+ *   states     --funded (on track) / --needs-you (your move) / --alert (short).
+ *   people     --member-1 / --member-2 / --member-shared.
+ *   tags       --tag-1…--tag-6 + --tag-untagged, ranked biggest-first, with
+ *              --tag-ink for anything drawn *on* a tag colour.
+ *
+ * Translucent washes are `color-mix()` against a token, never a hand-mixed
+ * `rgba()`: the second theme then needs no second set of them. Mixing with
+ * `transparent` in sRGB is premultiplied, so `color-mix(in srgb, X N%,
+ * transparent)` is exactly `rgba(X, N/100)` — the dark theme is unchanged to
+ * the byte.
+ *
+ * Dark is the default. Light is reachable through the theme toggle, and — in
+ * `system` mode, where ThemeContext leaves `data-theme` off — through the OS
+ * preference. An explicit `data-theme` beats the media query in both
+ * directions: `:root[data-theme="…"]` is (0,2,0) against the media block's
+ * (0,1,0), so the attribute wins wherever the blocks sit.
+ *
+ * The two light blocks are written out rather than derived. Keep them in sync.
+ * -------------------------------------------------------------------------- */
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --ground: #0c0c0c;
+  --ground-2: #131313;
+  --panel: #181818;
+  --panel-2: #1f1f1f;
+  --rule: #232321;
+  --rule-2: #2e2e2c;
+  /* What every translucent wash is mixed from: light-on-dark here, dark-on-light
+   * in the light theme. Never used neat. */
+  --wash: #ffffff;
+  --scrim: #000000;
+  --grid-line: color-mix(in srgb, var(--wash) 1.2%, transparent);
+
   --ink: #e8e6e0;
   --ink-2: #a09b91;
-  --muted: #5e5a51;
-  --good: #7be087;
-  --warn-amber: #f6c66b;
-  --warn: #f47b6b;
+  --ink-3: #5e5a51;
+
+  --funded: #7be087;
+  --needs-you: #f6c66b;
+  --alert: #f47b6b;
+  --alert-hover: #ff8e7d;
   --link: #7eb3f6;
   --accent: #b89df0;
+
+  --member-1: #8e9be8;
+  --member-2: #c58ab6;
+  --member-shared: #9a9080;
+
+  /* Accent purple stepped down toward the panel, plus a grey for the untagged
+   * bucket. Monochrome-ish on purpose: the hue carries no meaning, so it must
+   * not read as a status colour next to funded/needs-you/alert. */
+  --tag-1: #b89df0;
+  --tag-2: #9c84cf;
+  --tag-3: #816cae;
+  --tag-4: #67558e;
+  --tag-5: #4e3f6d;
+  --tag-6: #37294e;
+  --tag-untagged: #4a463f;
+  --tag-ink: #0c0c0c;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --ground: #fcfcfa;
+    --ground-2: #f4f3ef;
+    --panel: #ffffff;
+    --panel-2: #f6f5f1;
+    --rule: rgba(34, 38, 43, 0.14);
+    --rule-2: rgba(34, 38, 43, 0.26);
+    --wash: #22262b;
+    --scrim: #22262b;
+    --grid-line: color-mix(in srgb, var(--wash) 3%, transparent);
+
+    --ink: #22262b;
+    --ink-2: #6b7a72;
+    --ink-3: #93a099;
+
+    --funded: #1e7a5a;
+    --needs-you: #96690a;
+    --alert: #a4342b;
+    --alert-hover: #8c2c24;
+    --link: #4c5fc4;
+    --accent: #6d4ca8;
+
+    --member-1: #4c5fc4;
+    --member-2: #a0508b;
+    --member-shared: #7a756b;
+
+    /* Inverted ramp: on white a tag gets quieter by going *darker*, and every
+     * step still carries white label ink. */
+    --tag-1: #6d4ca8;
+    --tag-2: #5e4194;
+    --tag-3: #4f3780;
+    --tag-4: #412d6c;
+    --tag-5: #332358;
+    --tag-6: #251944;
+    --tag-untagged: #6b6459;
+    --tag-ink: #ffffff;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --ground: #fcfcfa;
+  --ground-2: #f4f3ef;
+  --panel: #ffffff;
+  --panel-2: #f6f5f1;
+  --rule: rgba(34, 38, 43, 0.14);
+  --rule-2: rgba(34, 38, 43, 0.26);
+  --wash: #22262b;
+  --scrim: #22262b;
+  --grid-line: color-mix(in srgb, var(--wash) 3%, transparent);
+
+  --ink: #22262b;
+  --ink-2: #6b7a72;
+  --ink-3: #93a099;
+
+  --funded: #1e7a5a;
+  --needs-you: #96690a;
+  --alert: #a4342b;
+  --alert-hover: #8c2c24;
+  --link: #4c5fc4;
+  --accent: #6d4ca8;
+
+  --member-1: #4c5fc4;
+  --member-2: #a0508b;
+  --member-shared: #7a756b;
+
+  --tag-1: #6d4ca8;
+  --tag-2: #5e4194;
+  --tag-3: #4f3780;
+  --tag-4: #412d6c;
+  --tag-5: #332358;
+  --tag-6: #251944;
+  --tag-untagged: #6b6459;
+  --tag-ink: #ffffff;
+}
+
+/* Theme-independent: derived from the palette above, so they follow it. */
+:root {
+  /* A date the plan worked out rather than one you typed. Its own name so the
+   * derived-date styling can move without dragging every muted label with it. */
+  --derived: var(--ink-3);
+  /* Neutral wash for a block that should sit back without a border. */
+  --shade: color-mix(in srgb, var(--wash) 3.5%, transparent);
+
+  --shadow-tip: 0 4px 14px color-mix(in srgb, var(--scrim) 45%, transparent);
+  --shadow-drawer: -10px 0 32px color-mix(in srgb, var(--scrim) 50%, transparent);
+  --shadow-palette:
+    0 24px 60px color-mix(in srgb, var(--scrim) 55%, transparent),
+    0 4px 12px color-mix(in srgb, var(--scrim) 40%, transparent);
 
   --radius: 3px;
   --sidebar-w: 224px;
@@ -90,7 +241,7 @@
 }
 html,
 body {
-  background: var(--bg);
+  background: var(--ground);
   color: var(--ink);
   font-family: var(--font-mono);
   font-size: 13px;
@@ -107,8 +258,8 @@ body::before {
   pointer-events: none;
   z-index: 0;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 
@@ -137,8 +288,8 @@ textarea {
 }
 
 .sidebar {
-  background: var(--bg-2);
-  border-right: 1px solid var(--line);
+  background: var(--ground-2);
+  border-right: 1px solid var(--rule);
   padding: 1.25rem 0.85rem;
   display: flex;
   flex-direction: column;
@@ -163,20 +314,20 @@ textarea {
 .brand-dot {
   width: 9px;
   height: 9px;
-  background: var(--good);
+  background: var(--funded);
   border-radius: 1px;
-  box-shadow: 0 0 8px var(--good);
+  box-shadow: 0 0 8px var(--funded);
   flex-shrink: 0;
 }
 .brand-version {
-  color: var(--muted);
+  color: var(--ink-3);
   font-weight: 400;
   font-size: 11px;
   margin-left: auto;
 }
 
 .nav-section {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.14em;
@@ -203,13 +354,13 @@ textarea {
   text-decoration: none;
 }
 .nav-item:hover {
-  background: var(--card);
+  background: var(--panel);
   color: var(--ink);
 }
 .nav-item.active {
-  background: var(--card);
+  background: var(--panel);
   color: var(--ink);
-  border-left-color: var(--good);
+  border-left-color: var(--funded);
 }
 .nav-item.disabled {
   opacity: 0.6;
@@ -223,24 +374,24 @@ textarea {
   flex: 1;
 }
 .nav-item .kbd-ish {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
 }
 .nav-item .badge {
-  background: var(--card-2);
+  background: var(--panel-2);
   color: var(--ink-2);
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 2px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
 }
 
 .sidebar-foot {
   margin-top: auto;
   font-size: 11px;
-  color: var(--muted);
+  color: var(--ink-3);
   padding: 0.5rem 0.35rem 0;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--rule);
 }
 .sidebar-foot .row {
   display: flex;
@@ -253,7 +404,7 @@ textarea {
 }
 .sidebar-foot .logout {
   background: transparent;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
   color: var(--ink-2);
   padding: 0.4rem;
   border-radius: 3px;
@@ -263,9 +414,9 @@ textarea {
   font-size: 12px;
 }
 .sidebar-foot .logout:hover {
-  border-color: var(--line-strong);
+  border-color: var(--rule-2);
   color: var(--ink);
-  background: var(--card);
+  background: var(--panel);
 }
 
 /* ============================================================================
@@ -278,8 +429,8 @@ textarea {
   justify-content: space-between;
   gap: 0.6rem;
   padding: 0.7rem 1rem;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--line);
+  background: var(--ground-2);
+  border-bottom: 1px solid var(--rule);
   position: sticky;
   top: 0;
   z-index: 40;
@@ -295,7 +446,7 @@ textarea {
 }
 .nav-toggle {
   background: transparent;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
   color: var(--ink);
   font-size: 15px;
   line-height: 1;
@@ -304,8 +455,8 @@ textarea {
   cursor: pointer;
 }
 .nav-toggle:hover {
-  border-color: var(--line-strong);
-  background: var(--card);
+  border-color: var(--rule-2);
+  background: var(--panel);
 }
 
 /* ============================================================================
@@ -321,8 +472,8 @@ textarea {
   align-items: center;
   gap: 1.5rem;
   font-size: 11px;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--rule);
   padding-bottom: 0.85rem;
   margin-bottom: 1.5rem;
   flex-wrap: wrap;
@@ -335,10 +486,10 @@ textarea {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--good);
+  background: var(--funded);
   display: inline-block;
   margin-right: 0.35rem;
-  box-shadow: 0 0 6px var(--good);
+  box-shadow: 0 0 6px var(--funded);
 }
 .statusbar .spacer {
   flex: 1;
@@ -354,7 +505,7 @@ h1 {
   margin-bottom: 0.25rem;
 }
 h1 .scope {
-  color: var(--muted);
+  color: var(--ink-3);
   font-weight: 400;
   margin-left: 0.75rem;
 }
@@ -372,7 +523,7 @@ h3 {
 }
 
 .subhead {
-  color: var(--muted);
+  color: var(--ink-3);
   margin-bottom: 1.5rem;
   font-size: 12px;
 }
@@ -382,10 +533,10 @@ h3 {
 }
 
 .muted {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 .error {
-  color: var(--warn);
+  color: var(--alert);
 }
 
 /* ============================================================================
@@ -403,7 +554,7 @@ h3 {
   color: var(--ink);
 }
 .section-head .meta {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
 }
 .section-head .spacer {
@@ -425,7 +576,7 @@ h3 {
   text-decoration: underline;
 }
 .action.muted {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 /* ============================================================================
@@ -435,21 +586,21 @@ h3 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0;
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   margin: 0 0 1.75rem;
 }
 .kpi {
   padding: 0.9rem 1rem;
-  border-right: 1px solid var(--line);
+  border-right: 1px solid var(--rule);
 }
 .kpi:last-child {
   border-right: none;
 }
 .kpi-label {
   font-size: 10px;
-  color: var(--muted);
+  color: var(--ink-3);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin-bottom: 0.3rem;
@@ -461,21 +612,21 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 .kpi.ok .kpi-value {
-  color: var(--good);
+  color: var(--funded);
 }
 .kpi.warn .kpi-value {
-  color: var(--warn);
+  color: var(--alert);
 }
 .kpi-delta {
   font-size: 10.5px;
-  color: var(--muted);
+  color: var(--ink-3);
   margin-top: 0.15rem;
 }
 .kpi-delta.ok {
-  color: var(--good);
+  color: var(--funded);
 }
 .kpi-delta.warn {
-  color: var(--warn);
+  color: var(--alert);
 }
 
 /* ============================================================================
@@ -485,28 +636,28 @@ table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12.5px;
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   overflow: hidden;
 }
 th {
   text-align: left;
   padding: 0.55rem 0.8rem;
-  color: var(--muted);
+  color: var(--ink-3);
   font-weight: 400;
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-2);
+  border-bottom: 1px solid var(--rule);
+  background: var(--ground-2);
 }
 th.num {
   text-align: right;
 }
 td {
   padding: 0.65rem 0.8rem;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--rule);
 }
 tr:last-child td {
   border-bottom: none;
@@ -517,41 +668,41 @@ td.num,
   font-variant-numeric: tabular-nums;
 }
 tr:hover td {
-  background: var(--card-2);
+  background: var(--panel-2);
 }
 td.num.ok {
-  color: var(--good);
+  color: var(--funded);
 }
 td.num.warn {
-  color: var(--warn);
+  color: var(--alert);
 }
 td.num.dim {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 td.dim {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 .name {
   color: var(--ink);
   font-weight: 500;
 }
 .shared {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 10.5px;
   margin-left: 0.5rem;
   padding: 1px 5px;
   border-radius: 2px;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
+  background: var(--ground-2);
+  border: 1px solid var(--rule);
 }
 
 /* Plan-table compatibility: existing PlanTable component uses these classes. */
 .plan-table tr.at-risk td {
-  background: rgba(244, 123, 107, 0.06);
+  background: color-mix(in srgb, var(--alert) 6%, transparent);
 }
 /* Count hint after save/mo, e.g. "£164.26 (2)" — 2 payments fall due this month. */
 .recurs {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
 }
 .badge {
@@ -562,12 +713,12 @@ td.dim {
   letter-spacing: 0.02em;
 }
 .badge.ok {
-  background: rgba(123, 224, 135, 0.12);
-  color: var(--good);
+  background: color-mix(in srgb, var(--funded) 12%, transparent);
+  color: var(--funded);
 }
 .badge.warn {
-  background: rgba(244, 123, 107, 0.12);
-  color: var(--warn);
+  background: color-mix(in srgb, var(--alert) 12%, transparent);
+  color: var(--alert);
 }
 .tag-status {
   padding: 2px 7px;
@@ -577,30 +728,30 @@ td.dim {
   letter-spacing: 0.02em;
 }
 .tag-status.ok {
-  background: rgba(123, 224, 135, 0.12);
-  color: var(--good);
+  background: color-mix(in srgb, var(--funded) 12%, transparent);
+  color: var(--funded);
 }
 .tag-status.warn {
-  background: rgba(244, 123, 107, 0.12);
-  color: var(--warn);
+  background: color-mix(in srgb, var(--alert) 12%, transparent);
+  color: var(--alert);
 }
 .tag-status.idle {
-  background: var(--bg-2);
-  color: var(--muted);
-  border: 1px solid var(--line);
+  background: var(--ground-2);
+  color: var(--ink-3);
+  border: 1px solid var(--rule);
 }
 
 .row-actions {
   display: inline-flex;
   gap: 0.5rem;
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
 }
 .row-actions button,
 .row-actions a {
   background: transparent;
   border: 0;
-  color: var(--muted);
+  color: var(--ink-3);
   cursor: pointer;
   padding: 0;
   font-size: 11px;
@@ -621,8 +772,8 @@ td.dim {
 }
 .account-card {
   display: block;
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 0.85rem 0.95rem;
   text-decoration: none;
@@ -630,8 +781,8 @@ td.dim {
   transition: border-color 0.12s ease;
 }
 .account-card:hover {
-  border-color: var(--line-strong);
-  background: var(--card-2);
+  border-color: var(--rule-2);
+  background: var(--panel-2);
 }
 .account-card .name {
   font-weight: 600;
@@ -653,8 +804,8 @@ td.dim {
   list-style: none;
   padding: 0;
   margin: 0;
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   overflow: hidden;
 }
@@ -665,7 +816,7 @@ td.dim {
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.55rem 0.85rem;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--rule);
   font-size: 12.5px;
 }
 .entity-list li:last-child,
@@ -674,10 +825,10 @@ td.dim {
 }
 .entity-list li:hover,
 .account-list li:hover {
-  background: var(--card-2);
+  background: var(--panel-2);
 }
 .entity-list em {
-  color: var(--muted);
+  color: var(--ink-3);
   font-style: normal;
   font-size: 11px;
   margin-left: 0.4rem;
@@ -689,8 +840,8 @@ td.dim {
 input,
 select,
 textarea {
-  background: var(--bg-2);
-  border: 1px solid var(--line);
+  background: var(--ground-2);
+  border: 1px solid var(--rule);
   color: var(--ink);
   padding: 0.45rem 0.65rem;
   border-radius: 3px;
@@ -701,11 +852,11 @@ textarea {
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: var(--line-strong);
-  background: var(--card);
+  border-color: var(--rule-2);
+  background: var(--panel);
 }
 input::placeholder {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 label {
@@ -719,7 +870,7 @@ label {
 
 button {
   background: var(--ink);
-  color: var(--bg);
+  color: var(--ground);
   border: 0;
   border-radius: 3px;
   padding: 0.5rem 0.9rem;
@@ -744,19 +895,19 @@ button:disabled {
 button.ghost {
   background: transparent;
   color: var(--ink-2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
 }
 button.ghost:hover:not(:disabled) {
-  background: var(--card);
+  background: var(--panel);
   color: var(--ink);
-  border-color: var(--line-strong);
+  border-color: var(--rule-2);
 }
 button.danger {
-  background: var(--warn);
-  color: var(--bg);
+  background: var(--alert);
+  color: var(--ground);
 }
 button.danger:hover:not(:disabled) {
-  background: #ff8e7d;
+  background: var(--alert-hover);
 }
 button.tiny {
   font-size: 11px;
@@ -765,8 +916,8 @@ button.tiny {
 }
 
 .auth-card {
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: 4px;
   padding: 1.5rem;
   max-width: 360px;
@@ -803,7 +954,7 @@ button.tiny {
   align-items: center;
   gap: 0.6rem;
   margin: 1rem 0;
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
 }
 .auth-divider::before,
@@ -811,14 +962,14 @@ button.tiny {
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--line);
+  background: var(--rule);
 }
 .auth-sso {
   width: 100%;
 }
 .auth-issuer {
   margin: 0.45rem 0 0;
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
   word-break: break-all;
 }
@@ -828,12 +979,12 @@ button.tiny {
   font-size: 11.5px;
 }
 .auth-card .action.muted {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
 .stack-form {
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 1rem;
   margin: 1rem 0 0;
@@ -843,7 +994,7 @@ button.tiny {
 }
 .stack-form h3 {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--ink-3);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   font-weight: 600;
@@ -885,7 +1036,7 @@ button.tiny {
 }
 .scope-block-head {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--ink-3);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin-bottom: 0.5rem;
@@ -895,11 +1046,11 @@ button.tiny {
 .empty-state {
   text-align: center;
   padding: 3rem 1rem;
-  border: 1px dashed var(--line);
+  border: 1px dashed var(--rule);
   border-radius: var(--radius);
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 12.5px;
-  background: var(--bg-2);
+  background: var(--ground-2);
 }
 .empty-state h3 {
   color: var(--ink-2);
@@ -913,10 +1064,10 @@ button.tiny {
   margin: 0 auto 0.85rem;
 }
 .empty-state code {
-  background: var(--card);
+  background: var(--panel);
   padding: 1px 5px;
   border-radius: 2px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
   color: var(--ink-2);
   font-size: 11.5px;
 }
@@ -943,7 +1094,7 @@ button.tiny {
     position: static;
     height: auto;
     border-right: 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--rule);
     display: none;
   }
   .sidebar.open {
@@ -964,7 +1115,7 @@ button.tiny {
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: color-mix(in srgb, var(--scrim) 55%, transparent);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
   z-index: 50;
@@ -986,9 +1137,9 @@ button.tiny {
   bottom: 0;
   width: 520px;
   max-width: 92vw;
-  background: var(--bg-2);
-  border-left: 1px solid var(--line-strong);
-  box-shadow: -10px 0 32px rgba(0, 0, 0, 0.5);
+  background: var(--ground-2);
+  border-left: 1px solid var(--rule-2);
+  box-shadow: var(--shadow-drawer);
   z-index: 51;
   display: flex;
   flex-direction: column;
@@ -1008,8 +1159,8 @@ button.tiny {
   align-items: center;
   justify-content: space-between;
   padding: 0.95rem 1.25rem;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-2);
+  border-bottom: 1px solid var(--rule);
+  background: var(--ground-2);
   flex-shrink: 0;
 }
 .drawer-title {
@@ -1018,14 +1169,14 @@ button.tiny {
   color: var(--ink);
 }
 .drawer-title .scope {
-  color: var(--muted);
+  color: var(--ink-3);
   font-weight: 400;
   margin-left: 0.5rem;
 }
 .drawer-close {
   background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--line);
+  color: var(--ink-3);
+  border: 1px solid var(--rule);
   padding: 0.2rem 0.55rem;
   font-size: 12px;
   border-radius: 3px;
@@ -1034,19 +1185,19 @@ button.tiny {
 }
 .drawer-close:hover {
   color: var(--ink);
-  border-color: var(--line-strong);
-  background: var(--card);
+  border-color: var(--rule-2);
+  background: var(--panel);
 }
 
 .drawer-body {
   flex: 1;
   overflow-y: auto;
   padding: 1.25rem;
-  background: var(--bg);
+  background: var(--ground);
 }
 .drawer-body .field-hint {
   display: block;
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
   margin-top: -0.35rem;
   margin-bottom: 0.65rem;
@@ -1057,8 +1208,8 @@ button.tiny {
   display: flex;
   gap: 0.6rem;
   padding: 0.85rem 1.25rem;
-  border-top: 1px solid var(--line);
-  background: var(--bg-2);
+  border-top: 1px solid var(--rule);
+  background: var(--ground-2);
   justify-content: flex-end;
   flex-shrink: 0;
 }
@@ -1066,17 +1217,17 @@ button.tiny {
 .danger-zone {
   margin-top: 2rem;
   padding-top: 1.25rem;
-  border-top: 1px dashed rgba(244, 123, 107, 0.4);
+  border-top: 1px dashed color-mix(in srgb, var(--alert) 40%, transparent);
 }
 .danger-zone h3 {
-  color: var(--warn);
+  color: var(--alert);
   margin-bottom: 0.55rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   font-size: 11px;
 }
 .danger-zone .hint {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11.5px;
   margin-bottom: 0.85rem;
   line-height: 1.55;
@@ -1099,11 +1250,11 @@ button.tiny {
   position: relative;
 }
 .kpi.clickable:hover {
-  background: var(--card-2);
+  background: var(--panel-2);
 }
 .kpi.clickable .kpi-label::after {
   content: " ✎";
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 10px;
   opacity: 0;
   transition: opacity 0.12s ease;
@@ -1145,7 +1296,7 @@ td.row-actions-cell {
 td.row-actions-cell .row-edit {
   opacity: 0;
   background: transparent;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
   color: var(--ink-2);
   font-size: 11px;
   padding: 0.2rem 0.55rem;
@@ -1158,8 +1309,8 @@ tr:hover td.row-actions-cell .row-edit {
 }
 td.row-actions-cell .row-edit:hover {
   color: var(--ink);
-  border-color: var(--line-strong);
-  background: var(--card);
+  border-color: var(--rule-2);
+  background: var(--panel);
 }
 
 /* ============================================================================
@@ -1168,7 +1319,7 @@ td.row-actions-cell .row-edit:hover {
 .palette-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: color-mix(in srgb, var(--scrim) 55%, transparent);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
   z-index: 60;
@@ -1190,12 +1341,10 @@ td.row-actions-cell .row-edit:hover {
   transform: translateX(-50%);
   width: 580px;
   max-width: 92vw;
-  background: var(--card);
-  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
   border-radius: 6px;
-  box-shadow:
-    0 24px 60px rgba(0, 0, 0, 0.55),
-    0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-palette);
   z-index: 61;
   display: flex;
   flex-direction: column;
@@ -1218,10 +1367,10 @@ td.row-actions-cell .row-edit:hover {
   align-items: center;
   gap: 0.65rem;
   padding: 0 1rem;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--rule);
 }
 .palette-prompt {
-  color: var(--good);
+  color: var(--funded);
   font-size: 14px;
   flex-shrink: 0;
 }
@@ -1236,13 +1385,13 @@ td.row-actions-cell .row-edit:hover {
   font-family: var(--font-mono);
 }
 .palette-input::placeholder {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 .palette-esc {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
   padding: 2px 7px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
   border-radius: 3px;
   flex-shrink: 0;
 }
@@ -1253,7 +1402,7 @@ td.row-actions-cell .row-edit:hover {
   padding: 0.35rem 0 0.5rem;
 }
 .palette-empty {
-  color: var(--muted);
+  color: var(--ink-3);
   padding: 1rem;
   font-size: 12.5px;
   text-align: center;
@@ -1262,7 +1411,7 @@ td.row-actions-cell .row-edit:hover {
   padding: 0.35rem 0;
 }
 .palette-group-title {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -1287,15 +1436,15 @@ td.row-actions-cell .row-edit:hover {
   font-weight: 400;
 }
 .palette-item.active {
-  background: var(--card-2);
+  background: var(--panel-2);
   color: var(--ink);
-  border-left-color: var(--good);
+  border-left-color: var(--funded);
 }
 .palette-item-label {
   flex: 1;
 }
 .palette-item-hint {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
 }
 
@@ -1310,8 +1459,8 @@ td.row-actions-cell .row-edit:hover {
   align-items: center;
   gap: 1.25rem;
   flex-wrap: wrap;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
+  background: var(--ground-2);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 0.55rem 0.85rem;
   margin: 0 0 0.85rem;
@@ -1324,7 +1473,7 @@ td.row-actions-cell .row-edit:hover {
   font-variant-numeric: tabular-nums;
 }
 .reality-strip .dim {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 .reality-strip .spacer {
   flex: 1;
@@ -1343,11 +1492,11 @@ td.row-actions-cell .row-edit:hover {
 
 /* The whole point of the loop: real money is behind the plan. */
 .reality-banner {
-  background: rgba(246, 198, 107, 0.08);
-  border: 1px solid rgba(246, 198, 107, 0.3);
-  border-left: 2px solid var(--warn-amber);
+  background: color-mix(in srgb, var(--needs-you) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--needs-you) 30%, transparent);
+  border-left: 2px solid var(--needs-you);
   border-radius: var(--radius);
-  color: var(--warn-amber);
+  color: var(--needs-you);
   padding: 0.5rem 0.85rem;
   margin: 0 0 1rem;
   font-size: 12px;
@@ -1358,7 +1507,7 @@ td.row-actions-cell .row-edit:hover {
   white-space: nowrap;
 }
 .mtd-tick {
-  color: var(--good);
+  color: var(--funded);
   font-size: 11px;
   margin-right: 0.5rem;
   font-variant-numeric: tabular-nums;
@@ -1406,7 +1555,7 @@ td.row-actions-cell .row-edit:hover {
   font-variant-numeric: tabular-nums;
 }
 .networth-summary .dim {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 .chart-legend {
   display: flex;
@@ -1429,13 +1578,13 @@ td.row-actions-cell .row-edit:hover {
 
 /* Shared chart tooltip — one look for every chart in the app. */
 .chart-tip {
-  background: var(--card);
-  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
   border-radius: var(--radius);
   padding: 6px 9px;
   font-size: 12px;
   line-height: 1.5;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-tip);
 }
 .chart-tip-head {
   color: var(--ink-2);
@@ -1475,13 +1624,13 @@ td.row-actions-cell .row-edit:hover {
   gap: 0.3rem;
 }
 .months-select button.active {
-  background: var(--card);
+  background: var(--panel);
   color: var(--ink);
-  border-color: var(--line-strong);
+  border-color: var(--rule-2);
 }
 
 .projection-hint {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11.5px;
   margin-bottom: 0.5rem;
 }
@@ -1491,7 +1640,7 @@ td.row-actions-cell .row-edit:hover {
   overflow-x: auto;
   max-width: 100%;
   margin-top: 0.75rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
 }
 .months-grid {
@@ -1518,9 +1667,9 @@ td.row-actions-cell .row-edit:hover {
   left: 0;
   z-index: 1;
   text-align: left;
-  background: var(--bg-2);
+  background: var(--ground-2);
   /* box-shadow, not border-right: collapsed borders drop off sticky cells. */
-  box-shadow: 1px 0 0 var(--line);
+  box-shadow: 1px 0 0 var(--rule);
 }
 .months-grid tbody th.sticky-col {
   color: var(--ink);
@@ -1528,44 +1677,44 @@ td.row-actions-cell .row-edit:hover {
   font-size: 12px;
   text-transform: none;
   letter-spacing: 0;
-  background: var(--card);
+  background: var(--panel);
 }
 .months-grid tbody tr:hover th.sticky-col,
 .months-grid tbody tr:hover td {
-  background: var(--card-2);
+  background: var(--panel-2);
 }
 /* A month this payment actually falls due in. */
 .months-grid td.due {
   color: var(--ink);
   font-weight: 600;
-  background: rgba(246, 198, 107, 0.07);
+  background: color-mix(in srgb, var(--needs-you) 7%, transparent);
 }
 .due-dot {
-  color: var(--warn-amber);
+  color: var(--needs-you);
   margin-left: 0.2rem;
 }
 .months-grid tfoot th,
 .months-grid tfoot td {
-  border-top: 1px solid var(--line-strong);
+  border-top: 1px solid var(--rule-2);
   border-bottom: 0;
-  background: var(--bg-2);
+  background: var(--ground-2);
 }
 .months-grid tfoot th.sticky-col {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 10.5px;
 }
 .months-grid tfoot td.ok {
-  color: var(--good);
+  color: var(--funded);
 }
 .months-grid tfoot td.warn {
-  color: var(--warn);
-  background: rgba(244, 123, 107, 0.08);
+  color: var(--alert);
+  background: color-mix(in srgb, var(--alert) 8%, transparent);
 }
 
 /* Overview: what lands in the next fortnight. */
 .upcoming-card {
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 0.35rem 0.95rem 0.85rem;
   margin-bottom: 1.75rem;
@@ -1584,7 +1733,7 @@ td.row-actions-cell .row-edit:hover {
   gap: 0.45rem;
   padding: 0.28rem 0;
   font-size: 12.5px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--rule);
 }
 .upcoming-row:last-child {
   border-bottom: 0;
@@ -1602,13 +1751,13 @@ td.row-actions-cell .row-edit:hover {
   font-variant-numeric: tabular-nums;
 }
 .upcoming-row .where {
-  color: var(--muted);
+  color: var(--ink-3);
   margin-left: auto;
   font-size: 11.5px;
 }
 .upcoming-row .sep,
 .upcoming-row .dim {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 /* Beyond the coming week: context, not a call to action. */
 .upcoming-row.far {
@@ -1626,8 +1775,8 @@ td.row-actions-cell .row-edit:hover {
   gap: 0.6rem;
 }
 .payday-event {
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 0.5rem 0.7rem;
   font-size: 12px;
@@ -1638,7 +1787,7 @@ td.row-actions-cell .row-edit:hover {
   gap: 0.3rem;
   padding-bottom: 0.35rem;
   margin-bottom: 0.35rem;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--rule);
 }
 .payday-head .spacer {
   flex: 1;
@@ -1649,7 +1798,7 @@ td.row-actions-cell .row-edit:hover {
   font-variant-numeric: tabular-nums;
 }
 .payday-head .dim {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11.5px;
 }
 .payday-slice {
@@ -1661,7 +1810,7 @@ td.row-actions-cell .row-edit:hover {
   padding: 0.12rem 0;
 }
 .payday-slice .dim {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 .payday-slice .num {
   color: var(--ink);
@@ -1672,8 +1821,8 @@ td.row-actions-cell .row-edit:hover {
  * Settings — account facts and the two-factor panels.
  * ============================================================================ */
 .settings-panel {
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 0.9rem 1rem;
   max-width: 620px;
@@ -1687,7 +1836,7 @@ td.row-actions-cell .row-edit:hover {
 }
 .settings-row .k {
   flex: 0 0 8.5rem;
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -1723,20 +1872,20 @@ td.row-actions-cell .row-edit:hover {
 .toggle-row input[type="checkbox"] {
   width: auto;
   margin: 0;
-  accent-color: var(--good);
+  accent-color: var(--funded);
   cursor: pointer;
 }
 
 /* Export above, import below, with air between them. */
 .data-divider {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--rule);
   margin: 1rem 0;
 }
 .file-picker {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--muted);
+  color: var(--ink-3);
   margin-bottom: 0;
   max-width: 26rem;
 }
@@ -1747,7 +1896,7 @@ td.row-actions-cell .row-edit:hover {
   cursor: pointer;
 }
 .import-confirm {
-  border-left: 2px solid var(--warn-amber);
+  border-left: 2px solid var(--needs-you);
   padding-left: 0.75rem;
   margin-top: 0.85rem;
 }
@@ -1761,7 +1910,7 @@ td.row-actions-cell .row-edit:hover {
   word-break: break-all;
 }
 .import-result {
-  color: var(--good);
+  color: var(--funded);
   font-size: 12px;
   margin-top: 0.85rem;
 }
@@ -1773,7 +1922,7 @@ td.row-actions-cell .row-edit:hover {
 
 /* Enrolment / disable steps, separated from the status line above them. */
 .totp-step {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--rule);
   margin-top: 0.85rem;
   padding-top: 0.85rem;
 }
@@ -1783,8 +1932,8 @@ td.row-actions-cell .row-edit:hover {
 }
 /* The shared secret is meant to be read aloud and typed — space it out. */
 .totp-secret {
-  background: var(--bg-2);
-  border: 1px solid var(--line);
+  background: var(--ground-2);
+  border: 1px solid var(--rule);
   border-radius: 2px;
   padding: 0.2rem 0.45rem;
   color: var(--ink);
@@ -1802,14 +1951,14 @@ td.row-actions-cell .row-edit:hover {
 
 /* Recovery codes: shown once, so the panel shouts a little. */
 .recovery-panel {
-  border: 1px solid var(--warn-amber);
+  border: 1px solid var(--needs-you);
   border-radius: var(--radius);
-  background: var(--bg-2);
+  background: var(--ground-2);
   padding: 0.85rem 1rem;
   margin-top: 0.85rem;
 }
 .recovery-panel h3 {
-  color: var(--warn-amber);
+  color: var(--needs-you);
   margin-bottom: 0.4rem;
 }
 .recovery-panel .auth-hint b {
@@ -1847,16 +1996,16 @@ td.row-actions-cell .row-edit:hover {
   gap: 0.3rem;
 }
 .mode-switch button.active {
-  background: var(--card);
+  background: var(--panel);
   color: var(--ink);
-  border-color: var(--line-strong);
+  border-color: var(--rule-2);
 }
 
 /* ============================================================================
  * What-if preview — before → after, inside the payment drawer.
  * ============================================================================ */
 .preview-block {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--rule);
   margin-top: 1rem;
   padding-top: 0.85rem;
   display: flex;
@@ -1865,13 +2014,13 @@ td.row-actions-cell .row-edit:hover {
   gap: 0.35rem;
 }
 .preview-block .field-hint {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
 }
 .preview-strip {
   width: 100%;
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-left: 2px solid var(--accent);
   border-radius: var(--radius);
   padding: 0.55rem 0.75rem;
@@ -1887,30 +2036,30 @@ td.row-actions-cell .row-edit:hover {
 }
 .preview-label {
   flex: 0 0 5.5rem;
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
 .preview-arrow {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 .preview-to {
   color: var(--ink);
   font-weight: 600;
 }
 .preview-row.warn .preview-to {
-  color: var(--warn);
+  color: var(--alert);
 }
 .preview-note {
   margin-top: 0.4rem;
   padding-top: 0.35rem;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
+  border-top: 1px solid var(--rule);
+  color: var(--ink-3);
   font-size: 11.5px;
 }
 .preview-note.warn {
-  color: var(--warn);
+  color: var(--alert);
 }
 
 /* ============================================================================
@@ -1932,7 +2081,7 @@ td.row-actions-cell .row-edit:hover {
   align-items: center;
   justify-content: center;
   z-index: 2;
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11.5px;
   letter-spacing: 0.04em;
   pointer-events: none;
@@ -1976,7 +2125,7 @@ td.row-actions-cell .row-edit:hover {
   font-variant-numeric: tabular-nums;
 }
 .tag-legend-share {
-  color: var(--muted);
+  color: var(--ink-3);
   font-variant-numeric: tabular-nums;
   min-width: 3.2rem;
   text-align: right;
@@ -1992,8 +2141,8 @@ td.row-actions-cell .row-edit:hover {
   gap: 0.75rem;
 }
 .member-bar {
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 0.6rem 0.75rem;
 }
@@ -2013,7 +2162,7 @@ td.row-actions-cell .row-edit:hover {
   font-variant-numeric: tabular-nums;
 }
 .member-bar-head .dim {
-  color: var(--muted);
+  color: var(--ink-3);
   font-size: 11px;
 }
 .member-bar-track {
@@ -2022,8 +2171,8 @@ td.row-actions-cell .row-edit:hover {
   height: 10px;
   border-radius: 2px;
   overflow: hidden;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
+  background: var(--ground-2);
+  border: 1px solid var(--rule);
 }
 .member-bar-seg {
   display: block;
@@ -2033,10 +2182,10 @@ td.row-actions-cell .row-edit:hover {
   /* Hatched rather than solid: it is money that isn't there. */
   background: repeating-linear-gradient(
     45deg,
-    rgba(244, 123, 107, 0.55),
-    rgba(244, 123, 107, 0.55) 3px,
-    rgba(244, 123, 107, 0.18) 3px,
-    rgba(244, 123, 107, 0.18) 6px
+    color-mix(in srgb, var(--alert) 55%, transparent),
+    color-mix(in srgb, var(--alert) 55%, transparent) 3px,
+    color-mix(in srgb, var(--alert) 18%, transparent) 3px,
+    color-mix(in srgb, var(--alert) 18%, transparent) 6px
   );
 }
 .member-bar-legend {
@@ -2055,7 +2204,7 @@ td.row-actions-cell .row-edit:hover {
   gap: 0.35rem;
 }
 .member-bar-legend li.warn {
-  color: var(--warn);
+  color: var(--alert);
 }
 .member-bar-legend i {
   width: 7px;
@@ -2064,7 +2213,7 @@ td.row-actions-cell .row-edit:hover {
   flex-shrink: 0;
 }
 .member-bar-legend i.unfunded {
-  background: rgba(244, 123, 107, 0.55);
+  background: color-mix(in srgb, var(--alert) 55%, transparent);
 }
 .member-bar-legend .amount {
   color: var(--ink);
@@ -2092,7 +2241,13 @@ td.row-actions-cell .row-edit:hover {
   pointer-events: none;
 }
 .privacy-eye {
-  color: var(--good);
+  color: var(--funded);
+}
+
+/* The theme toggle's mark. Quieter than the privacy eye: which theme is on is
+ * already obvious from everything around it. */
+.theme-mark {
+  color: var(--ink-3);
 }
 /* On mobile the eye joins the burger on the right rather than floating in the
  * middle of the bar. */

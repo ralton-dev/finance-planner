@@ -1,4 +1,7 @@
+import { useMemo } from "react";
 import { ResponsiveContainer, Tooltip, Treemap } from "recharts";
+import { useTheme } from "../contexts/ThemeContext.js";
+import { resolveToken, useChartColors } from "../lib/chartColors.js";
 import { formatCompactMinor, formatMinor } from "../lib/money.js";
 import { tagShade, type TagGroup } from "../lib/tags.js";
 
@@ -46,9 +49,10 @@ function TagCell({
   depth = 1,
   name = "",
   size = 0,
-  fill = "#b89df0",
+  fill = "",
   currency = "GBP",
 }: CellProps) {
+  const colors = useChartColors();
   // Recharts also hands the content the root rectangle. Drawing it would tint
   // the gaps between the real cells, so it is skipped.
   if (depth === 0) return null;
@@ -61,18 +65,18 @@ function TagCell({
         y={y}
         width={width}
         height={height}
-        fill={fill}
+        fill={fill || colors.tags[0]}
         fillOpacity={0.82}
-        stroke="#0c0c0c"
+        stroke={colors.ground}
         strokeWidth={2}
       />
       {roomForLabel && (
-        <text x={x + 8} y={y + 18} fontSize={11.5} fill="#0c0c0c" fontWeight={600}>
+        <text x={x + 8} y={y + 18} fontSize={11.5} fill={colors.tagInk} fontWeight={600}>
           {name}
         </text>
       )}
       {roomForValue && (
-        <text x={x + 8} y={y + 34} fontSize={11} fill="#0c0c0c" fillOpacity={0.72}>
+        <text x={x + 8} y={y + 34} fontSize={11} fill={colors.tagInk} fillOpacity={0.72}>
           {formatCompactMinor(size, currency)}
         </text>
       )}
@@ -113,13 +117,21 @@ function TagTooltip({
 }
 
 export function TagTreemap({ groups, currency }: { groups: TagGroup[]; currency: string }) {
-  const data: Cell[] = groups.map((g, i) => ({
-    name: g.tag,
-    size: g.valueMinor,
-    share: g.share,
-    count: g.count,
-    fill: tagShade(g.tag, i),
-  }));
+  // `tagShade` hands back a `var(--tag-n)` reference, which is what a DOM
+  // consumer wants; an SVG `fill` attribute needs the colour itself — and which
+  // colour that is depends on the theme on screen.
+  const { resolved } = useTheme();
+  const data: Cell[] = useMemo(
+    () =>
+      groups.map((g, i) => ({
+        name: g.tag,
+        size: g.valueMinor,
+        share: g.share,
+        count: g.count,
+        fill: resolveToken(tagShade(g.tag, i)),
+      })),
+    [groups, resolved],
+  );
 
   return (
     <div style={{ width: "100%", height: 260 }}>

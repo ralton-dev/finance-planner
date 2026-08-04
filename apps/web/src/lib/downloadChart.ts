@@ -9,11 +9,13 @@
  * capability check that simply reports failure instead of throwing.
  */
 
+import { FALLBACK_CHART_COLORS, readToken } from "./chartColors.js";
 import { saveBlob } from "./files.js";
 
-/** Matches --bg; the exported PNG should look like the app, not like a
- *  transparent cut-out that turns black in a chat client. */
-const APP_BG = "#0c0c0c";
+/** The page ground of the theme on screen; the exported PNG should look like
+ *  the app it came from, not like a transparent cut-out that turns black in a
+ *  chat client. Read per export, so a light-theme chart exports light. */
+const appBackground = (): string => readToken("--ground", FALLBACK_CHART_COLORS.ground);
 /** Retina-ish export regardless of the screen it was rendered on. */
 const PIXEL_SCALE = 2;
 const FALLBACK_SIZE = { width: 900, height: 420 };
@@ -99,7 +101,7 @@ function toBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
 export async function downloadChartPng(
   container: Element | null | undefined,
   name: string,
-  background = APP_BG,
+  background = appBackground(),
 ): Promise<boolean> {
   const svg = findChartSvg(container);
   if (!svg || !canExportChart()) return false;
