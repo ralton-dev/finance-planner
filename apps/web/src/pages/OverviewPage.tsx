@@ -1,24 +1,42 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { Amount } from "../components/Amount.js";
 import { ChartFrame } from "../components/ChartFrame.js";
 import { DownloadButton } from "../components/DownloadButton.js";
+import { Fold } from "../components/Fold.js";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
 import { UpcomingDigest } from "../components/UpcomingDigest.js";
 import { api, ApiError } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
+import { deriveNeedsYou, type NeedsYouAccountInput, type NeedsYouInput } from "../lib/needsYou.js";
 import { buildNetWorthSeries, type AccountBalanceHistory } from "../lib/networth.js";
 import { useAsync } from "../lib/useAsync.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
+import { AccountCell, AttentionCell, BalanceCell } from "./AccountsPage.js";
 import type {
   AccountDto,
+  AccountPlanDto,
   BalanceSnapshotDto,
   CurrencyOverviewDto,
   HouseholdDto,
   HouseholdPlanDto,
+  OverviewAccountDto,
   OverviewDto,
+  TransferConfirmationDto,
   UpcomingDto,
   UserDto,
 } from "../lib/types.js";
+
+/**
+ * The Overview: what needs you across everything, and a door to each place the
+ * detail lives.
+ *
+ * It used to print the household plan in full — the money-flow Sankey, the
+ * member table, the per-account reconciliation — which is the plan page's job,
+ * done here a second time in a smaller box. What a landing page owes you is the
+ * one number, the list of things waiting on a human, and a way through to the
+ * screen that can do something about each of them.
+ */
 
 /** Look-ahead for the "coming up" digest — a fortnight is one pay cycle. */
 const UPCOMING_DAYS = 14;
@@ -28,11 +46,21 @@ const NetWorthChart = lazy(() =>
   import("../components/NetWorthChart.js").then((m) => ({ default: m.NetWorthChart })),
 );
 
-/** Balances + reserved for one account. Reserved only exists on the *account*
- *  plan (household plans don't expose it), so it is fetched alongside. */
+/** Balances for the net-worth chart, plus the account plan the checklist's
+ *  `record` and `check-in` rules are derived from. */
 interface AccountReality extends AccountBalanceHistory {
   account: AccountDto;
-  reservedMinor: number;
+  /** null when this account's plan failed to load — it drops out of the
+   *  checklist rather than blanking it. */
+  plan: AccountPlanDto | null;
+}
+
+/** A household, its plan and this month's confirmations: everything the fold
+ *  derives from, and everything its link card says. */
+export interface HouseholdEntry {
+  household: HouseholdDto;
+  plan: HouseholdPlanDto;
+  confirmations: TransferConfirmationDto[];
 }
 
 export function OverviewPage() {
@@ -42,16 +70,31 @@ export function OverviewPage() {
   const accounts = useAsync<AccountDto[]>(() => api.listAccounts(), []);
   const upcoming = useAsync<UpcomingDto>(() => api.upcoming(UPCOMING_DAYS), []);
 
+  // The household plans are read for one reason: the fold derives the
+  // shortfall and transfer rows from them, and the link cards print the totals
+  // that same read already carries. Nothing on this page renders their lines.
   const households = me.data?.households ?? [];
   const householdKey = households.map((h) => h.id).join(",");
-  const plans = useAsync<{ h: HouseholdDto; p: HouseholdPlanDto }[]>(
-    () => Promise.all(households.map((h) => api.householdPlan(h.id).then((p) => ({ h, p })))),
+  const plans = useAsync<HouseholdEntry[]>(
+    () =>
+      Promise.all(
+        households.map(async (household): Promise<HouseholdEntry | null> => {
+          const plan = await api.householdPlan(household.id).catch(() => null);
+          if (!plan) return null;
+          // Server-side default is the current month, which is the month the
+          // checklist filters to anyway.
+          const confirmations = await api
+            .listTransferConfirmations(household.id)
+            .catch((): TransferConfirmationDto[] => []);
+          return { household, plan, confirmations };
+        }),
+      ).then((entries) => entries.filter((e): e is HouseholdEntry => e !== null)),
     [householdKey],
   );
 
   // One parallel batch across every accessible account: balance history for the
-  // chart, plan for `reservedMinor`. A single failing account degrades to
-  // "no data" instead of blanking the whole section.
+  // chart, the account plan for the checklist. A single failing account degrades
+  // to "no data" instead of blanking the section.
   const accountList = accounts.data ?? [];
   const accountKey = accountList.map((a) => a.id).join(",");
   const reality = useAsync<AccountReality[]>(
@@ -62,14 +105,14 @@ export function OverviewPage() {
             api.listBalances(account.id).catch((): BalanceSnapshotDto[] => []),
             api.getPlan(account.id).catch(() => null),
           ]);
-          return { account, snapshots, reservedMinor: plan?.reservedMinor ?? 0 };
+          return { account, snapshots, plan };
         }),
       ),
     [accountKey],
   );
 
   /** Everything on the page, re-read: for anything that can create data behind
-   *  the Overview's back (a quick-add drawer, the demo seed). */
+   *  the Overview's back (a quick-add drawer, the demo seed, the fold). */
   function refetchAll(): void {
     overview.refetch();
     accounts.refetch();
@@ -85,18 +128,43 @@ export function OverviewPage() {
   }, [lastCreated]);
 
   if (me.loading || overview.loading || accounts.loading) return <p className="muted">loading…</p>;
-  if (overview.error) return <p className="error">failed to load overview.</p>;
+  if (overview.error || !overview.data) return <p className="error">failed to load overview.</p>;
 
+  const { asOfDate, perCurrency: buckets } = overview.data;
   const byId = new Map((accounts.data ?? []).map((a) => [a.id, a]));
+  const stateById = new Map(buckets.flatMap((c) => c.accounts).map((a) => [a.accountId, a]));
   const householdPlans = plans.data ?? [];
-  // Accounts already reconciled inside a household plan shouldn't also appear in
-  // the standalone list below.
-  const pooledIds = new Set(householdPlans.flatMap(({ p }) => p.accounts.map((a) => a.accountId)));
-  const buckets = overview.data?.perCurrency ?? [];
-  const standalone = buckets
+  const totalAccounts = accounts.data?.length ?? 0;
+
+  // Accounts planned inside a household are that household's story; the table
+  // below lists only the ones planned alone. The overview DTO says which is
+  // which, so this no longer depends on having read any household plan.
+  const unpooled = buckets
+    .map((c) => ({ ...c, accounts: c.accounts.filter((a) => !a.householdId) }))
+    .filter((c) => c.accounts.length > 0);
+
+  // Everything the checklist is derived from, dated by the overview's as-of.
+  // `householdId` is the de-duplication hook: an account inside a household in
+  // this input contributes its record and check-in rows, but its shortfall is
+  // left to that household's member rows, which say whose money is missing.
+  const needsYou: NeedsYouInput = {
+    asOfDate,
+    households: householdPlans.map(({ plan, confirmations }) => ({ plan, confirmations })),
+    accounts: (reality.data ?? []).flatMap(({ account, plan }): NeedsYouAccountInput[] => {
+      if (!plan) return [];
+      const householdId = stateById.get(account.id)?.householdId;
+      return [{ plan, name: account.name, ...(householdId ? { householdId } : {}) }];
+    }),
+    upcoming: upcoming.data?.items ?? [],
+  };
+
+  // --- superseded blocks, still rendered until the subtractive commit --------
+  const pooledIds = new Set(
+    householdPlans.flatMap(({ plan }) => plan.accounts.map((a) => a.accountId)),
+  );
+  const legacy = buckets
     .map((c) => ({ ...c, accounts: c.accounts.filter((sa) => !pooledIds.has(sa.accountId)) }))
     .filter((c) => c.accounts.length > 0);
-  const totalAccounts = accounts.data?.length ?? 0;
 
   return (
     <section>
@@ -114,60 +182,387 @@ export function OverviewPage() {
             <b>{buckets.length}</b> {buckets.length === 1 ? "currency" : "currencies"}
           </>
         )}
+        {asOfDate && <> · as of {asOfDate}</>}
       </div>
-
-      {totalAccounts > 0 && (
-        <UpcomingDigest
-          items={upcoming.data?.items ?? []}
-          days={upcoming.data?.days ?? UPCOMING_DAYS}
-          loading={upcoming.loading}
-        />
-      )}
 
       {totalAccounts === 0 ? (
         <NoAccounts onSeeded={refetchAll} />
-      ) : households.length > 0 ? (
-        <>
-          {plans.loading ? (
-            <p className="muted">loading household plans…</p>
-          ) : (
-            householdPlans.map(({ h, p }) => (
-              <div key={h.id} className="scope-block">
-                <div className="scope-block-head">
-                  household · {h.name}
-                  <Link
-                    to={`/households/${h.id}/plan`}
-                    className="action"
-                    style={{ marginLeft: "0.75rem" }}
-                  >
-                    full plan →
-                  </Link>
-                </div>
-                {p.accounts.length === 0 ? (
-                  <p className="muted" style={{ fontSize: "12px" }}>
-                    no accounts in this household's plan yet —{" "}
-                    <Link to={`/households/${h.id}`} className="action">
-                      set it up →
-                    </Link>
-                  </p>
-                ) : (
-                  <HouseholdPlanView plan={p} />
-                )}
-              </div>
-            ))
-          )}
-          {standalone.map((c) => (
-            <StandaloneAccounts key={c.currency} bucket={c} byId={byId} heading="other accounts" />
-          ))}
-        </>
       ) : (
-        buckets.map((c) => <CurrencyBlock key={c.currency} bucket={c} byId={byId} />)
-      )}
+        <>
+          {/* The headline and the checklist must not appear before the data
+              they are derived from, or the page greets you with a confident
+              "nothing planned yet" it is about to take back. */}
+          {plans.loading || reality.loading ? (
+            <p className="muted">reading your plans…</p>
+          ) : (
+            <Fold input={needsYou} loading={upcoming.loading} onActioned={refetchAll} />
+          )}
 
-      {totalAccounts > 0 && <NetWorth reality={reality.data ?? []} loading={reality.loading} />}
+          <UpcomingDigest
+            items={upcoming.data?.items ?? []}
+            days={upcoming.data?.days ?? UPCOMING_DAYS}
+            loading={upcoming.loading}
+          />
+
+          <HouseholdCards entries={householdPlans} loading={plans.loading} asOfDate={asOfDate} />
+
+          {unpooled.map((c) => (
+            <StandaloneAccounts
+              key={c.currency}
+              bucket={c}
+              byId={byId}
+              asOfDate={asOfDate}
+              named={households.length > 0}
+            />
+          ))}
+
+          {households.length === 0 ? (
+            buckets.map((c) => <CurrencyBlock key={c.currency} bucket={c} byId={byId} />)
+          ) : (
+            <>
+              {householdPlans.map(({ household, plan }) => (
+                <div key={household.id} className="scope-block">
+                  <div className="scope-block-head">
+                    household · {household.name}
+                    <Link
+                      to={`/households/${household.id}/plan`}
+                      className="action"
+                      style={{ marginLeft: "0.75rem" }}
+                    >
+                      full plan →
+                    </Link>
+                  </div>
+                  {plan.accounts.length === 0 ? (
+                    <p className="muted" style={{ fontSize: "12px" }}>
+                      no accounts in this household's plan yet —{" "}
+                      <Link to={`/households/${household.id}`} className="action">
+                        set it up →
+                      </Link>
+                    </p>
+                  ) : (
+                    <HouseholdPlanView plan={plan} />
+                  )}
+                </div>
+              ))}
+              {legacy.map((c) => (
+                <LegacyAccounts key={c.currency} bucket={c} byId={byId} />
+              ))}
+            </>
+          )}
+
+          <NetWorth buckets={buckets} reality={reality.data ?? []} loading={reality.loading} />
+        </>
+      )}
     </section>
   );
 }
+
+// --- household doorways ------------------------------------------------------
+
+/** A card's state chips, in the accounts index's vocabulary. */
+export interface HouseholdChip {
+  tone: "alert" | "needs-you" | "funded";
+  label: string;
+  amountMinor?: number;
+}
+
+/**
+ * What a household card says about itself, worst first: money the plan cannot
+ * cover, then money nobody has moved yet, then — only when neither applies —
+ * that it is on track.
+ *
+ * The transfer count comes from the same derivation the fold's rows do, so a
+ * card and the checklist above it can never disagree about what is outstanding.
+ */
+export function householdChips(entry: HouseholdEntry, asOfDate: string): HouseholdChip[] {
+  const chips: HouseholdChip[] = [];
+
+  if (entry.plan.shortfallMinor > 0) {
+    chips.push({ tone: "alert", label: "unfunded", amountMinor: entry.plan.shortfallMinor });
+  }
+
+  const waiting = deriveNeedsYou({
+    asOfDate,
+    households: [{ plan: entry.plan, confirmations: entry.confirmations }],
+  }).filter((i) => i.kind === "transfer").length;
+  if (waiting > 0) {
+    chips.push({
+      tone: "needs-you",
+      label: waiting === 1 ? "1 transfer to make" : `${waiting} transfers to make`,
+    });
+  }
+
+  return chips.length > 0 ? chips : [{ tone: "funded", label: "on track" }];
+}
+
+function HouseholdCards({
+  entries,
+  loading,
+  asOfDate,
+}: {
+  entries: HouseholdEntry[];
+  loading: boolean;
+  asOfDate: string;
+}) {
+  if (loading && entries.length === 0) {
+    return (
+      <p className="muted" style={{ fontSize: "12px" }}>
+        loading household plans…
+      </p>
+    );
+  }
+  if (entries.length === 0) return null;
+
+  return (
+    <>
+      <div className="section-head">
+        <h2>households</h2>
+        <span className="meta">
+          [{entries.length} {entries.length === 1 ? "plan" : "plans"}]
+        </span>
+      </div>
+      <div className="household-cards">
+        {entries.map((entry) => (
+          <HouseholdCard key={entry.household.id} entry={entry} asOfDate={asOfDate} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** The doorway: what the household is, what it costs, and what it wants. */
+function HouseholdCard({ entry, asOfDate }: { entry: HouseholdEntry; asOfDate: string }) {
+  const { household, plan } = entry;
+  const c = plan.currency;
+  const members = plan.members.length;
+  const accounts = plan.accounts.length;
+
+  return (
+    <Link to={`/households/${household.id}/plan`} className="household-card">
+      <div className="household-card-head">
+        <span className="name">{household.name}</span>
+        <span className="spacer" />
+        <span className="action">full plan →</span>
+      </div>
+      <div className="household-card-meta">
+        {members} {members === 1 ? "member" : "members"} · {accounts}{" "}
+        {accounts === 1 ? "account" : "accounts"}
+      </div>
+      <div className="household-card-figures">
+        <Amount minor={plan.monthlyIncomeMinor} currency={c} /> in
+        <span className="dim"> · </span>
+        <Amount minor={plan.totalRequiredMinor} currency={c} /> required
+      </div>
+      <div className="household-card-chips">
+        {householdChips(entry, asOfDate).map((chip) => (
+          <span key={chip.tone} className={`tag-status ${chip.tone}`}>
+            {chip.label}
+            {chip.amountMinor !== undefined && (
+              <>
+                {" · "}
+                <Amount minor={chip.amountMinor} currency={c} />
+              </>
+            )}
+          </span>
+        ))}
+      </div>
+    </Link>
+  );
+}
+
+// --- accounts planned outside a household ------------------------------------
+
+/**
+ * The accounts nobody's household plan speaks for, in the accounts index's own
+ * columns — same cells, same chips, same staleness threshold, so the two
+ * screens cannot describe one account two ways.
+ */
+function StandaloneAccounts({
+  bucket,
+  byId,
+  asOfDate,
+  named,
+}: {
+  bucket: CurrencyOverviewDto;
+  byId: Map<string, AccountDto>;
+  asOfDate: string;
+  named: boolean;
+}) {
+  const rows = bucket.accounts.filter((s) => byId.has(s.accountId));
+  if (rows.length === 0) return null;
+
+  return (
+    <>
+      <div className="section-head">
+        <h2>{named ? "your other accounts" : "accounts"}</h2>
+        <span className="meta">
+          [{rows.length} {rows.length === 1 ? "row" : "rows"} · {bucket.currency}
+          {named ? " · not in a household" : ""}]
+        </span>
+        <span className="spacer" />
+        <Link to="/accounts" className="action">
+          manage →
+        </Link>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>account</th>
+            <th className="num">balance</th>
+            <th className="num">left over / mo</th>
+            <th>attention</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => {
+            const account = byId.get(s.accountId)!;
+            return (
+              <tr key={s.accountId}>
+                <td>
+                  <AccountCell account={account} state={s} />
+                </td>
+                <td className="num">
+                  <BalanceCell state={s} currency={bucket.currency} asOfDate={asOfDate} />
+                </td>
+                <td className="num">
+                  <Amount minor={s.leftoverMinor} currency={bucket.currency} />
+                </td>
+                <td>
+                  <AttentionCell state={s} currency={bucket.currency} asOfDate={asOfDate} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+// --- net worth ---------------------------------------------------------------
+
+/** What the accounts hold, and how much of it the plan has already claimed. */
+export interface NetWorthTotals {
+  cashMinor: number;
+  reservedMinor: number;
+  /** Cash the plan has no claim on. Negative when the plan is over-committed. */
+  freeMinor: number;
+  /** How many accounts have ever been checked in — nothing above is real
+   *  without at least one. */
+  checkedIn: number;
+}
+
+/**
+ * Net worth from the same read the accounts index uses: the latest balance
+ * check-in per account, and what that account's plan has set aside. Summed
+ * inside one currency only — the caller passes one overview bucket.
+ */
+export function netWorthTotals(accounts: readonly OverviewAccountDto[]): NetWorthTotals {
+  let cashMinor = 0;
+  let reservedMinor = 0;
+  let checkedIn = 0;
+
+  for (const account of accounts) {
+    if (account.latestBalanceMinor !== null && account.latestBalanceMinor !== undefined) {
+      cashMinor += account.latestBalanceMinor;
+      checkedIn += 1;
+    }
+    reservedMinor += account.reservedMinor ?? 0;
+  }
+
+  return { cashMinor, reservedMinor, freeMinor: cashMinor - reservedMinor, checkedIn };
+}
+
+/**
+ * The sentence under the figure. A balance is not spendable money: the plan has
+ * already promised most of it to something, and the difference is the only
+ * number worth acting on.
+ */
+export function netWorthSentence(totals: NetWorthTotals, currency: string): string {
+  if (totals.checkedIn === 0) {
+    return "No balances checked in yet — record one and this becomes real.";
+  }
+  const reserved = formatMinor(totals.reservedMinor, currency);
+  if (totals.freeMinor < 0) {
+    return (
+      `The plan has ${reserved} set aside — ` +
+      `${formatMinor(-totals.freeMinor, currency)} more than these accounts hold.`
+    );
+  }
+  return (
+    `${reserved} of it is already set aside by the plan, ` +
+    `leaving ${formatMinor(totals.freeMinor, currency)} genuinely free.`
+  );
+}
+
+/** What you hold, said in a sentence; the trend is a disclosure behind it. */
+function NetWorth({
+  buckets,
+  reality,
+  loading,
+}: {
+  buckets: CurrencyOverviewDto[];
+  reality: AccountReality[];
+  loading: boolean;
+}) {
+  const points = buildNetWorthSeries(reality);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const multi = buckets.length > 1;
+
+  return (
+    <div className="scope-block">
+      <div className="section-head">
+        <h2>net worth</h2>
+        <span className="meta">[from balance check-ins · carried forward]</span>
+      </div>
+
+      {buckets.map((bucket) => {
+        const totals = netWorthTotals(bucket.accounts);
+        return (
+          <div key={bucket.currency} className="networth-line">
+            <div className="networth-figure">
+              {multi && <span className="dim">{bucket.currency} </span>}
+              <Amount minor={totals.cashMinor} currency={bucket.currency} />
+            </div>
+            <p className="networth-sentence">{netWorthSentence(totals, bucket.currency)}</p>
+          </div>
+        );
+      })}
+
+      <details className="disclosure">
+        <summary>net worth over time</summary>
+        {loading ? (
+          <p className="muted" style={{ fontSize: "12px" }}>
+            loading balances…
+          </p>
+        ) : points.length === 0 ? (
+          <p className="muted" style={{ fontSize: "12px" }}>
+            record balances on your accounts to see net worth over time
+          </p>
+        ) : (
+          <>
+            <div className="disclosure-actions">
+              <DownloadButton targetRef={chartRef} name="net-worth" />
+            </div>
+            <ChartFrame ref={chartRef}>
+              <Suspense
+                fallback={
+                  <p className="muted" style={{ fontSize: "12px" }}>
+                    loading chart…
+                  </p>
+                }
+              >
+                <NetWorthChart points={points} />
+              </Suspense>
+            </ChartFrame>
+          </>
+        )}
+      </details>
+    </div>
+  );
+}
+
+// --- first run ---------------------------------------------------------------
 
 /**
  * First run: nothing to plan with yet. Offers the worked example alongside the
@@ -249,82 +644,20 @@ function useDemoSeedEnabled(): boolean {
   return enabled;
 }
 
-/** Net worth over time, from manual balance check-ins. */
-function NetWorth({ reality, loading }: { reality: AccountReality[]; loading: boolean }) {
-  const points = buildNetWorthSeries(reality);
-  const chartRef = useRef<HTMLDivElement>(null);
-
-  // Latest balance per account, summed per currency — never across currencies.
-  const totals = new Map<string, { cash: number; reserved: number }>();
-  for (const r of reality) {
-    const entry = totals.get(r.account.currency) ?? { cash: 0, reserved: 0 };
-    const latest = [...r.snapshots].sort((a, b) => a.asOfDate.localeCompare(b.asOfDate)).at(-1);
-    entry.cash += latest?.balanceMinor ?? 0;
-    entry.reserved += r.reservedMinor;
-    totals.set(r.account.currency, entry);
-  }
-  const multi = totals.size > 1;
-
-  return (
-    <div className="scope-block">
-      <div className="section-head">
-        <h2>net worth</h2>
-        <span className="meta">[from balance check-ins · carried forward]</span>
-        <span className="spacer" />
-        <DownloadButton targetRef={chartRef} name="net-worth" />
-      </div>
-
-      {loading ? (
-        <p className="muted" style={{ fontSize: "12px" }}>
-          loading balances…
-        </p>
-      ) : points.length === 0 ? (
-        <p className="muted" style={{ fontSize: "12px" }}>
-          record balances on your accounts to see net worth over time
-        </p>
-      ) : (
-        <>
-          <div className="networth-summary">
-            {[...totals.entries()].map(([currency, t]) => (
-              <span key={currency}>
-                {multi && <span className="dim">{currency} </span>}
-                cash <b className="amount">{formatMinor(t.cash, currency)}</b>
-                <span className="dim"> · </span>
-                reserved <b className="amount">{formatMinor(t.reserved, currency)}</b>
-              </span>
-            ))}
-          </div>
-          <ChartFrame ref={chartRef}>
-            <Suspense
-              fallback={
-                <p className="muted" style={{ fontSize: "12px" }}>
-                  loading chart…
-                </p>
-              }
-            >
-              <NetWorthChart points={points} />
-            </Suspense>
-          </ChartFrame>
-        </>
-      )}
-    </div>
-  );
-}
+// --- superseded by the sections above, removed in the subtractive commit ------
 
 /** A standalone (not-in-a-plan) account table — names + per-account status. */
-function StandaloneAccounts({
+function LegacyAccounts({
   bucket,
   byId,
-  heading,
 }: {
   bucket: CurrencyOverviewDto;
   byId: Map<string, AccountDto>;
-  heading: string;
 }) {
   return (
     <div className="scope-block">
       <div className="section-head">
-        <h2>{heading}</h2>
+        <h2>other accounts</h2>
         <span className="meta">
           [{bucket.accounts.length} · {bucket.currency} · not in a plan]
         </span>

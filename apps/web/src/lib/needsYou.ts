@@ -123,6 +123,16 @@ export interface NeedsYouHeadline {
   sentence: string;
 }
 
+/**
+ * The currency the headline is counted in: the first household's, else the
+ * first account's. One figure can only be in one currency, so on the Overview —
+ * where the input spans every household and every standalone account — this is
+ * also the filter that decides which of them the headline is allowed to add up.
+ */
+export function headlineCurrency(input: NeedsYouInput): string {
+  return input.households?.[0]?.plan.currency ?? input.accounts?.[0]?.plan.currency ?? "GBP";
+}
+
 // --- dates -----------------------------------------------------------------
 
 /** Whole days from `from` to `to`, both ISO date-only strings. */
@@ -477,19 +487,22 @@ function transfersClause(count: number): string {
  *
  * `items` comes from {@link deriveNeedsYou} on the same input — it decides how
  * the left-over sentence ends, and nothing else.
+ *
+ * Aggregating is a matter of a wider input: every household and every account
+ * planned outside one, summed worst-first, in the one currency the figure can
+ * honestly be in. Money in another currency is left to that currency's own
+ * screen rather than added to a total that would mean nothing.
  */
 export function deriveHeadline(
   input: NeedsYouInput,
   items: readonly NeedsYouItem[],
 ): NeedsYouHeadline {
-  const households = input.households ?? [];
-  const standalone = standaloneAccounts(input);
-
-  const currency =
-    households[0]?.plan.currency ??
-    standalone[0]?.plan.currency ??
-    input.accounts?.[0]?.plan.currency ??
-    "GBP";
+  const currency = headlineCurrency(input);
+  // De-duplication first (an account inside a household is that household's
+  // story), then the currency filter — an account is standalone or not
+  // regardless of what the headline happens to be counted in.
+  const households = (input.households ?? []).filter((h) => h.plan.currency === currency);
+  const standalone = standaloneAccounts(input).filter((a) => a.plan.currency === currency);
 
   const sum = (pick: (p: { shortfallMinor: number; leftoverMinor: number }) => number): number =>
     households.reduce((n, h) => n + pick(h.plan), 0) +

@@ -806,6 +806,62 @@ describe("deriveHeadline", () => {
     });
   });
 
+  it("aggregates two households worst-first: the total, named by the bigger gap", () => {
+    const other = householdPlan({
+      householdId: "hh2",
+      currency: "GBP",
+      monthlyIncomeMinor: 200_000,
+      leftoverMinor: 100_000,
+      shortfallMinor: 50_000,
+      members: [member({ userId: "cass", displayName: "Cass", shortfallMinor: 50_000 })],
+      lines: [
+        hhLine({
+          paymentId: "loan",
+          name: "Loan",
+          tag: "debt",
+          requiredMonthlyMinor: 50_000,
+          allocations: [{ userId: "cass", requiredMinor: 50_000, fundedMinor: 0 }],
+        }),
+      ],
+      transfers: [],
+    });
+    // The mockup's household (Alex, £40 short) plus a worse one (Cass, £500).
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      households: [household(), household({ plan: other, confirmations: [] })],
+    };
+    const headline = deriveHeadline(input, deriveNeedsYou(input));
+
+    expect(headline.kind).toBe("shortfall");
+    expect(headline.amountMinor).toBe(54_000);
+    expect(headline.sentence).toBe(
+      "£540.00 is short this month, most of it Cass's share of debt. Everything else across " +
+        "3 payments is covered — clear it and you're left with £4,326.62 for the month.",
+    );
+  });
+
+  it("counts the aggregate in one currency rather than adding pounds to euros", () => {
+    const euro = householdPlan({
+      householdId: "hh-eu",
+      currency: "EUR",
+      leftoverMinor: 900_000,
+      shortfallMinor: 700_000,
+      members: [member({ userId: "luc", displayName: "Luc", shortfallMinor: 700_000 })],
+      lines: [],
+      transfers: [],
+    });
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      households: [household(), household({ plan: euro, confirmations: [] })],
+    };
+    const headline = deriveHeadline(input, deriveNeedsYou(input));
+
+    // The euro household's rows still reach the list; only the figure is GBP.
+    expect(deriveNeedsYou(input).map((i) => i.key)).toContain("shortfall:member:hh-eu:luc");
+    expect(headline.amountMinor).toBe(4_000);
+    expect(headline.sentence).toMatch(/^Alex's share of housing is £40\.00 short this month\./);
+  });
+
   it("adds up across households and standalone accounts", () => {
     const input: NeedsYouInput = {
       asOfDate: AS_OF,

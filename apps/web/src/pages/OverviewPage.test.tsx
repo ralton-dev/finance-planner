@@ -3,9 +3,14 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickAddProvider } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
-import type { AccountDto } from "../lib/types.js";
+import type {
+  AccountDto,
+  HouseholdPlanDto,
+  OverviewAccountDto,
+  TransferConfirmationDto,
+} from "../lib/types.js";
 import { stubApiFetch, type FetchStub, type Routes } from "../test/apiMock.js";
-import { OverviewPage } from "./OverviewPage.js";
+import { householdChips, netWorthSentence, netWorthTotals, OverviewPage } from "./OverviewPage.js";
 
 const ME = { id: "u1", email: "ada@example.com", displayName: "Ada", households: [] };
 
@@ -111,7 +116,7 @@ describe("OverviewPage — demo seed", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /load demo data/i }));
 
-    expect(await screen.findByText("Everyday Account")).toBeInTheDocument();
+    expect((await screen.findAllByText("Everyday Account"))[0]).toBeInTheDocument();
     expect(screen.queryByText(/no accounts yet/i)).toBeNull();
     expect(stub.calls("POST /api/demo/seed")).toBe(1);
     // The empty state's fetches ran again rather than the page guessing.
@@ -133,7 +138,344 @@ describe("OverviewPage — demo seed", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /load demo data/i }));
 
-    expect(await screen.findByText("Everyday Account")).toBeInTheDocument();
+    expect((await screen.findAllByText("Everyday Account"))[0]).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+// --- the doorways ------------------------------------------------------------
+// One household (two accounts) plus one account planned alone, which is the
+// arrangement every rule on this page has an opinion about.
+
+const AS_OF = "2026-08-04";
+
+function state(over: Partial<OverviewAccountDto> & { accountId: string }): OverviewAccountDto {
+  return {
+    name: over.accountId,
+    householdId: null,
+    householdRole: null,
+    monthlyIncomeMinor: 0,
+    leftoverMinor: 0,
+    shortfallMinor: 0,
+    atRiskCount: 0,
+    latestBalanceMinor: null,
+    latestBalanceDate: null,
+    reservedMinor: 0,
+    unrecordedCount: 0,
+    unrecordedTotalMinor: 0,
+    ...over,
+  };
+}
+
+function account(id: string, name: string): AccountDto {
+  return {
+    id,
+    name,
+    currency: "GBP",
+    openingBalanceMinor: 0,
+    monthlyBufferMinor: 0,
+    owner: true,
+    permission: "edit",
+  };
+}
+
+const HOUSEHOLD_PLAN: HouseholdPlanDto = {
+  householdId: "hh",
+  asOfDate: AS_OF,
+  currency: "GBP",
+  monthlyIncomeMinor: 630_000,
+  totalRequiredMinor: 219_000,
+  totalFundedMinor: 215_000,
+  leftoverMinor: 411_000,
+  shortfallMinor: 4_000,
+  members: [
+    {
+      userId: "u1",
+      displayName: "Ada",
+      shareBp: 6_000,
+      monthlyIncomeMinor: 400_000,
+      obligationMinor: 131_400,
+      fundedMinor: 131_400,
+      leftoverMinor: 268_600,
+      shortfallMinor: 0,
+    },
+    {
+      userId: "u2",
+      displayName: "Alex",
+      shareBp: 4_000,
+      monthlyIncomeMinor: 230_000,
+      obligationMinor: 87_600,
+      fundedMinor: 83_600,
+      leftoverMinor: 142_400,
+      shortfallMinor: 4_000,
+    },
+  ],
+  accounts: [
+    {
+      accountId: "ada",
+      name: "Ada current",
+      role: "personal",
+      memberUserId: "u1",
+      currency: "GBP",
+      monthlyIncomeMinor: 400_000,
+      requiredOutflowMinor: 0,
+      fundedOutflowMinor: 0,
+      transferInMinor: 0,
+      transferOutMinor: 131_400,
+      leftoverMinor: 268_600,
+      shortfallMinor: 0,
+    },
+    {
+      accountId: "bills",
+      name: "Bills joint",
+      role: "shared",
+      memberUserId: null,
+      currency: "GBP",
+      monthlyIncomeMinor: 0,
+      requiredOutflowMinor: 219_000,
+      fundedOutflowMinor: 215_000,
+      transferInMinor: 219_000,
+      transferOutMinor: 0,
+      leftoverMinor: 0,
+      shortfallMinor: 0,
+    },
+  ],
+  lines: [
+    {
+      paymentId: "rent",
+      accountId: "bills",
+      name: "Council flat rent",
+      category: "monthly_recurring",
+      scope: "shared",
+      amountMinor: 100_000,
+      dueDate: "2026-08-01",
+      targetDate: "2026-08-01",
+      priority: 10,
+      requiredMonthlyMinor: 100_000,
+      fundedMonthlyMinor: 96_000,
+      occurrencesThisMonth: 1,
+      onTrack: false,
+      tag: "housing",
+      allocations: [
+        { userId: "u1", requiredMinor: 60_000, fundedMinor: 60_000 },
+        { userId: "u2", requiredMinor: 40_000, fundedMinor: 36_000 },
+      ],
+    },
+  ],
+  transfers: [
+    { fromAccountId: "ada", toAccountId: "bills", memberUserId: "u1", amountMinor: 131_400 },
+    { fromAccountId: "bills", toAccountId: "ada", memberUserId: "u2", amountMinor: 87_600 },
+  ],
+};
+
+const PLANNED_ME = { ...ME, households: [{ id: "hh", name: "Chestnut Road" }] };
+
+const PLANNED_ACCOUNTS = [
+  account("ada", "Ada current"),
+  account("bills", "Bills joint"),
+  account("side", "Side hustle"),
+];
+
+const PLANNED_STATE = [
+  state({ accountId: "ada", name: "Ada current", householdId: "hh", householdRole: "personal" }),
+  state({ accountId: "bills", name: "Bills joint", householdId: "hh", householdRole: "shared" }),
+  state({
+    accountId: "side",
+    name: "Side hustle",
+    leftoverMinor: 12_500,
+    latestBalanceMinor: 90_000,
+    latestBalanceDate: AS_OF,
+    reservedMinor: 30_000,
+  }),
+];
+
+/** An account plan flat enough that the checklist has nothing to say about it —
+ *  the household's rows are what these tests are about. */
+function emptyPlan(accountId: string) {
+  return {
+    accountId,
+    currency: "GBP",
+    monthlyIncomeMinor: 0,
+    bufferMinor: 0,
+    totalRequiredMinor: 0,
+    totalFundedMinor: 0,
+    leftoverMinor: 0,
+    shortfallMinor: 0,
+    lines: [],
+    contributionsMTD: [],
+    latestBalance: { asOfDate: AS_OF, balanceMinor: 0 },
+    reservedMinor: 0,
+  };
+}
+
+function renderPlanned(routes: Routes = {}): void {
+  stub = stubApiFetch({
+    "GET /api/auth/me": { body: PLANNED_ME },
+    "GET /api/accounts": { body: PLANNED_ACCOUNTS },
+    "GET /api/overview": {
+      body: {
+        asOfDate: AS_OF,
+        perCurrency: [
+          {
+            currency: "GBP",
+            monthlyIncomeMinor: 630_000,
+            bufferMinor: 0,
+            totalRequiredMinor: 219_000,
+            totalFundedMinor: 215_000,
+            leftoverMinor: 411_000,
+            shortfallMinor: 4_000,
+            accounts: PLANNED_STATE,
+          },
+        ],
+      },
+    },
+    "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
+    "GET /api/households/hh/plan": { body: HOUSEHOLD_PLAN },
+    "GET /api/households/hh/transfers/confirmations": { body: [] },
+    "GET /api/accounts/ada/plan": { body: emptyPlan("ada") },
+    "GET /api/accounts/bills/plan": { body: emptyPlan("bills") },
+    "GET /api/accounts/side/plan": { body: emptyPlan("side") },
+    "GET /api/accounts/ada/balances": { body: [] },
+    "GET /api/accounts/bills/balances": { body: [] },
+    "GET /api/accounts/side/balances": { body: [] },
+    ...routes,
+  });
+
+  render(
+    <MemoryRouter>
+      <QuickAddProvider>
+        <OverviewPage />
+      </QuickAddProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe("OverviewPage — fold + doorways", () => {
+  it("leads with the aggregate headline the checklist derives", async () => {
+    renderPlanned();
+
+    expect(
+      await screen.findByText(/Alex's share of housing is £40\.00 short this month/),
+    ).toBeInTheDocument();
+    // Both of the household's transfers are outstanding, so the fold asks.
+    expect(screen.getByText("Ada → Bills joint")).toBeInTheDocument();
+  });
+
+  it("gives each household a card that opens its own plan", async () => {
+    renderPlanned();
+
+    const card = (await screen.findAllByRole("link", { name: /Chestnut Road/ }))[0]!;
+    expect(card).toHaveAttribute("href", "/households/hh/plan");
+    expect(card).toHaveTextContent("2 members · 2 accounts");
+    expect(card).toHaveTextContent("£6,300.00 in");
+    expect(card).toHaveTextContent("£2,190.00 required");
+    expect(card).toHaveTextContent("unfunded · £40.00");
+    expect(card).toHaveTextContent("2 transfers to make");
+  });
+
+  it("tables only the accounts no household plans, in the index's own columns", async () => {
+    renderPlanned();
+
+    const table = (await screen.findAllByRole("table"))[0]!;
+    expect(table).toHaveTextContent("Side hustle");
+    expect(table).not.toHaveTextContent("Bills joint");
+    // WP-4's cells, verbatim: the balance and how long ago anyone said so.
+    expect(table).toHaveTextContent("£900.00");
+    expect(table).toHaveTextContent("checked in today");
+  });
+
+  it("says what you hold and how much of it the plan has already claimed", async () => {
+    renderPlanned();
+
+    expect(
+      await screen.findByText(
+        "£300.00 of it is already set aside by the plan, leaving £600.00 genuinely free.",
+      ),
+    ).toBeInTheDocument();
+    // The trend is a disclosure now, not the section's headline.
+    expect(screen.getByText("net worth over time").tagName).toBe("SUMMARY");
+  });
+});
+
+describe("householdChips", () => {
+  const entry = (confirmations: TransferConfirmationDto[] = []) => ({
+    household: { id: "hh", name: "Chestnut Road" },
+    plan: HOUSEHOLD_PLAN,
+    confirmations,
+  });
+
+  it("leads with money the plan cannot cover, then money nobody has moved", () => {
+    expect(householdChips(entry(), AS_OF)).toEqual([
+      { tone: "alert", label: "unfunded", amountMinor: 4_000 },
+      { tone: "needs-you", label: "2 transfers to make" },
+    ]);
+  });
+
+  it("counts down as transfers are confirmed, and uses the singular", () => {
+    const confirmed: TransferConfirmationDto[] = [
+      {
+        id: "c1",
+        householdId: "hh",
+        month: "2026-08-01",
+        fromAccountId: "ada",
+        toAccountId: "bills",
+        memberUserId: "u1",
+        amountMinor: 131_400,
+        createdAt: "2026-08-01T00:00:00.000Z",
+      },
+    ];
+    expect(householdChips(entry(confirmed), AS_OF)[1]).toEqual({
+      tone: "needs-you",
+      label: "1 transfer to make",
+    });
+  });
+
+  it("says so plainly when neither applies", () => {
+    const settled = { ...entry(), plan: { ...HOUSEHOLD_PLAN, shortfallMinor: 0, transfers: [] } };
+    expect(householdChips(settled, AS_OF)).toEqual([{ tone: "funded", label: "on track" }]);
+  });
+});
+
+describe("net worth", () => {
+  it("sums the check-ins, and what the plan has set aside against them", () => {
+    expect(
+      netWorthTotals([
+        state({ accountId: "a", latestBalanceMinor: 250_000, reservedMinor: 90_000 }),
+        state({ accountId: "b", latestBalanceMinor: 50_000, reservedMinor: 10_000 }),
+      ]),
+    ).toEqual({ cashMinor: 300_000, reservedMinor: 100_000, freeMinor: 200_000, checkedIn: 2 });
+  });
+
+  it("leaves an unchecked account out of the cash, not out of the reserve", () => {
+    expect(
+      netWorthTotals([
+        state({ accountId: "a", latestBalanceMinor: 250_000, reservedMinor: 90_000 }),
+        state({ accountId: "b", latestBalanceMinor: null, reservedMinor: 10_000 }),
+      ]),
+    ).toEqual({ cashMinor: 250_000, reservedMinor: 100_000, freeMinor: 150_000, checkedIn: 1 });
+  });
+
+  it("words the gap between cash and reserved", () => {
+    expect(
+      netWorthSentence(
+        { cashMinor: 300_000, reservedMinor: 100_000, freeMinor: 200_000, checkedIn: 2 },
+        "GBP",
+      ),
+    ).toBe("£1,000.00 of it is already set aside by the plan, leaving £2,000.00 genuinely free.");
+  });
+
+  it("says which way round it is when the plan claims more than you hold", () => {
+    expect(
+      netWorthSentence(
+        { cashMinor: 100_000, reservedMinor: 140_000, freeMinor: -40_000, checkedIn: 1 },
+        "GBP",
+      ),
+    ).toBe("The plan has £1,400.00 set aside — £400.00 more than these accounts hold.");
+  });
+
+  it("refuses to pretend when nothing has been checked in", () => {
+    expect(
+      netWorthSentence({ cashMinor: 0, reservedMinor: 0, freeMinor: 0, checkedIn: 0 }, "GBP"),
+    ).toBe("No balances checked in yet — record one and this becomes real.");
   });
 });
