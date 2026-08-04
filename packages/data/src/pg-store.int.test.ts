@@ -134,8 +134,11 @@ describe("PgStore (Postgres via Testcontainers)", () => {
       await expect(confirm(topUp)).rejects.toThrow(/transfer_confirmations_inflow_month_unique/);
       // A different movement between the same two accounts is a different thing.
       await expect(confirm(isa)).resolves.toBeTruthy();
-      // Scoped to nothing at all is still refused.
-      await expect(confirm(null)).rejects.toThrow(/transfer_confirmation_scope/);
+      // Neither household nor inflow: 0009 refused this as "scoped to nothing",
+      // and 0010 accepts it as a transfer the plan derived, scoped by (from, to,
+      // month, member) like every other row. Exercised in full further down;
+      // here it only has to have stopped being refused.
+      await expect(confirm(null)).resolves.toBeTruthy();
 
       // Household rows behave exactly as they always did: one row per member,
       // and a second for the same member refused by the original constraint.
@@ -152,6 +155,61 @@ describe("PgStore (Postgres via Testcontainers)", () => {
         [topUp],
       );
       expect(left.rows[0]).toEqual({ n: 0 });
+    });
+  });
+
+  it("confirms a derived transfer that carries neither a household nor an inflow", async () => {
+    const owner = "77777777-7777-7777-7777-777777777777";
+    const other = "88888888-8888-8888-8888-888888888888";
+    const from = await withClient(uri, async (c) => {
+      const { rows: accounts } = await c.query<{ id: string }>(
+        `INSERT INTO core.accounts (owner_user_id, name)
+         VALUES ($1, 'Source'), ($1, 'Bills'), ($1, 'Holiday') RETURNING id`,
+        [owner],
+      );
+      const [source, bills, holiday] = accounts.map((r) => r.id);
+      const confirm = (to: string, member = owner, month = "2026-08-01") =>
+        c.query(
+          `INSERT INTO core.transfer_confirmations
+             (household_id, inflow_id, month, from_account_id, to_account_id,
+              member_user_id, amount_minor)
+           VALUES (NULL, NULL, $3, $1, $2, $4, 30320)`,
+          [source, to, month, member],
+        );
+
+      // The shape 0009's CHECK called "scoped to nothing" and refused outright.
+      await expect(confirm(bills)).resolves.toBeTruthy();
+      // …recorded once a month and no more, which is what neither older unique
+      // key can see with both scope columns null.
+      await expect(confirm(bills)).rejects.toThrow(/transfer_confirmations_derived_month_unique/);
+      // Another pot, another actor, another month: three different movements.
+      await expect(confirm(holiday)).resolves.toBeTruthy();
+      await expect(confirm(bills, other)).resolves.toBeTruthy();
+      await expect(confirm(bills, owner, "2026-09-01")).resolves.toBeTruthy();
+      return source;
+    });
+
+    // The hazard this migration has to survive: 0009 re-runs immediately before
+    // 0010 on every sync and re-adds `transfer_confirmation_scope` whenever it
+    // finds the name free. With derived rows in the table that ADD would
+    // validate against them, fail, and wedge every future deploy. Applying
+    // everything again — twice — proves the name stays held and the rows stay.
+    await applyMigrations(uri);
+    await applyMigrations(uri);
+    await withClient(uri, async (c) => {
+      const derived = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM core.transfer_confirmations
+         WHERE household_id IS NULL AND inflow_id IS NULL AND from_account_id = $1`,
+        [from],
+      );
+      expect(derived.rows[0]).toEqual({ n: 4 });
+      const scope = await c.query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+         WHERE conname = 'transfer_confirmation_scope'
+           AND conrelid = 'core.transfer_confirmations'::regclass`,
+      );
+      expect(scope.rows).toHaveLength(1);
+      expect(scope.rows[0]!.def).not.toContain("inflow_id");
     });
   });
 
