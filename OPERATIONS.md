@@ -187,6 +187,18 @@ min 2 / max 6 replicas). Deployments omit a static `replicas` when
 autoscaling is enabled so they don't fight the HPA. Each service has a
 PodDisruptionBudget with `minAvailable: 1`.
 
+> **auth must stay at one replica.** `values-prod.yaml` pins
+> `services.auth.replicas: 1`, and autoscaling must stay off for auth. The
+> service keeps a refresh-token rotation grace window **in process** — a short
+> memory of the token it has just replaced, so a retried or concurrent refresh
+> is not mistaken for token theft. A second pod has no such memory: a refresh
+> that lands on it looks like a presented-but-revoked token, reuse detection
+> fires, and **every session for that user is revoked** — the reload-logout bug,
+> back again and now load-balancer-dependent, so it will reproduce roughly half
+> the time and never in a one-pod dev stack. Lift the constraint only once the
+> rotation link lives on the session row (see BACKLOG), or put sticky routing in
+> front of `POST /api/auth/refresh`.
+
 ### Auth-specific
 
 - Per-route rate-limit (`@fastify/rate-limit`), per IP: register 3/min, login
@@ -195,6 +207,9 @@ PodDisruptionBudget with `minAvailable: 1`.
 - Refresh tokens rotate on use. A presented-but-revoked token triggers
   **reuse detection**: every active session for the user is revoked and the
   client must re-login. Surfaced as `401 reuse_detected`.
+- A rotated token is forgiven for a short grace window, held in an **in-process
+  `Map`** — which is what makes the auth service stateful and pins it to one
+  replica (see Scaling above).
 - Account access uses a 404-not-403 leak rule: no access at all returns 404
   (preserves existence privacy), insufficient permission returns 403.
 - TOTP is optional per user. Enrolment issues single-use recovery codes;

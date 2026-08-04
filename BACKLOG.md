@@ -60,6 +60,17 @@ endorsement.
   screen is actually scannable — enrolment means pasting the URI or typing the
   secret. Rendering the URI as a QR needs a generator dependency (or a
   hand-rolled encoder) that hasn't been taken on.
+- **Auth is stateful, so it cannot be scaled out.** Refresh-token rotation keeps
+  a short grace window for the token it has just replaced in an **in-process
+  `Map`** (`apps/auth/src/server.ts`), so a retried or concurrent refresh is not
+  read as token theft. At one replica that is correct; at two, a refresh landing
+  on the other pod trips reuse detection and revokes every session for that user
+  — the reload-logout bug returning, load-balancer-dependent and invisible in a
+  one-pod dev stack. `values-prod.yaml` therefore pins `auth.replicas: 1` and
+  autoscaling must stay off for auth. The fix is to move the link onto the
+  session row — a `rotated_to_session_id` column plus a rotated-at timestamp, so
+  any pod can follow the chain — or, as a stopgap, sticky routing in front of
+  `POST /api/auth/refresh`.
 - **Notification scheduler assumes a single api replica.** The digest sender is
   a 15-minute `setInterval` inside the api process, not a CronJob or a queue.
   There is no leader election or distributed lock — the unique

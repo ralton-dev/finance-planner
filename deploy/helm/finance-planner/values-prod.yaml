@@ -11,8 +11,14 @@ services:
     replicas: 3
   web:
     replicas: 3
+  # Must stay at 1. The auth service holds refresh-token rotation state in
+  # process — a short grace window keyed by the token it just replaced, so a
+  # retried or racing refresh is not read as token theft. At two replicas a
+  # refresh can land on the pod that knows nothing about the rotation, which
+  # revokes every session for that user and logs them out everywhere. Raise this
+  # only once that state lives on the session row (see BACKLOG).
   auth:
-    replicas: 2
+    replicas: 1
   calc:
     replicas: 2
 
