@@ -12,7 +12,7 @@ import type {
   OverviewAccountDto,
 } from "../lib/types.js";
 import { stubApiFetch, type Routes } from "../test/apiMock.js";
-import { HouseholdDetailPage, splitByShares } from "./HouseholdDetailPage.js";
+import { HouseholdDetailPage } from "./HouseholdDetailPage.js";
 
 const AS_OF = "2026-08-04";
 
@@ -130,8 +130,13 @@ function summary(partial: Partial<OverviewAccountDto> & { accountId: string }): 
   };
 }
 
-/** A plan whose only shared cost is the joint pot's required outflow. */
-function plan(sharedRequiredMinor: number): HouseholdPlanDto {
+/**
+ * A plan whose shared costs are `billsMinor`, one line each, all in the joint
+ * pot. The lines are what the consequence line splits — the engine splits every
+ * bill on its own, so the page must be given them individually.
+ */
+function plan(...billsMinor: number[]): HouseholdPlanDto {
+  const sharedRequiredMinor = billsMinor.reduce((s, b) => s + b, 0);
   const personal = (accountId: string, name: string, memberUserId: string) => ({
     accountId,
     name,
@@ -175,7 +180,22 @@ function plan(sharedRequiredMinor: number): HouseholdPlanDto {
       personal("a2", "Ben current", "u1"),
       personal("a3", "Alex current", "u2"),
     ],
-    lines: [],
+    lines: billsMinor.map((amountMinor, i) => ({
+      paymentId: `p${i}`,
+      accountId: "a1",
+      name: `bill ${i}`,
+      category: "monthly_recurring",
+      scope: "shared",
+      amountMinor,
+      dueDate: AS_OF,
+      targetDate: AS_OF,
+      priority: 100,
+      requiredMonthlyMinor: amountMinor,
+      fundedMonthlyMinor: amountMinor,
+      occurrencesThisMonth: 1,
+      onTrack: true,
+      allocations: [],
+    })),
     transfers: [],
   };
 }
@@ -341,6 +361,31 @@ describe("HouseholdDetailPage — the shares block", () => {
     );
   });
 
+  it("splits each bill on its own and rounds every share up", async () => {
+    // £1,000.01 and £200.03. Per bill: Ben 60001 + 12002, Alex 40001 + 8002 —
+    // splitting the £1,200.04 total in one go would ask Alex for £480.02, a
+    // penny less than the engine will. Every share rounds up, so the pot takes
+    // in 2p more than the bills cost.
+    renderPage({ "GET /api/households/h1/plan": { body: plan(100_001, 20_003) } });
+
+    expect(flat(await screen.findByText(/splits shared costs/))).toBe(
+      "splits shared costs 60.0/40.0 — £1,200.04 a month lands as Ben £720.03 and Alex £480.03 into Bills joint. every share is rounded up, so the pot ends the month £0.02 over rather than a penny short.",
+    );
+  });
+
+  it("leaves a personal bill parked in the pot out of the split", async () => {
+    // The engine charges it wholly to its bearer, so the shares never touch it
+    // — and the sentence is built from the lines, not the pot's outflow total.
+    const p = plan(100_000);
+    p.lines.push({ ...p.lines[0]!, paymentId: "p9", name: "Ben's bike", scope: "personal" });
+    p.accounts[0]!.requiredOutflowMinor = 200_000;
+    renderPage({ "GET /api/households/h1/plan": { body: p } });
+
+    expect(flat(await screen.findByText(/splits shared costs/))).toBe(
+      "splits shared costs 60.0/40.0 — £1,000.00 a month lands as Ben £600.00 and Alex £400.00 into Bills joint.",
+    );
+  });
+
   it("follows the inputs before anything is saved", async () => {
     const user = userEvent.setup();
     renderPage();
@@ -438,14 +483,5 @@ describe("HouseholdDetailPage — the danger zone", () => {
 
     await user.type(screen.getByLabelText("type household name to confirm deletion"), "Ralton");
     expect(del).toBeEnabled();
-  });
-});
-
-describe("splitByShares", () => {
-  it("keeps every part a whole minor unit and the pence add up", () => {
-    expect(splitByShares(10_001, [6000, 4000])).toEqual([6001, 4000]);
-    expect(splitByShares(100, [1, 1, 1])).toEqual([34, 33, 33]);
-    // No weights at all falls back to an even split, as the engine does.
-    expect(splitByShares(100, [0, 0])).toEqual([50, 50]);
   });
 });

@@ -1,3 +1,4 @@
+import { splitByShares } from "@finance-planner/contracts/money";
 import { type CSSProperties, type FormEvent, Fragment, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Amount } from "../components/Amount.js";
@@ -91,30 +92,6 @@ export function mergeAccountRows(
 }
 
 // --- the share split ---------------------------------------------------------
-
-/**
- * Split an integer amount by integer weights, largest remainder first — the
- * same arithmetic the household engine uses (`splitByShares` in
- * packages/domain), so the consequence line promises what the plan will do.
- * Every part is a whole minor unit and the parts sum to `amount` exactly.
- * All-zero weights fall back to an even split, as the engine does.
- */
-export function splitByShares(amount: number, weights: number[]): number[] {
-  const n = weights.length;
-  if (n === 0) return [];
-  const safe = weights.map((w) => Math.max(0, w));
-  const total = safe.reduce((s, w) => s + w, 0);
-  const effective = total > 0 ? safe : safe.map(() => 1);
-  const denom = total > 0 ? total : n;
-  const exact = effective.map((w) => (amount * w) / denom);
-  const parts = exact.map(Math.floor);
-  let remainder = amount - parts.reduce((s, p) => s + p, 0);
-  const order = exact
-    .map((e, i) => ({ i, frac: e - Math.floor(e) }))
-    .sort((a, b) => b.frac - a.frac || a.i - b.i);
-  for (let k = 0; remainder > 0 && k < n; k++, remainder--) parts[order[k]!.i]! += 1;
-  return parts;
-}
 
 /** Weights as percentages of their own total, in basis points — what the plan
  *  normalises them to before it splits anything. */
@@ -429,10 +406,12 @@ function SharesBlock({
 /**
  * What the numbers above actually do, in one sentence.
  *
- * The amount split is the plan's own figure — what the household's shared pots
- * must pay out each month — never a total re-derived on this page, so the
- * sentence moves whenever the plan does. The split itself is the engine's
- * largest-remainder arithmetic on integer minor units, so the pence add up.
+ * The amounts split are the plan's own figures — the share-split bills the
+ * household's shared pots must pay each month — never totals re-derived on this
+ * page, so the sentence moves whenever the plan does. The split is the engine's
+ * own `splitByShares`, applied the way the engine applies it: once per bill,
+ * each member's slice rounded up. Splitting the total in one go would name
+ * smaller figures than the plan will actually ask for.
  */
 function ConsequenceLine({
   members,
@@ -456,10 +435,20 @@ function ConsequenceLine({
   }
 
   const pots = plan.accounts.filter((a) => a.role === "shared");
-  const sharedCostsMinor = pots.reduce((s, a) => s + a.requiredOutflowMinor, 0);
+  const potIds = new Set(pots.map((a) => a.accountId));
+  // What the shares actually govern: the shared-scope bills sitting in the
+  // pots. A personal bill parked in a pot belongs to one member — the engine
+  // never splits it, so neither does this sentence.
+  const potLines = plan.lines.filter((l) => potIds.has(l.accountId) && l.scope === "shared");
+  const sharedCostsMinor = potLines.reduce((s, l) => s + l.requiredMonthlyMinor, 0);
   const potName = pots.length === 1 ? (pots[0]?.name ?? "the shared pot") : "the shared pots";
   const normalised = normaliseShares(weights);
-  const split = splitByShares(sharedCostsMinor, weights);
+  const split = members.map(() => 0);
+  for (const line of potLines) {
+    splitByShares(line.requiredMonthlyMinor, weights).forEach((v, i) => (split[i]! += v));
+  }
+  // Rounding each share up leaves the pot a few pence heavier than the bills.
+  const overshootMinor = split.reduce((s, v) => s + v, 0) - sharedCostsMinor;
   const ratio = normalised.map(percent).join("/");
 
   if (sharedCostsMinor === 0) {
@@ -481,6 +470,13 @@ function ConsequenceLine({
         </Fragment>
       ))}{" "}
       into {potName}.
+      {overshootMinor > 0 && (
+        <>
+          {" "}
+          every share is rounded up, so the pot ends the month{" "}
+          <Amount minor={overshootMinor} currency={plan.currency} /> over rather than a penny short.
+        </>
+      )}
     </p>
   );
 }
