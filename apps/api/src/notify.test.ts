@@ -231,6 +231,59 @@ describe("buildDailyDigest", () => {
     expect(await buildDailyDigest(store, user.id, AS_OF)).toBeNull();
   });
 
+  /**
+   * The other half of the same blindness, and the one WP-S closes: a solo user's
+   * derived feed into a bills pot is a transfer with a member, a source account
+   * and a payday, exactly like a household member's share of the rent — but the
+   * only thing that produced a transfer was a household plan, so
+   * `splitTransfersByPayday` had nothing to schedule and the section was empty.
+   * One pass derives both, so the digest serves both.
+   */
+  it("dates a solo user's derived feed to their payday, with no household anywhere", async () => {
+    const user = await seedUser(store, "pot@example.com");
+    const current = await store.createAccount({
+      ownerUserId: user.id,
+      name: "Current",
+      currency: "GBP",
+    });
+    const pot = await store.createAccount({ ownerUserId: user.id, name: "Bills", currency: "GBP" });
+    await store.createIncome({
+      accountId: current.id,
+      name: "Salary",
+      amountMinor: 300_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-08-06",
+      active: true,
+    });
+    await store.createPayment({
+      accountId: pot.id,
+      name: "Council tax",
+      category: "monthly_recurring",
+      amountMinor: 15_000,
+      dueDate: null,
+      recurrence: null,
+      targetDate: null,
+      priority: 1,
+      alreadySavedMinor: 0,
+      autoRenew: true,
+      active: true,
+      notes: null,
+      projectId: null,
+      scope: "shared",
+      bearerUserId: null,
+      fixedMonthlyMinor: null,
+      tag: null,
+    });
+
+    // Nobody authored a movement, and there is no household to name.
+    expect(await store.listInflows(pot.id)).toEqual([]);
+    const digest = await buildDailyDigest(store, user.id, AS_OF);
+    expect(digest).toContain("Transfers for the next 7 days");
+    expect(digest).toContain("- 2026-08-06 — 150.00 GBP from Current to Bills");
+    expect(digest).not.toContain("(");
+  });
+
   it("drops transfers scheduled outside the window", async () => {
     const alice = await seedUser(store, "late@example.com");
     const household = await store.createHousehold("Home", alice.id);

@@ -876,7 +876,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * Nothing is refused for closing a funding loop. A cycle is a property of the
    * estate rather than of the edge that completes it, so it is detected by the
    * ordered pass and reported on every plan involved as
-   * `fundingCycleAccountIds` — see `computeEstatePlan`. Authoring stays
+   * `fundingCycleAccountIds` — see `computeScopePlan`. Authoring stays
    * permissive; the plan is where the loop is named.
    */
   app.post("/api/accounts/:id/inflows", async (req, reply) => {

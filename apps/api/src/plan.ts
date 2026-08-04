@@ -22,7 +22,14 @@ import {
   type UpcomingPayment,
   upcomingPayments,
 } from "@finance-planner/domain";
-import type { Account, Inflow, Payment, Store, TransferConfirmation } from "@finance-planner/data";
+import type {
+  Account,
+  Household,
+  Inflow,
+  Payment,
+  Store,
+  TransferConfirmation,
+} from "@finance-planner/data";
 
 /**
  * A payment's effective already-saved: its manual base plus every contribution
@@ -189,6 +196,10 @@ interface LoadedHousehold {
  */
 export interface PlanContext {
   readonly accounts: Map<string, Promise<Account | null>>;
+  /** Per owner: the accounts they hold, and the households they are in. Asked
+   *  once per account by the closure, so memoised once per person. */
+  readonly ownedAccounts: Map<string, Promise<Account[]>>;
+  readonly userHouseholds: Map<string, Promise<Household[]>>;
   readonly loaded: Map<string, Promise<LoadedAccount>>;
   readonly households: Map<string, Promise<LoadedHousehold>>;
   /** Which household plans an account, independent of who is asking. */
@@ -204,6 +215,8 @@ export interface PlanContext {
 export function createPlanContext(): PlanContext {
   return {
     accounts: new Map(),
+    ownedAccounts: new Map(),
+    userHouseholds: new Map(),
     loaded: new Map(),
     households: new Map(),
     accountHousehold: new Map(),
@@ -244,7 +257,9 @@ async function householdPlanningAccount(
 ): Promise<string | null> {
   return memo(ctx.accountHousehold, account.id, async () => {
     const [owned, shares] = await Promise.all([
-      store.listHouseholdsForUser(account.ownerUserId),
+      memo(ctx.userHouseholds, account.ownerUserId, () =>
+        store.listHouseholdsForUser(account.ownerUserId),
+      ),
       store.listSharesForAccount(account.id),
     ]);
     const seen = new Set<string>();
@@ -419,7 +434,10 @@ async function closeScope(
       households.set(householdId, household);
       neighbours.push(...household.accountIds);
     } else {
-      for (const sibling of await store.listAccountsForOwner(next.ownerUserId)) {
+      const siblings = await memo(ctx.ownedAccounts, next.ownerUserId, () =>
+        store.listAccountsForOwner(next.ownerUserId),
+      );
+      for (const sibling of siblings) {
         // Only the ones no household plans. Reaching a household through a
         // member's private account would drag its whole roster into a scope
         // that has nothing to do with it, and quietly hand the household an

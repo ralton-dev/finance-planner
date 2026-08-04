@@ -185,7 +185,7 @@ function clampMonths(months: number | undefined): number {
 
 /**
  * Reference date for each simulated month. Month 0 is the as-of date itself
- * (so the first month matches `computeAccountPlan(account, asOfDate)` exactly);
+ * (so the first month matches the plan for that very date, exactly);
  * later months start on the 1st, `k` months on from the as-of month.
  */
 function monthReferences(asOfDate: string, months: number): string[] {

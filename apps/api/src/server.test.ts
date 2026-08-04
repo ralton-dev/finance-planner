@@ -2,6 +2,7 @@ import { MemoryStore, type Store } from "@finance-planner/data";
 import { signAccessToken } from "@finance-planner/security";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ApiEnv } from "./env.js";
+import { buildDailyDigest } from "./notify.js";
 import { buildServer } from "./server.js";
 
 const env: ApiEnv = {
@@ -1340,6 +1341,164 @@ describe("api service", () => {
     return { current, pot, movement };
   }
 
+  /**
+   * The case 0009 could not reach and WP-R made storable: a transfer the pass
+   * derived for a user with no household. It has no `household_id` to scope it
+   * and no `inflow_id` to name it, because nobody authored it — it is what the
+   * plan says the month costs, and the only thing that identifies it is the two
+   * accounts, the month and the member.
+   */
+  it("confirms a transfer nobody authored, for a user with no household", async () => {
+    const { user, auth } = await seedUser(store);
+    const make = async (name: string) =>
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+    const current = await make("current");
+    const pot = await make("pot");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${current.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/payments`,
+      headers: auth,
+      payload: { name: "Council tax", category: "monthly_recurring", amountMinor: 15000 },
+    });
+
+    // Nothing authored the feed. The prompt is the derived transfer, and the
+    // line leaning on it is awaiting a transfer rather than at risk.
+    expect(await store.listInflows(pot.id)).toEqual([]);
+    const before = (
+      await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/plan`, headers: auth })
+    ).json();
+    expect(before.allocatedInflowMinor).toBe(15000);
+    expect(before.lines[0].status).toBe("awaiting_transfer");
+    expect(before.inflowSources).toEqual([
+      {
+        kind: "member",
+        memberUserId: user.id,
+        displayName: "Owner",
+        amountMinor: 15000,
+        confirmedMinor: 0,
+      },
+    ]);
+
+    const confirm = () =>
+      app.inject({
+        method: "POST",
+        url: `/api/accounts/${pot.id}/transfers/confirm`,
+        headers: auth,
+        payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
+      });
+    const res = await confirm();
+    expect(res.statusCode).toBe(201);
+    const { confirmation, contributions } = res.json();
+    expect(confirmation.householdId).toBeNull();
+    expect(confirmation.inflowId).toBeNull();
+    expect(confirmation.amountMinor).toBe(15000);
+    // Unlike an authored movement, a derived transfer *is* what pays the bills,
+    // so its slices are booked against them.
+    expect(contributions.map((c: { amountMinor: number }) => c.amountMinor)).toEqual([15000]);
+
+    const after = (
+      await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/plan`, headers: auth })
+    ).json();
+    expect(after.confirmedInflowMinor).toBe(15000);
+    expect(after.lines[0].status).toBe("funded");
+
+    // Idempotent, exactly as the other two handlers are.
+    expect((await confirm()).statusCode).toBe(409);
+
+    // ...and un-confirming takes the contributions it created with it.
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/accounts/${pot.id}/transfers/confirmations/${confirmation.id}`,
+      headers: auth,
+    });
+    expect(removed.statusCode).toBe(204);
+    const ledger = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${pot.id}/contributions`,
+      headers: auth,
+    });
+    expect(ledger.json()).toEqual([]);
+    expect((await confirm()).statusCode).toBe(201);
+  });
+
+  it("refuses a derived confirmation nothing in the plan asks for", async () => {
+    const { user, auth } = await seedUser(store);
+    const make = async (name: string) =>
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+    const current = await make("current");
+    const pot = await make("pot");
+
+    const post = (payload: object) =>
+      app.inject({
+        method: "POST",
+        url: `/api/accounts/${pot.id}/transfers/confirm`,
+        headers: auth,
+        payload,
+      });
+    // Nothing is owed anywhere, so no transfer is derived.
+    expect(
+      (await post({ fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id }))
+        .statusCode,
+    ).toBe(422);
+    // The destination has to be the account in the URL...
+    expect(
+      (await post({ fromAccountId: pot.id, toAccountId: current.id, memberUserId: user.id }))
+        .statusCode,
+    ).toBe(422);
+    // ...and there is no roster here to make anybody an admin of somebody
+    // else's money.
+    const { user: bob } = await seedUser(store, "bob@example.com");
+    expect(
+      (await post({ fromAccountId: current.id, toAccountId: pot.id, memberUserId: bob.id }))
+        .statusCode,
+    ).toBe(403);
+  });
+
+  it("keeps the derived un-confirm route away from the other two shapes", async () => {
+    const { user, auth } = await seedUser(store);
+    const { current, pot, movement } = await seedMovement(auth);
+    const authored = await store.createTransferConfirmation({
+      householdId: null,
+      inflowId: movement.id,
+      month: `${thisMonth()}-01`,
+      fromAccountId: current.id,
+      toAccountId: pot.id,
+      memberUserId: user.id,
+      amountMinor: 20000,
+    });
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/accounts/${pot.id}/transfers/confirmations/${authored.id}`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it("confirms a movement between two accounts you own, and un-confirms it", async () => {
     const { auth } = await seedUser(store);
     const { current, pot, movement } = await seedMovement(auth);
@@ -1747,6 +1906,117 @@ describe("api service", () => {
     expect(hers.json().allocatedInflowMinor).toBe(mine.allocatedInflowMinor);
     expect(hers.json().shortfallMinor).toBe(0);
     expect(hers.json().inflowSources).toBeNull();
+  });
+
+  /**
+   * WP-O's specification test, asserted once more where the user actually reads
+   * the numbers: three HTTP responses, one account, one figure.
+   *
+   * The domain has its own copy (`packages/domain/src/parity.test.ts`) over one
+   * `computeScopePlan`. This one goes through the loader, the store and three
+   * separate requests, because "the same numbers because they are the same
+   * numbers" is a claim about the API as much as about the engine — the defect
+   * was two loaders, and a fixture that hands one input to three views cannot
+   * see a second loader if one comes back.
+   */
+  it("agrees to the penny across the household plan, the flow and the account plan", async () => {
+    const h = await seedHousehold(store, app);
+    // Alice moves £700 a month into an ISA that is not the household's — the
+    // defect verbatim: "a household plan cannot see money leaving one of its
+    // accounts to an account outside the household".
+    const isa = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: h.auth,
+        payload: { name: "isa", currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${isa.id}/inflows`,
+      headers: h.auth,
+      payload: {
+        name: "Standing order",
+        source: "account",
+        sourceAccountId: h.aliceCur.id,
+        amountMinor: 70000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+        priority: 10,
+      },
+    });
+
+    const get = async (url: string) =>
+      (await app.inject({ method: "GET", url, headers: h.auth })).json();
+
+    const household = await get(`/api/households/${h.household.id}/plan`);
+    const flow = await get(`/api/flow?accounts=${h.aliceCur.id},${isa.id}`);
+    const account = await get(`/api/accounts/${h.aliceCur.id}/plan`);
+
+    const householdAccount = household.accounts.find(
+      (a: { accountId: string }) => a.accountId === h.aliceCur.id,
+    );
+    const householdPage = householdAccount.leftoverMinor - householdAccount.committedMinor;
+    const flowDiagram = flow.accounts.find(
+      (a: { accountId: string }) => a.accountId === h.aliceCur.id,
+    ).leftoverMinor;
+    const accountPage = account.leftoverMinor - account.outboundInflowMinor;
+
+    expect({ householdPage, flowDiagram, accountPage }).toEqual({
+      householdPage: flowDiagram,
+      flowDiagram,
+      accountPage: flowDiagram,
+    });
+    // And the movement really is funded — three surfaces agreeing that nothing
+    // left would prove nothing at all.
+    expect(householdAccount.committedMinor).toBe(70000);
+    expect(account.residualMinor).toBe(flowDiagram);
+  });
+
+  /**
+   * The digest's third section is decision 13's committed bucket: the savings
+   * movements the plan funds out of the caller's own accounts, which they have
+   * not said they made.
+   */
+  it("renders the committed movements in the daily digest", async () => {
+    const h = await seedHousehold(store, app);
+    const isa = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: h.auth,
+        payload: { name: "isa", currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${isa.id}/inflows`,
+      headers: h.auth,
+      payload: {
+        name: "Standing order",
+        source: "account",
+        sourceAccountId: h.aliceCur.id,
+        amountMinor: 70000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+        priority: 10,
+      },
+    });
+
+    const digest = await buildDailyDigest(store, h.alice.id, "2026-08-04");
+    expect(digest).toContain("Money to move between your own accounts");
+    expect(digest).toContain("700.00 GBP from alice-cur to isa");
+    // What the movement *delivers*, not what it asks for — the same figure the
+    // account page and the flow diagram print, read off the same pass.
+    const account = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${h.aliceCur.id}/plan`,
+        headers: h.auth,
+      })
+    ).json();
+    expect(account.outboundInflowMinor).toBe(70000);
   });
 
   it("does not change the estate's income when an account starts receiving inflow", async () => {
