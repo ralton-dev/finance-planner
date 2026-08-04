@@ -788,6 +788,48 @@ button.tiny {
 .auth-card a {
   color: var(--link);
 }
+/* Explanatory copy above a field — quieter than body text, never a heading. */
+.auth-hint {
+  color: var(--ink-2);
+  font-size: 11.5px;
+  margin-bottom: 0.85rem;
+}
+.auth-card .auth-hint + .auth-hint {
+  margin-top: -0.5rem;
+}
+/* "or" rule between password and SSO sign-in. */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 1rem 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.auth-sso {
+  width: 100%;
+}
+.auth-issuer {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  word-break: break-all;
+}
+/* Link-style actions inside the auth card read as links, not buttons. */
+.auth-card .action {
+  color: var(--link);
+  font-size: 11.5px;
+}
+.auth-card .action.muted {
+  color: var(--muted);
+}
 
 .stack-form {
   background: var(--card);
@@ -1614,4 +1656,100 @@ td.row-actions-cell .row-edit:hover {
 .payday-slice .num {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+ * Settings — account facts and the two-factor panels.
+ * ============================================================================ */
+.settings-panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  max-width: 620px;
+}
+.settings-row {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  font-size: 12.5px;
+}
+.settings-row .k {
+  flex: 0 0 8.5rem;
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.settings-row .v {
+  color: var(--ink);
+  word-break: break-word;
+}
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+.settings-panel .auth-hint {
+  margin: 0.6rem 0 0;
+  max-width: 56ch;
+}
+
+/* Enrolment / disable steps, separated from the status line above them. */
+.totp-step {
+  border-top: 1px solid var(--line);
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+}
+.totp-step label {
+  max-width: 14rem;
+  margin-top: 0.85rem;
+}
+/* The shared secret is meant to be read aloud and typed — space it out. */
+.totp-secret {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.2rem 0.45rem;
+  color: var(--ink);
+  font-size: 12.5px;
+  letter-spacing: 0.14em;
+  user-select: all;
+  word-break: break-all;
+}
+.totp-uri {
+  color: var(--ink-2);
+  font-size: 11px;
+  user-select: all;
+  word-break: break-all;
+}
+
+/* Recovery codes: shown once, so the panel shouts a little. */
+.recovery-panel {
+  border: 1px solid var(--warn-amber);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  padding: 0.85rem 1rem;
+  margin-top: 0.85rem;
+}
+.recovery-panel h3 {
+  color: var(--warn-amber);
+  margin-bottom: 0.4rem;
+}
+.recovery-panel .auth-hint b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.3rem 1rem;
+  margin: 0.75rem 0 0;
+  font-size: 12.5px;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+  user-select: all;
 }

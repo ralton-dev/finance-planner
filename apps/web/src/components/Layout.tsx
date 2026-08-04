@@ -22,6 +22,7 @@ export function Layout() {
       a: () => navigate("/accounts"),
       p: () => navigate("/projects"),
       s: () => navigate("/households"),
+      ",": () => navigate("/settings"),
     },
     n: {
       p: () => openPayment(),
@@ -72,6 +73,10 @@ export function Layout() {
         <NavLink to="/households" className={navClass}>
           <span className="label">households</span>
           <span className="kbd-ish">g s</span>
+        </NavLink>
+        <NavLink to="/settings" className={navClass}>
+          <span className="label">settings</span>
+          <span className="kbd-ish">g ,</span>
         </NavLink>
 
         <div className="nav-section">quick add</div>

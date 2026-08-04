@@ -12,11 +12,17 @@ import type {
   HouseholdProjectionDto,
   HouseholdRole,
   IncomeDto,
+  LoginResultDto,
+  LoginSessionDto,
   MonthCloseDto,
+  OidcMetaDto,
   OverviewDto,
   PaymentDto,
   ProjectDetailDto,
   ProjectDto,
+  TotpDisableDto,
+  TotpEnableDto,
+  TotpSetupDto,
   TransferConfirmationDto,
   UpcomingDto,
   UserDto,
@@ -111,12 +117,22 @@ export class ApiClient {
     return this.request<{ userId: string }>("POST", "/api/auth/register", body);
   }
 
-  async login(body: { email: string; password: string }) {
-    const res = await this.request<{ accessToken: string; user: UserDto }>(
-      "POST",
-      "/api/auth/login",
-      body,
-    );
+  /** Either a session, or a `totpRequired` challenge to finish via loginTotp(). */
+  async login(body: { email: string; password: string }): Promise<LoginResultDto> {
+    const res = await this.request<LoginResultDto>("POST", "/api/auth/login", body);
+    if ("accessToken" in res) this.accessToken = res.accessToken;
+    return res;
+  }
+
+  /** Second leg of a 2FA login. Exactly one of `code` / `recoveryCode`.
+   *  `retry: false` — a 401 here means a bad code, not a stale access token, so
+   *  there is nothing to refresh and re-sending the code would be pointless. */
+  async loginTotp(body: {
+    pendingToken: string;
+    code?: string;
+    recoveryCode?: string;
+  }): Promise<LoginSessionDto> {
+    const res = await this.request<LoginSessionDto>("POST", "/api/auth/login/totp", body, false);
     this.accessToken = res.accessToken;
     return res;
   }
@@ -131,6 +147,36 @@ export class ApiClient {
 
   me() {
     return this.request<UserDto>("GET", "/api/auth/me");
+  }
+
+  // ---- two-factor auth (TOTP) ----
+  /** Starts enrolment: returns the shared secret to show once. 409 when already on. */
+  totpSetup() {
+    return this.request<TotpSetupDto>("POST", "/api/auth/totp/setup");
+  }
+  /** Confirms enrolment with a code from the authenticator. The recovery codes
+   *  it returns are the only copy — the server keeps hashes. */
+  totpEnable(code: string) {
+    return this.request<TotpEnableDto>("POST", "/api/auth/totp/enable", { code });
+  }
+  /** Accepts a TOTP code or an unused recovery code. */
+  totpDisable(code: string) {
+    return this.request<TotpDisableDto>("POST", "/api/auth/totp/disable", { code });
+  }
+
+  // ---- password reset ----
+  /** Always 204, whether or not the address exists — never enumerate accounts. */
+  forgotPassword(email: string) {
+    return this.request<void>("POST", "/api/auth/password/forgot", { email });
+  }
+  resetPassword(token: string, password: string) {
+    return this.request<{ reset: true }>("POST", "/api/auth/password/reset", { token, password });
+  }
+
+  // ---- single sign-on ----
+  /** Whether this deployment has an OIDC provider configured. */
+  oidcMeta() {
+    return this.request<OidcMetaDto>("GET", "/api/auth/oidc/meta");
   }
 
   // ---- accounts ----

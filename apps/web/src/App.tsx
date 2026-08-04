@@ -9,6 +9,7 @@ import { NewPaymentDrawer } from "./components/NewPaymentDrawer.js";
 import { QuickAddProvider } from "./contexts/QuickAddContext.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AccountsPage } from "./pages/AccountsPage.js";
+import { ForgotPasswordPage } from "./pages/ForgotPasswordPage.js";
 import { HouseholdDetailPage } from "./pages/HouseholdDetailPage.js";
 import { HouseholdsPage } from "./pages/HouseholdsPage.js";
 import { LoginPage } from "./pages/LoginPage.js";
@@ -16,6 +17,8 @@ import { OverviewPage } from "./pages/OverviewPage.js";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage.js";
 import { ProjectsPage } from "./pages/ProjectsPage.js";
 import { RegisterPage } from "./pages/RegisterPage.js";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage.js";
+import { SettingsPage } from "./pages/SettingsPage.js";
 
 // Code-split the plan page: it pulls in the charting library (recharts), which
 // we don't want in the initial bundle for users who never open the money flow.
@@ -31,6 +34,9 @@ export function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            {/* Password reset is reachable while logged out, by definition. */}
+            <Route path="/forgot" element={<ForgotPasswordPage />} />
+            <Route path="/reset" element={<ResetPasswordPage />} />
             <Route
               element={
                 <RequireAuth>
@@ -45,6 +51,7 @@ export function App() {
               <Route path="/projects/:id" element={<ProjectDetailPage />} />
               <Route path="/households" element={<HouseholdsPage />} />
               <Route path="/households/:id" element={<HouseholdDetailPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
               <Route
                 path="/households/:id/plan"
                 element={

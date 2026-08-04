@@ -18,8 +18,48 @@ export interface UserDto {
   email: string;
   displayName: string;
   emailVerified?: boolean;
+  /** Whether an authenticator app is enrolled. Optional so a payload from an
+   *  older API (or a test fixture) still satisfies the type — absent reads as
+   *  "not enabled". */
+  totpEnabled?: boolean;
   households?: HouseholdDto[];
 }
+
+// --- auth: second factor, password reset, SSO --------------------------------
+
+/** A completed login: an access token in memory plus the refresh cookie. */
+export interface LoginSessionDto {
+  accessToken: string;
+  user: UserDto;
+}
+
+/** Credentials were right, but the account has 2FA — finish at /login/totp.
+ *  `pendingToken` is short-lived and is never persisted anywhere. */
+export interface TotpChallengeDto {
+  totpRequired: true;
+  pendingToken: string;
+}
+
+export type LoginResultDto = LoginSessionDto | TotpChallengeDto;
+
+/** Shared secret to enter into an authenticator app, plus the otpauth:// URI. */
+export interface TotpSetupDto {
+  secret: string;
+  otpauthUri: string;
+}
+
+/** The one and only time the recovery codes are readable. */
+export interface TotpEnableDto {
+  enabled: true;
+  recoveryCodes: string[];
+}
+
+export interface TotpDisableDto {
+  enabled: false;
+}
+
+/** Whether this deployment has an OIDC provider wired up. */
+export type OidcMetaDto = { enabled: false } | { enabled: true; issuer: string };
 
 export interface HouseholdDto {
   id: string;
