@@ -23,9 +23,11 @@ import { type Account, type AccountAccess, createStore, type Store } from "@fina
 import {
   type AccountPlan,
   clampUpcomingDays,
+  computeAccountPlan,
   computeAccountProjection,
   computeHouseholdProjection,
   computeOverview,
+  monthlyIncomeMinor,
   toISODate,
 } from "@finance-planner/domain";
 import { createMailer, type Mailer } from "@finance-planner/mailer";
@@ -96,6 +98,22 @@ const intParam = (value: string | undefined): number | undefined => {
 
 /** The "YYYY-MM" month an ISO date falls in. */
 const monthOf = (date: string): string => date.slice(0, 7);
+
+/**
+ * A `?month=YYYY-MM` query param as the ISO first-of-month a confirmation is
+ * keyed by; absent means the month running now.
+ *
+ * Validated, unlike the older read-only month params: this one reaches a write,
+ * and an unparseable month would otherwise arrive at the database as a date
+ * literal it cannot make sense of.
+ */
+const monthQuery = (month: string | undefined): string => {
+  const value = month ?? monthOf(today());
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) {
+    throw new HttpError(422, "validation_error", "month must be YYYY-MM");
+  }
+  return monthToFirstDay(value);
+};
 
 /**
  * As-of date for closing a month: today when closing the month still running,
@@ -974,6 +992,9 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
 
     const confirmation = await store.createTransferConfirmation({
       householdId: id,
+      // A household transfer is derived from the plan, not authored: there is no
+      // inflow row behind it to point at.
+      inflowId: null,
       month,
       fromAccountId: body.fromAccountId,
       toAccountId: body.toAccountId,
@@ -1022,6 +1043,135 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     if (confirmation.memberUserId !== userId) {
       await requireMembership(userId, id, ["owner", "admin"]);
     }
+    await store.deleteTransferConfirmation(confId);
+    return reply.code(204).send();
+  });
+
+  // ---- standalone movements ("I moved the money", with no household) ----
+  /**
+   * Confirm an account-sourced inflow — money you moved between two accounts you
+   * own. The household handler above answers the same question for a transfer
+   * the household plan derived; this one asks no household anything, because a
+   * movement between your own accounts has none in it.
+   *
+   * Keyed on the inflow rather than on (from, to, member): a movement is one
+   * authored `core.inflows` row, two accounts can have several movements between
+   * them, and a solo movement has no member to key on. Month defaults to the one
+   * running now.
+   */
+  app.post("/api/inflows/:inflowId/confirm", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { inflowId } = req.params as { inflowId: string };
+    const { month: monthParam } = req.query as { month?: string };
+    const inflow = await store.getInflow(inflowId);
+    // Only a movement can be moved. An external inflow is money arriving from
+    // outside the estate — nobody transfers their own salary to themselves.
+    if (!inflow || inflow.source !== "account" || !inflow.sourceAccountId) {
+      throw new HttpError(404, "not_found", "Movement not found");
+    }
+    // Both ends of it: money lands in one account and leaves the other, and you
+    // have to be able to watch it go to be able to say that it went.
+    const { account } = await requireAccess(userId, inflow.accountId, "edit");
+    await requireAccess(userId, inflow.sourceAccountId, "view");
+    const month = monthQuery(monthParam);
+    const asOfDate = today();
+
+    // Idempotency guard first, exactly as the household handler does it: once
+    // confirmed, stay confirmed even if the plan has since moved on. The
+    // database says the same thing through
+    // `transfer_confirmations_inflow_month_unique`; this is the answer with an
+    // error code on it.
+    const confirmed = await store.listTransferConfirmationsForAccount(inflow.accountId, month);
+    if (confirmed.some((c) => c.inflowId === inflowId)) {
+      throw new HttpError(409, "already_confirmed", "Movement already confirmed this month");
+    }
+
+    // What the movement is worth in a month, normalised the same way every
+    // arriving amount is. `monthlyIncomeMinor` is a frequency→monthly
+    // conversion, not a claim that this is income — it is emphatically not.
+    const amountMinor = monthlyIncomeMinor(inflow, new Date(asOfDate));
+
+    // What this money pays for, answered by the engine rather than by a second
+    // allocator written here: the receiving account's plan as it stands, and the
+    // same plan with the movement's money arriving. The difference, line by
+    // line, is what the movement funds.
+    //
+    // WP-G hand-off: once `buildAccountInput` supplies a standalone account's
+    // authored inflows itself, `input.inflow` will already contain this
+    // movement and the overlay below becomes a double count — at which point
+    // the base plan must instead be computed with this movement *removed*, or
+    // better, the engine should attribute `fundedFromInflowMinor` per source and
+    // this overlay disappears entirely. It fails safe until then: an
+    // already-counted movement books nothing rather than booking twice.
+    const input = await buildAccountInput(store, account, asOfDate);
+    const arriving = input.inflow ?? { allocatedMinor: 0, confirmedMinor: 0 };
+    const before = computeAccountPlan(input, asOfDate);
+    const after = computeAccountPlan(
+      {
+        ...input,
+        inflow: {
+          allocatedMinor: arriving.allocatedMinor + amountMinor,
+          confirmedMinor: arriving.confirmedMinor + amountMinor,
+        },
+      },
+      asOfDate,
+    );
+
+    const confirmation = await store.createTransferConfirmation({
+      householdId: null,
+      inflowId,
+      month,
+      fromAccountId: inflow.sourceAccountId,
+      toAccountId: inflow.accountId,
+      memberUserId: userId,
+      amountMinor,
+    });
+    const fundedBefore = new Map(before.lines.map((l) => [l.paymentId, l.fundedFromInflowMinor]));
+    const contributions = [];
+    for (const line of after.lines) {
+      const funded = line.fundedFromInflowMinor - (fundedBefore.get(line.paymentId) ?? 0);
+      if (funded <= 0) continue;
+      contributions.push(
+        await store.createContribution({
+          paymentId: line.paymentId,
+          accountId: inflow.accountId,
+          userId,
+          month,
+          amountMinor: funded,
+          note: null,
+          transferConfirmationId: confirmation.id,
+        }),
+      );
+    }
+    return reply.code(201).send({ confirmation, contributions });
+  });
+
+  /** Movements touching this account this month, from both sides: what arrived
+   *  here and what left here. No household needed to ask. */
+  app.get("/api/accounts/:id/transfers/confirmations", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { month } = req.query as { month?: string };
+    await requireAccess(userId, id, "view");
+    return store.listTransferConfirmationsForAccount(id, monthQuery(month));
+  });
+
+  /**
+   * Un-confirm a movement: drops it and the contributions it created.
+   *
+   * Nested under the inflow deliberately, so it can only ever reach an
+   * inflow-scoped confirmation. A household one keeps its own route and its own
+   * rule — a plain member may only un-confirm their own — and this must not
+   * become a way around it.
+   */
+  app.delete("/api/inflows/:inflowId/confirmations/:confId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { inflowId, confId } = req.params as { inflowId: string; confId: string };
+    const confirmation = await store.getTransferConfirmation(confId);
+    if (!confirmation || confirmation.inflowId !== inflowId) {
+      throw new HttpError(404, "not_found", "Confirmation not found");
+    }
+    await requireAccess(userId, confirmation.toAccountId, "edit");
     await store.deleteTransferConfirmation(confId);
     return reply.code(204).send();
   });

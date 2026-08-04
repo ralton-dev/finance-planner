@@ -1281,6 +1281,173 @@ describe("api service", () => {
     expect(plan.lines.map((l: { status: string }) => l.status)).toEqual(["at_risk"]);
   });
 
+  // --- "I moved the money", with no household anywhere in it
+
+  /** A holiday pot fed by a movement out of a current account. One user, two
+   *  accounts, no household — the case the old NOT NULL made unrecordable. */
+  async function seedMovement(auth: { authorization: string }) {
+    const make = async (name: string) =>
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+    const current = await make("current");
+    const pot = await make("holiday pot");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/payments`,
+      headers: auth,
+      payload: {
+        name: "Holiday",
+        category: "fixed_point",
+        amountMinor: 120000,
+        dueDate: "2027-08-01",
+      },
+    });
+    // Authored on the store directly: inflows have no HTTP surface yet.
+    const movement = await store.createInflow({
+      accountId: pot.id,
+      name: "Monthly top-up",
+      source: "account",
+      sourceAccountId: current.id,
+      amountMinor: 20000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 50,
+      active: true,
+    });
+    return { current, pot, movement };
+  }
+
+  it("confirms a movement between two accounts you own, and un-confirms it", async () => {
+    const { auth } = await seedUser(store);
+    const { current, pot, movement } = await seedMovement(auth);
+
+    const confirm = () =>
+      app.inject({ method: "POST", url: `/api/inflows/${movement.id}/confirm`, headers: auth });
+
+    const res = await confirm();
+    expect(res.statusCode).toBe(201);
+    const { confirmation, contributions } = res.json();
+    expect(confirmation.householdId).toBeNull();
+    expect(confirmation.inflowId).toBe(movement.id);
+    expect(confirmation.fromAccountId).toBe(current.id);
+    expect(confirmation.toAccountId).toBe(pot.id);
+    expect(confirmation.amountMinor).toBe(20000);
+    expect(confirmation.month).toBe(`${thisMonth()}-01`);
+
+    // The money it moved is booked against what it pays for, and nothing more
+    // than was moved.
+    expect(contributions).toHaveLength(1);
+    const [booked] = contributions;
+    expect(booked.accountId).toBe(pot.id);
+    expect(booked.transferConfirmationId).toBe(confirmation.id);
+    expect(booked.amountMinor).toBeGreaterThan(0);
+    expect(booked.amountMinor).toBeLessThanOrEqual(confirmation.amountMinor);
+
+    // Confirming the same movement again is refused rather than double-booked.
+    expect((await confirm()).statusCode).toBe(409);
+    expect((await confirm()).json().error.code).toBe("already_confirmed");
+
+    // Readable from both ends of the movement, without naming a household.
+    for (const accountId of [pot.id, current.id]) {
+      const listed = await app.inject({
+        method: "GET",
+        url: `/api/accounts/${accountId}/transfers/confirmations`,
+        headers: auth,
+      });
+      expect(listed.json().map((c: { id: string }) => c.id)).toEqual([confirmation.id]);
+    }
+
+    // Un-confirming takes the contributions it created with it.
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/inflows/${movement.id}/confirmations/${confirmation.id}`,
+      headers: auth,
+    });
+    expect(removed.statusCode).toBe(204);
+    const ledger = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${pot.id}/contributions`,
+      headers: auth,
+    });
+    expect(ledger.json()).toHaveLength(0);
+    const after = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${pot.id}/transfers/confirmations`,
+      headers: auth,
+    });
+    expect(after.json()).toEqual([]);
+
+    // ...and it can be confirmed again afterwards.
+    expect((await confirm()).statusCode).toBe(201);
+  });
+
+  it("refuses to confirm anything that is not a movement", async () => {
+    const { auth } = await seedUser(store);
+    const { pot, movement } = await seedMovement(auth);
+    const salary = await store.createIncome({
+      accountId: pot.id,
+      name: "Pay",
+      amountMinor: 100000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+    // Money arriving from outside the estate is not something you transferred.
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/inflows/${salary.id}/confirm`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(404);
+    // A malformed month reaches a write, so it is checked rather than passed on.
+    const bad = await app.inject({
+      method: "POST",
+      url: `/api/inflows/${movement.id}/confirm?month=2026-13`,
+      headers: auth,
+    });
+    expect(bad.statusCode).toBe(422);
+  });
+
+  it("hides someone else's movement rather than admitting it exists", async () => {
+    const { auth } = await seedUser(store);
+    const { movement } = await seedMovement(auth);
+    const { auth: strangerAuth } = await seedUser(store, "stranger@example.com");
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/inflows/${movement.id}/confirm`,
+      headers: strangerAuth,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("keeps household confirmations out of the account-scoped list", async () => {
+    const h = await seedHousehold(store, app);
+    await confirmAllInflow(h);
+    // The household's own view is unchanged...
+    const household = await app.inject({
+      method: "GET",
+      url: `/api/households/${h.household.id}/transfers/confirmations`,
+      headers: h.auth,
+    });
+    expect(household.json().length).toBeGreaterThan(0);
+    // ...and none of it shows up as a movement, because none of it is one: a
+    // household transfer is derived from the plan, not authored as an inflow.
+    const perAccount = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${h.bills.id}/transfers/confirmations`,
+      headers: h.auth,
+    });
+    expect(perAccount.json()).toEqual([]);
+  });
+
   it("funds a household pot from the household's allocation, awaiting the transfer", async () => {
     const h = await seedHousehold(store, app);
     const householdPlan = (
