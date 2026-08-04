@@ -18,17 +18,32 @@ import {
   upsertBalanceBody,
 } from "@finance-planner/contracts";
 import { type Account, type AccountAccess, createStore, type Store } from "@finance-planner/data";
-import { computeOverview, toISODate } from "@finance-planner/domain";
+import {
+  clampUpcomingDays,
+  computeAccountProjection,
+  computeHouseholdProjection,
+  computeOverview,
+  toISODate,
+  upcomingPayments,
+} from "@finance-planner/domain";
 import { type Action, type AppAbility, buildAbility, subject } from "@finance-planner/policies";
 import { verifyAccessToken } from "@finance-planner/security";
 import fastifyHttpProxy from "@fastify/http-proxy";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { type ApiEnv, loadEnv } from "./env.js";
-import { computeHouseholdPlanFor, computePlanForAccount } from "./plan.js";
+import {
+  buildAccountInput,
+  buildHouseholdInput,
+  computeHouseholdPlanFor,
+  computeHouseholdPlanWithSchedule,
+  computePlanForAccount,
+} from "./plan.js";
 
 const SERVICE = "api";
 const VERSION = process.env.npm_package_version ?? "0.0.0";
 const startedAt = Date.now();
+/** Row cap on the upcoming feed — see the handler comment. */
+const MAX_UPCOMING_ITEMS = 50;
 
 export interface ApiDeps {
   store?: Store;
@@ -57,6 +72,14 @@ const today = (): string => toISODate(new Date());
 
 /** Months are stored as the ISO date of their first day ("2026-08" → "2026-08-01"). */
 const monthToFirstDay = (month: string): string => `${month}-01`;
+
+/** Parse an integer query param. Absent or unparseable → undefined, leaving the
+ *  domain to apply its own default; the domain also clamps the range. */
+const intParam = (value: string | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
 /** The "YYYY-MM" month an ISO date falls in. */
 const monthOf = (date: string): string => date.slice(0, 7);
@@ -273,6 +296,29 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         : null,
       reservedMinor: plan.lines.reduce((sum, l) => sum + l.alreadySavedMinor, 0),
     };
+  });
+
+  /**
+   * Month-by-month simulation of the account's plan, so the UI can show where
+   * the money lands rather than just this month's slice. The balance trajectory
+   * starts from the latest real balance check-in; with no check-in there is no
+   * honest opening figure, so every month reports a null balance.
+   */
+  app.get("/api/accounts/:id/projection", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { asOf, months } = req.query as { asOf?: string; months?: string };
+    const { account } = await requireAccess(userId, id, "view");
+    const asOfDate = asOf ?? today();
+    const [input, balances] = await Promise.all([
+      buildAccountInput(store, account),
+      store.listBalanceSnapshots(id),
+    ]);
+    const latest = balances.at(-1);
+    return computeAccountProjection(input, asOfDate, {
+      months: intParam(months),
+      startingBalanceMinor: latest?.balanceMinor ?? null,
+    });
   });
 
   // ---- contributions (the money-set-aside ledger) ----
@@ -530,6 +576,44 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return computeOverview(plans, asOfDate);
   });
 
+  // ---- upcoming payments ----
+  /**
+   * What falls due next across every account the caller can see, merged into
+   * one dated feed. Each row carries its account so the UI needs no second
+   * lookup. Capped at MAX_UPCOMING_ITEMS rows: this is a "what's next" glance,
+   * not a report — a 90-day window over many accounts is otherwise unbounded,
+   * and a caller wanting the full picture has the per-account plan.
+   */
+  app.get("/api/upcoming", async (req) => {
+    const userId = await authenticate(req);
+    const { asOf, days } = req.query as { asOf?: string; days?: string };
+    const asOfDate = asOf ?? today();
+    const window = clampUpcomingDays(intParam(days));
+    const access = await store.listAccessibleAccounts(userId);
+
+    const items = [];
+    for (const a of access) {
+      const account = await store.getAccount(a.accountId);
+      if (!account) continue;
+      const input = await buildAccountInput(store, account);
+      for (const row of upcomingPayments(input.payments, asOfDate, window)) {
+        items.push({
+          ...row,
+          accountId: account.id,
+          accountName: account.name,
+          currency: account.currency,
+        });
+      }
+    }
+    items.sort(
+      (x, y) =>
+        (x.dueDate < y.dueDate ? -1 : x.dueDate > y.dueDate ? 1 : 0) ||
+        x.name.localeCompare(y.name) ||
+        x.accountName.localeCompare(y.accountName),
+    );
+    return { asOfDate, days: window, items: items.slice(0, MAX_UPCOMING_ITEMS) };
+  });
+
   // ---- household plan + account assignments ----
   /**
    * Pooled household plan: proportional shared-cost split, cross-account
@@ -542,7 +626,18 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { id } = req.params as { id: string };
     const { asOf } = req.query as { asOf?: string };
     await requireMembership(userId, id);
-    return computeHouseholdPlanFor(store, id, asOf ?? today());
+    return computeHouseholdPlanWithSchedule(store, id, asOf ?? today());
+  });
+
+  /** The household's pooled plan simulated month by month. Members only — same
+   *  rule as the plan it projects. */
+  app.get("/api/households/:id/projection", async (req) => {
+    const userId = await authenticate(req);
+    const { id } = req.params as { id: string };
+    const { asOf, months } = req.query as { asOf?: string; months?: string };
+    await requireMembership(userId, id);
+    const input = await buildHouseholdInput(store, id);
+    return computeHouseholdProjection(input, asOf ?? today(), { months: intParam(months) });
   });
 
   /** The roster of accounts in this household's plan, with their roles. */

@@ -4,9 +4,14 @@ import {
   computeAccountPlan,
   computeHouseholdPlan,
   type HouseholdAccountInput,
+  type HouseholdInput,
   type HouseholdPlan,
+  type IncomeInput,
+  type MemberPaydaySchedule,
+  type PaymentInput,
+  splitTransfersByPayday,
 } from "@finance-planner/domain";
-import type { Account, Store } from "@finance-planner/data";
+import type { Account, Income, Payment, Store } from "@finance-planner/data";
 
 /**
  * A payment's effective already-saved: its manual base plus every contribution
@@ -18,8 +23,56 @@ async function savedByPayment(store: Store, accountId: string): Promise<Map<stri
   return new Map(totals.map((t) => [t.paymentId, t.totalMinor]));
 }
 
+function toIncomeInput(i: Income): IncomeInput {
+  return {
+    id: i.id,
+    amountMinor: i.amountMinor,
+    frequency: i.frequency,
+    recurrence: i.recurrence,
+    anchorDate: i.anchorDate,
+    active: i.active,
+  };
+}
+
+function toPaymentInput(p: Payment, saved: Map<string, number>): PaymentInput {
+  return {
+    id: p.id,
+    name: p.name,
+    category: p.category,
+    amountMinor: p.amountMinor,
+    dueDate: p.dueDate,
+    recurrence: p.recurrence,
+    targetDate: p.targetDate,
+    priority: p.priority,
+    alreadySavedMinor: p.alreadySavedMinor + (saved.get(p.id) ?? 0),
+    autoRenew: p.autoRenew,
+    active: p.active,
+  };
+}
+
 /**
- * Load an account's incomes + payments and compute its savings plan.
+ * Load an account's incomes + payments as engine input. Shared by every read
+ * that reasons about the account's money — the plan, the projection, the
+ * upcoming feed — so they all see the same derived already-saved.
+ */
+export async function buildAccountInput(store: Store, account: Account): Promise<AccountInput> {
+  const [incomes, payments, saved] = await Promise.all([
+    store.listIncomes(account.id),
+    store.listPayments(account.id),
+    savedByPayment(store, account.id),
+  ]);
+
+  return {
+    accountId: account.id,
+    currency: account.currency,
+    monthlyBufferMinor: account.monthlyBufferMinor,
+    incomes: incomes.map(toIncomeInput),
+    payments: payments.map((p) => toPaymentInput(p, saved)),
+  };
+}
+
+/**
+ * Compute an account's savings plan.
  *
  * Snapshot persistence is intentionally NOT performed here. The plan endpoint
  * is read-only on every browser refresh; writing a row each call turned an
@@ -32,54 +85,19 @@ export async function computePlanForAccount(
   account: Account,
   asOfDate: string,
 ): Promise<AccountPlan> {
-  const [incomes, payments, saved] = await Promise.all([
-    store.listIncomes(account.id),
-    store.listPayments(account.id),
-    savedByPayment(store, account.id),
-  ]);
-
-  const input: AccountInput = {
-    accountId: account.id,
-    currency: account.currency,
-    monthlyBufferMinor: account.monthlyBufferMinor,
-    incomes: incomes.map((i) => ({
-      id: i.id,
-      amountMinor: i.amountMinor,
-      frequency: i.frequency,
-      recurrence: i.recurrence,
-      anchorDate: i.anchorDate,
-      active: i.active,
-    })),
-    payments: payments.map((p) => ({
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      amountMinor: p.amountMinor,
-      dueDate: p.dueDate,
-      recurrence: p.recurrence,
-      targetDate: p.targetDate,
-      priority: p.priority,
-      alreadySavedMinor: p.alreadySavedMinor + (saved.get(p.id) ?? 0),
-      autoRenew: p.autoRenew,
-      active: p.active,
-    })),
-  };
-
-  return computeAccountPlan(input, asOfDate);
+  return computeAccountPlan(await buildAccountInput(store, account), asOfDate);
 }
 
 /**
- * Assemble and compute a household's pooled plan: its members (with their
- * contribution shares), the accounts assigned to the household (with their
- * roles), and every income + payment on those accounts. The engine then splits
- * shared costs by share, funds across accounts by priority, and derives the
- * transfers needed between accounts. Read-only; no snapshot persistence.
+ * Assemble a household's engine input: its members (with their contribution
+ * shares), the accounts assigned to the household (with their roles), and every
+ * income + payment on those accounts. Shared by the household plan and the
+ * household projection. Read-only; no snapshot persistence.
  */
-export async function computeHouseholdPlanFor(
+export async function buildHouseholdInput(
   store: Store,
   householdId: string,
-  asOfDate: string,
-): Promise<HouseholdPlan> {
+): Promise<HouseholdInput> {
   const [memberships, assignments] = await Promise.all([
     store.listMembersForHousehold(householdId),
     store.listAccountAssignments(householdId),
@@ -108,26 +126,9 @@ export async function computeHouseholdPlanFor(
       memberUserId: asg.memberUserId,
       currency: account.currency,
       monthlyBufferMinor: account.monthlyBufferMinor,
-      incomes: incomes.map((i) => ({
-        id: i.id,
-        amountMinor: i.amountMinor,
-        frequency: i.frequency,
-        recurrence: i.recurrence,
-        anchorDate: i.anchorDate,
-        active: i.active,
-      })),
+      incomes: incomes.map(toIncomeInput),
       payments: payments.map((p) => ({
-        id: p.id,
-        name: p.name,
-        category: p.category,
-        amountMinor: p.amountMinor,
-        dueDate: p.dueDate,
-        recurrence: p.recurrence,
-        targetDate: p.targetDate,
-        priority: p.priority,
-        alreadySavedMinor: p.alreadySavedMinor + (saved.get(p.id) ?? 0),
-        autoRenew: p.autoRenew,
-        active: p.active,
+        ...toPaymentInput(p, saved),
         scope: p.scope,
         bearerUserId: p.bearerUserId,
       })),
@@ -135,5 +136,48 @@ export async function computeHouseholdPlanFor(
   }
 
   const currency = accounts[0]?.currency ?? "GBP";
-  return computeHouseholdPlan({ householdId, currency, members, accounts }, asOfDate);
+  return { householdId, currency, members, accounts };
+}
+
+/**
+ * Compute a household's pooled plan: the engine splits shared costs by share,
+ * funds across accounts by priority, and derives the transfers needed between
+ * accounts.
+ */
+export async function computeHouseholdPlanFor(
+  store: Store,
+  householdId: string,
+  asOfDate: string,
+): Promise<HouseholdPlan> {
+  return computeHouseholdPlan(await buildHouseholdInput(store, householdId), asOfDate);
+}
+
+export interface HouseholdPlanWithSchedule extends HouseholdPlan {
+  /** When each member should move their transfers, anchored to their paydays. */
+  paydaySchedule: MemberPaydaySchedule[];
+}
+
+/**
+ * The household plan plus the payday schedule for its derived transfers. A
+ * member's paydays come from the incomes on their personal accounts — the same
+ * member→accounts mapping the engine uses (role "personal", matching
+ * memberUserId) — read off the input already loaded rather than refetched.
+ */
+export async function computeHouseholdPlanWithSchedule(
+  store: Store,
+  householdId: string,
+  asOfDate: string,
+): Promise<HouseholdPlanWithSchedule> {
+  const input = await buildHouseholdInput(store, householdId);
+  const plan = computeHouseholdPlan(input, asOfDate);
+  const memberIncomes = input.members.map((m) => ({
+    memberUserId: m.userId,
+    incomes: input.accounts
+      .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
+      .flatMap((a) => a.incomes),
+  }));
+  return {
+    ...plan,
+    paydaySchedule: splitTransfersByPayday(plan.transfers, memberIncomes, asOfDate),
+  };
 }

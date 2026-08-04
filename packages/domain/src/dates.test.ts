@@ -5,6 +5,7 @@ import {
   intervalInMonths,
   monthsUntil,
   nextOccurrence,
+  occurrenceDatesInMonth,
   occurrencesInMonth,
   parseISODate,
   toISODate,
@@ -135,6 +136,42 @@ describe("occurrencesInMonth", () => {
         parseISODate("2026-06-15"),
       ),
     ).toBe(2);
+  });
+});
+
+describe("occurrenceDatesInMonth", () => {
+  const dates = (anchor: string, interval: number, unit: "week" | "month", ref: string) =>
+    occurrenceDatesInMonth(parseISODate(anchor), { interval, unit, anchor }, parseISODate(ref)).map(
+      toISODate,
+    );
+
+  it("lists a fortnightly cadence's dates in the month", () => {
+    expect(dates("2026-07-01", 2, "week", "2026-07-20")).toEqual([
+      "2026-07-01",
+      "2026-07-15",
+      "2026-07-29",
+    ]);
+  });
+
+  it("carries a past anchor forward into the reference month", () => {
+    expect(dates("2025-06-11", 2, "week", "2026-06-15")).toEqual(["2026-06-10", "2026-06-24"]);
+  });
+
+  it("returns nothing when the cadence skips the month", () => {
+    expect(dates("2026-03-01", 3, "month", "2026-01-01")).toEqual([]);
+  });
+
+  it("returns nothing for a non-positive interval", () => {
+    expect(dates("2026-03-01", 0, "month", "2026-03-01")).toEqual([]);
+  });
+
+  it("agrees with occurrencesInMonth", () => {
+    const anchor = parseISODate("2026-06-11");
+    const rec = { interval: 2, unit: "week" as const, anchor: "2026-06-11" };
+    const ref = parseISODate("2026-06-01");
+    expect(occurrenceDatesInMonth(anchor, rec, ref)).toHaveLength(
+      occurrencesInMonth(anchor, rec, ref),
+    );
   });
 });
 

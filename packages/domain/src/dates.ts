@@ -84,26 +84,35 @@ export function nextOccurrence(anchor: Date, rec: Recurrence, now: Date): Date {
 }
 
 /**
- * Count how many occurrences of `rec` (stepping forward from `anchor`) land in
- * the calendar month containing `ref`. Occurrences before the anchor are not
- * counted. A sub-monthly cadence such as every-2-weeks falls due 2 or 3 times a
- * month depending on where the dates sit, so this count is dynamic month to
- * month rather than a fixed average.
+ * The dates on which `rec` (stepping forward from `anchor`) lands in the
+ * calendar month containing `ref`, ascending. Occurrences before the anchor are
+ * never produced. A sub-monthly cadence such as every-2-weeks lands 2 or 3 times
+ * in a month depending on where the dates sit, so the list length is dynamic
+ * month to month rather than a fixed average.
  */
-export function occurrencesInMonth(anchor: Date, rec: Recurrence, ref: Date): number {
-  if (rec.interval < 1) return 0;
+export function occurrenceDatesInMonth(anchor: Date, rec: Recurrence, ref: Date): Date[] {
+  if (rec.interval < 1) return [];
   const monthStart = new Date(Date.UTC(ref.getUTCFullYear(), ref.getUTCMonth(), 1));
   const nextMonthStart = new Date(Date.UTC(ref.getUTCFullYear(), ref.getUTCMonth() + 1, 1));
   // First occurrence on/after the month start (never earlier than the anchor).
   let occ = nextOccurrence(anchor, rec, monthStart);
-  let count = 0;
+  const dates: Date[] = [];
   let guard = 0;
   while (occ.getTime() < nextMonthStart.getTime() && guard < 1000) {
-    count += 1;
+    dates.push(occ);
     occ = addUnit(occ, rec.interval, rec.unit);
     guard += 1;
   }
-  return count;
+  return dates;
+}
+
+/**
+ * Count how many occurrences of `rec` (stepping forward from `anchor`) land in
+ * the calendar month containing `ref` — the count sibling of
+ * `occurrenceDatesInMonth`, sharing its stepping and guards.
+ */
+export function occurrencesInMonth(anchor: Date, rec: Recurrence, ref: Date): number {
+  return occurrenceDatesInMonth(anchor, rec, ref).length;
 }
 
 /** Ceiling integer division; returns `a` if the divisor is non-positive. */

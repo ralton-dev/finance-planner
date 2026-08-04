@@ -1188,4 +1188,312 @@ describe("api service", () => {
     });
     expect(removed.statusCode).toBe(204);
   });
+
+  // ---- projections ----
+
+  /** An account with a salary and a savings goal, ready to project. */
+  async function seedProjectableAccount(auth: Record<string, string>) {
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Everyday", currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: {
+        name: "Holiday",
+        category: "fixed_point",
+        amountMinor: 120000,
+        dueDate: "2027-08-01",
+      },
+    });
+    return account;
+  }
+
+  it("projects an account forward from its latest balance check-in", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedProjectableAccount(auth);
+    await app.inject({
+      method: "PUT",
+      url: `/api/accounts/${account.id}/balance`,
+      headers: auth,
+      payload: { asOfDate: "2026-01-05", balanceMinor: 50000 },
+    });
+
+    const projection = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/projection?months=3&asOf=2026-01-10`,
+        headers: auth,
+      })
+    ).json();
+
+    expect(projection.accountId).toBe(account.id);
+    expect(projection.currency).toBe("GBP");
+    expect(projection.asOfDate).toBe("2026-01-10");
+    expect(projection.months).toHaveLength(3);
+    expect(projection.months.map((m: { month: string }) => m.month)).toEqual([
+      "2026-01",
+      "2026-02",
+      "2026-03",
+    ]);
+    // The check-in anchors the trajectory: the opening balance plus what the
+    // first month sets aside toward the goal.
+    expect(projection.months[0].projectedBalanceMinor).toBe(
+      50000 + projection.months[0].totalFundedMinor,
+    );
+    expect(projection.months[2].projectedBalanceMinor).toBeGreaterThan(
+      projection.months[0].projectedBalanceMinor,
+    );
+    expect(projection.months[0].lines[0].name).toBe("Holiday");
+  });
+
+  it("defaults to 12 months and reports no balance without a check-in", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedProjectableAccount(auth);
+    const projection = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/projection?asOf=2026-01-10&months=nonsense`,
+        headers: auth,
+      })
+    ).json();
+    expect(projection.months).toHaveLength(12);
+    expect(
+      projection.months.every(
+        (m: { projectedBalanceMinor: null }) => m.projectedBalanceMinor === null,
+      ),
+    ).toBe(true);
+  });
+
+  it("lets a view-only member project a shared account but hides it from strangers", async () => {
+    const { user, auth } = await seedUser(store, "owner-proj@example.com");
+    const { user: partner, auth: partnerAuth } = await seedUser(store, "partner-proj@example.com");
+    const { auth: strangerAuth } = await seedUser(store, "stranger-proj@example.com");
+    const account = await seedProjectableAccount(auth);
+
+    const household = await store.createHousehold("Home", user.id);
+    await store.addMembership(household.id, partner.id, "member");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/shares`,
+      headers: auth,
+      payload: { householdId: household.id, permission: "view" },
+    });
+
+    const url = `/api/accounts/${account.id}/projection?months=2&asOf=2026-01-10`;
+    const seen = await app.inject({ method: "GET", url, headers: partnerAuth });
+    expect(seen.statusCode).toBe(200);
+    expect(seen.json().months).toHaveLength(2);
+
+    const hidden = await app.inject({ method: "GET", url, headers: strangerAuth });
+    expect(hidden.statusCode).toBe(404);
+  });
+
+  it("projects a household plan month by month for its members only", async () => {
+    const h = await seedHousehold(store, app);
+    const { auth: strangerAuth } = await seedUser(store, "stranger-hh@example.com");
+    const url = `/api/households/${h.household.id}/projection?months=2&asOf=2026-06-15`;
+
+    const projection = (await app.inject({ method: "GET", url, headers: h.auth })).json();
+    expect(projection.householdId).toBe(h.household.id);
+    expect(projection.currency).toBe("GBP");
+    expect(projection.months).toHaveLength(2);
+    expect(projection.months[0].month).toBe("2026-06");
+    expect(projection.months[0].transfersTotalMinor).toBeGreaterThan(0);
+    // Household lines carry their account (payments are unique per account).
+    expect(projection.months[0].lines[0].accountId).toBe(h.bills.id);
+
+    const hidden = await app.inject({ method: "GET", url, headers: strangerAuth });
+    expect(hidden.statusCode).toBe(404);
+  });
+
+  // ---- payday schedule ----
+
+  it("carries a payday schedule for each member's transfers on the household plan", async () => {
+    const h = await seedHousehold(store, app);
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${h.household.id}/plan?asOf=2026-06-15`,
+        headers: h.auth,
+      })
+    ).json();
+
+    interface Schedule {
+      memberUserId: string;
+      events: { date: string; totalMinor: number; transfers: { toAccountId: string }[] }[];
+    }
+    const schedules: Schedule[] = plan.paydaySchedule;
+    expect(schedules.map((s) => s.memberUserId)).toEqual([h.alice.id, h.bob.id]);
+
+    for (const schedule of schedules) {
+      // Salaries are anchored to the 1st, so one payday: the 1st of the month.
+      expect(schedule.events.map((e) => e.date)).toEqual(["2026-06-01"]);
+      const planned = plan.transfers
+        .filter((t: { memberUserId: string }) => t.memberUserId === schedule.memberUserId)
+        .reduce((sum: number, t: { amountMinor: number }) => sum + t.amountMinor, 0);
+      const scheduled = schedule.events.reduce((sum, e) => sum + e.totalMinor, 0);
+      expect(scheduled).toBe(planned);
+      expect(schedule.events[0]!.transfers[0]!.toAccountId).toBe(h.bills.id);
+    }
+  });
+
+  // ---- upcoming feed ----
+
+  /** Create an account holding one payment, for the upcoming-feed tests. */
+  async function seedDuePayment(auth: Record<string, string>, name: string, payment: object) {
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name, currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: payment,
+    });
+    return account;
+  }
+
+  it("merges upcoming payments across accounts and filters by the window", async () => {
+    const { auth } = await seedUser(store);
+    const everyday = await seedDuePayment(auth, "Everyday", {
+      name: "Rent",
+      category: "monthly_recurring",
+      amountMinor: 100000,
+      dueDate: "2026-08-10",
+    });
+    const savings = await seedDuePayment(auth, "Savings", {
+      name: "Car tax",
+      category: "fixed_point",
+      amountMinor: 22000,
+      dueDate: "2026-08-05",
+    });
+    // Well outside a fortnight — must not appear.
+    await seedDuePayment(auth, "Later", {
+      name: "Christmas",
+      category: "fixed_point",
+      amountMinor: 40000,
+      dueDate: "2026-12-01",
+    });
+
+    const feed = (
+      await app.inject({
+        method: "GET",
+        url: "/api/upcoming?days=14&asOf=2026-08-03",
+        headers: auth,
+      })
+    ).json();
+
+    expect(feed.asOfDate).toBe("2026-08-03");
+    expect(feed.days).toBe(14);
+    expect(feed.items).toHaveLength(2);
+    expect(feed.items[0]).toMatchObject({
+      accountId: savings.id,
+      accountName: "Savings",
+      currency: "GBP",
+      name: "Car tax",
+      category: "fixed_point",
+      amountMinor: 22000,
+      dueDate: "2026-08-05",
+      daysUntil: 2,
+    });
+    expect(feed.items[1]).toMatchObject({
+      accountId: everyday.id,
+      accountName: "Everyday",
+      name: "Rent",
+      dueDate: "2026-08-10",
+      daysUntil: 7,
+    });
+  });
+
+  it("clamps the window and caps the feed at 50 rows", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Busy", currency: "GBP" },
+      })
+    ).json();
+    // Eight fortnightly bills × 7 hits each in a 90-day window = 56 rows.
+    for (let i = 0; i < 8; i++) {
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: `Bill ${i}`,
+          category: "custom_recurring",
+          amountMinor: 1000,
+          dueDate: "2026-08-03",
+          recurrence: { interval: 2, unit: "week", anchor: "2026-08-03" },
+        },
+      });
+    }
+
+    const feed = (
+      await app.inject({
+        method: "GET",
+        url: "/api/upcoming?days=400&asOf=2026-08-03",
+        headers: auth,
+      })
+    ).json();
+    expect(feed.days).toBe(90); // clamped
+    expect(feed.items).toHaveLength(50);
+    // The cap keeps the soonest rows: the feed is sorted before it is sliced.
+    expect(feed.items[0].dueDate).toBe("2026-08-03");
+    expect(feed.items[49].dueDate <= "2026-10-26").toBe(true);
+  });
+
+  it("shows each caller only their own accounts' upcoming payments", async () => {
+    const { auth } = await seedUser(store, "mine@example.com");
+    await seedDuePayment(auth, "Mine", {
+      name: "Rent",
+      category: "monthly_recurring",
+      amountMinor: 100000,
+      dueDate: "2026-08-10",
+    });
+    const { auth: strangerAuth } = await seedUser(store, "theirs@example.com");
+
+    const mine = (
+      await app.inject({ method: "GET", url: "/api/upcoming?asOf=2026-08-03", headers: auth })
+    ).json();
+    expect(mine.items).toHaveLength(1);
+    expect(mine.days).toBe(14); // default window
+
+    const theirs = (
+      await app.inject({
+        method: "GET",
+        url: "/api/upcoming?asOf=2026-08-03",
+        headers: strangerAuth,
+      })
+    ).json();
+    expect(theirs.items).toEqual([]);
+
+    const unauthenticated = await app.inject({ method: "GET", url: "/api/upcoming" });
+    expect(unauthenticated.statusCode).toBe(401);
+  });
 });
