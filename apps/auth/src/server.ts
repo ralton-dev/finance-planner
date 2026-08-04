@@ -51,6 +51,17 @@ const OIDC_HANDSHAKE_TTL_SECONDS = 600;
 const PENDING_TTL_SECONDS = 300;
 /** How long an emailed password-reset link stays redeemable. */
 const RESET_TTL_MS = 60 * 60 * 1000;
+/**
+ * How long after we rotate a refresh token the superseded one may still be
+ * presented before we call it theft. Browser tabs share one cookie, and a page
+ * whose access token has just expired 401s on several requests at once — so
+ * concurrent presentations of the same token are ordinary traffic, not attack
+ * traffic. Kept short: outside it, reuse detection is as strict as ever.
+ */
+const ROTATION_GRACE_MS = 10_000;
+/** How far a straggler may be chased along the rotation chain (the winner can
+ *  itself have rotated again while the straggler was in flight). */
+const ROTATION_CHAIN_MAX = 8;
 
 export interface AuthDeps {
   store?: Store;
@@ -63,6 +74,11 @@ export interface AuthDeps {
    * back-to-back logins don't trip the per-IP throttle.
    */
   rateLimit?: boolean;
+  /**
+   * Wall clock in milliseconds. Injected so tests can step over the refresh
+   * rotation grace window instead of sleeping through it.
+   */
+  now?: () => number;
 }
 
 class HttpError extends Error {
@@ -95,6 +111,7 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
     ? { store: deps.store, close: async () => {} }
     : createStore(env.databaseUrl);
   const store = handle.store;
+  const now = deps.now ?? Date.now;
   // SSO is off unless an injected client or a fully-configured provider says so.
   const oidcClient = deps.oidcClient ?? (env.oidc ? new HttpOidcClient(env.oidc) : undefined);
 
@@ -162,22 +179,116 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
     });
   };
 
+  /** Drop the refresh cookie. The attributes must match setRefreshCookie's — a
+   *  clear that differs on SameSite/Secure/Path names a *different* cookie, and
+   *  the real one survives the "logout". */
+  const clearRefreshCookie = (reply: FastifyReply): void => {
+    reply.clearCookie(REFRESH_COOKIE, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: env.cookieSecure,
+      path: env.cookiePath,
+    });
+  };
+
+  /** Both halves of a new session: the access token for the caller, and the
+   *  refresh token the cookie now carries (which /auth/refresh remembers for
+   *  the grace window). */
   const issueSession = async (
     reply: FastifyReply,
     userId: string,
     email: string,
-  ): Promise<string> => {
+  ): Promise<{ accessToken: string; refreshToken: string }> => {
     const refresh = randomToken();
-    const expiresAt = new Date(Date.now() + env.refreshTtlDays * 86_400_000).toISOString();
+    const expiresAt = new Date(now() + env.refreshTtlDays * 86_400_000).toISOString();
     await store.createSession({ userId, refreshTokenHash: sha256(refresh), expiresAt });
     setRefreshCookie(reply, refresh);
-    return signAccessToken(env.jwtSecret, { sub: userId, email }, env.accessTtlSeconds);
+    return {
+      accessToken: await signAccessToken(
+        env.jwtSecret,
+        { sub: userId, email },
+        env.accessTtlSeconds,
+      ),
+      refreshToken: refresh,
+    };
+  };
+
+  /** The session a spent refresh token was rotated into. */
+  interface Rotation {
+    refreshToken: string;
+    userId: string;
+    email: string;
+  }
+
+  /**
+   * Refresh tokens rotated — or being rotated right now — within the last
+   * ROTATION_GRACE_MS, keyed by the hash of the token that was spent.
+   *
+   * The value is the *promise* of the replacement, not the replacement, which
+   * is what makes simultaneous presentations safe: two requests carrying the
+   * same cookie land microseconds apart, and the second must wait for the
+   * first's new session rather than read a half-rotated one and cry theft.
+   *
+   * Purely in-process and self-pruning: nothing here outlives the grace window.
+   * A race split across replicas therefore still falls to the strict path — no
+   * worse than before, and the client's own single-flight refresh keeps one tab
+   * from racing itself. Closing that last gap would need the successor recorded
+   * on the session row, i.e. a migration.
+   */
+  const rotations = new Map<string, { at: number; replacement: Promise<Rotation | null> }>();
+
+  /** Claim a token's rotation. The promise is settled by whoever claimed it —
+   *  with null if their refresh turned out to fail. */
+  const claimRotation = (): {
+    promise: Promise<Rotation | null>;
+    settle: (r: Rotation | null) => void;
+  } => {
+    let settle!: (r: Rotation | null) => void;
+    const promise = new Promise<Rotation | null>((resolve) => {
+      settle = resolve;
+    });
+    return { promise, settle };
+  };
+
+  /** Housekeeping: drop everything past the window, so a hit afterwards is
+   *  inside the grace period by construction. */
+  const pruneRotations = (nowMs: number): void => {
+    for (const [hash, rotated] of rotations) {
+      if (nowMs - rotated.at > ROTATION_GRACE_MS) rotations.delete(hash);
+    }
+  };
+
+  /**
+   * The session a straggler should be handed back, or null when the presented
+   * token is a replay we have no business honouring.
+   *
+   * Follows the rotation chain, because the tab that won the race may have
+   * rotated again while the straggler was in flight. Whatever the chain ends at
+   * is checked against the store, so a session killed in the meantime — logout,
+   * password reset, account deletion, an earlier theft sweep — can never be
+   * resurrected here.
+   */
+  const rotationReplay = async (
+    entry: { replacement: Promise<Rotation | null> },
+    nowMs: number,
+  ): Promise<Rotation | null> => {
+    let rotation = await entry.replacement;
+    for (let hop = 0; rotation && hop < ROTATION_CHAIN_MAX; hop++) {
+      const next = rotations.get(sha256(rotation.refreshToken));
+      if (!next) break;
+      rotation = await next.replacement;
+    }
+    if (!rotation) return null;
+    const successor = await store.getSessionByTokenHash(sha256(rotation.refreshToken));
+    if (!successor || successor.revokedAt) return null;
+    if (new Date(successor.expiresAt) < new Date(nowMs)) return null;
+    return rotation;
   };
 
   /** The one place a login succeeds: password, second factor and SSO all land
    *  here, so the session + response shape can never drift between them. */
   const completeLogin = async (reply: FastifyReply, user: User): Promise<FastifyReply> => {
-    const accessToken = await issueSession(reply, user.id, user.email);
+    const { accessToken } = await issueSession(reply, user.id, user.email);
     return reply.send({
       accessToken,
       user: { id: user.id, email: user.email, displayName: user.displayName },
@@ -387,24 +498,65 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   app.post("/auth/refresh", rl(20), async (req, reply) => {
     const refresh = req.cookies[REFRESH_COOKIE];
     if (!refresh) throw new HttpError(401, "unauthorized", "Missing refresh token");
-    const session = await store.getSessionByTokenHash(sha256(refresh));
-    if (!session) throw new HttpError(401, "unauthorized", "Invalid refresh token");
-    if (new Date(session.expiresAt) < new Date()) {
-      throw new HttpError(401, "unauthorized", "Refresh token expired");
+    const nowMs = now();
+    const hash = sha256(refresh);
+    pruneRotations(nowMs);
+
+    // Claim this token's rotation, synchronously — no `await` between the read
+    // and the write — so two requests carrying the same cookie can never both
+    // believe they are first. A token *we* rotated moments ago is a race, not a
+    // theft: tabs share one cookie, and a page's requests all 401 together the
+    // instant an access token expires. The straggler gets the same session the
+    // winner got; revoking the lot here is what signed people out everywhere.
+    const inflight = rotations.get(hash);
+    const claim = inflight ? null : claimRotation();
+    if (claim) rotations.set(hash, { at: nowMs, replacement: claim.promise });
+
+    if (inflight) {
+      const replay = await rotationReplay(inflight, nowMs);
+      if (replay) {
+        setRefreshCookie(reply, replay.refreshToken);
+        return reply.send({
+          accessToken: await signAccessToken(
+            env.jwtSecret,
+            { sub: replay.userId, email: replay.email },
+            env.accessTtlSeconds,
+          ),
+        });
+      }
+      // That rotation failed, or its session has since been ended. Fall through
+      // and let the store say why.
     }
-    // Reuse detection: if the presented token belongs to an already-revoked
-    // session, an attacker has captured a previously-rotated cookie. Nuke
-    // every active session for this user — they'll have to re-login.
-    if (session.revokedAt) {
-      await store.revokeAllUserSessions(session.userId);
-      reply.clearCookie(REFRESH_COOKIE, { path: env.cookiePath });
-      throw new HttpError(401, "reuse_detected", "Refresh token reused; sessions revoked");
+
+    try {
+      const session = await store.getSessionByTokenHash(hash);
+      if (!session) throw new HttpError(401, "unauthorized", "Invalid refresh token");
+      if (new Date(session.expiresAt) < new Date(nowMs)) {
+        throw new HttpError(401, "unauthorized", "Refresh token expired");
+      }
+      // Revoked, with no rotation of ours to account for it: an attacker has
+      // captured a previously-rotated cookie. Nuke every active session for
+      // this user — they'll have to re-login.
+      if (session.revokedAt) {
+        await store.revokeAllUserSessions(session.userId);
+        clearRefreshCookie(reply);
+        throw new HttpError(401, "reuse_detected", "Refresh token reused; sessions revoked");
+      }
+      await store.revokeSession(session.id); // rotation
+      const user = await store.getUserById(session.userId);
+      if (!user) throw new HttpError(401, "unauthorized", "Unknown user");
+      const { accessToken, refreshToken } = await issueSession(reply, user.id, user.email);
+      claim?.settle({ refreshToken, userId: user.id, email: user.email });
+      return reply.send({ accessToken });
+    } catch (err) {
+      // Nothing to replay: release the claim so the next attempt starts clean.
+      // Only ours — a slow enough failure can have been pruned and re-claimed.
+      if (claim) {
+        if (rotations.get(hash)?.replacement === claim.promise) rotations.delete(hash);
+        claim.settle(null);
+      }
+      throw err;
     }
-    await store.revokeSession(session.id); // rotation
-    const user = await store.getUserById(session.userId);
-    if (!user) throw new HttpError(401, "unauthorized", "Unknown user");
-    const accessToken = await issueSession(reply, user.id, user.email);
-    return reply.send({ accessToken });
   });
 
   // ---- logout ----
@@ -414,7 +566,7 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
       const session = await store.getSessionByTokenHash(sha256(refresh));
       if (session) await store.revokeSession(session.id);
     }
-    reply.clearCookie(REFRESH_COOKIE, { path: env.cookiePath });
+    clearRefreshCookie(reply);
     return reply.send({ ok: true });
   });
 
@@ -464,7 +616,7 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
       throw new HttpError(403, "invalid_credentials", "Password does not match");
     }
     await store.deleteUserCascade(userId);
-    reply.clearCookie(REFRESH_COOKIE, { path: env.cookiePath });
+    clearRefreshCookie(reply);
     return reply.code(204).send();
   });
 

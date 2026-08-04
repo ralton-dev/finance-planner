@@ -30,11 +30,13 @@ const oidcEnv: AuthEnv = {
 
 const register = { email: "user@example.com", password: "password123", displayName: "User" };
 
-function makeApp() {
+/** `now` is injected by the refresh-rotation tests so they can step over the
+ *  grace window rather than sleep through it. */
+function makeApp(now?: () => number) {
   const store = new MemoryStore();
   const mailer = new LogMailer();
   // Disable rate-limit in tests so back-to-back logins don't trip the per-IP throttle.
-  const app = buildServer({ store, mailer, env, rateLimit: false });
+  const app = buildServer({ store, mailer, env, rateLimit: false, now });
   return { app, store, mailer };
 }
 
@@ -68,6 +70,11 @@ function makeOidcApp(claims: OidcIdTokenClaims) {
   const oidcClient = new FakeOidcClient(claims);
   const app = buildServer({ store, mailer, env: oidcEnv, oidcClient, rateLimit: false });
   return { app, store, mailer, oidcClient };
+}
+
+/** The fp_refresh value a response set — what the next request must send back. */
+function refreshCookie(res: { cookies: { name: string; value: string }[] }): string {
+  return res.cookies.find((c) => c.name === "fp_refresh")!.value;
 }
 
 /** Register + log in, returning the bearer header the authed routes want. */
@@ -165,25 +172,31 @@ describe("auth service", () => {
   });
 
   it("detects refresh-token reuse and revokes every active session for the user", async () => {
-    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
-    const login1 = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
-    const cookie1 = login1.cookies.find((c) => c.name === "fp_refresh")!.value;
+    // A replay long after the rotation is theft, not a race: hold the clock
+    // still, then step it past the grace window before replaying.
+    let clock = Date.now();
+    const app = makeApp(() => clock).app;
+    await app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login1 = await app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const cookie1 = refreshCookie(login1);
 
     // Second login (e.g. a second device) — another active session is born.
-    const login2 = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
-    const cookie2 = login2.cookies.find((c) => c.name === "fp_refresh")!.value;
+    const login2 = await app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const cookie2 = refreshCookie(login2);
 
     // First refresh rotates cookie1 — the old one is now revoked.
-    const rotated = await ctx.app.inject({
+    const rotated = await app.inject({
       method: "POST",
       url: "/auth/refresh",
       cookies: { fp_refresh: cookie1 },
     });
     expect(rotated.statusCode).toBe(200);
 
+    clock += 60_000;
+
     // Replay cookie1 → attacker scenario. Expect 401 with reuse code, and the
     // *other* session (cookie2) should also be revoked as collateral.
-    const replayed = await ctx.app.inject({
+    const replayed = await app.inject({
       method: "POST",
       url: "/auth/refresh",
       cookies: { fp_refresh: cookie1 },
@@ -191,12 +204,133 @@ describe("auth service", () => {
     expect(replayed.statusCode).toBe(401);
     expect(replayed.json().error.code).toBe("reuse_detected");
 
-    const stillAlive = await ctx.app.inject({
+    const stillAlive = await app.inject({
       method: "POST",
       url: "/auth/refresh",
       cookies: { fp_refresh: cookie2 },
     });
     expect(stillAlive.statusCode).toBe(401);
+  });
+
+  // The bug these pin: two tabs (or one page's parallel requests) present the
+  // same refresh cookie, the second one lands after rotation, and the old code
+  // read that as theft — signing the user out of every device, the racing tab
+  // included.
+  it("keeps racing refreshes on one cookie signed in", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const cookie = refreshCookie(login);
+
+    // Five at once is the real trigger: a page whose access token has expired
+    // 401s on every request it has in flight, and each retry refreshes.
+    const raced = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        ctx.app.inject({ method: "POST", url: "/auth/refresh", cookies: { fp_refresh: cookie } }),
+      ),
+    );
+
+    expect(raced.map((r) => r.statusCode)).toEqual([200, 200, 200, 200, 200]);
+    for (const res of raced) expect(res.json().accessToken).toBeTruthy();
+    // All were handed the same live session, so whichever Set-Cookie the
+    // browser kept still works.
+    const issued = new Set(raced.map(refreshCookie));
+    expect(issued.size).toBe(1);
+    const next = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: [...issued][0]! },
+    });
+    expect(next.statusCode).toBe(200);
+  });
+
+  it("leaves other devices' sessions alone when tabs race", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const laptop = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const phone = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+
+    for (let i = 0; i < 2; i++) {
+      const raced = await ctx.app.inject({
+        method: "POST",
+        url: "/auth/refresh",
+        cookies: { fp_refresh: refreshCookie(laptop) },
+      });
+      expect(raced.statusCode).toBe(200);
+    }
+
+    const stillSignedIn = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: refreshCookie(phone) },
+    });
+    expect(stillSignedIn.statusCode).toBe(200);
+  });
+
+  it("follows the rotation chain when the straggler is several refreshes behind", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const stale = refreshCookie(login);
+
+    // The winning tab refreshes twice more while the straggler is in flight.
+    let latest = stale;
+    for (let i = 0; i < 2; i++) {
+      const res = await ctx.app.inject({
+        method: "POST",
+        url: "/auth/refresh",
+        cookies: { fp_refresh: latest },
+      });
+      latest = refreshCookie(res);
+    }
+
+    const straggler = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: stale },
+    });
+    expect(straggler.statusCode).toBe(200);
+    expect(refreshCookie(straggler)).toBe(latest);
+  });
+
+  it("never resurrects a session that was ended inside the grace window", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const stale = refreshCookie(login);
+
+    const rotated = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: stale },
+    });
+    await ctx.app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      cookies: { fp_refresh: refreshCookie(rotated) },
+    });
+
+    // Still inside the window, but there is no live session to replay onto.
+    const replayed = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/refresh",
+      cookies: { fp_refresh: stale },
+    });
+    expect(replayed.statusCode).toBe(401);
+  });
+
+  it("clears the refresh cookie with the attributes it was set with", async () => {
+    await ctx.app.inject({ method: "POST", url: "/auth/register", payload: register });
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: register });
+    const set = login.cookies.find((c) => c.name === "fp_refresh")!;
+
+    const out = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      cookies: { fp_refresh: set.value },
+    });
+    const cleared = out.cookies.find((c) => c.name === "fp_refresh")!;
+    expect(cleared.value).toBe("");
+    // A clear whose attributes differ names a different cookie to the browser.
+    expect(cleared.path).toBe(set.path);
+    expect(cleared.sameSite).toBe(set.sameSite);
+    expect(cleared.httpOnly).toBe(set.httpOnly);
   });
 
   it("creates and lists households for the authenticated user", async () => {
