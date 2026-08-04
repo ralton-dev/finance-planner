@@ -3,6 +3,7 @@ import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-route
 import { useAuth } from "../auth/AuthContext.js";
 import { usePrivacy } from "../contexts/PrivacyContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
+import { type Theme, useTheme } from "../contexts/ThemeContext.js";
 import { useChordShortcuts } from "../lib/useChordShortcuts.js";
 
 export function Layout() {
@@ -11,6 +12,7 @@ export function Layout() {
   const location = useLocation();
   const { openPayment, openIncome, openAccount } = useQuickAdd();
   const { hidden, toggle: togglePrivacy } = usePrivacy();
+  const { theme, cycle: cycleTheme } = useTheme();
 
   // On mobile the sidebar collapses behind a burger toggle. Following a link
   // (which changes the route) closes it again so it never covers the content.
@@ -35,6 +37,10 @@ export function Layout() {
     h: {
       a: togglePrivacy,
     },
+    // "t t" — theme, next one along.
+    t: {
+      t: cycleTheme,
+    },
   });
 
   return (
@@ -44,6 +50,7 @@ export function Layout() {
           <span className="brand-dot" />
           finance-planner
         </span>
+        <ThemeToggle theme={theme} onCycle={cycleTheme} className="nav-toggle" />
         <PrivacyToggle hidden={hidden} onToggle={togglePrivacy} className="nav-toggle" />
         <button
           type="button"
@@ -100,6 +107,20 @@ export function Layout() {
             {hidden ? "show amounts" : "hide amounts"}
           </span>
           <span className="kbd-ish">h a</span>
+        </button>
+        <button
+          type="button"
+          className="nav-item"
+          aria-label={themeActionLabel(theme)}
+          onClick={cycleTheme}
+        >
+          <span className="label">
+            <span aria-hidden="true" className="theme-mark">
+              {THEME_MARK[theme]}
+            </span>{" "}
+            theme {theme}
+          </span>
+          <span className="kbd-ish">t t</span>
         </button>
 
         <div className="nav-section">quick add</div>
@@ -169,6 +190,42 @@ export function Layout() {
 
 function navClass({ isActive }: { isActive: boolean }): string {
   return isActive ? "nav-item active" : "nav-item";
+}
+
+/** One glyph per mode: filled for dark, hollow for light, half for "ask the
+ *  machine". */
+const THEME_MARK: Record<Theme, string> = { dark: "●", light: "○", system: "◑" };
+
+/** A three-way cycle has no honest `aria-pressed`, so the label says where the
+ *  next press lands. */
+function themeActionLabel(theme: Theme): string {
+  const next: Record<Theme, Theme> = { dark: "light", light: "system", system: "dark" };
+  return `theme ${theme} — switch to ${next[theme]}`;
+}
+
+/** Dark, light, or whatever the OS says. In the mobile bar as well as the
+ *  sidebar: the sidebar is collapsed exactly when the room's lighting is least
+ *  likely to be the one the app was set up in. */
+function ThemeToggle({
+  theme,
+  onCycle,
+  className,
+}: {
+  theme: Theme;
+  onCycle: () => void;
+  className: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={className}
+      aria-label={themeActionLabel(theme)}
+      title={themeActionLabel(theme)}
+      onClick={onCycle}
+    >
+      {THEME_MARK[theme]}
+    </button>
+  );
 }
 
 /** The eye. Present in the mobile bar too, because the sidebar it lives in is
