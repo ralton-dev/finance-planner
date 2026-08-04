@@ -24,6 +24,7 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 
 - **Operations / runbook:** [`OPERATIONS.md`](./OPERATIONS.md)
 - **Deferred backlog:** [`BACKLOG.md`](./BACKLOG.md)
+- **UI redesign plan (in flight):** [`REDESIGN.md`](./REDESIGN.md)
 - **Contributing:** [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - **Licence:** [MIT](./LICENSE)
 
