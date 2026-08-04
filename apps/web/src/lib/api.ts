@@ -14,6 +14,7 @@ import type {
   HouseholdRole,
   ImportCountsDto,
   IncomeDto,
+  InflowDto,
   LoginResultDto,
   LoginSessionDto,
   MetaDto,
@@ -395,6 +396,53 @@ export class ApiClient {
   }
   deleteIncome(id: string) {
     return this.request<void>("DELETE", `/api/incomes/${id}`);
+  }
+
+  // ---- inflows ----
+  // Money arriving, whatever its source. `/incomes` above is the external half
+  // of these very rows — one table, two doors, and the income door deliberately
+  // cannot see a movement between two of your own accounts.
+  /** Everything arriving into this account: external income and movements alike. */
+  listInflows(accountId: string) {
+    return this.request<InflowDto[]>("GET", `/api/accounts/${accountId}/inflows`);
+  }
+  /** The other face of the same rows: movements *leaving* this account — what
+   *  its surplus is already committed to. */
+  listOutboundInflows(accountId: string) {
+    return this.request<InflowDto[]>("GET", `/api/accounts/${accountId}/inflows/outbound`);
+  }
+  createInflow(accountId: string, body: unknown) {
+    return this.request<InflowDto>("POST", `/api/accounts/${accountId}/inflows`, body);
+  }
+  /** Everything but which two accounts it runs between: re-pointing an end is
+   *  authoring a new movement, and the API refuses it here. */
+  updateInflow(id: string, body: unknown) {
+    return this.request<InflowDto>("PATCH", `/api/inflows/${id}`, body);
+  }
+  deleteInflow(id: string) {
+    return this.request<void>("DELETE", `/api/inflows/${id}`);
+  }
+  /** "I moved this money", for one month of one movement — the standalone twin
+   *  of `confirmTransfer`, with no household anywhere. Books what the movement
+   *  actually delivered against the payments it funded. */
+  confirmMovement(inflowId: string, month?: string) {
+    return this.request<ConfirmTransferResultDto>(
+      "POST",
+      `/api/inflows/${inflowId}/confirm${month ? `?month=${month}` : ""}`,
+    );
+  }
+  /** Movements touching this account this month, from both sides: what arrived
+   *  here and what left here. Defaults to the current month server-side. */
+  listAccountConfirmations(accountId: string, month?: string) {
+    return this.request<TransferConfirmationDto[]>(
+      "GET",
+      `/api/accounts/${accountId}/transfers/confirmations${month ? `?month=${month}` : ""}`,
+    );
+  }
+  /** Nested under the inflow, so it can only ever reach an inflow-scoped
+   *  confirmation — a household one keeps its own route and its own rule. */
+  unconfirmMovement(inflowId: string, confirmationId: string) {
+    return this.request<void>("DELETE", `/api/inflows/${inflowId}/confirmations/${confirmationId}`);
   }
 
   // ---- payments ----

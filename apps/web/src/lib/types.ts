@@ -126,6 +126,38 @@ export interface IncomeDto {
   active: boolean;
 }
 
+/** Where money arriving into an account came from: outside everything you own,
+ *  or another account you own. */
+export type InflowSourceKind = "external" | "account";
+
+/**
+ * Money arriving into an account, authored on the account it arrives in.
+ *
+ * `source: "external"` is what an income has always been — the `/incomes`
+ * endpoints are the external half of these very rows. `source: "account"` is
+ * one row with two faces: it arrives on `accountId` and leaves
+ * `sourceAccountId`, so the two ends can never drift apart.
+ */
+export interface InflowDto {
+  id: string;
+  /** The account the money arrives into. */
+  accountId: string;
+  name: string;
+  source: InflowSourceKind;
+  /** The account the money leaves. Set exactly when `source` is "account". */
+  sourceAccountId: string | null;
+  amountMinor: number;
+  frequency: Frequency;
+  recurrence: Recurrence | null;
+  anchorDate: string;
+  /** Rank among the *sending* account's movements, lower first. Meaningless on
+   *  an external inflow — nothing sends a salary. */
+  priority: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PaymentDto {
   id: string;
   accountId: string;
@@ -175,6 +207,33 @@ export interface ProjectDetailDto extends ProjectDto {
   payments: ProjectMemberPaymentDto[];
 }
 
+/**
+ * Why a line is where it is — the axis `onTrack` cannot express.
+ *
+ * `onTrack` answers "does the plan cover this?". It cannot separate *the plan
+ * cannot fund this* (cut something, or raise a share) from *the plan funds this,
+ * you have not moved the money yet* (make the transfer). Two problems, two
+ * remedies, two colours: red is only ever the first of them.
+ */
+export type PlanLineStatus = "funded" | "awaiting_transfer" | "at_risk";
+
+/**
+ * A line's tri-state, from an API that may not have said.
+ *
+ * The one place the fallback is written down, so no screen invents its own.
+ * `onTrack` is the older, coarser axis and still means what it always meant:
+ * the plan covers this. A payload with no `status` — a household plan's lines,
+ * an older API, a fixture — collapses to the two states the UI had before,
+ * which is exactly what those payloads meant.
+ *
+ * A function in a types module because it *is* the type: reading the wire's
+ * optional field is not something a component should be trusted to do twice.
+ */
+export function lineStatus(line: Pick<PlanLineDto, "status" | "onTrack">): PlanLineStatus {
+  if (line.status) return line.status;
+  return line.onTrack ? "funded" : "at_risk";
+}
+
 export interface PlanLineDto {
   paymentId: string;
   name: string;
@@ -189,10 +248,24 @@ export interface PlanLineDto {
   monthsUntilDue: number;
   requiredMonthlyMinor: number;
   fundedMonthlyMinor: number;
+  /** Of `fundedMonthlyMinor`, the part the account's own income paid for.
+   *  Sums with `fundedFromInflowMinor` to `fundedMonthlyMinor` exactly.
+   *  Optional: a household plan's lines carry no split. */
+  fundedFromOwnMinor?: number;
+  /** Of `fundedMonthlyMinor`, the part paid for by money arriving from
+   *  elsewhere — a household member, or another account you own. */
+  fundedFromInflowMinor?: number;
   alreadySavedMinor: number;
   /** Times the payment falls due this month; >1 for sub-monthly recurrences. */
   occurrencesThisMonth?: number;
   onTrack: boolean;
+  /**
+   * The tri-state. Optional because it is additive — a payload without it (an
+   * older API, a household line, a test fixture) is read as `funded` when
+   * `onTrack` and `at_risk` when not, which is exactly what the UI said before
+   * the third state existed.
+   */
+  status?: PlanLineStatus;
   projectedCompletionDate?: string;
   /** Passthrough of the goal's monthly contribution cap (fixed_point only). */
   fixedMonthlyMinor?: number | null;
@@ -212,6 +285,51 @@ export interface LatestBalanceDto {
   asOfDate: string;
   balanceMinor: number;
 }
+
+/** What one authored movement actually delivered into an account this month. */
+export interface InflowArrivalDto {
+  /** The authored inflow's id — one row, read from both ends. */
+  inflowId: string;
+  fromAccountId: string;
+  /** What the sending account could afford, which may be less than the row asks. */
+  amountMinor: number;
+  /** How much of `amountMinor` somebody has said actually moved; absent means
+   *  nobody has said this one moved. */
+  confirmedMinor?: number;
+}
+
+/**
+ * One sender's share of the money arriving into an account this month.
+ *
+ * Discriminated rather than merged, because there really are two senders: a
+ * person the household plan asks to transfer, and another account of your own
+ * that a movement drains. A member has a name and no account; an account has an
+ * id and no member.
+ *
+ * **`displayName` and `accountName` are access-gated and may be absent.** The
+ * amount is a fact about an account the caller can already see; the *name* of
+ * whoever is sending it is not. Render the absence honestly — "a household
+ * member", "another account" — rather than inventing a name or printing an id.
+ */
+export type PlanInflowSourceDto =
+  | {
+      kind: "member";
+      memberUserId: string;
+      /** Only when the caller can see the household. */
+      displayName?: string;
+      amountMinor: number;
+      confirmedMinor: number;
+    }
+  | {
+      kind: "account";
+      /** The authored inflow, so "I moved it" has something to post to. */
+      inflowId: string;
+      fromAccountId: string;
+      /** Only when the caller can see the sending account. */
+      accountName?: string;
+      amountMinor: number;
+      confirmedMinor: number;
+    };
 
 export interface AccountPlanDto {
   accountId: string;
@@ -234,6 +352,35 @@ export interface AccountPlanDto {
   latestBalance: LatestBalanceDto | null;
   /** Sum of every line's already-saved: what the plan believes is spoken for. */
   reservedMinor: number;
+  /**
+   * Money arriving into this account this month from anywhere but its own
+   * income. Never folded into `monthlyIncomeMinor`: the account that sent it
+   * still reports it as its own, and folding would double it in every figure
+   * that sums income across accounts.
+   */
+  allocatedInflowMinor?: number;
+  /** Of `allocatedInflowMinor`, how much somebody has said actually moved. The
+   *  rest funds the arithmetic while its lines read `awaiting_transfer`. */
+  confirmedInflowMinor?: number;
+  /** Of `allocatedInflowMinor`, what each movement from another account
+   *  delivered. Empty for an account nothing moves into. */
+  inflowArrivals?: InflowArrivalDto[];
+  /** Total this account sends on to other accounts. Deliberately *not*
+   *  subtracted from `leftoverMinor` — see the API's `AccountPlan`. */
+  outboundInflowMinor?: number;
+  /**
+   * Where the arriving money is coming from, when the caller may be told.
+   * `null` — the API's own answer — means nothing is arriving that this caller
+   * may be told about, which reads the same as nothing arriving.
+   */
+  inflowSources?: PlanInflowSourceDto[] | null;
+  /**
+   * The accounts in the funding loop this account belongs to, in the order
+   * money would travel round it. Absent in the normal, acyclic case. A loop is
+   * detected and reported, never refused at authoring — so the UI is the only
+   * thing that can explain it.
+   */
+  fundingCycleAccountIds?: string[];
 }
 
 /**
@@ -289,6 +436,12 @@ export interface OverviewAccountDto {
   /** Its role in that plan — the shared pot, or one member's own account. */
   householdRole: AccountRole | null;
   monthlyIncomeMinor: number;
+  /** Money arriving from anywhere but this account's own income — amounts only,
+   *  never who is sending it, so the index needs no access gate. */
+  allocatedInflowMinor?: number;
+  /** Of that, how much has been confirmed as actually moved. The difference is
+   *  what the index's awaiting chip counts. */
+  confirmedInflowMinor?: number;
   leftoverMinor: number;
   shortfallMinor: number;
   atRiskCount: number;
@@ -318,6 +471,13 @@ export interface CurrencyOverviewDto {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /**
+   * Money that left one account in this rollup and was spent by another. It is
+   * why the rows do not add up to `leftoverMinor`: the sender still reports the
+   * pound as its surplus and the receiver reports the same pound as funded, so
+   * the total nets it out and the rows do not.
+   */
+  intraEstateMovementMinor?: number;
   shortfallMinor: number;
   accounts: OverviewAccountDto[];
 }
@@ -449,10 +609,24 @@ export interface MonthProjectionDto {
   /** "YYYY-MM". */
   month: string;
   monthlyIncomeMinor: number;
+  /**
+   * Money arriving into the account this month from outside it. Without it a
+   * projected month cannot explain itself — `totalFundedMinor` can exceed
+   * `monthlyIncomeMinor - bufferMinor` with nothing on the wire saying why,
+   * which reads as an arithmetic error rather than as a funded pot.
+   */
+  allocatedInflowMinor?: number;
+  /** Of that, what somebody has said moved. Zero in every month after the
+   *  first: nobody has moved next March's money yet. */
+  confirmedInflowMinor?: number;
   bufferMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /** Money leaving for other accounts this month. Not subtracted from
+   *  `leftoverMinor`, so a month that sends its surplus on cannot look like a
+   *  month that kept it. */
+  outboundInflowMinor?: number;
   shortfallMinor: number;
   reservedEndMinor: number;
   /** null on every month when the account has no balance check-in to start from. */
@@ -542,10 +716,20 @@ export interface BalanceSnapshotDto {
   createdAt: string;
 }
 
-/** A member's confirmation that a planned monthly transfer was actually made. */
+/**
+ * "I moved the money", for one month of one movement.
+ *
+ * A household attributes the movement to a member; a movement between two of
+ * your own accounts has no household at all, which is why `householdId` is
+ * nullable. Exactly one of the two scopes is set.
+ */
 export interface TransferConfirmationDto {
   id: string;
-  householdId: string;
+  /** The household attributing this movement, when one does. */
+  householdId: string | null;
+  /** The account-sourced inflow this confirms, when it confirms one. Optional
+   *  so a payload from before movements existed still satisfies the type. */
+  inflowId?: string | null;
   month: string;
   fromAccountId: string;
   toAccountId: string;
@@ -568,7 +752,8 @@ export interface MonthCloseDto {
   closedAt: string;
 }
 
-/** POST /transfers/confirm returns the confirmation plus the contributions it booked. */
+/** POST /transfers/confirm and POST /inflows/:id/confirm both return the
+ *  confirmation plus the contributions it booked. */
 export interface ConfirmTransferResultDto {
   confirmation: TransferConfirmationDto;
   contributions: ContributionDto[];
@@ -581,6 +766,10 @@ export interface ConfirmTransferResultDto {
 export interface ImportCountsDto {
   accounts: number;
   incomes: number;
+  /** Movements between two of the imported accounts. */
+  accountInflows?: number;
+  /** "I moved the money", restored against those movements. */
+  accountInflowConfirmations?: number;
   payments: number;
   contributions: number;
   balanceSnapshots: number;
