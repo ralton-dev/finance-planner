@@ -162,6 +162,47 @@ describe("AccountsPage — attention chips", () => {
     expect(within(row).queryByText("funded")).toBeNull();
   });
 
+  it("asks for a transfer in amber, never in red", async () => {
+    // The bills pot: £303.20 planned in, nothing moved. The plan covers it, so
+    // there is no shortfall — the outstanding thing is a transfer, and a
+    // transfer is your move, not a hole in the plan.
+    renderAccounts(
+      [account({ id: "a1", name: "Bills joint" })],
+      [summary({ accountId: "a1", allocatedInflowMinor: 30_320, confirmedInflowMinor: 0 })],
+    );
+
+    const row = await rowFor("Bills joint");
+    const chip = within(row).getByText(/awaiting transfer/);
+    expect(chip).toHaveClass("tag-status", "needs-you");
+    expect(chip).not.toHaveClass("alert");
+    expect(within(row).getByText("£303.20")).toBeInTheDocument();
+    // No red chip anywhere on the row, and no claim that it is funded either.
+    expect(row.querySelectorAll(".tag-status.alert")).toHaveLength(0);
+    expect(within(row).queryByText("unfunded")).toBeNull();
+    expect(within(row).queryByText("funded")).toBeNull();
+  });
+
+  it("stops asking once the money has moved", async () => {
+    renderAccounts(
+      [account({ id: "a1", name: "Bills joint" })],
+      [summary({ accountId: "a1", allocatedInflowMinor: 30_320, confirmedInflowMinor: 30_320 })],
+    );
+
+    const row = await rowFor("Bills joint");
+    expect(within(row).queryByText(/awaiting/)).toBeNull();
+    expect(within(row).getByText("funded")).toBeInTheDocument();
+  });
+
+  it("counts only the part still to move", async () => {
+    renderAccounts(
+      [account({ id: "a1", name: "Bills joint" })],
+      [summary({ accountId: "a1", allocatedInflowMinor: 30_320, confirmedInflowMinor: 20_000 })],
+    );
+
+    const row = await rowFor("Bills joint");
+    expect(within(row).getByText("£103.20")).toBeInTheDocument();
+  });
+
   it("treats an account nobody has ever checked in as needing one", async () => {
     renderAccounts(
       [account({ id: "a1", name: "Rainy day" })],
@@ -209,6 +250,20 @@ describe("AccountsPage — ownership", () => {
     );
 
     expect(within(await rowFor("Bills joint")).getByText("owner · shared pot")).toBeVisible();
+  });
+
+  it("says where a pot with no income of its own gets its money", async () => {
+    // No household role and no salary: this row used to read as an account with
+    // no funding source at all, when in fact money arrives every month.
+    renderAccounts(
+      [account({ id: "a1", name: "Rainy day" })],
+      [summary({ accountId: "a1", monthlyIncomeMinor: 0, allocatedInflowMinor: 30_320 })],
+    );
+
+    const sub = within(await rowFor("Rainy day")).getByText("owner · fed from elsewhere");
+    expect(sub).toBeVisible();
+    // Nothing implies a household — the sender may be another account you own.
+    expect(sub).not.toHaveTextContent(/household|shared/);
   });
 });
 

@@ -1,9 +1,10 @@
-import type { AccountPlanDto } from "./types.js";
+import { lineStatus, type AccountPlanDto } from "./types.js";
 
 /**
- * The difference a drafted payment would make, reduced to the three things
- * worth saying before you commit to it: what happens to the headroom, what
- * happens to the gap, and whose goals it puts at risk.
+ * The difference a drafted payment would make, reduced to the things worth
+ * saying before you commit to it: what happens to the headroom, what happens to
+ * the gap, whose goals it puts at risk, and whose it pushes onto money that has
+ * not moved yet.
  */
 export interface PreviewImpact {
   currency: string;
@@ -17,17 +18,31 @@ export interface PreviewImpact {
   shortfallWorse: boolean;
   /** Existing lines that were on track and no longer are, by name. */
   newlyAtRisk: string[];
+  /**
+   * Existing lines the plan still covers, but now only because money somebody
+   * has yet to move is paying for them.
+   *
+   * `onTrack` cannot see this: a line degrading `funded → awaiting_transfer` is
+   * on track either side of the change, so the preview used to report "no goal
+   * falls behind" while quietly making a goal depend on a transfer. A smaller
+   * claim than `newlyAtRisk` and never coloured red — the remedy is to move
+   * money, not to cut something.
+   */
+  newlyAwaiting: string[];
   /** True when nothing moves at all — worth saying plainly. */
   unchanged: boolean;
 }
 
 /** Compare a plan with its what-if overlay. Pure: both come from one preview. */
 export function summarizePreview(base: AccountPlanDto, preview: AccountPlanDto): PreviewImpact {
-  const wasOnTrack = new Map(base.lines.map((l) => [l.paymentId, l.onTrack]));
-  // Only lines that already existed can be *newly* at risk; the drafted payment
+  const before = new Map(base.lines.map((l) => [l.paymentId, lineStatus(l)]));
+  // Only lines that already existed can be *newly* anything; the drafted payment
   // itself is a new line, and "the thing you just added is short" is obvious.
   const newlyAtRisk = preview.lines
-    .filter((l) => !l.onTrack && wasOnTrack.get(l.paymentId) === true)
+    .filter((l) => !l.onTrack && before.get(l.paymentId) === "funded")
+    .map((l) => l.name);
+  const newlyAwaiting = preview.lines
+    .filter((l) => lineStatus(l) === "awaiting_transfer" && before.get(l.paymentId) === "funded")
     .map((l) => l.name);
 
   const leftoverWorse = preview.leftoverMinor < base.leftoverMinor;
@@ -42,9 +57,11 @@ export function summarizePreview(base: AccountPlanDto, preview: AccountPlanDto):
     leftoverWorse,
     shortfallWorse,
     newlyAtRisk,
+    newlyAwaiting,
     unchanged:
       base.leftoverMinor === preview.leftoverMinor &&
       base.shortfallMinor === preview.shortfallMinor &&
-      newlyAtRisk.length === 0,
+      newlyAtRisk.length === 0 &&
+      newlyAwaiting.length === 0,
   };
 }

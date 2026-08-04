@@ -2,8 +2,9 @@
  * Pure shaping for the projection surfaces: the chart's series and the
  * months × payments grid. Both account and household projections feed the same
  * views, so everything here works off the fields the two shapes share — the
- * extras (`projectedBalanceMinor`, `transfersTotalMinor`) are optional and each
- * simply drives one more thing when present.
+ * extras (`projectedBalanceMinor`, `transfersTotalMinor` /
+ * `outboundInflowMinor`) are optional and each simply drives one more thing
+ * when present.
  */
 
 /** The line fields the views need, from either projection shape. */
@@ -26,9 +27,29 @@ export interface ProjectionMonthLike {
   reservedEndMinor: number;
   /** Account projections only; null when there is no balance check-in to start from. */
   projectedBalanceMinor?: number | null;
-  /** Household projections only. */
+  /** Money members must move between accounts this month. Household
+   *  projections only — an account's own answer is `outboundInflowMinor`. */
   transfersTotalMinor?: number;
+  /**
+   * Money leaving this account for other accounts this month.
+   *
+   * The account-scope answer to the same question the household one asks. A
+   * household is no longer the only thing that makes money move: two accounts
+   * one person owns move money between them with no household anywhere, and a
+   * projection that could only read `transfersTotalMinor` was blind to it.
+   */
+  outboundInflowMinor?: number;
   lines: ProjectionLineLike[];
+}
+
+/**
+ * What has to move this month, whatever the scope: the household's transfers,
+ * or this account's own outbound movements. Never both — the two shapes carry
+ * one field each — so the first one present is the answer, and `null` means
+ * this projection does not track movement at all.
+ */
+function movedMinor(month: ProjectionMonthLike): number | null {
+  return month.transfersTotalMinor ?? month.outboundInflowMinor ?? null;
 }
 
 /** One x-position of the chart. Nulls are gaps, never zeroes. */
@@ -46,7 +67,7 @@ export function buildProjectionPoints(months: ProjectionMonthLike[]): Projection
     reserved: m.reservedEndMinor,
     balance: m.projectedBalanceMinor ?? null,
     shortfall: m.shortfallMinor,
-    transfers: m.transfersTotalMinor ?? null,
+    transfers: movedMinor(m),
   }));
 }
 
@@ -62,9 +83,10 @@ export function hasShortfallSeries(months: ProjectionMonthLike[]): boolean {
   return months.some((m) => m.shortfallMinor > 0);
 }
 
-/** Household-only: worth mentioning when money actually has to move. */
+/** Worth mentioning when money actually has to move — between members of a
+ *  household, or between two accounts one person owns. */
 export function hasTransfers(months: ProjectionMonthLike[]): boolean {
-  return months.some((m) => (m.transfersTotalMinor ?? 0) > 0);
+  return months.some((m) => (movedMinor(m) ?? 0) > 0);
 }
 
 /** A payment's slice of one month, or `null` where the payment is not in the plan. */

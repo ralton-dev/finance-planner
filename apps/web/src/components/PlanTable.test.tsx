@@ -1,7 +1,15 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { AccountPlanDto } from "../lib/types.js";
-import { daysUntilNextMonthly, PlanSummary, PlanTable } from "./PlanTable.js";
+import { phraseText } from "../lib/money.js";
+import type { AccountPlanDto, PlanInflowSourceDto } from "../lib/types.js";
+import {
+  daysUntilNextMonthly,
+  inflowNote,
+  PlanSummary,
+  PlanTable,
+  recordPrefillMinor,
+  senderName,
+} from "./PlanTable.js";
 
 const AS_OF = "2026-08-04";
 
@@ -335,6 +343,293 @@ describe("PlanTable", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/greater than zero/i);
     expect(onRecord).not.toHaveBeenCalled();
+  });
+});
+
+// --- the third status -------------------------------------------------------
+// The screen that prompted the whole piece of work: a bills pot with no income
+// of its own, funded to the penny by £303.20 somebody has yet to move. It used
+// to read REQUIRED £303.20 · SHORTFALL £303.20 with every line red.
+
+/** A line the plan covers with money that has not moved yet. */
+const awaiting: AccountPlanDto["lines"][number] = {
+  paymentId: "b1",
+  name: "Council tax",
+  category: "monthly_recurring",
+  amountMinor: 15_320,
+  dueDate: "2026-08-01",
+  targetDate: "2026-08-01",
+  monthsUntilDue: 0,
+  requiredMonthlyMinor: 15_320,
+  fundedMonthlyMinor: 15_320,
+  fundedFromOwnMinor: 0,
+  fundedFromInflowMinor: 15_320,
+  alreadySavedMinor: 0,
+  onTrack: true,
+  status: "awaiting_transfer",
+};
+
+/** The bills pot, exactly as the API now describes it. */
+const billsPot: AccountPlanDto = {
+  accountId: "pot",
+  asOfDate: AS_OF,
+  currency: "GBP",
+  monthlyIncomeMinor: 0,
+  bufferMinor: 0,
+  totalRequiredMinor: 30_320,
+  totalFundedMinor: 30_320,
+  leftoverMinor: 0,
+  shortfallMinor: 0,
+  allocatedInflowMinor: 30_320,
+  confirmedInflowMinor: 0,
+  contributionsMTD: [],
+  latestBalance: null,
+  reservedMinor: 0,
+  inflowSources: [
+    {
+      kind: "member",
+      memberUserId: "u1",
+      displayName: "Ben",
+      amountMinor: 30_320,
+      confirmedMinor: 0,
+    },
+  ],
+  lines: [awaiting, { ...awaiting, paymentId: "b2", name: "Broadband", amountMinor: 15_000 }],
+};
+
+describe("PlanTable — the tri-state", () => {
+  it("gives each of the three statuses its own words and its own tone", () => {
+    const lines: AccountPlanDto["lines"] = [
+      { ...awaiting, paymentId: "f", name: "Rent", status: "funded" },
+      { ...awaiting, paymentId: "w", name: "Water" },
+      { ...awaiting, paymentId: "r", name: "Gas", status: "at_risk", onTrack: false },
+    ];
+    render(<PlanTable plan={{ ...billsPot, lines }} />);
+
+    expect(screen.getByText("on track")).toHaveClass("tag-status", "ok");
+    expect(screen.getByText("awaiting transfer")).toHaveClass("tag-status", "needs-you");
+    expect(screen.getByText("at risk")).toHaveClass("tag-status", "warn");
+  });
+
+  it("tints the waiting row amber and the short row red, and leaves funded plain", () => {
+    const lines: AccountPlanDto["lines"] = [
+      { ...awaiting, paymentId: "f", name: "Rent", status: "funded" },
+      { ...awaiting, paymentId: "w", name: "Water" },
+      { ...awaiting, paymentId: "r", name: "Gas", status: "at_risk", onTrack: false },
+    ];
+    const { container } = render(<PlanTable plan={{ ...billsPot, lines }} />);
+
+    const rows = [...container.querySelectorAll("tbody tr")];
+    expect(rows.map((r) => r.className)).toEqual(["", "awaiting", "at-risk"]);
+  });
+
+  it("falls back to the two states a payload without a status meant", () => {
+    // The existing fixture carries no `status` at all: on-track is funded,
+    // off-track is at risk, exactly as before the third state existed.
+    const { container } = render(<PlanTable plan={plan} />);
+    expect(screen.getByText("on track")).toBeInTheDocument();
+    expect(screen.getByText("at risk")).toBeInTheDocument();
+    expect(screen.queryByText("awaiting transfer")).toBeNull();
+    expect(container.querySelector("tr.awaiting")).toBeNull();
+  });
+
+  it("shows no red anywhere on an account somebody else's money funds", () => {
+    const { container } = render(
+      <>
+        <PlanSummary plan={billsPot} />
+        <PlanTable plan={billsPot} />
+      </>,
+    );
+
+    // Red lives in exactly three classes on this screen; none of them fires.
+    expect(container.querySelectorAll(".tag-status.warn")).toHaveLength(0);
+    expect(container.querySelectorAll(".kpi.warn")).toHaveLength(0);
+    expect(container.querySelectorAll("tr.at-risk")).toHaveLength(0);
+    expect(screen.queryByText("at risk")).toBeNull();
+    expect(screen.queryByText("shortfall")).toBeNull();
+    // And what it says instead.
+    expect(screen.getAllByText("awaiting transfer")).toHaveLength(2);
+  });
+});
+
+describe("PlanTable — recording what has actually arrived", () => {
+  it("prefills a waiting line with the account's own money, not the transfer", () => {
+    // The line is funded £153.20, of which £53.20 is this account's own income
+    // and £100.00 is a transfer nobody has made. Asking to record £153.20 is
+    // asking to record money that has not moved.
+    const straddling = { ...awaiting, fundedFromOwnMinor: 5_320, fundedFromInflowMinor: 10_000 };
+    expect(recordPrefillMinor(straddling)).toBe(5_320);
+    expect(recordPrefillMinor({ ...straddling, status: "funded" })).toBe(15_320);
+    // No split on the wire at all: nothing to be careful about.
+    expect(recordPrefillMinor(plan.lines[0]!)).toBe(15_000);
+  });
+
+  it("opens the record box with that figure", () => {
+    const goal: AccountPlanDto["lines"][number] = {
+      ...plan.lines[0]!,
+      fundedFromOwnMinor: 4_000,
+      fundedFromInflowMinor: 11_000,
+      status: "awaiting_transfer",
+    };
+    render(
+      <PlanTable
+        plan={{ ...plan, lines: [goal] }}
+        canRecord
+        onRecord={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "record" }));
+    expect(screen.getByLabelText("amount to record for Holiday")).toHaveValue("40.00");
+  });
+});
+
+describe("PlanSummary — where the money is coming from", () => {
+  it("says the account has none of its own, and what is arriving instead", () => {
+    const { container } = render(<PlanSummary plan={billsPot} />);
+
+    // INCOME is an em dash, not £0.00 — there is no income, not a zero one.
+    const income = screen.getByText("monthly income").parentElement;
+    expect(income).toHaveTextContent("—");
+    // The whole point: no SHORTFALL, and LEFT OVER does not claim £0.00 either.
+    expect(screen.queryByText("shortfall")).toBeNull();
+    expect(screen.getByText("left over").parentElement).toHaveTextContent("—");
+    // The figure and where it comes from.
+    expect(screen.getByText("arriving").parentElement).toHaveTextContent("£303.20");
+    expect(container.querySelector(".plan-notes")).toHaveTextContent(
+      "no income of its own · £303.20 arriving from Ben this month",
+    );
+    // The figure in the prose is wrapped, so privacy mode can still blur it.
+    expect(container.querySelector(".plan-notes .amount")).toHaveTextContent("£303.20");
+    expect(screen.getByText("none of it moved yet")).toBeInTheDocument();
+  });
+
+  it("turns the arriving KPI green once the money has moved", () => {
+    const { container } = render(
+      <PlanSummary plan={{ ...billsPot, confirmedInflowMinor: 30_320 }} />,
+    );
+    expect(container.querySelector(".kpi.needs-you")).toBeNull();
+    expect(screen.getByText("all of it moved")).toBeInTheDocument();
+  });
+
+  it("counts what has moved so far when only part of it has", () => {
+    render(<PlanSummary plan={{ ...billsPot, confirmedInflowMinor: 12_000 }} />);
+    expect(screen.getByText(/moved so far/)).toHaveTextContent("£120.00 moved so far");
+  });
+
+  it("leaves an ordinary account exactly as it was", () => {
+    const { container } = render(<PlanSummary plan={plan} />);
+    expect(container.querySelector(".plan-notes")).toBeNull();
+    expect(screen.queryByText("arriving")).toBeNull();
+    expect(screen.getByText("left over")).toBeInTheDocument();
+    expect(screen.getByText("£2,786.00")).toBeInTheDocument();
+  });
+
+  it("names a funding loop rather than hiding it", () => {
+    render(<PlanSummary plan={{ ...billsPot, fundingCycleAccountIds: ["a", "b", "c"] }} />);
+    expect(screen.getByText(/funding loop · 3 accounts feed each other/)).toBeInTheDocument();
+  });
+});
+
+describe("inflowNote — the sentence, for each kind of sender", () => {
+  const withSources = (
+    sources: PlanInflowSourceDto[] | null,
+    over: Partial<AccountPlanDto> = {},
+  ): AccountPlanDto => ({ ...billsPot, inflowSources: sources, ...over });
+
+  const text = (p: AccountPlanDto): string => phraseText(inflowNote(p) ?? []);
+
+  it("names a household member sending money", () => {
+    expect(text(billsPot)).toBe("no income of its own · £303.20 arriving from Ben this month");
+  });
+
+  it("names another of your own accounts, with no household invented", () => {
+    const sentence = text(
+      withSources([
+        {
+          kind: "account",
+          inflowId: "i1",
+          fromAccountId: "a1",
+          accountName: "Ben current",
+          amountMinor: 30_320,
+          confirmedMinor: 0,
+        },
+      ]),
+    );
+    expect(sentence).toBe("no income of its own · £303.20 arriving from Ben current this month");
+    expect(sentence).not.toMatch(/household/);
+  });
+
+  it("says the kind of sender when access control withholds the name", () => {
+    expect(
+      senderName({ kind: "member", memberUserId: "u9", amountMinor: 1, confirmedMinor: 0 }),
+    ).toBe("a household member");
+    expect(
+      senderName({
+        kind: "account",
+        inflowId: "i9",
+        fromAccountId: "a9",
+        amountMinor: 1,
+        confirmedMinor: 0,
+      }),
+    ).toBe("another account");
+
+    const sentence = text(
+      withSources([
+        {
+          kind: "account",
+          inflowId: "i9",
+          fromAccountId: "a9",
+          amountMinor: 30_320,
+          confirmedMinor: 0,
+        },
+      ]),
+    );
+    expect(sentence).toBe(
+      "no income of its own · £303.20 arriving from another account this month",
+    );
+    // Never an id, and never "your account" for one you have not been shown.
+    expect(sentence).not.toMatch(/a9/);
+  });
+
+  it("lists two senders", () => {
+    expect(
+      text(
+        withSources([
+          {
+            kind: "member",
+            memberUserId: "u1",
+            displayName: "Ben",
+            amountMinor: 20_000,
+            confirmedMinor: 0,
+          },
+          {
+            kind: "account",
+            inflowId: "i1",
+            fromAccountId: "a1",
+            accountName: "Rainy day",
+            amountMinor: 10_320,
+            confirmedMinor: 0,
+          },
+        ]),
+      ),
+    ).toBe("no income of its own · £303.20 arriving from Ben and Rainy day this month");
+  });
+
+  it("names nobody when the API named nobody", () => {
+    // `inflowSources: null` — something is arriving, but not who is sending it.
+    expect(text(withSources(null))).toBe("no income of its own · £303.20 arriving this month");
+  });
+
+  it("drops the lead clause on an account that also earns", () => {
+    expect(text(withSources(billsPot.inflowSources ?? null, { monthlyIncomeMinor: 250_000 }))).toBe(
+      "£303.20 arriving from Ben this month",
+    );
+  });
+
+  it("says nothing at all when nothing is arriving", () => {
+    expect(inflowNote(plan)).toBeNull();
+    expect(inflowNote({ ...billsPot, allocatedInflowMinor: 0 })).toBeNull();
   });
 });
 

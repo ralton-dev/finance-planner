@@ -35,6 +35,7 @@ const CHIP_ROW: CSSProperties = { display: "flex", flexWrap: "wrap", gap: "0.3re
  *  short, green is done, grey is only saying how old something is. */
 const TONE_CLASS: Record<AttentionTone, string> = {
   record: "needs-you",
+  awaiting: "needs-you",
   unfunded: "alert",
   funded: "funded",
   stale: "neutral",
@@ -57,7 +58,7 @@ function checkedInLabel(days: number): string {
 // --- the state columns ------------------------------------------------------
 // Exported: the Overview lists standalone accounts with these same columns.
 
-export type AttentionTone = "record" | "unfunded" | "stale" | "funded";
+export type AttentionTone = "record" | "awaiting" | "unfunded" | "stale" | "funded";
 
 export interface AttentionChip {
   tone: AttentionTone;
@@ -68,9 +69,15 @@ export interface AttentionChip {
 }
 
 /**
- * What the row is asking for, worst first: money to record, money that is
- * missing, a balance nobody has confirmed. `funded` is the answer only when
- * there is no question — it never sits alongside another chip.
+ * What the row is asking for: money to record, money that has not moved yet,
+ * money that is missing, a balance nobody has confirmed. `funded` is the answer
+ * only when there is no question — it never sits alongside another chip.
+ *
+ * The two amber chips come first because they are things a person *does* with
+ * money that exists. Red is the one that means the plan cannot cover it and
+ * something has to be cut, so it never fires for an account somebody funds:
+ * `shortfallMinor` is computed with the arriving inflow in it, and an account
+ * waiting on a transfer says so in amber instead.
  *
  * The record rule mirrors the checklist's (`lib/needsYou.ts`), and the
  * staleness threshold is that module's, so the index and the fold cannot
@@ -89,6 +96,12 @@ export function deriveAttention(
       label: `record ${state.unrecordedCount}`,
       amountMinor: state.unrecordedTotalMinor,
     });
+  }
+  // Planned to arrive, nobody has said it moved. The plan already counts it, so
+  // the account is not short — it is waiting on a human, which is amber.
+  const awaitingMinor = (state.allocatedInflowMinor ?? 0) - (state.confirmedInflowMinor ?? 0);
+  if (awaitingMinor > 0) {
+    chips.push({ tone: "awaiting", label: "awaiting transfer", amountMinor: awaitingMinor });
   }
   if (state.shortfallMinor > 0) {
     chips.push({ tone: "unfunded", label: "unfunded", amountMinor: state.shortfallMinor });
@@ -178,11 +191,20 @@ export function ownershipPhrase(account: AccountDto): string {
     : "shared with you · can view";
 }
 
-/** The ownership phrase plus what the account is for, when the plan knows. */
+/**
+ * The ownership phrase plus what the account is for, when the plan knows.
+ *
+ * The third clause is the one an account fed only by movements used to fall
+ * through: no household role and no income of its own read as an account with
+ * no funding source at all, when in fact money arrives every month. It is
+ * worded without "household" on purpose — the sender may be another account the
+ * same person owns, with no household in the picture.
+ */
 export function accountSubLine(account: AccountDto, state?: OverviewAccountDto): string {
   const parts = [ownershipPhrase(account)];
   if (state?.householdRole === "shared") parts.push("shared pot");
   else if ((state?.monthlyIncomeMinor ?? 0) > 0) parts.push("salary lands here");
+  else if ((state?.allocatedInflowMinor ?? 0) > 0) parts.push("fed from elsewhere");
   return parts.join(" · ");
 }
 

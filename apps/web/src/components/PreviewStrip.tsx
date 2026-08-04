@@ -30,6 +30,13 @@ export function PreviewStrip({ impact }: { impact: PreviewImpact }) {
       />
       {impact.newlyAtRisk.length > 0 ? (
         <p className="preview-note warn">puts at risk: {impact.newlyAtRisk.join(", ")}</p>
+      ) : impact.newlyAwaiting.length > 0 ? (
+        // Still covered — but only by money nobody has moved yet, which is a
+        // smaller thing to say and never red. Red is for a plan that cannot
+        // cover it at all.
+        <p className="preview-note needs-you">
+          leans on a transfer: {impact.newlyAwaiting.join(", ")}
+        </p>
       ) : impact.unchanged ? (
         <p className="preview-note">nothing in the plan moves.</p>
       ) : (

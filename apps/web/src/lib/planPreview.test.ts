@@ -18,6 +18,11 @@ function line(paymentId: string, name: string, onTrack: boolean): PlanLineDto {
   };
 }
 
+/** Covered, but only by money nobody has moved yet. Still `onTrack`. */
+function awaiting(paymentId: string, name: string): PlanLineDto {
+  return { ...line(paymentId, name, true), status: "awaiting_transfer" };
+}
+
 function plan(over: Partial<AccountPlanDto>): AccountPlanDto {
   return {
     accountId: "acc",
@@ -71,6 +76,34 @@ describe("summarizePreview", () => {
       ],
     });
     expect(summarizePreview(base, preview).newlyAtRisk).toEqual(["car insurance"]);
+  });
+
+  it("names goals the draft pushes onto money that has not moved", () => {
+    // `onTrack` is true on both sides, so the old comparison saw nothing at all
+    // and the strip said "no goal falls behind" while quietly making one depend
+    // on a transfer.
+    const base = plan({ lines: [line("p1", "car insurance", true)] });
+    const preview = plan({ lines: [awaiting("p1", "car insurance"), line("new", "telly", true)] });
+
+    const impact = summarizePreview(base, preview);
+    expect(impact.newlyAwaiting).toEqual(["car insurance"]);
+    // A smaller claim than at-risk, and never confused with it.
+    expect(impact.newlyAtRisk).toEqual([]);
+    expect(impact.unchanged).toBe(false);
+  });
+
+  it("does not re-report a line that was already waiting on a transfer", () => {
+    const same = plan({ lines: [awaiting("p1", "car insurance")] });
+    expect(summarizePreview(same, same).newlyAwaiting).toEqual([]);
+  });
+
+  it("calls a line that goes all the way to short at-risk, not merely waiting", () => {
+    const base = plan({ lines: [line("p1", "car insurance", true)] });
+    const preview = plan({ lines: [line("p1", "car insurance", false)] });
+
+    const impact = summarizePreview(base, preview);
+    expect(impact.newlyAtRisk).toEqual(["car insurance"]);
+    expect(impact.newlyAwaiting).toEqual([]);
   });
 
   it("flags an unchanged plan", () => {

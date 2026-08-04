@@ -669,6 +669,11 @@ h3 {
 .kpi.warn .kpi-value {
   color: var(--alert);
 }
+/* "Waiting on you to move money" — the third KPI tone, and the reason the
+ * account page can stop painting a funded pot red. */
+.kpi.needs-you .kpi-value {
+  color: var(--needs-you);
+}
 .kpi-delta {
   font-size: 10.5px;
   color: var(--ink-3);
@@ -679,6 +684,33 @@ h3 {
 }
 .kpi-delta.warn {
   color: var(--alert);
+}
+.kpi-delta.needs-you {
+  color: var(--needs-you);
+}
+
+/* Where an account's money is coming from, under the KPI row it explains. An
+ * account is a location money sits in, not a closed universe, and this is the
+ * one line that says so in words.
+ *
+ * The note belongs to the row above it, so the row gives up its bottom margin
+ * when one follows rather than the note climbing back into it on a negative. */
+.kpis:has(+ .plan-notes) {
+  margin-bottom: 0.5rem;
+}
+.plan-notes {
+  margin: 0 0 1.75rem;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+.plan-notes p {
+  margin: 0 0 0.2rem;
+}
+.plan-notes p:last-child {
+  margin-bottom: 0;
+}
+.plan-notes .needs-you {
+  color: var(--needs-you);
 }
 
 /* ============================================================================
@@ -824,15 +856,33 @@ td.dim {
   background: var(--panel-2);
 }
 
-/* Plan-table compatibility: existing PlanTable component uses these classes. */
+/* Plan-table compatibility: existing PlanTable component uses these classes.
+ *
+ * Two washes, not one. A row the plan cannot cover is red; a row the plan
+ * covers with money nobody has moved yet is amber. They used to share the red
+ * one, which asked the reader to cut something when the answer was to make a
+ * transfer. Same 6% strength either way — the hue carries the difference, the
+ * weight does not. */
 .plan-table tr.at-risk td {
   background: color-mix(in srgb, var(--alert) 6%, transparent);
+}
+.plan-table tr.awaiting td {
+  background: color-mix(in srgb, var(--needs-you) 6%, transparent);
 }
 /* The sticky cell has to carry the row's tint too, and opaquely. Mixing into
  * `--panel` rather than `transparent` lands on exactly the colour the wash
  * above resolves to over the same surface. */
 .plan-table tr.at-risk td.sticky-col {
   background: color-mix(in srgb, var(--alert) 6%, var(--panel));
+}
+.plan-table tr.awaiting td.sticky-col {
+  background: color-mix(in srgb, var(--needs-you) 6%, var(--panel));
+}
+/* A chip is one label. "awaiting transfer" is long enough to break in two on a
+ * phone, where it stops reading as one chip and starts reading as two; the
+ * wrapper scrolls the extra width, which is what it is for. */
+.plan-table .tag-status {
+  white-space: nowrap;
 }
 /* The phone sub-line: off until the columns it stands in for are dropped. Any
  * wrapped table may use it — the plan table was first, not special. */
@@ -2580,6 +2630,11 @@ summary > h3 {
 }
 .preview-note.warn {
   color: var(--alert);
+}
+/* Still covered, but only by money nobody has moved yet. Amber, because the
+ * remedy is a transfer rather than cutting something. */
+.preview-note.needs-you {
+  color: var(--needs-you);
 }
 
 /* ============================================================================
