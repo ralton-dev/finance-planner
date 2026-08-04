@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { AccountMovements } from "../components/AccountMovements.js";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { Amount } from "../components/Amount.js";
 import { MonthScorecard } from "../components/MonthScorecard.js";
@@ -140,7 +141,9 @@ export function AccountPage() {
         <div>
           <div className="section-head">
             <h2>income</h2>
-            <span className="meta">[{incomes.data?.length ?? 0} active]</span>
+            {/* External inflows only. Money out of another account you own is
+                not income, and has its own section below. */}
+            <span className="meta">[{incomes.data?.length ?? 0} active · from outside]</span>
             <span className="spacer" />
             {canEdit && (
               <button type="button" className="action" onClick={() => openIncome(id)}>
@@ -306,6 +309,13 @@ export function AccountPage() {
           )}
         </div>
       </div>
+
+      <AccountMovements
+        account={account.data}
+        plan={plan.data}
+        canEdit={canEdit}
+        onChanged={refresh}
+      />
 
       <MonthScorecard
         closes={closes.data ?? []}

@@ -75,6 +75,11 @@ function renderAccount(extra?: Routes) {
     "GET /api/accounts/pot/incomes": { body: [] },
     "GET /api/accounts/pot/payments": { body: [] },
     "GET /api/accounts/pot/closes": { body: [] },
+    "GET /api/accounts/pot/inflows": { body: [] },
+    "GET /api/accounts/pot/inflows/outbound": { body: [] },
+    "GET /api/accounts": {
+      body: [{ id: "pot", name: "Bills joint", currency: "GBP", owner: true }],
+    },
     "GET /api/projects": { body: [] },
     "GET /api/accounts/pot/projection?months=12": {
       body: { accountId: "pot", currency: "GBP", asOfDate: AS_OF, months: [] },
@@ -134,5 +139,21 @@ describe("AccountPage — a pot with no income of its own", () => {
     expect(document.querySelectorAll("tr.at-risk")).toHaveLength(0);
     expect(screen.getAllByText("awaiting transfer")).toHaveLength(2);
     expect(document.querySelectorAll("tr.awaiting")).toHaveLength(2);
+  });
+
+  /**
+   * The capability WP-F through WP-J built and nothing could reach. A pot fed
+   * by another account you own could be planned, confirmed and drawn, but there
+   * was nowhere in the app to say "move £400 a month out of my current account
+   * into this" — the only door was an API call.
+   */
+  it("offers a way to author a movement, from both ends of one", async () => {
+    renderAccount();
+    await screen.findByText("movements");
+
+    expect(screen.getByText("arriving here")).toBeInTheDocument();
+    expect(screen.getByText("leaving here")).toBeInTheDocument();
+    // The income column keeps its own door and says what it is for.
+    expect(screen.getByText("[0 active · from outside]")).toBeInTheDocument();
   });
 });
