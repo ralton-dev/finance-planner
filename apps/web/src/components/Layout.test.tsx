@@ -50,32 +50,34 @@ describe("Layout theme toggle", () => {
     renderLayout();
     await waitFor(() => expect(screen.getByText("page")).toBeInTheDocument());
 
+    // A fresh session follows the machine, so nothing is stamped yet.
+    expect(sidebarToggle()).toHaveTextContent("theme system");
+    expect(document.documentElement.getAttribute(THEME_ATTRIBUTE)).toBeNull();
+
+    fireEvent.click(sidebarToggle());
     expect(sidebarToggle()).toHaveTextContent("theme light");
     expect(document.documentElement.getAttribute(THEME_ATTRIBUTE)).toBe("light");
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
 
     fireEvent.click(sidebarToggle());
     expect(sidebarToggle()).toHaveTextContent("theme dark");
     expect(document.documentElement.getAttribute(THEME_ATTRIBUTE)).toBe("dark");
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
-
-    fireEvent.click(sidebarToggle());
-    expect(sidebarToggle()).toHaveTextContent("theme system");
-    expect(document.documentElement.getAttribute(THEME_ATTRIBUTE)).toBeNull();
   });
 
   it("names the next stop so a three-way cycle has an honest label", async () => {
     renderLayout();
     await waitFor(() => expect(screen.getByText("page")).toBeInTheDocument());
-    expect(sidebarToggle()).toHaveAccessibleName("theme light — switch to dark");
+    expect(sidebarToggle()).toHaveAccessibleName("theme system — switch to light");
   });
 
   it("keeps a copy in the mobile bar, where the sidebar is collapsed", async () => {
     renderLayout();
     await waitFor(() => expect(screen.getByText("page")).toBeInTheDocument());
 
-    const mobile = screen.getAllByRole("button", { name: /^theme light — switch to/ })[0]!;
+    const mobile = screen.getAllByRole("button", { name: /^theme system — switch to/ })[0]!;
     fireEvent.click(mobile);
-    expect(document.documentElement.getAttribute(THEME_ATTRIBUTE)).toBe("dark");
+    expect(document.documentElement.getAttribute(THEME_ATTRIBUTE)).toBe("light");
   });
 
   it("leaves the privacy toggle alone", async () => {

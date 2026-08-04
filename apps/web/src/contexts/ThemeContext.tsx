@@ -10,10 +10,11 @@ export type Theme = "dark" | "light" | "system";
 /** What that comes out as — the two the stylesheet actually paints. */
 export type ResolvedTheme = "dark" | "light";
 
-/** The order the toggle walks: the two explicit choices, then "whatever the
- *  machine says". Light leads because light is the default — so from a fresh
- *  install dark is exactly one click away. */
-export const THEME_ORDER: readonly Theme[] = ["light", "dark", "system"];
+/** The order the toggle walks: the default first, then the two ways of
+ *  overriding it. `system` leads because `system` is where everyone starts;
+ *  light before dark after it, because that is the order the two are named in
+ *  everywhere else in the app. */
+export const THEME_ORDER: readonly Theme[] = ["system", "light", "dark"];
 
 interface ThemeValue {
   /** The stored choice, including `system`. */
@@ -21,17 +22,18 @@ interface ThemeValue {
   /** `system` resolved against the OS preference; never `system` itself. */
   resolved: ResolvedTheme;
   setTheme: (theme: Theme) => void;
-  /** light → dark → system → light. */
+  /** system → light → dark → system. */
   cycle: () => void;
 }
 
 /**
  * Default value rather than a throwing hook: a chart or a page rendered outside
  * the provider (a test, the login screen) should render in the default theme,
- * not crash.
+ * not crash. `resolved` is light because that is what `system` comes out as
+ * absent any signal to the contrary — the same answer `:root` gives.
  */
 const ThemeContext = createContext<ThemeValue>({
-  theme: "light",
+  theme: "system",
   resolved: "light",
   setTheme: () => {},
   cycle: () => {},
@@ -43,20 +45,21 @@ const isTheme = (value: string | null): value is Theme =>
 function readStored(): Theme {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    // Light is the default now. An unset (or corrupt) preference still resolves
-    // to a fixed theme rather than falling through to the OS: `system` is a
-    // choice you make, not one you inherit, and the stylesheet's `:root` block
-    // has to agree with whatever this returns or the first paint flashes.
-    return isTheme(stored) ? stored : "light";
+    // `system` is the default: an unset — or corrupt — preference follows the
+    // machine. It is also the one default that cannot flash, because it stamps
+    // no attribute at all: `:root` (light) and its
+    // `@media (prefers-color-scheme: dark)` override answer the first paint on
+    // their own, before any script has run.
+    return isTheme(stored) ? stored : "system";
   } catch {
     // Private-mode Safari and friends: no persistence, still a working toggle.
-    return "light";
+    return "system";
   }
 }
 
 /** The OS preference, when the browser will say. Asked as "is it dark?" to
- *  match the stylesheet, which now carries light in `:root` and overrides it
- *  under `@media (prefers-color-scheme: dark)`. */
+ *  match the stylesheet, which carries light in `:root` and overrides it under
+ *  `@media (prefers-color-scheme: dark)`. */
 function prefersDark(): boolean {
   try {
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -77,10 +80,14 @@ function stamp(theme: Theme): void {
 }
 
 /**
- * Theme mode: dark, light, or whatever the machine is set to. One attribute on
- * the document root swaps the whole token set — instant, no reload, and it
- * reaches the drawers and the command palette, which render outside the page
- * tree. Persisted so it survives a refresh.
+ * Theme mode: dark, light, or whatever the machine is set to — the last of
+ * which is where a new install starts. One attribute on the document root swaps
+ * the whole token set — instant, no reload, and it reaches the drawers and the
+ * command palette, which render outside the page tree. Persisted so it survives
+ * a refresh.
+ *
+ * An explicit choice outranks the OS in both directions, because
+ * `:root[data-theme="…"]` is (0,2,0) against the media block's (0,1,0).
  *
  * Charts can't use `var()` (SVG presentation attributes don't take it), so they
  * read the resolved tokens through `useChartColors()`, which re-reads them off

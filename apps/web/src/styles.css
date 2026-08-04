@@ -82,16 +82,18 @@
  * transparent)` is exactly `rgba(X, N/100)` — the dark theme is unchanged to
  * the byte.
  *
- * Light is the default. Dark is reachable through the theme toggle (one click
- * from a fresh install), and — in `system` mode, where ThemeContext leaves
- * `data-theme` off — through the OS preference. An explicit `data-theme` beats
- * the media query in both directions: `:root[data-theme="…"]` is (0,2,0)
- * against the media block's (0,1,0), so the attribute wins wherever the blocks
- * sit.
+ * `system` is the default — ThemeContext leaves `data-theme` off, and these two
+ * blocks answer on their own: light in `:root`, dark under
+ * `@media (prefers-color-scheme: dark)`. That is why the default is safe
+ * without a blocking script; nothing has to run before the first paint, and it
+ * cannot flash in either direction.
  *
- * `:root` has to carry whatever `ThemeContext.readStored()` defaults to, or the
- * first paint lands in one theme and React repaints it in the other. The two
- * blocks per theme are written out rather than derived. Keep each pair in sync.
+ * An explicit choice stamps the attribute and beats the media query both ways:
+ * `:root[data-theme="…"]` is (0,2,0) against the media block's (0,1,0), so it
+ * wins wherever the blocks sit.
+ *
+ * The two blocks per theme are written out rather than derived. Keep each pair
+ * in sync.
  *
  * Every ink and status colour here clears WCAG AA (4.5:1) against every surface
  * it is painted on, in both themes — see the WP-8 contrast pass. The hairline

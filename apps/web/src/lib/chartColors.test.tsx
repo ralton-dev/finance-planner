@@ -121,13 +121,18 @@ describe("useChartColors", () => {
         <Probe />
       </ThemeProvider>,
     );
+    // A fresh session is `system`, which stamps nothing — so `:root` answers,
+    // and jsdom's matchMedia says the machine is light.
+    expect(screen.getByRole("status")).toHaveTextContent("#1a6b4f #6d4ca8");
+
+    // system → light: same colours, now pinned by the attribute.
+    fireEvent.click(screen.getByRole("button", { name: "next theme" }));
     expect(screen.getByRole("status")).toHaveTextContent("#1a6b4f #6d4ca8");
 
     fireEvent.click(screen.getByRole("button", { name: "next theme" }));
     expect(screen.getByRole("status")).toHaveTextContent("#7be087 #b89df0");
 
-    // …and back again: light → dark → system (no attribute) → light.
-    fireEvent.click(screen.getByRole("button", { name: "next theme" }));
+    // …and back to system, where the attribute comes off again.
     fireEvent.click(screen.getByRole("button", { name: "next theme" }));
     expect(screen.getByRole("status")).toHaveTextContent("#1a6b4f #6d4ca8");
   });

@@ -56,18 +56,43 @@ afterEach(() => {
 });
 
 describe("ThemeProvider", () => {
-  it("starts light and stamps the root attribute", () => {
+  it("starts on the machine's setting, stamping no attribute at all", () => {
+    stubPrefersDark(false);
     render(
       <ThemeProvider>
         <Consumer />
       </ThemeProvider>,
     );
-    expect(screen.getByRole("button", { name: "theme light" })).toBeInTheDocument();
-    expect(attribute()).toBe("light");
+    expect(screen.getByRole("button", { name: "theme system" })).toBeInTheDocument();
+    // The whole point of defaulting to `system`: nothing is stamped, so the
+    // stylesheet's `:root` and its `prefers-color-scheme` override answer the
+    // first paint on their own and there is nothing to flash.
+    expect(attribute()).toBeNull();
     expect(screen.getByTestId("resolved")).toHaveTextContent("light");
   });
 
-  it("cycles light → dark → system → light, dropping the attribute for system", () => {
+  it("comes up dark on a dark machine, and light on a light one", () => {
+    const set = stubPrefersDark(true);
+    const { unmount } = render(
+      <ThemeProvider>
+        <Consumer />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId("resolved")).toHaveTextContent("dark");
+    expect(attribute()).toBeNull();
+    unmount();
+
+    set(false);
+    localStorage.clear();
+    render(
+      <ThemeProvider>
+        <Consumer />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId("resolved")).toHaveTextContent("light");
+  });
+
+  it("cycles system → light → dark → system, dropping the attribute for system", () => {
     render(
       <ThemeProvider>
         <Consumer />
@@ -75,8 +100,10 @@ describe("ThemeProvider", () => {
     );
     const toggle = (): HTMLElement => screen.getByRole("button", { name: /^theme / });
 
-    // Dark is one click from a fresh install, which is the whole promise of
-    // flipping the default.
+    fireEvent.click(toggle());
+    expect(toggle()).toHaveTextContent("theme light");
+    expect(attribute()).toBe("light");
+
     fireEvent.click(toggle());
     expect(toggle()).toHaveTextContent("theme dark");
     expect(attribute()).toBe("dark");
@@ -85,10 +112,6 @@ describe("ThemeProvider", () => {
     expect(toggle()).toHaveTextContent("theme system");
     // No attribute in system mode: the stylesheet's media query answers instead.
     expect(attribute()).toBeNull();
-
-    fireEvent.click(toggle());
-    expect(toggle()).toHaveTextContent("theme light");
-    expect(attribute()).toBe("light");
   });
 
   it("persists the choice", () => {
@@ -97,13 +120,13 @@ describe("ThemeProvider", () => {
         <Consumer />
       </ThemeProvider>,
     );
-    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("system");
 
     fireEvent.click(screen.getByRole("button", { name: /^theme / }));
-    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
   });
 
-  it.each<Theme>(["dark", "system"])("restores a stored %s session", (stored) => {
+  it.each<Theme>(["dark", "light", "system"])("restores a stored %s session", (stored) => {
     localStorage.setItem(THEME_STORAGE_KEY, stored);
     render(
       <ThemeProvider>
@@ -114,28 +137,43 @@ describe("ThemeProvider", () => {
     expect(attribute()).toBe(stored === "system" ? null : stored);
   });
 
-  it("falls back to light rather than the OS when nothing is stored", () => {
-    stubPrefersDark(true);
+  it("keeps an explicit choice across a reload, against the OS both ways", () => {
+    // Stored dark on a light machine…
+    const set = stubPrefersDark(false);
+    localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    const first = render(
+      <ThemeProvider>
+        <Consumer />
+      </ThemeProvider>,
+    );
+    expect(attribute()).toBe("dark");
+    expect(screen.getByTestId("resolved")).toHaveTextContent("dark");
+    first.unmount();
+
+    // …and stored light on a dark one. The attribute is (0,2,0) against the
+    // media block's (0,1,0), so it wins in both directions.
+    set(true);
+    localStorage.setItem(THEME_STORAGE_KEY, "light");
     render(
       <ThemeProvider>
         <Consumer />
       </ThemeProvider>,
     );
-    // `system` is a choice you make, not one you inherit — and `:root` in the
-    // stylesheet carries light, so anything else here would flash on first
-    // paint.
     expect(attribute()).toBe("light");
     expect(screen.getByTestId("resolved")).toHaveTextContent("light");
   });
 
-  it("ignores a corrupt stored value", () => {
+  it("falls back to the OS on a corrupt stored value", () => {
+    stubPrefersDark(true);
     localStorage.setItem(THEME_STORAGE_KEY, "puce");
     render(
       <ThemeProvider>
         <Consumer />
       </ThemeProvider>,
     );
-    expect(attribute()).toBe("light");
+    expect(screen.getByRole("button", { name: "theme system" })).toBeInTheDocument();
+    expect(attribute()).toBeNull();
+    expect(screen.getByTestId("resolved")).toHaveTextContent("dark");
   });
 
   describe("system", () => {
@@ -179,12 +217,13 @@ describe("ThemeProvider", () => {
   });
 
   it("takes the attribute with it when the app unmounts", () => {
+    localStorage.setItem(THEME_STORAGE_KEY, "dark");
     const view = render(
       <ThemeProvider>
         <Consumer />
       </ThemeProvider>,
     );
-    expect(attribute()).toBe("light");
+    expect(attribute()).toBe("dark");
     view.unmount();
     expect(attribute()).toBeNull();
   });
@@ -203,8 +242,9 @@ describe("ThemeProvider", () => {
       </ThemeProvider>,
     );
     fireEvent.click(screen.getByRole("button", { name: /^theme / }));
-    // No persistence, but a working toggle for this session.
-    expect(attribute()).toBe("dark");
+    // No persistence, so it starts at `system` like any other fresh session —
+    // and the toggle still works.
+    expect(attribute()).toBe("light");
 
     getItem.mockRestore();
     setItem.mockRestore();
@@ -212,7 +252,7 @@ describe("ThemeProvider", () => {
 
   it("leaves the page in the default theme outside a provider rather than throwing", () => {
     render(<Consumer />);
-    expect(screen.getByRole("button", { name: "theme light" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "theme system" })).toBeInTheDocument();
     expect(attribute()).toBeNull();
   });
 });
