@@ -28,6 +28,22 @@ export async function exerciseStore(store: Store): Promise<void> {
   await store.updateUserPassword(user.id, "hash-2");
   expect((await store.getUserById(user.id))?.passwordHash).toBe("hash-2");
 
+  // --- digest opt-in: off until asked for, and listable once on ---
+  expect(user.notifyEmail).toBe(false);
+  expect((await store.listUsersWithNotifications()).map((u) => u.id)).not.toContain(user.id);
+  await store.setUserNotifyEmail(user.id, true);
+  expect((await store.getUserById(user.id))?.notifyEmail).toBe(true);
+  expect((await store.listUsersWithNotifications()).map((u) => u.id)).toEqual([user.id]);
+  await store.setUserNotifyEmail(user.id, false);
+  expect(await store.listUsersWithNotifications()).toEqual([]);
+
+  // --- notification log: one claim per (user, day, kind) ---
+  expect(await store.tryLogNotification(user.id, "2026-08-04", "daily_digest")).toBe(true);
+  expect(await store.tryLogNotification(user.id, "2026-08-04", "daily_digest")).toBe(false);
+  expect(await store.tryLogNotification(user.id, "2026-08-05", "daily_digest")).toBe(true);
+  expect(await store.tryLogNotification(user.id, "2026-08-04", "weekly_digest")).toBe(true);
+  expect(await store.tryLogNotification(federated.id, "2026-08-04", "daily_digest")).toBe(true);
+
   // --- two-factor: staged secret, then enabled, then torn down ---
   expect(user.totpSecret).toBeNull();
   expect(user.totpEnabledAt).toBeNull();
@@ -547,4 +563,106 @@ export async function exerciseStore(store: Store): Promise<void> {
   await store.deletePayment(p1.id);
   expect((await store.listPayments(account.id)).length).toBe(1);
   expect(await store.getContribution(c1.id)).toBeNull(); // its contributions go too
+
+  // --- erasure: everything of the user's own, and nothing of anyone else's ---
+  const leaver = await store.createUser({
+    email: "leaver@example.com",
+    passwordHash: "hash",
+    displayName: "Leaver",
+  });
+  const leaverAccount = await store.createAccount({
+    ownerUserId: leaver.id,
+    name: "Leaver Current",
+    currency: "GBP",
+  });
+  const leaverPayment = await store.createPayment({
+    accountId: leaverAccount.id,
+    name: "Gym",
+    category: "monthly_recurring",
+    amountMinor: 3_000,
+    dueDate: null,
+    recurrence: null,
+    targetDate: null,
+    priority: 10,
+    alreadySavedMinor: 0,
+    autoRenew: true,
+    active: true,
+    notes: null,
+    projectId: null,
+    scope: "personal",
+    bearerUserId: leaver.id,
+    fixedMonthlyMinor: null,
+    tag: null,
+  });
+  const leaverContribution = await store.createContribution({
+    paymentId: leaverPayment.id,
+    accountId: leaverAccount.id,
+    userId: leaver.id,
+    month: "2026-08-01",
+    amountMinor: 3_000,
+    note: null,
+    transferConfirmationId: null,
+  });
+  const leaverProject = await store.createProject({
+    ownerUserId: leaver.id,
+    name: "Leaver project",
+    description: null,
+    color: null,
+    targetDate: null,
+  });
+  const leaverClose = await store.createMonthClose({
+    householdId: null,
+    accountId: leaverAccount.id,
+    month: "2026-07-01",
+    incomeMinor: 0,
+    plannedMinor: 3_000,
+    contributedMinor: 3_000,
+    closedBy: leaver.id,
+  });
+  // A household they founded, and one they merely joined.
+  const foundedHousehold = await store.createHousehold("Leaver's place", leaver.id);
+  const joinedHousehold = await store.createHousehold("Someone else's place", user.id);
+  await store.addMembership(joinedHousehold.id, leaver.id, "member");
+  // An account of someone else's, shared into the household they joined: it must
+  // survive, because it belongs to its owner.
+  await store.createAccountShare(account.id, joinedHousehold.id, "view");
+  expect(await store.getAccess(leaver.id, account.id)).not.toBeNull();
+  // Credentials + session state.
+  const leaverSession = await store.createSession({
+    userId: leaver.id,
+    refreshTokenHash: "leaver-refresh",
+    expiresAt: "2030-01-01T00:00:00.000Z",
+  });
+  await store.createEmailVerificationToken({
+    token: "leaver-verify",
+    userId: leaver.id,
+    expiresAt: "2030-01-01T00:00:00.000Z",
+  });
+  await store.createPasswordResetToken({
+    token: "leaver-reset",
+    userId: leaver.id,
+    expiresAt: "2030-01-01T00:00:00.000Z",
+  });
+  await store.replaceRecoveryCodes(leaver.id, ["leaver-code"]);
+  await store.setUserNotifyEmail(leaver.id, true);
+  await store.tryLogNotification(leaver.id, "2026-08-04", "daily_digest");
+
+  await store.deleteUserCascade(leaver.id);
+
+  expect(await store.getUserById(leaver.id)).toBeNull();
+  expect(await store.getAccount(leaverAccount.id)).toBeNull();
+  expect(await store.getPayment(leaverPayment.id)).toBeNull();
+  expect(await store.getContribution(leaverContribution.id)).toBeNull();
+  expect(await store.getProject(leaverProject.id)).toBeNull();
+  expect(await store.getMonthCloseById(leaverClose.id)).toBeNull();
+  expect(await store.getHousehold(foundedHousehold.id)).toBeNull();
+  expect(await store.getMembership(joinedHousehold.id, leaver.id)).toBeNull();
+  expect(await store.getSessionByTokenHash(leaverSession.refreshTokenHash)).toBeNull();
+  expect(await store.consumeEmailVerificationToken("leaver-verify")).toBeNull();
+  expect(await store.consumePasswordResetToken("leaver-reset")).toBeNull();
+  expect(await store.listUnusedRecoveryCodes(leaver.id)).toEqual([]);
+  expect((await store.listUsersWithNotifications()).map((u) => u.id)).not.toContain(leaver.id);
+  // The other user's household and account are untouched.
+  expect(await store.getHousehold(joinedHousehold.id)).not.toBeNull();
+  expect(await store.getAccount(account.id)).not.toBeNull();
 }

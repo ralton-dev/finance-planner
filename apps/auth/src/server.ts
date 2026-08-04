@@ -4,6 +4,7 @@ import fastifyRateLimit from "@fastify/rate-limit";
 import {
   addMemberBody,
   createHouseholdBody,
+  deleteMeBody,
   forgotPasswordBody,
   type HealthResponse,
   loginBody,
@@ -15,8 +16,10 @@ import {
   totpEnableBody,
   updateMemberRoleBody,
   updateMemberShareBody,
+  updateMeBody,
 } from "@finance-planner/contracts";
 import { createStore, type Store, type User } from "@finance-planner/data";
+import { createMailer, type Mailer } from "@finance-planner/mailer";
 import { type AppAbility, buildAbility, subject } from "@finance-planner/policies";
 import {
   buildOtpauthUri,
@@ -33,7 +36,6 @@ import {
 } from "@finance-planner/security";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { type AuthEnv, loadEnv, type OidcEnv } from "./env.js";
-import { createMailer, type Mailer } from "./mailer.js";
 import { HttpOidcClient, type OidcClient } from "./oidc.js";
 import { generateRecoveryCode, normaliseRecoveryCode, RECOVERY_CODE_COUNT } from "./recovery.js";
 
@@ -93,11 +95,13 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
     ? { store: deps.store, close: async () => {} }
     : createStore(env.databaseUrl);
   const store = handle.store;
-  const mailer = deps.mailer ?? createMailer(env);
   // SSO is off unless an injected client or a fully-configured provider says so.
   const oidcClient = deps.oidcClient ?? (env.oidc ? new HttpOidcClient(env.oidc) : undefined);
 
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
+  // Built after the app so the log-only mailer can write through the service
+  // logger rather than raw stdout.
+  const mailer = deps.mailer ?? createMailer(env, (msg) => app.log.info(msg));
   // The signing secret lets the OIDC handshake cookies be tamper-evident.
   app.register(fastifyCookie, { secret: env.jwtSecret });
   // Global rate-limit gate. Per-route configs below tighten the specific
@@ -415,19 +419,53 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   });
 
   // ---- me ----
-  app.get("/auth/me", async (req) => {
+  /** The caller's own profile. One shape, built once, so GET and PATCH can
+   *  never drift. */
+  const mePayload = async (user: User) => ({
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName,
+    emailVerified: user.emailVerified,
+    totpEnabled: !!user.totpEnabledAt,
+    notifyEmail: user.notifyEmail,
+    households: await store.listHouseholdsForUser(user.id),
+  });
+
+  app.get("/auth/me", async (req) => mePayload(await requireUser(await authenticate(req))));
+
+  /** Change a setting on your own account. Only the digest opt-in for now. */
+  app.patch("/auth/me", async (req) => {
     const userId = await authenticate(req);
-    const user = await store.getUserById(userId);
-    if (!user) throw new HttpError(404, "not_found", "User not found");
-    const households = await store.listHouseholdsForUser(userId);
-    return {
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName,
-      emailVerified: user.emailVerified,
-      totpEnabled: !!user.totpEnabledAt,
-      households,
-    };
+    await requireUser(userId);
+    const body = updateMeBody.parse(req.body);
+    await store.setUserNotifyEmail(userId, body.notifyEmail);
+    return mePayload(await requireUser(userId));
+  });
+
+  /**
+   * Erase the account. Takes everything that is the caller's alone — owned
+   * accounts and their history, projects, households they founded, their
+   * memberships elsewhere, sessions and tokens. Accounts merely shared *with*
+   * them survive; they are their owners'.
+   *
+   * The password is re-checked only for accounts that have one. An SSO-only
+   * user has no local password to prove, and the identity provider already
+   * vouched for them to get the access token they are holding — so holding a
+   * valid token IS the proof, and the body's `password` is ignored. (Sending
+   * `{"password":""}` fails schema validation, so those callers send any
+   * non-empty placeholder; requiring a fresh re-auth window instead was
+   * considered and rejected as more machinery than the risk warrants.)
+   */
+  app.delete("/auth/me", rl(3), async (req, reply) => {
+    const userId = await authenticate(req);
+    const user = await requireUser(userId);
+    const body = deleteMeBody.parse(req.body);
+    if (user.passwordHash && !verifyPassword(body.password, user.passwordHash)) {
+      throw new HttpError(403, "invalid_credentials", "Password does not match");
+    }
+    await store.deleteUserCascade(userId);
+    reply.clearCookie(REFRESH_COOKIE, { path: env.cookiePath });
+    return reply.code(204).send();
   });
 
   // ---- OIDC single sign-on ----

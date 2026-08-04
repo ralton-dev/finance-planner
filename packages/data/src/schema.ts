@@ -23,6 +23,7 @@ export const users = authSchema.table("users", {
   emailVerified: boolean("email_verified").notNull().default(false),
   totpSecret: text("totp_secret"),
   totpEnabledAt: timestamp("totp_enabled_at", { withTimezone: true }),
+  notifyEmail: boolean("notify_email").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -196,6 +197,19 @@ export const monthCloses = coreSchema.table("month_closes", {
   contributedMinor: bigint("contributed_minor", { mode: "number" }).notNull(),
   closedBy: uuid("closed_by"),
   closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * What has already been mailed. UNIQUE (user_id, date, kind) — enforced by the
+ * migration — makes a repeat send a no-op insert rather than a second email,
+ * which is what keeps a restarted (or briefly duplicated) notifier harmless.
+ */
+export const notificationLog = coreSchema.table("notification_log", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull(),
+  date: date("date").notNull(),
+  kind: text("kind").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const planSnapshots = calcSchema.table("plan_snapshots", {

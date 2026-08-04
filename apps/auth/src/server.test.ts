@@ -1,8 +1,8 @@
 import { MemoryStore } from "@finance-planner/data";
-import { totpCode } from "@finance-planner/security";
+import { LogMailer } from "@finance-planner/mailer";
+import { signAccessToken, totpCode } from "@finance-planner/security";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AuthEnv } from "./env.js";
-import { LogMailer } from "./mailer.js";
 import type { OidcClient, OidcDiscovery, OidcIdTokenClaims } from "./oidc.js";
 import { buildServer } from "./server.js";
 
@@ -1098,5 +1098,139 @@ describe("oidc sign-in", () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("email_required");
+  });
+});
+
+describe("account settings + erasure", () => {
+  let ctx: ReturnType<typeof makeApp>;
+  beforeEach(() => {
+    ctx = makeApp();
+  });
+
+  it("toggles the email digest opt-in and reflects it on /auth/me", async () => {
+    const auth = await registerAndLogin(ctx.app);
+
+    const before = await ctx.app.inject({ method: "GET", url: "/auth/me", headers: auth });
+    expect(before.json().notifyEmail).toBe(false);
+
+    const on = await ctx.app.inject({
+      method: "PATCH",
+      url: "/auth/me",
+      headers: auth,
+      payload: { notifyEmail: true },
+    });
+    expect(on.statusCode).toBe(200);
+    expect(on.json().notifyEmail).toBe(true);
+    expect(on.json().email).toBe(register.email); // the full me payload comes back
+
+    const after = await ctx.app.inject({ method: "GET", url: "/auth/me", headers: auth });
+    expect(after.json().notifyEmail).toBe(true);
+    expect((await ctx.store.listUsersWithNotifications()).map((u) => u.email)).toEqual([
+      register.email,
+    ]);
+
+    const off = await ctx.app.inject({
+      method: "PATCH",
+      url: "/auth/me",
+      headers: auth,
+      payload: { notifyEmail: false },
+    });
+    expect(off.json().notifyEmail).toBe(false);
+    expect(await ctx.store.listUsersWithNotifications()).toEqual([]);
+  });
+
+  it("rejects a nonsense settings body (422) and an unauthenticated one (401)", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const bad = await ctx.app.inject({
+      method: "PATCH",
+      url: "/auth/me",
+      headers: auth,
+      payload: { notifyEmail: "yes please" },
+    });
+    expect(bad.statusCode).toBe(422);
+    const anon = await ctx.app.inject({
+      method: "PATCH",
+      url: "/auth/me",
+      payload: { notifyEmail: true },
+    });
+    expect(anon.statusCode).toBe(401);
+  });
+
+  it("erases the account (and its data) once the password is proven", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const user = (await ctx.store.getUserByEmail(register.email))!;
+    const account = await ctx.store.createAccount({
+      ownerUserId: user.id,
+      name: "Everyday",
+      currency: "GBP",
+    });
+    const household = await ctx.store.createHousehold("Home", user.id);
+
+    const res = await ctx.app.inject({
+      method: "DELETE",
+      url: "/auth/me",
+      headers: auth,
+      payload: { password: register.password },
+    });
+    expect(res.statusCode).toBe(204);
+    // The refresh cookie is cleared on the way out.
+    expect(res.cookies.find((c) => c.name === "fp_refresh")?.value).toBe("");
+
+    expect(await ctx.store.getUserById(user.id)).toBeNull();
+    expect(await ctx.store.getAccount(account.id)).toBeNull();
+    expect(await ctx.store.getHousehold(household.id)).toBeNull();
+    // The token outlived the account; the routes say so rather than 500ing.
+    const after = await ctx.app.inject({ method: "GET", url: "/auth/me", headers: auth });
+    expect(after.statusCode).toBe(404);
+  });
+
+  it("refuses erasure on a wrong password, and leaves the account standing", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const user = (await ctx.store.getUserByEmail(register.email))!;
+    const res = await ctx.app.inject({
+      method: "DELETE",
+      url: "/auth/me",
+      headers: auth,
+      payload: { password: "not-my-password" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("invalid_credentials");
+    expect(await ctx.store.getUserById(user.id)).not.toBeNull();
+  });
+
+  it("erases a passwordless (SSO) account without checking the password", async () => {
+    // Holding a valid access token is the proof: there is no local password to
+    // re-check, and the identity provider already vouched for them.
+    const sso = await ctx.store.createUser({
+      email: "sso@example.com",
+      passwordHash: null,
+      displayName: "SSO",
+    });
+    const token = await signAccessToken(env.jwtSecret, { sub: sso.id, email: sso.email });
+    const res = await ctx.app.inject({
+      method: "DELETE",
+      url: "/auth/me",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { password: "ignored" },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(await ctx.store.getUserById(sso.id)).toBeNull();
+  });
+
+  it("rejects erasure without a token (401) or without a password field (422)", async () => {
+    const auth = await registerAndLogin(ctx.app);
+    const anon = await ctx.app.inject({
+      method: "DELETE",
+      url: "/auth/me",
+      payload: { password: "x" },
+    });
+    expect(anon.statusCode).toBe(401);
+    const empty = await ctx.app.inject({
+      method: "DELETE",
+      url: "/auth/me",
+      headers: auth,
+      payload: {},
+    });
+    expect(empty.statusCode).toBe(422);
   });
 });

@@ -8,6 +8,7 @@ import {
   createPaymentBody,
   createProjectBody,
   type HealthResponse,
+  importBody,
   planPreviewBody,
   type ReadinessResponse,
   reorderPaymentsBody,
@@ -25,13 +26,15 @@ import {
   computeHouseholdProjection,
   computeOverview,
   toISODate,
-  upcomingPayments,
 } from "@finance-planner/domain";
+import { createMailer, type Mailer } from "@finance-planner/mailer";
 import { type Action, type AppAbility, buildAbility, subject } from "@finance-planner/policies";
 import { verifyAccessToken } from "@finance-planner/security";
 import fastifyHttpProxy from "@fastify/http-proxy";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { seedDemoData } from "./demo.js";
 import { type ApiEnv, loadEnv } from "./env.js";
+import { startNotifier } from "./notify.js";
 import {
   buildAccountInput,
   buildHouseholdInput,
@@ -39,7 +42,9 @@ import {
   computeHouseholdPlanWithSchedule,
   computePlanForAccount,
   previewPlanForAccount,
+  upcomingForUser,
 } from "./plan.js";
+import { buildExport, importExport } from "./portability.js";
 
 const SERVICE = "api";
 const VERSION = process.env.npm_package_version ?? "0.0.0";
@@ -52,6 +57,8 @@ export interface ApiDeps {
   env?: ApiEnv;
   /** Forward /api/auth/* to the auth service. Disabled in unit tests. */
   registerAuthProxy?: boolean;
+  /** Digest sender. Defaults to SMTP-or-log from env; injected in tests. */
+  mailer?: Mailer;
 }
 
 class HttpError extends Error {
@@ -109,6 +116,14 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
 
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
   app.addHook("onClose", async () => handle.close());
+
+  // Daily digest sender. Off unless NOTIFY_ENABLED=true, so nothing is running
+  // in tests or in a deployment that hasn't asked for mail.
+  if (env.notifyEnabled) {
+    const mailer = deps.mailer ?? createMailer(env, (msg) => app.log.info(msg));
+    const stop = startNotifier(store, mailer, env, (msg) => app.log.info(msg));
+    app.addHook("onClose", async () => stop());
+  }
 
   // Single public entrypoint: forward /api/auth/* to the auth service.
   if (deps.registerAuthProxy ?? true) {
@@ -219,6 +234,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }),
   );
   app.get("/readyz", async (): Promise<ReadinessResponse> => ({ ready: true, checks: {} }));
+
+  /** What the SPA needs before anyone has signed in: which optional features
+   *  this deployment has turned on. Public, and deliberately tiny. */
+  app.get("/api/meta", async () => ({ demoSeedEnabled: env.enableDemoSeed }));
 
   // ---- accounts ----
   app.get("/api/accounts", async (req) => {
@@ -617,28 +636,8 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { asOf, days } = req.query as { asOf?: string; days?: string };
     const asOfDate = asOf ?? today();
     const window = clampUpcomingDays(intParam(days));
-    const access = await store.listAccessibleAccounts(userId);
-
-    const items = [];
-    for (const a of access) {
-      const account = await store.getAccount(a.accountId);
-      if (!account) continue;
-      const input = await buildAccountInput(store, account);
-      for (const row of upcomingPayments(input.payments, asOfDate, window)) {
-        items.push({
-          ...row,
-          accountId: account.id,
-          accountName: account.name,
-          currency: account.currency,
-        });
-      }
-    }
-    items.sort(
-      (x, y) =>
-        (x.dueDate < y.dueDate ? -1 : x.dueDate > y.dueDate ? 1 : 0) ||
-        x.name.localeCompare(y.name) ||
-        x.accountName.localeCompare(y.accountName),
-    );
+    // The assembly lives in plan.ts because the daily digest sends the same feed.
+    const items = await upcomingForUser(store, userId, asOfDate, window);
     return { asOfDate, days: window, items: items.slice(0, MAX_UPCOMING_ITEMS) };
   });
 
@@ -946,6 +945,52 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
     await store.deleteProject(id);
     return reply.code(204).send();
+  });
+
+  // ---- export / import ----
+  /**
+   * Take your data with you: every owned account and its history, plus your
+   * projects, as one JSON document. Served as a download so a browser hitting
+   * this URL saves a file instead of rendering it.
+   */
+  app.get("/api/export", async (req, reply) => {
+    const userId = await authenticate(req);
+    const file = await buildExport(store, userId);
+    return reply
+      .header(
+        "content-disposition",
+        `attachment; filename="finance-planner-export-${today()}.json"`,
+      )
+      .send(file);
+  });
+
+  /**
+   * Restore (or clone) an export under the caller, with fresh ids. Additive:
+   * existing data is left alone, so importing twice gives two copies rather
+   * than a silent overwrite. A file that doesn't match the schema is a 422.
+   */
+  app.post("/api/import", async (req) => {
+    const userId = await authenticate(req);
+    const file = importBody.parse(req.body);
+    return importExport(store, userId, file);
+  });
+
+  // ---- demo seed ----
+  /**
+   * Plant a worked example so a brand-new account has something to look at.
+   * Exists for first-run exploration and demos, and is off unless
+   * ENABLE_DEMO_SEED=true — when it is off the route 404s rather than 403s, so a
+   * deployment without it doesn't advertise that it exists. (GET /api/meta is
+   * the honest, deliberate way to ask.)
+   */
+  app.post("/api/demo/seed", async (req, reply) => {
+    const userId = await authenticate(req);
+    if (!env.enableDemoSeed) throw new HttpError(404, "not_found", "Not found");
+    if ((await store.listAccountsForOwner(userId)).length > 0) {
+      throw new HttpError(409, "demo_not_empty", "Demo data is only seeded into an empty account");
+    }
+    const counts = await seedDemoData(store, userId, today());
+    return reply.code(201).send(counts);
   });
 
   return app;

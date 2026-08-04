@@ -43,6 +43,13 @@ services:
       REDIS_URL: redis://redis:6379
       AUTH_URL: http://auth:4001
       JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-insecure-secret-change-me}
+      # Outbound mail for the daily digest. Unset SMTP_URL → digests are logged.
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      # The digest sender runs in this one api container; see .env.example.
+      NOTIFY_ENABLED: ${NOTIFY_ENABLED:-false}
+      NOTIFY_HOUR: ${NOTIFY_HOUR:-8}
+      ENABLE_DEMO_SEED: ${ENABLE_DEMO_SEED:-false}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "4000:4000"
@@ -60,6 +67,10 @@ services:
       AUTH_PORT: "4001"
       DATABASE_URL: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}
       JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-insecure-secret-change-me}
+      # Verification + password-reset mail, and the origin its links point at.
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "4001:4001"

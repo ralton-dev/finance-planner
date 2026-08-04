@@ -41,6 +41,9 @@ importers:
       '@finance-planner/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@finance-planner/mailer':
+        specifier: workspace:*
+        version: link:../../packages/mailer
       '@finance-planner/policies':
         specifier: workspace:*
         version: link:../../packages/policies
@@ -84,6 +87,9 @@ importers:
       '@finance-planner/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@finance-planner/mailer':
+        specifier: workspace:*
+        version: link:../../packages/mailer
       '@finance-planner/policies':
         specifier: workspace:*
         version: link:../../packages/policies
@@ -93,9 +99,6 @@ importers:
       fastify:
         specifier: ^5.2.1
         version: 5.8.5
-      nodemailer:
-        specifier: ^9.0.3
-        version: 9.0.3
       pg:
         specifier: ^8.13.1
         version: 8.21.0
@@ -103,9 +106,6 @@ importers:
       '@types/node':
         specifier: ^25.9.1
         version: 25.9.1
-      '@types/nodemailer':
-        specifier: ^8.0.1
-        version: 8.0.1
       tsup:
         specifier: ^8.3.5
         version: 8.5.1(postcss@8.5.15)(tsx@4.22.3)(typescript@5.9.3)(yaml@2.9.0)
@@ -261,6 +261,25 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^4.1.8
         version: 4.1.8(vitest@4.1.8)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.8
+        version: 4.1.8(@types/node@25.9.1)(@vitest/coverage-v8@4.1.8)(jsdom@25.0.1)(vite@6.4.2(@types/node@25.9.1)(tsx@4.22.3)(yaml@2.9.0))
+
+  packages/mailer:
+    dependencies:
+      nodemailer:
+        specifier: ^9.0.3
+        version: 9.0.3
+    devDependencies:
+      '@types/node':
+        specifier: ^25.9.1
+        version: 25.9.1
+      '@types/nodemailer':
+        specifier: ^8.0.1
+        version: 8.0.1
       typescript:
         specifier: ^5.7.3
         version: 5.9.3

@@ -22,6 +22,8 @@ export interface User {
   /** When two-factor became mandatory for this user. Null while a secret is
    *  merely staged (setup started but the first code hasn't been proven). */
   totpEnabledAt: string | null;
+  /** Opt-in to the daily email digest. Off until the user asks for it. */
+  notifyEmail: boolean;
   createdAt: string;
 }
 
@@ -215,6 +217,21 @@ export interface TransferConfirmation {
   toAccountId: string;
   memberUserId: string;
   amountMinor: number;
+  createdAt: string;
+}
+
+/**
+ * One row per notification actually sent. The (userId, date, kind) key is the
+ * idempotency guard: a second attempt on the same day for the same kind is
+ * refused by the unique index rather than by the sender remembering.
+ */
+export interface NotificationLogEntry {
+  id: string;
+  userId: string;
+  /** ISO date (local day) the notification covers. */
+  date: string;
+  /** What was sent, e.g. "daily_digest". */
+  kind: string;
   createdAt: string;
 }
 

@@ -77,6 +77,18 @@ export interface Store {
   setUserVerified(id: string): Promise<void>;
   /** Replace the user's local password hash (reset flow). */
   updateUserPassword(userId: string, passwordHash: string): Promise<void>;
+  /** Turn the daily email digest on or off for one user. */
+  setUserNotifyEmail(userId: string, on: boolean): Promise<void>;
+  /** Everyone who has opted into email notifications. The notifier's work list. */
+  listUsersWithNotifications(): Promise<User[]>;
+  /**
+   * Erase a user and everything that is theirs alone: their owned accounts (via
+   * the deleteAccount cascade), their projects, the households they created,
+   * their memberships elsewhere, sessions, tokens, recovery codes, notification
+   * log, and finally the user row. Accounts merely *shared with* them are left
+   * alone — those belong to their owners.
+   */
+  deleteUserCascade(userId: string): Promise<void>;
 
   // ---- two-factor ----
   /** Stage (or clear) the TOTP secret. Passing null also clears totpEnabledAt,
@@ -218,6 +230,14 @@ export interface Store {
   /** Closes for a scope, newest month first. */
   listMonthCloses(scope: MonthCloseScope): Promise<MonthClose[]>;
   deleteMonthClose(id: string): Promise<void>;
+
+  // ---- notification log (send-once guard) ----
+  /**
+   * Claim the right to send one notification. True the first time for a given
+   * (user, date, kind); false ever after. Insert-on-conflict-do-nothing in
+   * Postgres, so two notifiers racing still send exactly one message.
+   */
+  tryLogNotification(userId: string, date: string, kind: string): Promise<boolean>;
 
   // ---- calc snapshots ----
   saveSnapshot(snapshot: Omit<PlanSnapshot, "id" | "computedAt">): Promise<PlanSnapshot>;

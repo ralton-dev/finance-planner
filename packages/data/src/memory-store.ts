@@ -65,6 +65,8 @@ export class MemoryStore implements Store {
   private balanceSnapshots = new Map<string, BalanceSnapshot>();
   private transferConfirmations = new Map<string, TransferConfirmation>();
   private monthCloses = new Map<string, MonthClose>();
+  /** Keys are `${userId}|${date}|${kind}` — the PG unique index, in a Set. */
+  private notificationLog = new Set<string>();
 
   async createUser(input: NewUser): Promise<User> {
     const user: User = {
@@ -76,6 +78,7 @@ export class MemoryStore implements Store {
       emailVerified: false,
       totpSecret: null,
       totpEnabledAt: null,
+      notifyEmail: false,
       createdAt: now(),
     };
     this.users.set(user.id, user);
@@ -100,6 +103,36 @@ export class MemoryStore implements Store {
   async updateUserPassword(userId: string, passwordHash: string): Promise<void> {
     const u = this.users.get(userId);
     if (u) u.passwordHash = passwordHash;
+  }
+
+  async setUserNotifyEmail(userId: string, on: boolean): Promise<void> {
+    const u = this.users.get(userId);
+    if (u) u.notifyEmail = on;
+  }
+
+  async listUsersWithNotifications(): Promise<User[]> {
+    return [...this.users.values()].filter((u) => u.notifyEmail).sort(byCreatedAt);
+  }
+
+  async deleteUserCascade(userId: string): Promise<void> {
+    for (const account of await this.listAccountsForOwner(userId)) {
+      await this.deleteAccount(account.id);
+    }
+    for (const [k, p] of this.projects) if (p.ownerUserId === userId) this.projects.delete(k);
+    for (const h of [...this.households.values()]) {
+      // Households the user founded go with them; membership of someone else's
+      // household is just dropped.
+      if (h.createdBy === userId) await this.deleteHousehold(h.id);
+    }
+    for (const [k, m] of this.memberships) if (m.userId === userId) this.memberships.delete(k);
+    for (const [k, s] of this.sessions) if (s.userId === userId) this.sessions.delete(k);
+    for (const [k, t] of this.verifyTokens) if (t.userId === userId) this.verifyTokens.delete(k);
+    for (const [k, t] of this.resetTokens) if (t.userId === userId) this.resetTokens.delete(k);
+    for (const [k, c] of this.recoveryCodes) if (c.userId === userId) this.recoveryCodes.delete(k);
+    for (const key of this.notificationLog) {
+      if (key.startsWith(`${userId}|`)) this.notificationLog.delete(key);
+    }
+    this.users.delete(userId);
   }
 
   async setUserTotpSecret(userId: string, secret: string | null): Promise<void> {
@@ -506,6 +539,13 @@ export class MemoryStore implements Store {
         this.payments.set(id, { ...p, priority: index + 1, updatedAt: now() });
       }
     });
+  }
+
+  async tryLogNotification(userId: string, date: string, kind: string): Promise<boolean> {
+    const key = `${userId}|${date}|${kind}`;
+    if (this.notificationLog.has(key)) return false;
+    this.notificationLog.add(key);
+    return true;
   }
 
   async saveSnapshot(snapshot: Omit<PlanSnapshot, "id" | "computedAt">): Promise<PlanSnapshot> {

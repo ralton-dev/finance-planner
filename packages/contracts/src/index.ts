@@ -17,6 +17,9 @@ export const amountMinor = z.number().int().nonnegative();
 /** ISO date string (date-only), e.g. "2026-08-01". */
 export const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
 
+/** ISO timestamp, e.g. "2026-08-04T07:00:00.000Z". */
+export const isoDateTime = z.string().datetime();
+
 /** Calendar month, e.g. "2026-08". Stored as the month's first day. */
 export const monthString = z.string().regex(/^\d{4}-\d{2}$/, "expected YYYY-MM");
 
@@ -291,3 +294,125 @@ export const createProjectBody = z.object({
 });
 export type CreateProjectBody = z.infer<typeof createProjectBody>;
 export const updateProjectBody = createProjectBody.partial();
+
+// ---------------------------------------------------------------------------
+// Account settings
+// ---------------------------------------------------------------------------
+
+/** Settings a user can change about themselves. Only the digest opt-in so far. */
+export const updateMeBody = z.object({
+  notifyEmail: z.boolean(),
+});
+export type UpdateMeBody = z.infer<typeof updateMeBody>;
+
+/**
+ * Erasure confirmation. The password is only checked for accounts that have one
+ * — an SSO-only user proves themselves by holding a valid access token, so they
+ * may send `{"password": ""}` (or any value; it is ignored).
+ */
+export const deleteMeBody = z.object({
+  password: z.string().min(1),
+});
+export type DeleteMeBody = z.infer<typeof deleteMeBody>;
+
+// ---------------------------------------------------------------------------
+// Export / import
+// ---------------------------------------------------------------------------
+
+/**
+ * A user's data, portable as one JSON document. Deliberately id-free: nothing
+ * in here references a database row, so a file exported from one deployment can
+ * be imported into another (or back into the same one, as a copy).
+ *
+ * Consequences of that choice, all intentional:
+ *   - Cross-entity links that only exist as ids (a payment's project, a
+ *     payment's bearer, a contribution's author) are not carried; see the
+ *     per-field notes below.
+ *   - Household data (memberships, shares, transfers, household month closes)
+ *     is absent: it belongs to the household, not to one member, and re-creating
+ *     it under a single importing user would invent facts about other people.
+ */
+const exportContribution = z.object({
+  /** The month this belongs to, as its first day ("2026-08-01"). */
+  month: isoDate,
+  amountMinor: z.number().int().positive(),
+  note: z.string().nullable().default(null),
+});
+
+const exportPayment = z.object({
+  name: z.string().min(1),
+  category: paymentCategory,
+  amountMinor,
+  dueDate: isoDate.nullable().default(null),
+  recurrence: recurrence.nullable().default(null),
+  targetDate: isoDate.nullable().default(null),
+  priority: z.number().int().default(100),
+  alreadySavedMinor: amountMinor.default(0),
+  autoRenew: z.boolean().default(true),
+  active: z.boolean().default(true),
+  notes: z.string().nullable().default(null),
+  scope: paymentScope.default("shared"),
+  fixedMonthlyMinor: z.number().int().positive().nullable().default(null),
+  tag: z.string().nullable().default(null),
+  // Deliberately absent: `bearerUserId` and `projectId`. Both are ids of other
+  // rows; an id that means nothing on the far side of an import would be a
+  // dangling reference, so the link is dropped rather than guessed at.
+  contributions: z.array(exportContribution).default([]),
+});
+
+const exportIncome = z.object({
+  name: z.string().min(1),
+  amountMinor,
+  frequency,
+  recurrence: recurrence.nullable().default(null),
+  anchorDate: isoDate,
+  active: z.boolean().default(true),
+});
+
+const exportBalanceSnapshot = z.object({
+  asOfDate: isoDate,
+  /** May be negative (overdraft). */
+  balanceMinor: z.number().int(),
+});
+
+const exportMonthClose = z.object({
+  /** The closed month, as its first day ("2026-07-01"). */
+  month: isoDate,
+  incomeMinor: amountMinor,
+  plannedMinor: amountMinor,
+  contributedMinor: amountMinor,
+});
+
+const exportAccount = z.object({
+  name: z.string().min(1),
+  description: z.string().nullable().default(null),
+  currency: currencyCode,
+  openingBalanceMinor: amountMinor.default(0),
+  monthlyBufferMinor: amountMinor.default(0),
+  incomes: z.array(exportIncome).default([]),
+  payments: z.array(exportPayment).default([]),
+  balanceSnapshots: z.array(exportBalanceSnapshot).default([]),
+  closes: z.array(exportMonthClose).default([]),
+});
+
+const exportProject = z.object({
+  name: z.string().min(1),
+  description: z.string().nullable().default(null),
+  color: z.string().nullable().default(null),
+  targetDate: isoDate.nullable().default(null),
+});
+
+export const exportFileSchema = z.object({
+  /** Bump when the shape changes incompatibly; importers reject anything else. */
+  version: z.literal(1),
+  exportedAt: isoDateTime,
+  accounts: z.array(exportAccount).default([]),
+  projects: z.array(exportProject).default([]),
+});
+export type ExportFile = z.infer<typeof exportFileSchema>;
+export type ExportAccount = z.infer<typeof exportAccount>;
+export type ExportPayment = z.infer<typeof exportPayment>;
+
+/** Import takes exactly what export produced. Same schema, both directions. */
+export const importBody = exportFileSchema;
+export type ImportBody = ExportFile;

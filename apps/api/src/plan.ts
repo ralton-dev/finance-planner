@@ -11,6 +11,8 @@ import {
   type MemberPaydaySchedule,
   type PaymentInput,
   splitTransfersByPayday,
+  type UpcomingPayment,
+  upcomingPayments,
 } from "@finance-planner/domain";
 import type { Account, Income, Payment, Store } from "@finance-planner/data";
 
@@ -89,6 +91,53 @@ export async function computePlanForAccount(
   asOfDate: string,
 ): Promise<AccountPlan> {
   return computeAccountPlan(await buildAccountInput(store, account), asOfDate);
+}
+
+// ---------------------------------------------------------------------------
+// Upcoming feed
+// ---------------------------------------------------------------------------
+
+/** An upcoming due date, carrying the account it belongs to. */
+export interface UpcomingItem extends UpcomingPayment {
+  accountId: string;
+  accountName: string;
+  currency: string;
+}
+
+/**
+ * What falls due for one user in the next `days` days, across every account
+ * they can see, merged into one dated feed and sorted (date, then name, then
+ * account). Shared by GET /api/upcoming and the daily digest so the two can
+ * never disagree about what is coming up. Uncapped — the caller decides how
+ * many rows it wants.
+ */
+export async function upcomingForUser(
+  store: Store,
+  userId: string,
+  asOfDate: string,
+  days: number,
+): Promise<UpcomingItem[]> {
+  const access = await store.listAccessibleAccounts(userId);
+  const items: UpcomingItem[] = [];
+  for (const a of access) {
+    const account = await store.getAccount(a.accountId);
+    if (!account) continue;
+    const input = await buildAccountInput(store, account);
+    for (const row of upcomingPayments(input.payments, asOfDate, days)) {
+      items.push({
+        ...row,
+        accountId: account.id,
+        accountName: account.name,
+        currency: account.currency,
+      });
+    }
+  }
+  return items.sort(
+    (x, y) =>
+      (x.dueDate < y.dueDate ? -1 : x.dueDate > y.dueDate ? 1 : 0) ||
+      x.name.localeCompare(y.name) ||
+      x.accountName.localeCompare(y.accountName),
+  );
 }
 
 // ---------------------------------------------------------------------------

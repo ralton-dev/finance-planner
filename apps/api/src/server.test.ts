@@ -9,6 +9,10 @@ const env: ApiEnv = {
   host: "127.0.0.1",
   jwtSecret: "test-secret",
   authUrl: "http://localhost:4001",
+  mailFrom: "Finance Planner <no-reply@test.local>",
+  notifyEnabled: false,
+  notifyHour: 8,
+  enableDemoSeed: false,
 };
 
 async function seedUser(store: Store, email = "owner@example.com") {
@@ -1788,5 +1792,286 @@ describe("api service", () => {
 
     const unauthenticated = await app.inject({ method: "POST", url, payload });
     expect(unauthenticated.statusCode).toBe(401);
+  });
+});
+
+describe("export / import", () => {
+  let store: MemoryStore;
+  let app: ReturnType<typeof buildServer>;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    app = buildServer({ store, env, registerAuthProxy: false });
+  });
+
+  /** An owned account with one of everything hanging off it. */
+  async function seedRichAccount(ownerId: string) {
+    const account = await store.createAccount({
+      ownerUserId: ownerId,
+      name: "Everyday",
+      description: "Primary",
+      currency: "GBP",
+      openingBalanceMinor: 250_000,
+      monthlyBufferMinor: 10_000,
+    });
+    await store.createIncome({
+      accountId: account.id,
+      name: "Salary",
+      amountMinor: 300_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-25",
+      active: true,
+    });
+    const payment = await store.createPayment({
+      accountId: account.id,
+      name: "Holiday",
+      category: "fixed_point",
+      amountMinor: 120_000,
+      dueDate: "2027-08-01",
+      recurrence: null,
+      targetDate: null,
+      priority: 5,
+      alreadySavedMinor: 1_000,
+      autoRenew: true,
+      active: true,
+      notes: "Majorca",
+      projectId: null,
+      scope: "personal",
+      bearerUserId: ownerId,
+      fixedMonthlyMinor: 20_000,
+      tag: "travel",
+    });
+    await store.createContribution({
+      paymentId: payment.id,
+      accountId: account.id,
+      userId: ownerId,
+      month: "2026-08-01",
+      amountMinor: 20_000,
+      note: "August",
+      transferConfirmationId: null,
+    });
+    await store.upsertBalanceSnapshot({
+      accountId: account.id,
+      asOfDate: "2026-08-01",
+      balanceMinor: 240_000,
+    });
+    await store.createMonthClose({
+      householdId: null,
+      accountId: account.id,
+      month: "2026-07-01",
+      incomeMinor: 300_000,
+      plannedMinor: 20_000,
+      contributedMinor: 20_000,
+      closedBy: ownerId,
+    });
+    await store.createProject({
+      ownerUserId: ownerId,
+      name: "House move",
+      description: null,
+      color: "#abc",
+      targetDate: "2027-01-01",
+    });
+    return account;
+  }
+
+  it("exports everything owned, as a download", async () => {
+    const { user, auth } = await seedUser(store, "exporter@example.com");
+    await seedRichAccount(user.id);
+
+    const res = await app.inject({ method: "GET", url: "/api/export", headers: auth });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-disposition"]).toMatch(
+      /^attachment; filename="finance-planner-export-\d{4}-\d{2}-\d{2}\.json"$/,
+    );
+
+    const file = res.json();
+    expect(file.version).toBe(1);
+    expect(file.exportedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(file.accounts).toHaveLength(1);
+    expect(file.projects.map((p: { name: string }) => p.name)).toEqual(["House move"]);
+
+    const account = file.accounts[0];
+    expect(account.name).toBe("Everyday");
+    expect(account.monthlyBufferMinor).toBe(10_000);
+    expect(account.incomes).toHaveLength(1);
+    expect(account.balanceSnapshots).toEqual([{ asOfDate: "2026-08-01", balanceMinor: 240_000 }]);
+    expect(account.closes).toEqual([
+      { month: "2026-07-01", incomeMinor: 300_000, plannedMinor: 20_000, contributedMinor: 20_000 },
+    ]);
+
+    const payment = account.payments[0];
+    expect(payment.fixedMonthlyMinor).toBe(20_000);
+    expect(payment.tag).toBe("travel");
+    expect(payment.scope).toBe("personal");
+    expect(payment.notes).toBe("Majorca");
+    expect(payment.contributions).toEqual([
+      { month: "2026-08-01", amountMinor: 20_000, note: "August" },
+    ]);
+    // Cross-entity ids don't travel: no row id survives the document.
+    expect(payment.bearerUserId).toBeUndefined();
+    expect(payment.projectId).toBeUndefined();
+    expect(payment.id).toBeUndefined();
+    expect(account.id).toBeUndefined();
+  });
+
+  it("leaves accounts shared in by someone else to their owner", async () => {
+    const { user: owner, auth: ownerAuth } = await seedUser(store, "sharer@example.com");
+    const { user: guest, auth: guestAuth } = await seedUser(store, "guest@example.com");
+    const shared = await seedRichAccount(owner.id);
+    const household = await store.createHousehold("Home", owner.id);
+    await store.addMembership(household.id, guest.id, "member");
+    await store.createAccountShare(shared.id, household.id, "edit");
+
+    // The guest can see it in their own account list…
+    const visible = await app.inject({ method: "GET", url: "/api/accounts", headers: guestAuth });
+    expect(visible.json()).toHaveLength(1);
+    // …but exports nothing, because they own nothing.
+    const guestExport = await app.inject({ method: "GET", url: "/api/export", headers: guestAuth });
+    expect(guestExport.json().accounts).toEqual([]);
+    // The owner still exports it.
+    const ownerExport = await app.inject({ method: "GET", url: "/api/export", headers: ownerAuth });
+    expect(ownerExport.json().accounts).toHaveLength(1);
+  });
+
+  it("imports an export under a different user with fresh ids", async () => {
+    const { user: from, auth: fromAuth } = await seedUser(store, "from@example.com");
+    const { user: to, auth: toAuth } = await seedUser(store, "to@example.com");
+    await seedRichAccount(from.id);
+    const file = (
+      await app.inject({ method: "GET", url: "/api/export", headers: fromAuth })
+    ).json();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: toAuth,
+      payload: file,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      accounts: 1,
+      incomes: 1,
+      payments: 1,
+      contributions: 1,
+      balanceSnapshots: 1,
+      closes: 1,
+      projects: 1,
+    });
+
+    const imported = await store.listAccountsForOwner(to.id);
+    expect(imported).toHaveLength(1);
+    expect(imported[0]!.id).not.toBe((await store.listAccountsForOwner(from.id))[0]!.id);
+    const payments = await store.listPayments(imported[0]!.id);
+    expect(payments[0]!.tag).toBe("travel");
+    // The links that couldn't survive are cleanly null, not dangling.
+    expect(payments[0]!.bearerUserId).toBeNull();
+    expect(payments[0]!.projectId).toBeNull();
+    // Contributions land under the importing user, unhooked from any transfer.
+    const contributions = await store.listContributionsForAccount(imported[0]!.id);
+    expect(contributions[0]!.userId).toBe(to.id);
+    expect(contributions[0]!.transferConfirmationId).toBeNull();
+    // …and the exporter still has theirs: import adds, it never moves.
+    expect(await store.listAccountsForOwner(from.id)).toHaveLength(1);
+  });
+
+  it("is additive: importing the same file twice gives two copies", async () => {
+    const { user, auth } = await seedUser(store, "twice@example.com");
+    await seedRichAccount(user.id);
+    const file = (await app.inject({ method: "GET", url: "/api/export", headers: auth })).json();
+
+    await app.inject({ method: "POST", url: "/api/import", headers: auth, payload: file });
+    await app.inject({ method: "POST", url: "/api/import", headers: auth, payload: file });
+    expect(await store.listAccountsForOwner(user.id)).toHaveLength(3); // original + 2
+  });
+
+  it("rejects a file that isn't an export (422) and an anonymous caller (401)", async () => {
+    const { auth } = await seedUser(store, "bad@example.com");
+    for (const payload of [
+      { version: 2, exportedAt: new Date().toISOString(), accounts: [], projects: [] },
+      { version: 1, exportedAt: "yesterday", accounts: [], projects: [] },
+      { version: 1, exportedAt: new Date().toISOString(), accounts: [{ currency: "GBP" }] },
+      { nope: true },
+    ]) {
+      const res = await app.inject({ method: "POST", url: "/api/import", headers: auth, payload });
+      expect(res.statusCode).toBe(422);
+    }
+    expect((await app.inject({ method: "GET", url: "/api/export" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/import", payload: {} })).statusCode).toBe(
+      401,
+    );
+  });
+});
+
+describe("meta + demo seed", () => {
+  const demoEnv: ApiEnv = { ...env, enableDemoSeed: true };
+  let store: MemoryStore;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+  });
+
+  it("reports the demo seed as off, and hides the route entirely", async () => {
+    const app = buildServer({ store, env, registerAuthProxy: false });
+    const meta = await app.inject({ method: "GET", url: "/api/meta" });
+    expect(meta.statusCode).toBe(200); // public: no token needed
+    expect(meta.json()).toEqual({ demoSeedEnabled: false });
+
+    const { auth } = await seedUser(store, "nodemo@example.com");
+    const seed = await app.inject({ method: "POST", url: "/api/demo/seed", headers: auth });
+    expect(seed.statusCode).toBe(404); // 404, not 403: a disabled feature doesn't advertise itself
+  });
+
+  it("seeds a worked example into an empty account, once", async () => {
+    const app = buildServer({ store, env: demoEnv, registerAuthProxy: false });
+    expect((await app.inject({ method: "GET", url: "/api/meta" })).json()).toEqual({
+      demoSeedEnabled: true,
+    });
+
+    const { user, auth } = await seedUser(store, "demo@example.com");
+    const seed = await app.inject({ method: "POST", url: "/api/demo/seed", headers: auth });
+    expect(seed.statusCode).toBe(201);
+    expect(seed.json()).toEqual({
+      accounts: 1,
+      incomes: 1,
+      payments: 4,
+      contributions: 1,
+      balanceSnapshots: 1,
+    });
+
+    const accounts = await store.listAccountsForOwner(user.id);
+    expect(accounts[0]!.name).toBe("Everyday Account");
+    expect(accounts[0]!.openingBalanceMinor).toBe(250_000);
+    const payments = await store.listPayments(accounts[0]!.id);
+    expect(payments.map((p) => p.name).sort()).toEqual([
+      "Car insurance",
+      "Phone bill",
+      "Summer holiday",
+      "Water bill",
+    ]);
+    expect(payments.filter((p) => p.tag).map((p) => p.tag)).toEqual(["utilities"]);
+    // Dates are relative to today, so the plan is alive rather than historical.
+    const today = new Date().toISOString().slice(0, 10);
+    expect(payments.every((p) => !p.dueDate || p.dueDate > today)).toBe(true);
+    expect((await store.listBalanceSnapshots(accounts[0]!.id))[0]!.asOfDate).toBe(today);
+
+    // The plan actually computes over the seeded data.
+    const plan = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${accounts[0]!.id}/plan`,
+      headers: auth,
+    });
+    expect(plan.statusCode).toBe(200);
+    expect(plan.json().monthlyIncomeMinor).toBe(250_000);
+
+    // Second run refuses: the account is no longer empty.
+    const again = await app.inject({ method: "POST", url: "/api/demo/seed", headers: auth });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error.code).toBe("demo_not_empty");
+  });
+
+  it("still needs a token", async () => {
+    const app = buildServer({ store, env: demoEnv, registerAuthProxy: false });
+    expect((await app.inject({ method: "POST", url: "/api/demo/seed" })).statusCode).toBe(401);
   });
 });

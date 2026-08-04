@@ -61,6 +61,7 @@ function mapUser(r: typeof s.users.$inferSelect): User {
     emailVerified: r.emailVerified,
     totpSecret: r.totpSecret ?? null,
     totpEnabledAt: iso(r.totpEnabledAt),
+    notifyEmail: r.notifyEmail,
     createdAt: r.createdAt.toISOString(),
   };
 }
@@ -135,6 +136,48 @@ export class PgStore implements Store {
 
   async updateUserPassword(userId: string, passwordHash: string): Promise<void> {
     await this.db.update(s.users).set({ passwordHash }).where(eq(s.users.id, userId));
+  }
+
+  async setUserNotifyEmail(userId: string, on: boolean): Promise<void> {
+    await this.db.update(s.users).set({ notifyEmail: on }).where(eq(s.users.id, userId));
+  }
+
+  async listUsersWithNotifications(): Promise<User[]> {
+    const rows = await this.db
+      .select()
+      .from(s.users)
+      .where(eq(s.users.notifyEmail, true))
+      .orderBy(asc(s.users.createdAt));
+    return rows.map(mapUser);
+  }
+
+  async deleteUserCascade(userId: string): Promise<void> {
+    // Owned accounts first — deleteAccount already clears everything hanging off
+    // one. Accounts shared *with* this user are untouched: they are their
+    // owners', and the share dies with the membership below.
+    const owned = await this.db
+      .select({ id: s.accounts.id })
+      .from(s.accounts)
+      .where(eq(s.accounts.ownerUserId, userId));
+    for (const a of owned) await this.deleteAccount(a.id);
+
+    await this.db.delete(s.projects).where(eq(s.projects.ownerUserId, userId));
+
+    const founded = await this.db
+      .select({ id: s.households.id })
+      .from(s.households)
+      .where(eq(s.households.createdBy, userId));
+    for (const h of founded) await this.deleteHousehold(h.id);
+
+    await this.db.delete(s.memberships).where(eq(s.memberships.userId, userId));
+    await this.db.delete(s.sessions).where(eq(s.sessions.userId, userId));
+    await this.db
+      .delete(s.emailVerificationTokens)
+      .where(eq(s.emailVerificationTokens.userId, userId));
+    await this.db.delete(s.passwordResetTokens).where(eq(s.passwordResetTokens.userId, userId));
+    await this.db.delete(s.recoveryCodes).where(eq(s.recoveryCodes.userId, userId));
+    await this.db.delete(s.notificationLog).where(eq(s.notificationLog.userId, userId));
+    await this.db.delete(s.users).where(eq(s.users.id, userId));
   }
 
   async setUserTotpSecret(userId: string, secret: string | null): Promise<void> {
@@ -682,6 +725,19 @@ export class PgStore implements Store {
         .set({ priority: i + 1, updatedAt: new Date() })
         .where(and(eq(s.payments.id, orderedIds[i]!), eq(s.payments.accountId, accountId)));
     }
+  }
+
+  async tryLogNotification(userId: string, date: string, kind: string): Promise<boolean> {
+    // The unique index does the arbitration: the loser of a race inserts zero
+    // rows and is told "already sent" rather than sending a second email.
+    const rows = await this.db
+      .insert(s.notificationLog)
+      .values({ userId, date, kind })
+      .onConflictDoNothing({
+        target: [s.notificationLog.userId, s.notificationLog.date, s.notificationLog.kind],
+      })
+      .returning({ id: s.notificationLog.id });
+    return rows.length > 0;
   }
 
   async saveSnapshot(snapshot: Omit<PlanSnapshot, "id" | "computedAt">): Promise<PlanSnapshot> {
