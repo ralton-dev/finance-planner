@@ -237,6 +237,37 @@ export interface PlanPreviewDto {
   preview: AccountPlanDto;
 }
 
+/**
+ * One account inside the overview: the plan's numbers for it, plus the state
+ * the accounts index leads with. Enough to answer "which account needs me
+ * today" without a second request per row.
+ */
+export interface OverviewAccountDto {
+  accountId: string;
+  name: string;
+  /** The household this account is planned in, or null when it is planned
+   *  alone. Also the de-duplication hook: an account inside a household is
+   *  already spoken for by that household's members. */
+  householdId: string | null;
+  /** Its role in that plan — the shared pot, or one member's own account. */
+  householdRole: AccountRole | null;
+  monthlyIncomeMinor: number;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  atRiskCount: number;
+  /** The last balance check-in, from the same read the account page's reality
+   *  strip uses. Null on an account nobody has ever checked in. */
+  latestBalanceMinor: number | null;
+  latestBalanceDate: string | null;
+  /** What the plan has set aside on this account — the strip's second figure. */
+  reservedMinor: number;
+  /** Save-up lines the plan funded this month with no contribution recorded
+   *  against them yet, and how much of that money is still unrecorded. Same
+   *  definition of "covered" as the checklist's `record` rule. */
+  unrecordedCount: number;
+  unrecordedTotalMinor: number;
+}
+
 export interface CurrencyOverviewDto {
   currency: string;
   monthlyIncomeMinor: number;
@@ -245,12 +276,7 @@ export interface CurrencyOverviewDto {
   totalFundedMinor: number;
   leftoverMinor: number;
   shortfallMinor: number;
-  accounts: {
-    accountId: string;
-    leftoverMinor: number;
-    shortfallMinor: number;
-    atRiskCount: number;
-  }[];
+  accounts: OverviewAccountDto[];
 }
 
 export interface OverviewDto {

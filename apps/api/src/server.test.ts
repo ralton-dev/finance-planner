@@ -309,6 +309,158 @@ describe("api service", () => {
     expect(overview.perCurrency[0].monthlyIncomeMinor).toBe(200000);
   });
 
+  it("carries each account's state on the overview summary", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Everyday", currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+      payload: { name: "Pay", amountMinor: 300000, frequency: "monthly", anchorDate: "2026-01-25" },
+    });
+    // A save-up goal (120000 over 8 months → 15000/mo) and a monthly bill. Only
+    // the goal is ever "recorded"; the bill leaves the account by itself.
+    const goal = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: "Holiday",
+          category: "fixed_point",
+          amountMinor: 120000,
+          dueDate: "2026-09-01",
+        },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
+    });
+    await app.inject({
+      method: "PUT",
+      url: `/api/accounts/${account.id}/balance`,
+      headers: auth,
+      payload: { asOfDate: "2026-01-15", balanceMinor: 318450 },
+    });
+
+    const summary = (
+      await app.inject({ method: "GET", url: "/api/overview?asOf=2026-01-20", headers: auth })
+    ).json().perCurrency[0].accounts[0];
+
+    expect(summary).toMatchObject({
+      accountId: account.id,
+      name: "Everyday",
+      householdId: null,
+      householdRole: null,
+      monthlyIncomeMinor: 300000,
+      latestBalanceMinor: 318450,
+      latestBalanceDate: "2026-01-15",
+      reservedMinor: 0,
+      unrecordedCount: 1,
+      unrecordedTotalMinor: 17143, // 120000 over the 7 months to the due date
+    });
+
+    // Part of the month's target recorded: the count stands, the total is only
+    // what is still missing — the same figure the checklist would prefill.
+    await app.inject({
+      method: "POST",
+      url: `/api/payments/${goal.id}/contributions`,
+      headers: auth,
+      payload: { amountMinor: 5000, month: "2026-01" },
+    });
+    const partly = (
+      await app.inject({ method: "GET", url: "/api/overview?asOf=2026-01-20", headers: auth })
+    ).json().perCurrency[0].accounts[0];
+    expect(partly.reservedMinor).toBe(5000);
+    expect(partly.unrecordedCount).toBe(1);
+    expect(partly.unrecordedTotalMinor).toBe(11429); // (120000 - 5000) / 7 - 5000
+
+    // Covered: nothing left to record, and the monthly bill never counted.
+    await app.inject({
+      method: "POST",
+      url: `/api/payments/${goal.id}/contributions`,
+      headers: auth,
+      payload: { amountMinor: 100000, month: "2026-01" },
+    });
+    const covered = (
+      await app.inject({ method: "GET", url: "/api/overview?asOf=2026-01-20", headers: auth })
+    ).json().perCurrency[0].accounts[0];
+    expect(covered.unrecordedCount).toBe(0);
+    expect(covered.unrecordedTotalMinor).toBe(0);
+  });
+
+  it("reports one balance for an account, whichever screen asks", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Everyday", currency: "GBP", openingBalanceMinor: 250000 },
+      })
+    ).json();
+    await app.inject({
+      method: "PUT",
+      url: `/api/accounts/${account.id}/balance`,
+      headers: auth,
+      payload: { asOfDate: "2026-01-15", balanceMinor: 318450 },
+    });
+
+    const url = "?asOf=2026-01-20";
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan${url}`,
+        headers: auth,
+      })
+    ).json();
+    const summary = (
+      await app.inject({ method: "GET", url: `/api/overview${url}`, headers: auth })
+    ).json().perCurrency[0].accounts[0];
+
+    // The index and the account page's reality strip read the same check-in —
+    // not the opening balance the account was configured with.
+    expect(summary.latestBalanceMinor).toBe(plan.latestBalance.balanceMinor);
+    expect(summary.latestBalanceDate).toBe(plan.latestBalance.asOfDate);
+    expect(summary.reservedMinor).toBe(plan.reservedMinor);
+    expect(summary.latestBalanceMinor).not.toBe(account.openingBalanceMinor);
+  });
+
+  it("places a household's accounts on the overview summary", async () => {
+    const h = await seedHousehold(store, app);
+    const accounts = (
+      await app.inject({ method: "GET", url: "/api/overview?asOf=2026-01-20", headers: h.auth })
+    )
+      .json()
+      .perCurrency[0].accounts.reduce(
+        (byId: Record<string, unknown>, a: { accountId: string }) => ({
+          ...byId,
+          [a.accountId]: a,
+        }),
+        {},
+      );
+
+    expect(accounts[h.bills.id]).toMatchObject({
+      name: "bills",
+      householdId: h.household.id,
+      householdRole: "shared",
+    });
+    expect(accounts[h.aliceCur.id]).toMatchObject({
+      householdId: h.household.id,
+      householdRole: "personal",
+    });
+  });
+
   it("creates a project and assigns a payment to it", async () => {
     const { auth } = await seedUser(store);
     const account = (

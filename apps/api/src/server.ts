@@ -21,6 +21,7 @@ import {
 } from "@finance-planner/contracts";
 import { type Account, type AccountAccess, createStore, type Store } from "@finance-planner/data";
 import {
+  type AccountPlan,
   clampUpcomingDays,
   computeAccountProjection,
   computeHouseholdProjection,
@@ -105,6 +106,115 @@ function closeAsOfDate(month: string): string {
   if (month === current) return now;
   const [year, mon] = month.split("-").map(Number);
   return toISODate(new Date(Date.UTC(year!, mon!, 0))); // day 0 of the next month
+}
+
+/** Per-payment money set aside during the current month. */
+interface ContributionTotal {
+  paymentId: string;
+  amountMinor: number;
+}
+
+/** The reality half of an account's plan: what was set aside this month, what
+ *  the plan has spoken for in total, and the last real balance check-in. */
+interface AccountReality {
+  contributionsMTD: ContributionTotal[];
+  latestBalance: { asOfDate: string; balanceMinor: number } | null;
+  reservedMinor: number;
+}
+
+/**
+ * Read the reality that sits alongside a computed plan.
+ *
+ * The account page and the accounts index both come through here — the detail
+ * strip reads it off GET /accounts/:id/plan, the index off the overview — so
+ * the two screens cannot end up quoting different balances for one account.
+ * Balance snapshots are stored one-per-day in ascending date order, so the last
+ * one is the current balance.
+ */
+async function accountReality(
+  store: Store,
+  plan: AccountPlan,
+  asOfDate: string,
+): Promise<AccountReality> {
+  const [monthContributions, balances] = await Promise.all([
+    store.listContributionsForAccount(plan.accountId, monthToFirstDay(monthOf(asOfDate))),
+    store.listBalanceSnapshots(plan.accountId),
+  ]);
+
+  const mtd = new Map<string, number>();
+  for (const c of monthContributions) {
+    mtd.set(c.paymentId, (mtd.get(c.paymentId) ?? 0) + c.amountMinor);
+  }
+  const latest = balances.at(-1);
+
+  return {
+    contributionsMTD: [...mtd.entries()].map(([paymentId, amountMinor]) => ({
+      paymentId,
+      amountMinor,
+    })),
+    latestBalance: latest ? { asOfDate: latest.asOfDate, balanceMinor: latest.balanceMinor } : null,
+    reservedMinor: plan.lines.reduce((sum, l) => sum + l.alreadySavedMinor, 0),
+  };
+}
+
+/**
+ * Save-up money the plan funded this month that nobody has recorded yet.
+ *
+ * Same test as the web checklist's `record` rule (`web/src/lib/needsYou.ts`): a
+ * non-monthly line is covered once this month's contributions reach what the
+ * plan funded for it. The total is what is still missing rather than the
+ * month's target, so the index chip and the checklist's prefill agree.
+ */
+function unrecordedSaveUps(
+  plan: AccountPlan,
+  contributionsMTD: readonly ContributionTotal[],
+): { unrecordedCount: number; unrecordedTotalMinor: number } {
+  const mtd = new Map(contributionsMTD.map((c) => [c.paymentId, c.amountMinor]));
+  let unrecordedCount = 0;
+  let unrecordedTotalMinor = 0;
+
+  for (const line of plan.lines) {
+    if (line.category === "monthly_recurring" || line.fundedMonthlyMinor <= 0) continue;
+    const contributed = mtd.get(line.paymentId) ?? 0;
+    if (contributed >= line.fundedMonthlyMinor) continue;
+    unrecordedCount += 1;
+    unrecordedTotalMinor += line.fundedMonthlyMinor - contributed;
+  }
+
+  return { unrecordedCount, unrecordedTotalMinor };
+}
+
+/** Where an account sits in the user's households, when it sits in one. */
+interface AccountPlacement {
+  householdId: string | null;
+  householdRole: "shared" | "personal" | null;
+}
+
+const NO_HOUSEHOLD: AccountPlacement = { householdId: null, householdRole: null };
+
+/**
+ * Which household each of the caller's accounts is planned in, and as what.
+ * The index needs the role to say "shared pot" rather than guess at it, and the
+ * Overview needs the household id to keep from counting an account's shortfall
+ * twice — once as its own row, once inside its household's members. An account
+ * assigned in two households takes the first; households come back in a stable
+ * order, so the answer is deterministic.
+ */
+async function accountPlacements(
+  store: Store,
+  userId: string,
+): Promise<Map<string, AccountPlacement>> {
+  const placements = new Map<string, AccountPlacement>();
+  for (const household of await store.listHouseholdsForUser(userId)) {
+    for (const assignment of await store.listAccountAssignments(household.id)) {
+      if (placements.has(assignment.accountId)) continue;
+      placements.set(assignment.accountId, {
+        householdId: household.id,
+        householdRole: assignment.role,
+      });
+    }
+  }
+  return placements;
 }
 
 export function buildServer(deps: ApiDeps = {}): FastifyInstance {
@@ -296,27 +406,8 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { asOf } = req.query as { asOf?: string };
     const { account } = await requireAccess(userId, id, "view");
     const asOfDate = asOf ?? today();
-    const [plan, monthContributions, balances] = await Promise.all([
-      computePlanForAccount(store, account, asOfDate),
-      store.listContributionsForAccount(id, monthToFirstDay(monthOf(asOfDate))),
-      store.listBalanceSnapshots(id),
-    ]);
-    const mtd = new Map<string, number>();
-    for (const c of monthContributions) {
-      mtd.set(c.paymentId, (mtd.get(c.paymentId) ?? 0) + c.amountMinor);
-    }
-    const latest = balances.at(-1);
-    return {
-      ...plan,
-      contributionsMTD: [...mtd.entries()].map(([paymentId, amountMinor]) => ({
-        paymentId,
-        amountMinor,
-      })),
-      latestBalance: latest
-        ? { asOfDate: latest.asOfDate, balanceMinor: latest.balanceMinor }
-        : null,
-      reservedMinor: plan.lines.reduce((sum, l) => sum + l.alreadySavedMinor, 0),
-    };
+    const plan = await computePlanForAccount(store, account, asOfDate);
+    return { ...plan, ...(await accountReality(store, plan, asOfDate)) };
   });
 
   /**
@@ -610,17 +701,49 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   });
 
   // ---- overview ----
+  /**
+   * Every accessible account, aggregated per currency — and, per account, the
+   * state the accounts index leads with: where it is planned, what it actually
+   * holds, and what is waiting on a human. The aggregation itself stays in the
+   * engine; everything added here is read off the same plan and the same
+   * reality the account page reads, so no screen can disagree with another.
+   */
   app.get("/api/overview", async (req) => {
     const userId = await authenticate(req);
     const { asOf } = req.query as { asOf?: string };
     const asOfDate = asOf ?? today();
-    const access = await store.listAccessibleAccounts(userId);
-    const plans = [];
+    const [access, placements] = await Promise.all([
+      store.listAccessibleAccounts(userId),
+      accountPlacements(store, userId),
+    ]);
+
+    const plans: AccountPlan[] = [];
+    const state = new Map<string, Record<string, unknown>>();
     for (const a of access) {
       const account = await store.getAccount(a.accountId);
-      if (account) plans.push(await computePlanForAccount(store, account, asOfDate));
+      if (!account) continue;
+      const plan = await computePlanForAccount(store, account, asOfDate);
+      const reality = await accountReality(store, plan, asOfDate);
+      plans.push(plan);
+      state.set(account.id, {
+        name: account.name,
+        ...(placements.get(account.id) ?? NO_HOUSEHOLD),
+        monthlyIncomeMinor: plan.monthlyIncomeMinor,
+        latestBalanceMinor: reality.latestBalance?.balanceMinor ?? null,
+        latestBalanceDate: reality.latestBalance?.asOfDate ?? null,
+        reservedMinor: reality.reservedMinor,
+        ...unrecordedSaveUps(plan, reality.contributionsMTD),
+      });
     }
-    return computeOverview(plans, asOfDate);
+
+    const overview = computeOverview(plans, asOfDate);
+    return {
+      ...overview,
+      perCurrency: overview.perCurrency.map((c) => ({
+        ...c,
+        accounts: c.accounts.map((summary) => ({ ...summary, ...state.get(summary.accountId) })),
+      })),
+    };
   });
 
   // ---- upcoming payments ----
