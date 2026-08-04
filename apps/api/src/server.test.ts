@@ -2782,6 +2782,49 @@ describe("inflows over HTTP", () => {
     expect(res.json().error.code).toBe("validation_error");
   });
 
+  /**
+   * There is no exchange rate anywhere in this system, and the rollup nets
+   * intra-estate movement inside one currency bucket — so a movement across two
+   * of them would leave `totalFunded + leftover === income - buffer` broken in
+   * both. Refused rather than converted at an invented rate.
+   */
+  it("refuses a movement that crosses currencies", async () => {
+    const { auth } = await seedUser(store);
+    const pounds = await makeAccount(auth, "current");
+    const dollars = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "us-pot", currency: "USD" },
+      })
+    ).json();
+
+    const refused = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${dollars.id}/inflows`,
+      headers: auth,
+      payload: movementBody(pounds.id),
+    });
+    expect(refused.statusCode).toBe(422);
+    expect(refused.json().error.code).toBe("validation_error");
+    expect(refused.json().error.message).toMatch(/GBP to USD/);
+    expect(await store.listInflows(dollars.id)).toEqual([]);
+
+    // The same movement between two accounts in one currency is fine.
+    const sameCurrency = await makeAccount(auth, "gbp-pot");
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/accounts/${sameCurrency.id}/inflows`,
+          headers: auth,
+          payload: movementBody(pounds.id),
+        })
+      ).statusCode,
+    ).toBe(201);
+  });
+
   it("rejects a source account on an external inflow, and one missing from a movement", async () => {
     const { auth } = await seedUser(store);
     const a = await makeAccount(auth, "a");
@@ -3519,5 +3562,271 @@ describe("meta + demo seed", () => {
   it("still needs a token", async () => {
     const app = buildServer({ store, env: demoEnv, registerAuthProxy: false });
     expect((await app.inject({ method: "POST", url: "/api/demo/seed" })).statusCode).toBe(401);
+  });
+});
+
+/**
+ * The flow endpoint: where money goes across any set of accounts.
+ *
+ * The interesting case is the one the household-only diagram could never draw —
+ * a scope spanning two households and a pot that belongs to neither.
+ */
+describe("flow over any scope", () => {
+  let store: MemoryStore;
+  let app: ReturnType<typeof buildServer>;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    app = buildServer({ store, env, registerAuthProxy: false });
+  });
+
+  const flow = (auth: { authorization: string }, ids: string[], asOf = "2026-08-04") =>
+    app.inject({
+      method: "GET",
+      url: `/api/flow?accounts=${ids.join(",")}&asOf=${asOf}`,
+      headers: auth,
+    });
+
+  /**
+   * Alice is in two households — one with Bob, one with Carol — and also keeps
+   * a standalone ISA that no household has ever heard of, fed by a movement out
+   * of her current account. One diagram, all of it.
+   */
+  async function seedTwoHouseholdsAndAPot() {
+    const { user: alice, auth } = await seedUser(store, "alice@example.com");
+    const { user: bob } = await seedUser(store, "bob@example.com");
+    const { user: carol } = await seedUser(store, "carol@example.com");
+
+    const make = async (name: string, incomeMinor?: number) => {
+      const account = (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+      if (incomeMinor) {
+        await app.inject({
+          method: "POST",
+          url: `/api/accounts/${account.id}/incomes`,
+          headers: auth,
+          payload: {
+            name: "Pay",
+            amountMinor: incomeMinor,
+            frequency: "monthly",
+            anchorDate: "2026-01-01",
+          },
+        });
+      }
+      return account;
+    };
+
+    const current = await make("current", 400_000);
+    const homeBills = await make("home-bills");
+    // Alice's second current account, the one the flat is paid out of. It is
+    // deliberately left out of the diagram below, so the flat's rent arrives
+    // across the scope's edge while the home's arrives account to account.
+    const flatCurrent = await make("flat-current", 150_000);
+    const flatBills = await make("flat-bills");
+    const isa = await make("isa");
+
+    const bill = (accountId: string, name: string, amountMinor: number) =>
+      app.inject({
+        method: "POST",
+        url: `/api/accounts/${accountId}/payments`,
+        headers: auth,
+        payload: { name, category: "monthly_recurring", amountMinor, scope: "shared" },
+      });
+    await bill(homeBills.id, "Rent", 100_000);
+    await bill(flatBills.id, "Council tax", 40_000);
+
+    const home = await store.createHousehold("Home", alice.id);
+    await store.addMembership(home.id, bob.id, "member");
+    const flat = await store.createHousehold("Flat", alice.id);
+    await store.addMembership(flat.id, carol.id, "member");
+    const assign = (householdId: string, accountId: string, payload: object) =>
+      app.inject({
+        method: "PUT",
+        url: `/api/households/${householdId}/accounts/${accountId}`,
+        headers: auth,
+        payload,
+      });
+    await assign(home.id, current.id, { role: "personal", memberUserId: alice.id });
+    await assign(home.id, homeBills.id, { role: "shared" });
+    await assign(flat.id, flatCurrent.id, { role: "personal", memberUserId: alice.id });
+    await assign(flat.id, flatBills.id, { role: "shared" });
+
+    // The standalone leg: £600 a month from the current account into the ISA,
+    // with no household anywhere in it.
+    const movement = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${isa.id}/inflows`,
+        headers: auth,
+        payload: {
+          name: "Monthly saving",
+          source: "account",
+          sourceAccountId: current.id,
+          amountMinor: 60_000,
+          frequency: "monthly",
+          anchorDate: "2026-01-01",
+        },
+      })
+    ).json();
+
+    return { auth, alice, current, homeBills, flatCurrent, flatBills, isa, movement };
+  }
+
+  it("draws a scope spanning two households and a standalone pot", async () => {
+    const { auth, alice, current, homeBills, flatBills, isa, movement } =
+      await seedTwoHouseholdsAndAPot();
+
+    const res = await flow(auth, [current.id, homeBills.id, flatBills.id, isa.id]);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    expect(body.accounts.map((a: { name: string }) => a.name)).toEqual([
+      "current",
+      "home-bills",
+      "flat-bills",
+      "isa",
+    ]);
+    expect(body.currency).toBe("GBP");
+
+    // The authored movement is drawn account to account, by its own id.
+    const internal = body.edges.find((e: { inflowId?: string }) => e.inflowId === movement.id);
+    expect(internal).toMatchObject({
+      fromAccountId: current.id,
+      toAccountId: isa.id,
+      amountMinor: 60_000,
+      status: "funded",
+    });
+
+    // The home's rent is a household transfer whose sender *is* in the diagram,
+    // so it is drawn account to account, named by the member who moves it —
+    // a fact only the household plan holds, and one the estate pass has no
+    // authored row for.
+    expect(
+      body.edges.find(
+        (e: { toAccountId: string; memberUserId?: string }) =>
+          e.toAccountId === homeBills.id && e.memberUserId,
+      ),
+    ).toMatchObject({
+      fromAccountId: current.id,
+      memberUserId: alice.id,
+      memberName: "Owner",
+    });
+
+    // The flat's rent leaves an account the user left out, so it arrives across
+    // the scope's edge instead of out of thin air.
+    const arriving = body.edges.filter((e: { fromAccountId: null }) => e.fromAccountId === null);
+    expect(arriving.map((e: { toAccountId: string }) => e.toAccountId)).toEqual([flatBills.id]);
+
+    // Every node balances: what comes in is what goes out.
+    for (const node of body.accounts) {
+      const into = body.edges
+        .filter((e: { toAccountId: string }) => e.toAccountId === node.accountId)
+        .reduce((sum: number, e: { amountMinor: number }) => sum + e.amountMinor, 0);
+      const outOf = body.edges
+        .filter((e: { fromAccountId: string }) => e.fromAccountId === node.accountId)
+        .reduce((sum: number, e: { amountMinor: number }) => sum + e.amountMinor, 0);
+      expect(node.incomeMinor + into).toBe(node.spendingMinor + outOf + node.leftoverMinor);
+    }
+
+    // The denominator: money entering the scope from outside it, counted once.
+    const fromOutside = arriving.reduce(
+      (sum: number, e: { amountMinor: number }) => sum + e.amountMinor,
+      0,
+    );
+    expect(body.totalInflowMinor).toBe(400_000 + fromOutside);
+  });
+
+  /**
+   * The whole point of the endpoint taking the *set* rather than the household:
+   * a subset of the same accounts is a different picture of the same money, and
+   * the money crossing the edge of the smaller scope is still drawn.
+   */
+  it("draws a subset of the same accounts without inventing or losing money", async () => {
+    const { auth, current, isa } = await seedTwoHouseholdsAndAPot();
+    const body = (await flow(auth, [isa.id])).json();
+    expect(body.accounts).toHaveLength(1);
+    expect(body.edges).toEqual([
+      expect.objectContaining({ fromAccountId: null, toAccountId: isa.id, amountMinor: 60_000 }),
+    ]);
+    expect(body.totalInflowMinor).toBe(60_000);
+    // ...and the sender is untouched by not being drawn.
+    const sender = (await flow(auth, [current.id])).json();
+    expect(sender.accounts[0].incomeMinor).toBe(400_000);
+  });
+
+  it("is exactly as visible as the least visible account in the set", async () => {
+    const { auth, current } = await seedTwoHouseholdsAndAPot();
+    const { auth: strangerAuth } = await seedUser(store, "stranger@example.com");
+    const theirs = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: strangerAuth,
+        payload: { name: "not-yours", currency: "GBP" },
+      })
+    ).json();
+
+    const res = await flow(auth, [current.id, theirs.id]);
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("not_found");
+  });
+
+  it("refuses an empty scope, an oversized one, and one spanning currencies", async () => {
+    const { auth, current } = await seedTwoHouseholdsAndAPot();
+
+    const empty = await app.inject({ method: "GET", url: "/api/flow", headers: auth });
+    expect(empty.statusCode).toBe(422);
+    expect(empty.json().error.message).toMatch(/at least one account/);
+
+    const tooMany = await flow(
+      auth,
+      Array.from({ length: 41 }, (_, i) => `id-${i}`),
+    );
+    expect(tooMany.statusCode).toBe(422);
+    expect(tooMany.json().error.message).toMatch(/at most 40 accounts/);
+
+    const dollars = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "us-pot", currency: "USD" },
+      })
+    ).json();
+    const mixed = await flow(auth, [current.id, dollars.id]);
+    expect(mixed.statusCode).toBe(422);
+    expect(mixed.json().error.message).toMatch(/cannot span currencies: GBP, USD/);
+  });
+
+  it("takes a repeated account once, in the order the set names it", async () => {
+    const { auth, current, isa } = await seedTwoHouseholdsAndAPot();
+    const body = (await flow(auth, [isa.id, current.id, isa.id])).json();
+    expect(body.accounts.map((a: { name: string }) => a.name)).toEqual(["isa", "current"]);
+  });
+
+  /**
+   * Visibility is presentation, and the endpoint is where that promise is kept
+   * by having nowhere to break it: there is no parameter for hiding an account,
+   * so a hidden account cannot be dropped from the pass that funds the others.
+   */
+  it("has no notion of a hidden account, so hiding one cannot move a figure", async () => {
+    const { auth, current, isa } = await seedTwoHouseholdsAndAPot();
+    const scope = [current.id, isa.id];
+    const before = (await flow(auth, scope)).json();
+    // The client hiding the ISA still asks for the whole set.
+    const after = (await flow(auth, scope)).json();
+    expect(after).toEqual(before);
+    // ...and asking for a smaller set is a different question, which is why
+    // hiding must never be expressed that way: the movement's money leaves the
+    // current account either way, but the ISA's own node goes with it.
+    const narrowed = (await flow(auth, [current.id])).json();
+    expect(narrowed.accounts).toHaveLength(1);
+    expect(narrowed.edges[0]).toMatchObject({ fromAccountId: current.id, toAccountId: null });
   });
 });

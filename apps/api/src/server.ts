@@ -29,6 +29,7 @@ import {
   computeEstateProjection,
   computeHouseholdProjection,
   computeOverview,
+  flowFromEstate,
   toISODate,
   withoutArrival,
 } from "@finance-planner/domain";
@@ -50,6 +51,7 @@ import {
   computePlanForAccount,
   createPlanContext,
   fundingClosure,
+  householdAllocations,
   type InflowSource,
   type PlanContext,
   previewPlanForAccount,
@@ -63,6 +65,9 @@ const VERSION = process.env.npm_package_version ?? "0.0.0";
 const startedAt = Date.now();
 /** Row cap on the upcoming feed — see the handler comment. */
 const MAX_UPCOMING_ITEMS = 50;
+/** Accounts one diagram may span. A Sankey stops being readable long before
+ *  this, and the ordered pass behind it is not free. */
+const MAX_FLOW_ACCOUNTS = 40;
 /** Rank a movement takes among a sending account's outbound inflows when the
  *  caller does not say. The same 100 a payment's priority defaults to. */
 const DEFAULT_INFLOW_PRIORITY = 100;
@@ -852,6 +857,16 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * by the store's CHECK: the API should not need the database to tell it that
    * an account cannot fund itself.
    *
+   * **A movement between two currencies is refused**, because there is no rate
+   * anywhere in this system to convert it with. Nothing would be wrong at the
+   * two ends — each account would report an honest figure in its own money —
+   * but `computeOverview` buckets per currency and nets intra-estate movement
+   * *inside* one bucket, so a GBP→USD movement would leave the identity
+   * `totalFundedMinor + leftoverMinor === monthlyIncomeMinor - bufferMinor`
+   * broken in **both** buckets: money spoken for in the sending currency and
+   * arriving in the receiving one, netted in neither. Refusing is the only
+   * answer that stays true; converting would mean inventing a rate.
+   *
    * Nothing is refused for closing a funding loop. A cycle is a property of the
    * estate rather than of the edge that completes it, so it is detected by the
    * ordered pass and reported on every plan involved as
@@ -861,7 +876,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.post("/api/accounts/:id/inflows", async (req, reply) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    await requireAccess(userId, id, "edit");
+    const { account } = await requireAccess(userId, id, "edit");
     const body = createInflowBody.parse(req.body);
     const sourceAccountId = body.sourceAccountId ?? null;
     if (sourceAccountId === id) {
@@ -871,7 +886,16 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         "An inflow cannot be sourced from the account it arrives in",
       );
     }
-    if (sourceAccountId) await requireAccess(userId, sourceAccountId, "edit");
+    if (sourceAccountId) {
+      const { account: source } = await requireAccess(userId, sourceAccountId, "edit");
+      if (source.currency !== account.currency) {
+        throw new HttpError(
+          422,
+          "validation_error",
+          `A movement cannot cross currencies: ${source.currency} to ${account.currency}`,
+        );
+      }
+    }
     const inflow = await store.createInflow({
       accountId: id,
       name: body.name,
@@ -1118,6 +1142,97 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         accounts: c.accounts.map((summary) => ({ ...summary, ...state.get(summary.accountId) })),
       })),
     };
+  });
+
+  // ---- money flow over a set of accounts ----
+  /**
+   * Where money goes across **any set of accounts the caller can see**.
+   *
+   * The diagram used to be reachable only inside a household, which meant the
+   * most interesting picture — everything you own, at once — could not be drawn
+   * at all. Scope here is a user-defined set: two households' accounts and a
+   * standalone pot is an ordinary request.
+   *
+   * Nothing new is derived. The ordered pass already works out which money
+   * crosses which account boundary (`EstatePlan.movements`, the household-free
+   * twin of `HouseholdPlan.transfers`), and `flowFromEstate` reshapes its answer
+   * — it had simply never had an HTTP surface, so the only consumer in the whole
+   * codebase was the daily digest.
+   *
+   * The pass deliberately reaches beyond the scope, upstream to whatever funds
+   * it; only the scope's own accounts are drawn, and money arriving from an
+   * account outside it crosses the scope's edge as an unnamed source. Access is
+   * checked per account, so a set is exactly as visible as its least visible
+   * member.
+   *
+   * **Visibility is not scope.** Hiding a noisy account from a diagram is a
+   * presentation act and must not change a computed figure, so it is never sent
+   * here: the client asks for the whole set and draws a subset of it. Dropping a
+   * hidden account from the request would drop its money from everyone else's
+   * plan, which is precisely the bug that rule exists to prevent.
+   */
+  app.get("/api/flow", async (req) => {
+    const userId = await authenticate(req);
+    const { accounts: csv, asOf } = req.query as { accounts?: string; asOf?: string };
+    const asOfDate = asOf ?? today();
+
+    // De-duplicated, order preserved: the set is a list the user made, and the
+    // diagram draws it in the order they made it.
+    const ids = [
+      ...new Set(
+        (csv ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (ids.length === 0) {
+      throw new HttpError(422, "validation_error", "accounts must name at least one account");
+    }
+    if (ids.length > MAX_FLOW_ACCOUNTS) {
+      throw new HttpError(
+        422,
+        "validation_error",
+        `a diagram covers at most ${MAX_FLOW_ACCOUNTS} accounts`,
+      );
+    }
+
+    const ability = await abilityFor(userId);
+    const scope: Account[] = [];
+    for (const id of ids) {
+      const ref = subject("Account", { id });
+      if (!ability.hasAnyAccess(ref) || !ability.can("view", ref)) {
+        throw new HttpError(404, "not_found", "Account not found");
+      }
+      const account = await store.getAccount(id);
+      if (!account) throw new HttpError(404, "not_found", "Account not found");
+      scope.push(account);
+    }
+
+    // One diagram, one money. There is no rate anywhere in this system, so a
+    // scope spanning two currencies has no honest ribbon width — refused rather
+    // than drawn at an invented rate, the same answer authoring a cross-currency
+    // movement gets.
+    const currencies = [...new Set(scope.map((a) => a.currency))].sort();
+    if (currencies.length > 1) {
+      throw new HttpError(
+        422,
+        "validation_error",
+        `a diagram cannot span currencies: ${currencies.join(", ")}`,
+      );
+    }
+
+    const ctx = createPlanContext();
+    const [estate, allocations] = await Promise.all([
+      computeEstateFor(store, scope, asOfDate, ctx),
+      householdAllocations(store, userId, scope, asOfDate, ctx),
+    ]);
+    return flowFromEstate(
+      estate,
+      scope.map((a) => ({ accountId: a.id, name: a.name })),
+      currencies[0]!,
+      allocations,
+    );
   });
 
   // ---- upcoming payments ----
