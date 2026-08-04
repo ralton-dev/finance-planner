@@ -236,9 +236,11 @@ export function computeEstatePlan(accounts: AccountInput[], asOfDate: string): E
   const { order, cycles, broken } = orderAccounts([...byId.keys()], edges);
 
   const cycleFor = new Map<string, string[]>();
+  const brokenFor = new Map<string, string>();
   for (const cycle of cycles) {
     for (const accountId of cycle.accountIds) {
       if (!cycleFor.has(accountId)) cycleFor.set(accountId, cycle.accountIds);
+      if (!brokenFor.has(accountId)) brokenFor.set(accountId, cycle.brokenInflowId);
     }
   }
 
@@ -309,6 +311,7 @@ export function computeEstatePlan(accounts: AccountInput[], asOfDate: string): E
           : null,
       outboundInflows: outbound,
       fundingCycleAccountIds: cycleFor.get(accountId),
+      fundingCycleBrokenInflowId: brokenFor.get(accountId),
     };
     const plan = computeAccountPlan(input, asOfDate);
     inputs.push(input);

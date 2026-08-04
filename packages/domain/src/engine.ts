@@ -362,6 +362,7 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
     outboundInflowMinor: outboundTotal,
     outboundInflows,
     fundingCycleAccountIds: account.fundingCycleAccountIds,
+    fundingCycleBrokenInflowId: account.fundingCycleBrokenInflowId,
     lines,
   };
 }

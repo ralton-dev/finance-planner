@@ -218,6 +218,16 @@ export interface AccountInput {
    * computes nor acts on it.
    */
   fundingCycleAccountIds?: string[];
+  /**
+   * The one movement on that loop the pass ignored to break it.
+   *
+   * Carried for the same reason the account list is, and it is the half that
+   * makes the loop *actionable*: the accounts say a loop exists, this says which
+   * edge is not moving money — the edge a diagram would otherwise draw as a
+   * ribbon funding nothing, and the one the user has to delete or re-point.
+   * Set exactly when `fundingCycleAccountIds` is.
+   */
+  fundingCycleBrokenInflowId?: string;
 }
 
 /**
@@ -367,5 +377,8 @@ export interface AccountPlan {
    *  this account is part of. Absent when its funding is acyclic, which is
    *  almost always. See `AccountInput.fundingCycleAccountIds`. */
   fundingCycleAccountIds?: string[];
+  /** Also straight through: the movement on that loop the pass ignored, which
+   *  is the one funding nothing. See `AccountInput.fundingCycleBrokenInflowId`. */
+  fundingCycleBrokenInflowId?: string;
   lines: PaymentPlanLine[];
 }
