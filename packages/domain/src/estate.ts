@@ -98,12 +98,20 @@ export interface EstatePlan {
 const DEFAULT_PRIORITY = 100;
 
 /** An edge of the funding graph: money leaves `from` and arrives at `to`. */
-interface Edge {
+export interface FundingEdge {
   inflowId: string;
   from: string;
   to: string;
   priority: number;
   row: OutboundInflowInput;
+}
+
+/** The least an account has to be for its movements to be graphed: an id and the
+ *  movements leaving it. `AccountInput` satisfies it, and so does the scope
+ *  pass's account — one graph builder, not two. */
+export interface FundingNode {
+  accountId: string;
+  outboundInflows?: OutboundInflowInput[];
 }
 
 /**
@@ -114,8 +122,8 @@ interface Edge {
  * whose sender is not in this pass at all — that is worth reporting, and
  * inferring it from the receiver is the only way to see it.
  */
-function buildEdges(accounts: AccountInput[]): Edge[] {
-  const edges: Edge[] = [];
+export function buildFundingEdges(accounts: readonly FundingNode[]): FundingEdge[] {
+  const edges: FundingEdge[] = [];
   for (const account of accounts) {
     for (const row of account.outboundInflows ?? []) {
       if (row.active === false) continue;
@@ -161,11 +169,11 @@ interface Frame {
  * in (priority, destination, id) order, so the same estate always breaks the
  * same edge and reports the same loop.
  */
-function orderAccounts(
-  accountIds: string[],
-  edges: Edge[],
+export function orderAccounts(
+  accountIds: readonly string[],
+  edges: readonly FundingEdge[],
 ): { order: string[]; cycles: EstateCycle[]; broken: Set<string> } {
-  const out = new Map<string, Edge[]>(accountIds.map((id) => [id, []]));
+  const out = new Map<string, FundingEdge[]>(accountIds.map((id) => [id, []]));
   for (const edge of edges) {
     // An edge out of the estate does not order anything inside it.
     if (out.has(edge.to)) out.get(edge.from)?.push(edge);
@@ -232,7 +240,7 @@ function orderAccounts(
 export function computeEstatePlan(accounts: AccountInput[], asOfDate: string): EstatePlan {
   const now = parseISODate(asOfDate);
   const byId = new Map(accounts.map((a) => [a.accountId, a]));
-  const edges = buildEdges(accounts);
+  const edges = buildFundingEdges(accounts);
   const { order, cycles, broken } = orderAccounts([...byId.keys()], edges);
 
   const cycleFor = new Map<string, string[]>();
@@ -244,7 +252,7 @@ export function computeEstatePlan(accounts: AccountInput[], asOfDate: string): E
     }
   }
 
-  const outByAccount = new Map<string, Edge[]>();
+  const outByAccount = new Map<string, FundingEdge[]>();
   for (const edge of edges) {
     const list = outByAccount.get(edge.from) ?? [];
     list.push(edge);
