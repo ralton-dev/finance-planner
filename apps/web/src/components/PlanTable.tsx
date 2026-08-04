@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ApiError } from "../lib/api.js";
 import { formatMinor, toMajor, toMinor } from "../lib/money.js";
 import type { AccountPlanDto, PlanLineDto } from "../lib/types.js";
+import { Amount } from "./Amount.js";
 
 const CATEGORY_LABEL: Record<PlanLineDto["category"], string> = {
   monthly_recurring: "monthly",
@@ -114,132 +115,155 @@ export function PlanTable({ plan, canRecord = false, onRecord, asOfDate }: PlanT
   }
 
   return (
-    <table className="plan-table">
-      <thead>
-        <tr>
-          <th>payment</th>
-          <th>type</th>
-          <th>due</th>
-          <th className="num">amount</th>
-          <th className="num">save / mo</th>
-          <th className="num">saved</th>
-          <th>status</th>
-          <th>this month</th>
-        </tr>
-      </thead>
-      <tbody>
-        {plan.lines.map((line) => {
-          const recordedMinor = mtd.get(line.paymentId);
-          const recordable = canRecord && !!onRecord && line.category !== "monthly_recurring";
-          const isOpen = openId === line.paymentId;
-          // Straight from the API. A goal with a cap *and* a deadline is paced
-          // (the TYPE column says so) but its date is still the user's, and
-          // only the engine can tell the two apart.
-          const derived = line.dueDateIsDerived === true;
-          const dueInDays =
-            asOfDate && line.category === "monthly_recurring"
-              ? daysUntilNextMonthly(line.dueDate, asOfDate)
-              : null;
-          return (
-            <tr key={line.paymentId} className={line.onTrack ? "" : "at-risk"}>
-              <td className="name">{line.name}</td>
-              <td className="muted">{typeLabel(line)}</td>
-              <td className="muted">
-                {derived ? (
-                  <span className="derived" title="worked out from the pace, not a date you set">
-                    ~{line.targetDate}
+    // Scrolls inside itself rather than dragging the document sideways, and on
+    // a phone sheds the three columns the sub-line takes over — see
+    // `.table-scroll` and the `max-width: 560px` block in styles.css.
+    <div className="table-scroll">
+      <table className="plan-table">
+        <thead>
+          <tr>
+            <th className="sticky-col">payment</th>
+            <th className="wide-only">type</th>
+            <th className="wide-only">due</th>
+            <th className="num wide-only">amount</th>
+            <th className="num">save / mo</th>
+            <th className="num">saved</th>
+            <th>status</th>
+            <th>this month</th>
+          </tr>
+        </thead>
+        <tbody>
+          {plan.lines.map((line) => {
+            const recordedMinor = mtd.get(line.paymentId);
+            const recordable = canRecord && !!onRecord && line.category !== "monthly_recurring";
+            const isOpen = openId === line.paymentId;
+            // Straight from the API. A goal with a cap *and* a deadline is paced
+            // (the TYPE column says so) but its date is still the user's, and
+            // only the engine can tell the two apart.
+            const derived = line.dueDateIsDerived === true;
+            const dueInDays =
+              asOfDate && line.category === "monthly_recurring"
+                ? daysUntilNextMonthly(line.dueDate, asOfDate)
+                : null;
+            return (
+              <tr key={line.paymentId} className={line.onTrack ? "" : "at-risk"}>
+                <td className="name sticky-col">
+                  <span>{line.name}</span>
+                  {/* What the three dropped columns say, once they are gone.
+                      Written flat rather than as copies of their cells: the
+                      sub-line is already `--ink-3`, which is all `.derived`
+                      adds, and the tilde is what carries the meaning. The
+                      amount goes through <Amount> so privacy mode reaches it,
+                      and is left off when it is the monthly ask over again —
+                      every monthly bill, where the two are the same number. */}
+                  <span className="row-sub">
+                    {typeLabel(line)} · due {derived ? `~${line.targetDate}` : line.targetDate}
+                    {line.amountMinor !== line.requiredMonthlyMinor && (
+                      <>
+                        {" · "}
+                        <Amount minor={line.amountMinor} currency={plan.currency} />
+                      </>
+                    )}
                   </span>
-                ) : (
-                  line.targetDate
-                )}
-              </td>
-              <td className="num">{formatMinor(line.amountMinor, plan.currency)}</td>
-              <td className="num">
-                {formatMinor(line.requiredMonthlyMinor, plan.currency)}
-                {(line.occurrencesThisMonth ?? 1) > 1 && (
-                  <span
-                    className="recurs"
-                    title={`${line.occurrencesThisMonth} payments this month`}
-                  >
-                    {" "}
-                    ({line.occurrencesThisMonth})
-                  </span>
-                )}
-              </td>
-              <td className={`num${line.alreadySavedMinor === 0 ? " dim" : ""}`}>
-                {formatMinor(line.alreadySavedMinor, plan.currency)}
-              </td>
-              <td>
-                {line.onTrack ? (
-                  <span className="tag-status ok">on track</span>
-                ) : (
-                  <span
-                    className="tag-status warn"
-                    title={`projected ${line.projectedCompletionDate}`}
-                  >
-                    at risk
-                  </span>
-                )}
-              </td>
-              <td className="record-cell">
-                {dueInDays !== null && (
-                  <span className="due-in">
-                    {dueInDays === 0 ? "due today" : `due in ${dueInDays} d`}
-                  </span>
-                )}
-                {recordedMinor !== undefined && (
-                  <span className="mtd-tick" title="recorded this month">
-                    ✓ {formatMinor(recordedMinor, plan.currency)}
-                  </span>
-                )}
-                {recordable &&
-                  (isOpen ? (
-                    <span className="record-form">
-                      <input
-                        aria-label={`amount to record for ${line.name}`}
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void submit(line.paymentId);
-                          if (e.key === "Escape") setOpenId(null);
-                        }}
-                        inputMode="decimal"
-                        disabled={busy}
-                        autoFocus
-                      />
-                      <button
-                        type="button"
-                        className="tiny"
-                        onClick={() => void submit(line.paymentId)}
-                        disabled={busy}
-                      >
-                        {busy ? "…" : "save"}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost tiny"
-                        onClick={() => setOpenId(null)}
-                        disabled={busy}
-                      >
-                        ✕
-                      </button>
-                      {err && (
-                        <span className="error record-error" role="alert">
-                          {err}
-                        </span>
-                      )}
+                </td>
+                <td className="muted wide-only">{typeLabel(line)}</td>
+                <td className="muted wide-only">
+                  {derived ? (
+                    <span className="derived" title="worked out from the pace, not a date you set">
+                      ~{line.targetDate}
                     </span>
                   ) : (
-                    <button type="button" className="action" onClick={() => open(line)}>
-                      record
-                    </button>
-                  ))}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+                    line.targetDate
+                  )}
+                </td>
+                <td className="num wide-only">{formatMinor(line.amountMinor, plan.currency)}</td>
+                <td className="num">
+                  {formatMinor(line.requiredMonthlyMinor, plan.currency)}
+                  {(line.occurrencesThisMonth ?? 1) > 1 && (
+                    <span
+                      className="recurs"
+                      title={`${line.occurrencesThisMonth} payments this month`}
+                    >
+                      {" "}
+                      ({line.occurrencesThisMonth})
+                    </span>
+                  )}
+                </td>
+                <td className={`num${line.alreadySavedMinor === 0 ? " dim" : ""}`}>
+                  {formatMinor(line.alreadySavedMinor, plan.currency)}
+                </td>
+                <td>
+                  {line.onTrack ? (
+                    <span className="tag-status ok">on track</span>
+                  ) : (
+                    <span
+                      className="tag-status warn"
+                      title={`projected ${line.projectedCompletionDate}`}
+                    >
+                      at risk
+                    </span>
+                  )}
+                </td>
+                <td className="record-cell">
+                  {dueInDays !== null && (
+                    <span className="due-in">
+                      {dueInDays === 0 ? "due today" : `due in ${dueInDays} d`}
+                    </span>
+                  )}
+                  {recordedMinor !== undefined && (
+                    <span className="mtd-tick" title="recorded this month">
+                      ✓ {formatMinor(recordedMinor, plan.currency)}
+                    </span>
+                  )}
+                  {recordable &&
+                    (isOpen ? (
+                      <span className="record-form">
+                        <input
+                          aria-label={`amount to record for ${line.name}`}
+                          value={amount}
+                          onChange={(e) => setAmount(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void submit(line.paymentId);
+                            if (e.key === "Escape") setOpenId(null);
+                          }}
+                          inputMode="decimal"
+                          disabled={busy}
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          className="tiny"
+                          onClick={() => void submit(line.paymentId)}
+                          disabled={busy}
+                        >
+                          {busy ? "…" : "save"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost tiny"
+                          onClick={() => setOpenId(null)}
+                          disabled={busy}
+                        >
+                          ✕
+                        </button>
+                        {err && (
+                          <span className="error record-error" role="alert">
+                            {err}
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <button type="button" className="action" onClick={() => open(line)}>
+                        record
+                      </button>
+                    ))}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

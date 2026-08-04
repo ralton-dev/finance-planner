@@ -748,9 +748,123 @@ td.dim {
   border: 1px solid var(--rule);
 }
 
+/* ----------------------------------------------------------------------------
+ * A table wider than the window scrolls inside itself; the document never does.
+ *
+ * The same bones as `.grid-scroll` (the projection months, further down) plus
+ * two things a table of words needs that a grid of figures did not: an edge
+ * fade, so it is discoverable that there is more to the right, and a surface of
+ * its own, because the fade is a background and the table's own would paint
+ * over it.
+ *
+ * The fade is the four-layer background trick. Two `local` layers in the panel
+ * colour ride with the content and park against each edge; two `scroll` layers
+ * are pinned to the container. At rest the cover hides the fade; scroll away
+ * from an edge and its cover slides off, revealing it. No JS, and it goes quiet
+ * by itself at both ends. `--wash` is the token that flips with the theme —
+ * dark on light, light on dark — so the fade reads either way.
+ * -------------------------------------------------------------------------- */
+.table-scroll {
+  overflow-x: auto;
+  /* A sideways flick must not chain into the browser's back gesture. */
+  overscroll-behavior-x: contain;
+  max-width: 100%;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background-color: var(--panel);
+  background-image:
+    linear-gradient(to right, var(--panel), transparent),
+    linear-gradient(to left, var(--panel), transparent),
+    linear-gradient(to right, color-mix(in srgb, var(--wash) 16%, transparent), transparent),
+    linear-gradient(to left, color-mix(in srgb, var(--wash) 16%, transparent), transparent);
+  background-position:
+    left center,
+    right center,
+    left center,
+    right center;
+  background-repeat: no-repeat;
+  background-size:
+    28px 100%,
+    28px 100%,
+    16px 100%,
+    16px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+/* The table hands its frame to the wrapper: a second border would draw a box
+ * inside a box, and `overflow: hidden` from the base rule breaks the sticky
+ * column (the same trap `.months-grid` documents). Transparent so the wrapper's
+ * fade shows through the cells rather than under them. */
+.table-scroll > table {
+  width: auto;
+  min-width: 100%;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+}
+/* The row label stays put while the figures scroll past it — a wall of numbers
+ * with nothing saying which row you are on is worse than the overflow was. */
+.table-scroll .sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  text-align: left;
+  /* box-shadow, not border-right: collapsed borders drop off sticky cells. */
+  box-shadow: 1px 0 0 var(--rule);
+}
+.table-scroll th.sticky-col {
+  background: var(--ground-2);
+}
+/* Opaque, not a wash: rows slide *under* this cell, so anything translucent
+ * would show them through. */
+.table-scroll td.sticky-col {
+  background: var(--panel);
+}
+.table-scroll tr:hover td.sticky-col {
+  background: var(--panel-2);
+}
+
 /* Plan-table compatibility: existing PlanTable component uses these classes. */
 .plan-table tr.at-risk td {
   background: color-mix(in srgb, var(--alert) 6%, transparent);
+}
+/* The sticky cell has to carry the row's tint too, and opaquely. Mixing into
+ * `--panel` rather than `transparent` lands on exactly the colour the wash
+ * above resolves to over the same surface. */
+.plan-table tr.at-risk td.sticky-col {
+  background: color-mix(in srgb, var(--alert) 6%, var(--panel));
+}
+/* The phone sub-line: off until the columns it stands in for are dropped. */
+.plan-table .row-sub {
+  display: none;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 400;
+}
+/* Phones. Eight columns is more than 390px can carry honestly, so three of them
+ * — type, due date, and the payment's own amount — fold into a sub-line under
+ * the name, the convention the accounts index already uses. What is left is
+ * what the page is for: what to put aside each month, what is aside, whether
+ * that is enough, and this month's move. The wrapper scrolls the remainder. */
+@media (max-width: 560px) {
+  .plan-table .wide-only {
+    display: none;
+  }
+  .plan-table .row-sub {
+    display: block;
+  }
+  /* Wide enough that the sub-line does not wrap to a paragraph, narrow enough
+   * that a sticky column does not eat the viewport it is pinned over. */
+  .plan-table th.sticky-col,
+  .plan-table td.name {
+    min-width: 8.5rem;
+    max-width: 11rem;
+  }
+  .plan-table th,
+  .plan-table td {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
 }
 /* Count hint after save/mo, e.g. "£164.26 (2)" — 2 payments fall due this month. */
 .recurs {

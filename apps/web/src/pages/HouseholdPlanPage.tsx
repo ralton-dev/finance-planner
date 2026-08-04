@@ -141,41 +141,45 @@ export function HouseholdPlanPage() {
           no payments on the household's accounts yet.
         </p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>payment</th>
-              <th>account</th>
-              <th>split</th>
-              <th className="num">required / mo</th>
-              <th>status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {p.lines
-              .slice()
-              .sort((a, b) => a.priority - b.priority)
-              .map((l) => (
-                <tr key={l.paymentId} className={l.onTrack ? "" : "at-risk"}>
-                  <td className="name">{l.name}</td>
-                  <td className="muted">{accountName.get(l.accountId) ?? "account"}</td>
-                  <td>
-                    <span className={l.scope === "shared" ? "tag-status idle" : "shared"}>
-                      {l.scope}
-                    </span>
-                  </td>
-                  <td className="num">{formatMinor(l.requiredMonthlyMinor, c)}</td>
-                  <td>
-                    {l.onTrack ? (
-                      <span className="tag-status ok">on track</span>
-                    ) : (
-                      <span className="tag-status warn">short</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
+        // Five columns is past what a phone holds; the wrapper scrolls them
+        // rather than the document, with the payment name pinned to the left.
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th className="sticky-col">payment</th>
+                <th>account</th>
+                <th>split</th>
+                <th className="num">required / mo</th>
+                <th>status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {p.lines
+                .slice()
+                .sort((a, b) => a.priority - b.priority)
+                .map((l) => (
+                  <tr key={l.paymentId} className={l.onTrack ? "" : "at-risk"}>
+                    <td className="name sticky-col">{l.name}</td>
+                    <td className="muted">{accountName.get(l.accountId) ?? "account"}</td>
+                    <td>
+                      <span className={l.scope === "shared" ? "tag-status idle" : "shared"}>
+                        {l.scope}
+                      </span>
+                    </td>
+                    <td className="num">{formatMinor(l.requiredMonthlyMinor, c)}</td>
+                    <td>
+                      {l.onTrack ? (
+                        <span className="tag-status ok">on track</span>
+                      ) : (
+                        <span className="tag-status warn">short</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <TagBreakdown lines={p.lines} currency={c} />

@@ -258,6 +258,71 @@ describe("PlanTable", () => {
     expect(screen.queryByText(/^due /)).toBeNull();
   });
 
+  // The narrow layout, as far as jsdom can see it: which columns are marked to
+  // drop and what the sub-line taking them over says. Whether the document
+  // actually stops scrolling sideways at 390px is a measurement, not an
+  // assertion — see the browser pass.
+  it("scrolls inside a wrapper rather than dragging the document sideways", () => {
+    const { container } = render(<PlanTable plan={plan} />);
+    expect(container.querySelector("table.plan-table")?.parentElement).toHaveClass("table-scroll");
+  });
+
+  it("pins the payment column, so a scrolled row still says which one it is", () => {
+    const { container } = render(<PlanTable plan={plan} />);
+    expect(container.querySelector("thead th")).toHaveClass("sticky-col");
+    for (const row of container.querySelectorAll("tbody tr")) {
+      expect(row.firstElementChild).toHaveClass("sticky-col");
+    }
+  });
+
+  it("keeps five columns on a phone and marks the other three to drop", () => {
+    const { container } = render(<PlanTable plan={plan} />);
+    const headers = [...container.querySelectorAll("thead th")];
+    const kept = headers.filter((th) => !th.classList.contains("wide-only"));
+    expect(kept.map((th) => th.textContent)).toEqual([
+      "payment",
+      "save / mo",
+      "saved",
+      "status",
+      "this month",
+    ]);
+
+    // Every dropped header has exactly one dropped cell under it in each row —
+    // a column half-hidden would misalign the rest.
+    const dropped = headers.length - kept.length;
+    expect(dropped).toBe(3);
+    for (const row of container.querySelectorAll("tbody tr")) {
+      expect(row.querySelectorAll("td.wide-only")).toHaveLength(dropped);
+    }
+  });
+
+  it("folds type, due date and amount into a sub-line under the name", () => {
+    const { container } = render(<PlanTable plan={plan} />);
+    const [holiday] = container.querySelectorAll(".row-sub");
+    expect(holiday).toHaveTextContent("goal · dated · due 2026-09-01 · £1,200.00");
+    // Money in the sub-line still has to be something privacy mode can blur.
+    expect(holiday?.querySelector(".amount")).toHaveTextContent("£1,200.00");
+  });
+
+  it("leaves the amount off the sub-line when it is the monthly ask over again", () => {
+    // A monthly bill's amount *is* its required-per-month. Repeating it under
+    // the name would say nothing and cost two lines on a phone.
+    const { container } = render(<PlanTable plan={{ ...plan, lines: [monthlyBill] }} />);
+    expect(container.querySelector(".row-sub")).toHaveTextContent("monthly · due 2026-03-01");
+    expect(container.querySelector(".row-sub .amount")).toBeNull();
+  });
+
+  it("marks a derived date in the sub-line with the tilde the column uses", () => {
+    const paced: AccountPlanDto["lines"][number] = {
+      ...plan.lines[0]!,
+      targetDate: "2027-02-01",
+      fixedMonthlyMinor: 5_000,
+      dueDateIsDerived: true,
+    };
+    const { container } = render(<PlanTable plan={{ ...plan, lines: [paced] }} />);
+    expect(container.querySelector(".row-sub")).toHaveTextContent("due ~2027-02-01");
+  });
+
   it("refuses to record a zero amount", async () => {
     const onRecord = vi.fn().mockResolvedValue(undefined);
     render(<PlanTable plan={plan} canRecord onRecord={onRecord} />);
