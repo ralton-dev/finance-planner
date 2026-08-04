@@ -17,14 +17,10 @@ const MS_PER_DAY = 86_400_000;
  * of "£2,400 by March"?
  *
  * Only a `fixed_point` goal can carry a monthly contribution cap; the engine
- * ignores one anywhere else. With a cap the pace is the promise and the finish
- * date falls out of it, so the DUE date on the row is something the plan worked
- * out rather than something the user typed.
- *
- * The plan DTO fills `dueDate` either way (`p.dueDate ?? effectiveDate`), so
- * the cap is the only tell here. A paced goal that *also* carries a deadline —
- * allowed, and then the date is the user's — would read as derived; give the
- * DTO an explicit flag if that combination ever needs telling apart.
+ * ignores one anywhere else. The cap is what makes the goal paced, and that is
+ * all this answers: a paced goal may still carry a deadline the user typed.
+ * Whether the DUE date was *derived* is a separate question, and one the row
+ * cannot work out for itself — see `dueDateIsDerived` on the line.
  */
 export function isPacedGoal(line: PlanLineDto): boolean {
   return line.category === "fixed_point" && (line.fixedMonthlyMinor ?? 0) > 0;
@@ -136,7 +132,10 @@ export function PlanTable({ plan, canRecord = false, onRecord, asOfDate }: PlanT
           const recordedMinor = mtd.get(line.paymentId);
           const recordable = canRecord && !!onRecord && line.category !== "monthly_recurring";
           const isOpen = openId === line.paymentId;
-          const derived = isPacedGoal(line);
+          // Straight from the API. A goal with a cap *and* a deadline is paced
+          // (the TYPE column says so) but its date is still the user's, and
+          // only the engine can tell the two apart.
+          const derived = line.dueDateIsDerived === true;
           const dueInDays =
             asOfDate && line.category === "monthly_recurring"
               ? daysUntilNextMonthly(line.dueDate, asOfDate)

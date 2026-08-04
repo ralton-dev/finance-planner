@@ -3,8 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { AccountPlanDto } from "../lib/types.js";
 import { daysUntilNextMonthly, PlanSummary, PlanTable } from "./PlanTable.js";
 
+const AS_OF = "2026-08-04";
+
 const plan: AccountPlanDto = {
   accountId: "a1",
+  asOfDate: AS_OF,
   currency: "GBP",
   monthlyIncomeMinor: 300_000,
   bufferMinor: 0,
@@ -194,6 +197,7 @@ describe("PlanTable", () => {
       name: "New bike",
       targetDate: "2027-02-01",
       fixedMonthlyMinor: 5_000,
+      dueDateIsDerived: true,
     };
     render(<PlanTable plan={{ ...plan, lines: [plan.lines[0]!, paced] }} />);
 
@@ -202,6 +206,32 @@ describe("PlanTable", () => {
     // The dated goal keeps its date plain: the user typed that one.
     expect(screen.getByText("2026-09-01")).not.toHaveClass("derived");
     expect(screen.queryByText("~2026-09-01")).toBeNull();
+  });
+
+  it("leaves a paced goal's own deadline plain — the cap alone proves nothing", () => {
+    // A cap *and* a deadline: paced by type, but the date is the user's, and
+    // the engine is the only thing that can tell the two apart.
+    const pacedAndDated: AccountPlanDto["lines"][number] = {
+      ...plan.lines[0]!,
+      paymentId: "p9",
+      name: "New bike",
+      targetDate: "2027-02-01",
+      fixedMonthlyMinor: 5_000,
+      dueDateIsDerived: false,
+    };
+    render(<PlanTable plan={{ ...plan, lines: [pacedAndDated] }} />);
+
+    expect(screen.getByText("goal · paced")).toBeInTheDocument();
+    expect(screen.getByText("2027-02-01")).not.toHaveClass("derived");
+    expect(screen.queryByText("~2027-02-01")).toBeNull();
+  });
+
+  it("says nothing about derivation when the API is silent", () => {
+    // An older payload, or the household plan's lines: no flag, no tilde.
+    render(
+      <PlanTable plan={{ ...plan, lines: [{ ...plan.lines[0]!, fixedMonthlyMinor: 5_000 }] }} />,
+    );
+    expect(screen.getByText("2026-09-01")).not.toHaveClass("derived");
   });
 
   it("treats a zero cap as no cap at all", () => {

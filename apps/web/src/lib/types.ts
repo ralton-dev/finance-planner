@@ -182,6 +182,10 @@ export interface PlanLineDto {
   amountMinor: number;
   dueDate: string;
   targetDate: string;
+  /** The date on this line was worked out from the goal's pace, not set by the
+   *  user. The API says so explicitly because the wire cannot: `dueDate` is
+   *  filled in either way. */
+  dueDateIsDerived?: boolean;
   monthsUntilDue: number;
   requiredMonthlyMinor: number;
   fundedMonthlyMinor: number;
@@ -211,6 +215,11 @@ export interface LatestBalanceDto {
 
 export interface AccountPlanDto {
   accountId: string;
+  /** The date the plan was computed against — the server's day, not the
+   *  browser's. Already on the wire (`AccountPlan.asOfDate`); this type simply
+   *  never declared it, which is why the plan table's "due in N d" countdown
+   *  had nothing to count from. */
+  asOfDate: string;
   currency: string;
   monthlyIncomeMinor: number;
   bufferMinor: number;

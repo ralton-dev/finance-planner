@@ -55,6 +55,18 @@ export interface PaymentPlanLine {
   amountMinor: number;
   dueDate: string;
   targetDate: string;
+  /**
+   * True when the date on this line is one the engine worked out rather than
+   * one the user set: a contribution-capped goal carrying no `targetDate` and
+   * no `dueDate`, whose finish date is a consequence of the pace.
+   *
+   * It exists because the answer is not recoverable downstream — `dueDate` is
+   * emitted as `p.dueDate ?? effectiveDate`, so a date you typed and a date the
+   * plan derived are byte-identical on the wire. A UI inferring it from the cap
+   * alone gets the two ordinary cases right and mislabels the third: a goal
+   * that carries *both* a cap and a deadline keeps the user's date.
+   */
+  dueDateIsDerived: boolean;
   monthsUntilDue: number;
   requiredMonthlyMinor: number;
   fundedMonthlyMinor: number;

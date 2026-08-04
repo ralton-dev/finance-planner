@@ -249,6 +249,46 @@ describe("computeAccountPlan — contribution-first goals", () => {
     expect(plan.lines[0]?.tag).toBeNull();
   });
 
+  describe("dueDateIsDerived", () => {
+    const derived = (over: Partial<PaymentInput>): boolean =>
+      computeAccountPlan(fund([goal(over)]), "2026-01-01").lines[0]!.dueDateIsDerived;
+
+    it("is true only for a capped goal with no date of its own", () => {
+      expect(derived({ fixedMonthlyMinor: 20_000 })).toBe(true);
+    });
+
+    it("is false when a capped goal also carries a deadline", () => {
+      // The case the UI could not see: paced *and* dated. `dueDate` on the wire
+      // is the user's date either way, so nothing downstream can tell.
+      expect(derived({ fixedMonthlyMinor: 20_000, dueDate: "2026-09-01" })).toBe(false);
+      expect(derived({ fixedMonthlyMinor: 20_000, targetDate: "2026-09-01" })).toBe(false);
+    });
+
+    it("is false for a dated goal with no cap", () => {
+      expect(derived({ dueDate: "2026-09-01" })).toBe(false);
+    });
+
+    it("is false when the cap is zero, which is no cap at all", () => {
+      expect(derived({ fixedMonthlyMinor: 0 })).toBe(false);
+    });
+
+    it("is false for every category a cap does not apply to", () => {
+      const plan = computeAccountPlan(
+        fund([
+          {
+            id: "bill",
+            name: "Phone",
+            category: "monthly_recurring",
+            amountMinor: 4_500,
+            fixedMonthlyMinor: 1_000,
+          },
+        ]),
+        "2026-01-01",
+      );
+      expect(plan.lines[0]?.dueDateIsDerived).toBe(false);
+    });
+  });
+
   it("a dateless goal on pace has no projected completion date to add", () => {
     // The pace already *is* the target date, so there is nothing extra to say.
     const plan = computeAccountPlan(fund([goal({ fixedMonthlyMinor: 20_000 })]), "2026-01-01");

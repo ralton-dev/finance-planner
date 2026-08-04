@@ -1780,6 +1780,50 @@ describe("api service", () => {
     expect(cleared.json().fixedMonthlyMinor).toBeNull();
   });
 
+  it("says on the plan line whether the due date was derived or set", async () => {
+    const { auth } = await seedUser(store);
+    const account = await seedFundedAccount(auth);
+
+    const add = async (payload: Record<string, unknown>): Promise<string> =>
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/accounts/${account.id}/payments`,
+          headers: auth,
+          payload: { category: "fixed_point", amountMinor: 120000, ...payload },
+        })
+      ).json().id as string;
+
+    const paced = await add({ name: "Paced", fixedMonthlyMinor: 20000 });
+    const dated = await add({ name: "Dated", dueDate: "2026-09-01" });
+    // Both: a pace *and* a promise. The two are indistinguishable in `dueDate`
+    // — it is filled in either way — which is the whole reason for the flag.
+    const both = await add({
+      name: "Paced and dated",
+      fixedMonthlyMinor: 20000,
+      dueDate: "2026-09-01",
+    });
+
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan?asOf=2026-01-01`,
+        headers: auth,
+      })
+    ).json();
+    const byId = new Map<string, { dueDateIsDerived: boolean; dueDate: string }>(
+      plan.lines.map((l: { paymentId: string }) => [l.paymentId, l as never]),
+    );
+
+    expect(byId.get(paced)!.dueDateIsDerived).toBe(true);
+    expect(byId.get(dated)!.dueDateIsDerived).toBe(false);
+    expect(byId.get(both)!.dueDateIsDerived).toBe(false);
+    // …and the dates alone would have told the UI nothing: the paced goal's is
+    // as concrete on the wire as the one somebody typed.
+    expect(byId.get(paced)!.dueDate).toBe("2026-07-01");
+    expect(byId.get(both)!.dueDate).toBe("2026-09-01");
+  });
+
   it("carries payment tags onto household plan lines too", async () => {
     const h = await seedHousehold(store, app);
     await app.inject({

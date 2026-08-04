@@ -115,6 +115,7 @@ export function AccountPage() {
       {plan.data && (
         <PlanTable
           plan={plan.data}
+          asOfDate={plan.data.asOfDate}
           canRecord={canEdit}
           onRecord={async (paymentId, amountMinor) => {
             await api.recordContribution(paymentId, { amountMinor });

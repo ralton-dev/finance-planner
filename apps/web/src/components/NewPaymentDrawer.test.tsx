@@ -52,6 +52,7 @@ function planLine(over: Partial<PlanLineDto> & { paymentId: string }): PlanLineD
 function accountPlan(over: Partial<AccountPlanDto>): AccountPlanDto {
   return {
     accountId: "acc-1",
+    asOfDate: "2026-08-04",
     currency: "GBP",
     monthlyIncomeMinor: 300_000,
     bufferMinor: 0,

@@ -224,6 +224,9 @@ export function computeAccountPlan(account: AccountInput, asOfDate: string): Acc
       amountMinor: p.amountMinor,
       dueDate: p.dueDate ?? req.effectiveDate,
       targetDate: req.effectiveDate,
+      // The pace decided the date exactly when there was a cap and no date to
+      // keep — the same condition `requiredMonthlyForPayment` branches on.
+      dueDateIsDerived: contributionCapMinor(p) !== null && !p.targetDate && !p.dueDate,
       monthsUntilDue: req.monthsUntilDue,
       requiredMonthlyMinor: req.requiredMinor,
       fundedMonthlyMinor: funded,

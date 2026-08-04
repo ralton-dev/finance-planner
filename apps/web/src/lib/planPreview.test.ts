@@ -21,6 +21,7 @@ function line(paymentId: string, name: string, onTrack: boolean): PlanLineDto {
 function plan(over: Partial<AccountPlanDto>): AccountPlanDto {
   return {
     accountId: "acc",
+    asOfDate: "2026-08-04",
     currency: "GBP",
     monthlyIncomeMinor: 300_000,
     bufferMinor: 0,

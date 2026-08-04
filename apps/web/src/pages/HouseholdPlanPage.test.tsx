@@ -93,6 +93,7 @@ const PLAN: HouseholdPlanDto = {
 
 function accountPlan(over: Partial<AccountPlanDto> & { accountId: string }): AccountPlanDto {
   return {
+    asOfDate: AS_OF,
     currency: "GBP",
     monthlyIncomeMinor: 0,
     bufferMinor: 0,
