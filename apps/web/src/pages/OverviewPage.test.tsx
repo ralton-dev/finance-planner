@@ -494,35 +494,6 @@ describe("OverviewPage — fold + doorways", () => {
  * `awaiting_transfer` line with no prompt anywhere on the page.
  */
 describe("OverviewPage — money moving between your own accounts", () => {
-  const POT_PLAN = {
-    accountId: "pot",
-    asOfDate: AS_OF,
-    currency: "GBP",
-    monthlyIncomeMinor: 0,
-    bufferMinor: 0,
-    totalRequiredMinor: 30_000,
-    totalFundedMinor: 30_000,
-    leftoverMinor: 0,
-    shortfallMinor: 0,
-    allocatedInflowMinor: 30_000,
-    confirmedInflowMinor: 0,
-    lines: [],
-    contributionsMTD: [],
-    latestBalance: { asOfDate: AS_OF, balanceMinor: 0 },
-    reservedMinor: 0,
-    inflowArrivals: [{ inflowId: "inf-1", fromAccountId: "current", amountMinor: 30_000 }],
-    inflowSources: [
-      {
-        kind: "account",
-        inflowId: "inf-1",
-        fromAccountId: "current",
-        accountName: "Current account",
-        amountMinor: 30_000,
-        confirmedMinor: 0,
-      },
-    ],
-  };
-
   function renderEstate(routes: Routes = {}): ReturnType<typeof render> {
     stub = stubApiFetch({
       "GET /api/auth/me": { body: ME },
@@ -557,6 +528,12 @@ describe("OverviewPage — money moving between your own accounts", () => {
                   leftoverMinor: 0,
                   allocatedInflowMinor: 30_000,
                   confirmedInflowMinor: 0,
+                  // The itemisation, straight off the index: the authored
+                  // inflow's id and what it delivered, and no name anywhere.
+                  // The sender is named from the account list the page holds.
+                  inflowArrivals: [
+                    { inflowId: "inf-1", fromAccountId: "current", amountMinor: 30_000 },
+                  ],
                   latestBalanceMinor: 0,
                   latestBalanceDate: AS_OF,
                 }),
@@ -566,7 +543,6 @@ describe("OverviewPage — money moving between your own accounts", () => {
         },
       },
       "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
-      "GET /api/accounts/pot/plan": { body: POT_PLAN },
       ...routes,
     });
 
@@ -596,12 +572,21 @@ describe("OverviewPage — money moving between your own accounts", () => {
     );
   });
 
-  it("reads a plan only for the account with money in transit", async () => {
+  it("reads no account plan at all to draw the row", async () => {
     renderEstate();
     await screen.findByText("Current account → Holiday pot");
 
-    expect(stub.calls("GET /api/accounts/pot/plan")).toBe(1);
+    expect(stub.calls("GET /api/accounts/pot/plan")).toBe(0);
     expect(stub.calls("GET /api/accounts/current/plan")).toBe(0);
+  });
+
+  it("says only 'another account' when the sender is not one it can see", async () => {
+    // The index carries the sending account's *id*, never its name — so a
+    // sender missing from the account list has no name here, exactly as the
+    // plan's access-gated `inflowSources` would have withheld it.
+    renderEstate({ "GET /api/accounts": { body: [account("pot", "Holiday pot")] } });
+
+    expect(await screen.findByText("another account → Holiday pot")).toBeInTheDocument();
   });
 
   it("nets the movement out of the headline instead of counting it twice", async () => {
@@ -620,11 +605,20 @@ describe("OverviewPage — money moving between your own accounts", () => {
  * list *and* an account plan per account, so an estate of ten accounts cost
  * twenty requests nobody asked for. Everything the checklist needs now comes
  * down with the overview itself, so the cost is flat.
+ *
+ * The flat cost then sprang a leak and has been re-sealed. A movement between
+ * two accounts you own has to be confirmed against the *authored inflow*, and
+ * the index sent inflow totals without itemising them — so the page bought one
+ * whole account plan per account with money in transit to recover the ids. On
+ * a payday, with every pot fed and nothing yet ticked, that is a plan per pot.
+ * `inflowArrivals` now rides down with the index and the second case below
+ * costs exactly what the first does.
  */
 describe("OverviewPage — request cost", () => {
   /** Mounts the page over `count` standalone accounts, each with a row to
-   *  action, and reports how many requests that took. */
-  async function requestsFor(count: number): Promise<number> {
+   *  action, and reports how many requests that took. `inTransit` gives every
+   *  one of them money arriving that nobody has said moved. */
+  async function requestsFor(count: number, inTransit = false): Promise<number> {
     const list = Array.from({ length: count }, (_, i) => account(`a${i}`, `Account ${i}`));
     stub = stubApiFetch({
       "GET /api/auth/me": { body: ME },
@@ -645,6 +639,15 @@ describe("OverviewPage — request cost", () => {
                 state({
                   accountId: a.id,
                   name: a.name,
+                  ...(inTransit
+                    ? {
+                        allocatedInflowMinor: 30_000,
+                        confirmedInflowMinor: 0,
+                        inflowArrivals: [
+                          { inflowId: `inf-${a.id}`, fromAccountId: "src", amountMinor: 30_000 },
+                        ],
+                      }
+                    : {}),
                   planSummary: {
                     unrecorded: [
                       {
@@ -675,6 +678,7 @@ describe("OverviewPage — request cost", () => {
     );
     // Every account's row is on screen, so nothing is still in flight.
     expect(await screen.findAllByText("record Holiday")).toHaveLength(count);
+    if (inTransit) expect(await screen.findAllByText(/→ Account /)).toHaveLength(count);
 
     const total = stub.mock.mock.calls.length;
     cleanup();
@@ -686,6 +690,13 @@ describe("OverviewPage — request cost", () => {
     // me, accounts, overview, upcoming — and nothing per row.
     expect(await requestsFor(3)).toBe(4);
     expect(await requestsFor(5)).toBe(4);
+  });
+
+  it("costs the same again when every account has money in transit", async () => {
+    // Was 4 + one account plan per row: 7 and 9. The ids the confirm rows are
+    // keyed on come down with the index now.
+    expect(await requestsFor(3, true)).toBe(4);
+    expect(await requestsFor(5, true)).toBe(4);
   });
 });
 

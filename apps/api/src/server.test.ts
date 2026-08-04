@@ -3102,6 +3102,86 @@ describe("inflows over HTTP", () => {
   });
 
   /**
+   * The itemisation the Overview used to buy an account plan per row to get.
+   *
+   * A checklist row has to name the *authored inflow* to confirm against it,
+   * and the index sent per-account inflow totals without ever itemising them —
+   * so the page read a whole plan for every account with money in transit, for
+   * the ids alone. These are the same arrivals the account plan already carries
+   * unfiltered: ids and amounts, never a name. `planInflowSources` gates names
+   * and only names, which is why this needs no gate of its own, and the sender
+   * here is an account the caller cannot see at all.
+   */
+  it("itemises the arriving money by inflow, and names nobody", async () => {
+    const { auth } = await seedUser(store);
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
+    const me = (await store.getUserByEmail("owner@example.com"))!;
+    const household = await store.createHousehold("Home", bob.id);
+    await store.addMembership(household.id, me.id, "member");
+
+    const bobCurrent = await makeAccount(bobAuth, "bob-current");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${bobCurrent.id}/incomes`,
+      headers: bobAuth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    const pot = await makeAccount(auth, "pot");
+    const quiet = await makeAccount(auth, "quiet");
+    await store.createAccountShare(bobCurrent.id, household.id, "edit");
+    const movement = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${pot.id}/inflows`,
+        headers: auth,
+        payload: movementBody(bobCurrent.id),
+      })
+    ).json();
+    // The sender leaves my view again. The money still arrives.
+    await store.deleteAccountShare((await store.listSharesForAccount(bobCurrent.id))[0]!.id);
+
+    const rows = (await app.inject({ method: "GET", url: "/api/overview", headers: auth })).json()
+      .perCurrency[0].accounts;
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/plan`, headers: auth })
+    ).json();
+    const row = rows.find((r: { accountId: string }) => r.accountId === pot.id);
+
+    // Byte for byte what the plan endpoint already sends, so no screen can
+    // disagree with another about what arrived.
+    expect(row.inflowArrivals).toEqual(plan.inflowArrivals);
+    expect(row.inflowArrivals).toEqual([
+      {
+        inflowId: movement.id,
+        fromAccountId: bobCurrent.id,
+        amountMinor: 20000,
+        confirmedMinor: 0,
+      },
+    ]);
+    // The id of an account I cannot see travels; its *name* does not, here or
+    // on the plan.
+    expect(JSON.stringify(row)).not.toContain("bob-current");
+    expect(plan.inflowSources).toEqual([
+      {
+        kind: "account",
+        inflowId: movement.id,
+        fromAccountId: bobCurrent.id,
+        amountMinor: 20000,
+        confirmedMinor: 0,
+      },
+    ]);
+
+    // Omitted, not sent empty, on the ordinary account nothing moves into.
+    const other = rows.find((r: { accountId: string }) => r.accountId === quiet.id);
+    expect(other).not.toHaveProperty("inflowArrivals");
+  });
+
+  /**
    * The double-count guard, over the shape that used to hide it: a chain. Each
    * hop's pound is reported as the sender's leftover *and* as the receiver's
    * funded money, so the rollup has to net it once per hop — which it can only

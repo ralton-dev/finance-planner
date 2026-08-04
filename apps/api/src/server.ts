@@ -1091,6 +1091,15 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         // no household gate. Own income stays own income (decision #3).
         allocatedInflowMinor: plan.allocatedInflowMinor,
         confirmedInflowMinor: plan.confirmedInflowMinor,
+        // The same amounts, itemised by the authored inflow that delivered
+        // them. Sent for the same reason `planSummary` is: a checklist row has
+        // to name the movement to confirm against it, and without this the
+        // Overview paid a whole account plan per account with money in transit
+        // for the ids alone. Still no name in it — `planInflowSources` gates
+        // names and nothing else, and these ids ride ungated on the account
+        // plan already. Omitted rather than sent empty on the ordinary account
+        // nothing moves into.
+        ...(plan.inflowArrivals.length > 0 ? { inflowArrivals: plan.inflowArrivals } : {}),
         latestBalanceMinor: reality.latestBalance?.balanceMinor ?? null,
         latestBalanceDate: reality.latestBalance?.asOfDate ?? null,
         reservedMinor: reality.reservedMinor,

@@ -442,6 +442,17 @@ export interface OverviewAccountDto {
   /** Of that, how much has been confirmed as actually moved. The difference is
    *  what the index's awaiting chip counts. */
   confirmedInflowMinor?: number;
+  /**
+   * What each movement out of another account delivered here this month — the
+   * itemisation of `allocatedInflowMinor`, and the only carrier of the authored
+   * inflow's id, which is what "I moved it" is posted against.
+   *
+   * Ids and amounts, never a name, so this needs no access gate for the same
+   * reason the total above does not — and it rides on the account plan already,
+   * ungated, so withholding it here would hide nothing. Absent when nothing
+   * moves into this account, which is the ordinary case.
+   */
+  inflowArrivals?: InflowArrivalDto[];
   leftoverMinor: number;
   shortfallMinor: number;
   atRiskCount: number;

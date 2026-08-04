@@ -14,14 +14,15 @@ import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { AccountCell, AttentionCell, BalanceCell } from "./AccountsPage.js";
 import type {
   AccountDto,
-  AccountPlanDto,
   BalanceSnapshotDto,
   CurrencyOverviewDto,
   HouseholdDto,
   HouseholdPlanDto,
+  InflowArrivalDto,
   LatestBalanceDto,
   OverviewAccountDto,
   OverviewDto,
+  PlanInflowSourceDto,
   TransferConfirmationDto,
   UpcomingDto,
   UserDto,
@@ -41,15 +42,13 @@ import type {
  * rows are derived from them and the link cards print totals that same read
  * already carries. Nothing here renders their lines.
  *
- * The *account* plans are all but unread. GET /overview computes every one of
+ * The *account* plans are not read at all. GET /overview computes every one of
  * them to aggregate it, so it sends down the handful of line facts the
- * checklist acts on (`planSummary`) and the page costs a fixed number of
- * requests however many accounts you have. Two per-account reads are left, both
- * bought deliberately: the balance history behind the net-worth disclosure,
- * which waits until the disclosure is opened, and a plan for each account with
- * money arriving that nobody has said moved — the only place the authored
- * inflow's id lives, and without it a movement between two of your own accounts
- * has no row to be confirmed from. Both sets are normally empty.
+ * checklist acts on (`planSummary`) and the arrivals it must name to confirm a
+ * movement (`inflowArrivals`), and the page costs a fixed number of requests
+ * however many accounts you have. One per-account read is left and it is bought
+ * deliberately: the balance history behind the net-worth disclosure, which
+ * waits until the disclosure is opened.
  *
  * `UpcomingDigest` stays a section of its own, directly beneath the fold,
  * rather than folding into the checklist. A bill that falls due next Tuesday is
@@ -86,6 +85,33 @@ function latestBalanceOf(s: OverviewAccountDto): LatestBalanceDto | null {
   return { asOfDate, balanceMinor };
 }
 
+/**
+ * The overview's arrivals, given the sending accounts' names.
+ *
+ * The index carries ids and amounts and no name, which is what lets it skip an
+ * access gate. The names are then looked up in the account list this page
+ * already holds — and that list is exactly the accounts the caller may see,
+ * which is precisely the gate `planInflowSources` applies on the server. A
+ * sender they cannot see simply has no name here either, and `deriveNeedsYou`
+ * renders the absence as "another account" rather than as an id.
+ */
+export function namedSenders(
+  arrivals: readonly InflowArrivalDto[],
+  byId: ReadonlyMap<string, AccountDto>,
+): PlanInflowSourceDto[] {
+  return arrivals.map((a) => {
+    const sender = byId.get(a.fromAccountId);
+    return {
+      kind: "account",
+      inflowId: a.inflowId,
+      fromAccountId: a.fromAccountId,
+      ...(sender ? { accountName: sender.name } : {}),
+      amountMinor: a.amountMinor,
+      confirmedMinor: a.confirmedMinor ?? 0,
+    };
+  });
+}
+
 export function OverviewPage() {
   const { lastCreated } = useQuickAdd();
   const me = useAsync<UserDto>(() => api.me(), []);
@@ -115,37 +141,6 @@ export function OverviewPage() {
     [householdKey],
   );
 
-  // Movements between two accounts you own have no prompt anywhere else. The
-  // plan funds the receiving pot out of the arriving money, so its shortfall row
-  // correctly goes — and nothing takes its place unless the checklist can name
-  // the movement. Naming it needs the *authored inflow's id*, which is what the
-  // confirm endpoint is scoped by, and GET /overview sends per-account inflow
-  // totals without ever itemising them.
-  //
-  // So: one plan read for exactly the accounts with money arriving that nobody
-  // has said moved. That is the only set that can produce a row, and it is
-  // normally empty — a settled month costs nothing extra. A household pot still
-  // awaiting its members' transfers falls in the set too and yields no arrivals
-  // (a household allocation is not a movement); its prompt is the household's,
-  // and the wasted read is the price of not asking the index to itemise.
-  const awaitingIds = (overview.data?.perCurrency ?? [])
-    .flatMap((c) => c.accounts)
-    .filter((s) => (s.allocatedInflowMinor ?? 0) > (s.confirmedInflowMinor ?? 0))
-    .map((s) => s.accountId);
-  const awaitingKey = awaitingIds.join(",");
-  const arrivals = useAsync<Map<string, AccountPlanDto>>(
-    () =>
-      Promise.all(
-        awaitingIds.map(
-          async (id) =>
-            [id, await api.getPlan(id).catch(() => null)] as [string, AccountPlanDto | null],
-        ),
-      ).then(
-        (entries) => new Map(entries.filter((e): e is [string, AccountPlanDto] => e[1] !== null)),
-      ),
-    [awaitingKey],
-  );
-
   // The trend chart is the only thing left that needs a balance *history*, and
   // it sits behind a closed disclosure. Reading one per account at mount would
   // be a request per row for a chart most visits never open, so the batch waits
@@ -173,7 +168,6 @@ export function OverviewPage() {
     overview.refetch();
     accounts.refetch();
     plans.refetch();
-    arrivals.refetch();
     // A no-op while the trend is closed — the read is deps-gated on `trendOpen`.
     histories.refetch();
     upcoming.refetch();
@@ -206,15 +200,14 @@ export function OverviewPage() {
   // left to that household's member rows, which say whose money is missing.
   //
   // Every account fact here is off the overview's own read — the shortfall and
-  // left-over it aggregates anyway, the balance the index prints, and the line
-  // summary the API derives from the plan it computed. The only plans fetched
-  // are `arrivals`, and only for accounts with money in transit.
+  // left-over it aggregates anyway, the balance the index prints, the line
+  // summary the API derives from the plan it computed, and now the movements
+  // itemised out of the inflow total. No plan is fetched at all.
   const needsYou: NeedsYouInput = {
     asOfDate,
     households: householdPlans.map(({ plan, confirmations }) => ({ plan, confirmations })),
     accounts: buckets.flatMap((bucket) =>
       bucket.accounts.map((s): NeedsYouAccountInput => {
-        const arriving = arrivals.data?.get(s.accountId);
         return {
           name: s.name,
           plan: {
@@ -226,8 +219,12 @@ export function OverviewPage() {
             ...(s.allocatedInflowMinor === undefined
               ? {}
               : { allocatedInflowMinor: s.allocatedInflowMinor }),
-            ...(arriving?.inflowArrivals ? { inflowArrivals: arriving.inflowArrivals } : {}),
-            ...(arriving?.inflowSources ? { inflowSources: arriving.inflowSources } : {}),
+            ...(s.inflowArrivals
+              ? {
+                  inflowArrivals: s.inflowArrivals,
+                  inflowSources: namedSenders(s.inflowArrivals, byId),
+                }
+              : {}),
           },
           ...(s.householdId ? { householdId: s.householdId } : {}),
           ...(s.planSummary ? { lineSummary: s.planSummary } : {}),
@@ -272,11 +269,7 @@ export function OverviewPage() {
           {plans.loading ? (
             <p className="muted">reading your plans…</p>
           ) : (
-            <Fold
-              input={needsYou}
-              loading={upcoming.loading || arrivals.loading}
-              onActioned={refetchAll}
-            />
+            <Fold input={needsYou} loading={upcoming.loading} onActioned={refetchAll} />
           )}
 
           <UpcomingDigest
