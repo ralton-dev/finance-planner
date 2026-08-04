@@ -242,8 +242,13 @@
    * key. Mixed from --accent rather than --needs-you: on white the amber sits
    * at a mustard that reads as dirt at this alpha, and it would be a hair off
    * the shortfall tint two rows below it. Falling due is a fact, not a state,
-   * so the neutral emphasis colour is the honest one. */
-  --due-tint: color-mix(in srgb, var(--accent) 12%, transparent);
+   * so the neutral emphasis colour is the honest one.
+   *
+   * 22%, not the 12% it was picked at. That figure was chosen by computation;
+   * measured off the screen it came out at 1.20:1 against a plain cell on light
+   * and 1.23:1 on dark — present in the DOM and invisible in the room. The grid
+   * key names the tint as one of three marks, so it has to be one. */
+  --due-tint: color-mix(in srgb, var(--accent) 22%, transparent);
 
   --shadow-tip: 0 4px 14px color-mix(in srgb, var(--scrim) 45%, transparent);
   --shadow-drawer: -10px 0 32px color-mix(in srgb, var(--scrim) 50%, transparent);
@@ -2105,7 +2110,7 @@ summary > h3 {
   border-radius: 1px;
   vertical-align: -1px;
   background: var(--due-tint);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 /* Overview: what lands in the next fortnight. */
