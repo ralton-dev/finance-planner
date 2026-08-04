@@ -6,6 +6,7 @@ import {
   deriveHeadline,
   deriveNeedsYou,
   needsYouCountLabel,
+  type NeedsYouAction,
   type NeedsYouInput,
   type NeedsYouItem,
   type NeedsYouKind,
@@ -33,6 +34,14 @@ interface Settled {
   item: NeedsYouItem;
   undo?: Undo;
 }
+
+/**
+ * Rows whose whole action is one button: "I moved it". Two of them, because
+ * money can be waiting on a household member or on you moving your own — one
+ * row shape, two endpoints, and the checklist ranks them together.
+ */
+const isMarkDone = (action: NeedsYouAction): boolean =>
+  action.kind === "confirmTransfer" || action.kind === "confirmMovement";
 
 /** The chip that says what kind of thing a row is. */
 const KIND_LABEL: Record<NeedsYouKind, string> = {
@@ -142,6 +151,16 @@ export function Fold({ input, loading = false, onActioned }: Props) {
       return;
     }
 
+    // The same tick with no household in it: an authored movement between two
+    // accounts you own, confirmed against the inflow itself.
+    if (action.kind === "confirmMovement") {
+      void run(item, async () => {
+        const result = await api.confirmMovement(action.inflowId, action.month);
+        return () => api.unconfirmMovement(action.inflowId, result.confirmation.id);
+      });
+      return;
+    }
+
     if (action.kind === "recordContribution") {
       const amountMinor = toMinor(amount);
       if (amountMinor <= 0) {
@@ -228,7 +247,7 @@ export function Fold({ input, loading = false, onActioned }: Props) {
                       <Link to={item.href} className="action">
                         open →
                       </Link>
-                    ) : item.action.kind === "confirmTransfer" ? (
+                    ) : isMarkDone(item.action) ? (
                       <button
                         type="button"
                         className="ghost tiny"

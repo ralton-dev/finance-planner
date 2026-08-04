@@ -445,6 +445,94 @@ describe("Fold · transfer", () => {
   });
 });
 
+/**
+ * The same row with no household in it: money the plan moves between two
+ * accounts you own. One button, one endpoint scoped to the authored inflow.
+ */
+describe("Fold · movement", () => {
+  const potInput: NeedsYouInput = {
+    asOfDate: AS_OF,
+    accounts: [
+      {
+        name: "Holiday pot",
+        plan: accountPlan({
+          accountId: "holiday",
+          allocatedInflowMinor: 30_000,
+          inflowArrivals: [{ inflowId: "inf-1", fromAccountId: "current", amountMinor: 30_000 }],
+          inflowSources: [
+            {
+              kind: "account",
+              inflowId: "inf-1",
+              fromAccountId: "current",
+              accountName: "Current account",
+              amountMinor: 30_000,
+              confirmedMinor: 0,
+            },
+          ],
+        }),
+      },
+    ],
+  };
+
+  const confirmed: Routes = {
+    "POST /api/inflows/inf-1/confirm?month=2026-08": {
+      status: 201,
+      body: { confirmation: { id: "conf-move" }, contributions: [] },
+    },
+  };
+
+  it("offers one row for the movement, with the transfer chip and a tick", () => {
+    const { container } = renderFold(confirmed, potInput);
+
+    expect(container.querySelectorAll(".needs-you-row")).toHaveLength(1);
+    expect(screen.getByText("Current account → Holiday pot")).toBeInTheDocument();
+    expect(container.querySelector(".needs-you-kind")).toHaveTextContent("transfer");
+    expect(screen.getByRole("button", { name: "mark done" })).toBeInTheDocument();
+  });
+
+  it("confirms against the inflow, not a household", async () => {
+    const { onActioned } = renderFold(confirmed, potInput);
+
+    fireEvent.click(screen.getByRole("button", { name: "mark done" }));
+
+    await waitFor(() => expect(onActioned).toHaveBeenCalledTimes(1));
+    expect(stub.calls("POST /api/inflows/inf-1/confirm?month=2026-08")).toBe(1);
+    expect(await screen.findByText("✓ done")).toBeInTheDocument();
+  });
+
+  it("keeps the undo within reach", async () => {
+    const { onActioned } = renderFold(
+      { ...confirmed, "DELETE /api/inflows/inf-1/confirmations/conf-move": { status: 204 } },
+      potInput,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "mark done" }));
+    fireEvent.click(await screen.findByRole("button", { name: "undo" }));
+
+    await waitFor(() => expect(onActioned).toHaveBeenCalledTimes(2));
+    expect(stub.calls("DELETE /api/inflows/inf-1/confirmations/conf-move")).toBe(1);
+    expect(screen.getByRole("button", { name: "mark done" })).toBeInTheDocument();
+  });
+
+  it("rolls the tick back and names the error code when the server refuses", async () => {
+    const { onActioned } = renderFold(
+      {
+        "POST /api/inflows/inf-1/confirm?month=2026-08": {
+          status: 409,
+          body: { error: { code: "already_confirmed", message: "already confirmed" } },
+        },
+      },
+      potInput,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "mark done" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("already_confirmed");
+    expect(screen.queryByText("✓ done")).toBeNull();
+    expect(onActioned).not.toHaveBeenCalled();
+  });
+});
+
 describe("Fold · record", () => {
   it("prefills what is still missing, not the month's whole target", () => {
     renderFold();

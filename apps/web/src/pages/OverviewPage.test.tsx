@@ -488,6 +488,134 @@ describe("OverviewPage — fold + doorways", () => {
 });
 
 /**
+ * An estate with no household in it: a current account feeding a holiday pot.
+ * The pot's plan is funded out of the arriving money, so it is short of nothing
+ * — and until the checklist could name the movement, that left an
+ * `awaiting_transfer` line with no prompt anywhere on the page.
+ */
+describe("OverviewPage — money moving between your own accounts", () => {
+  const POT_PLAN = {
+    accountId: "pot",
+    asOfDate: AS_OF,
+    currency: "GBP",
+    monthlyIncomeMinor: 0,
+    bufferMinor: 0,
+    totalRequiredMinor: 30_000,
+    totalFundedMinor: 30_000,
+    leftoverMinor: 0,
+    shortfallMinor: 0,
+    allocatedInflowMinor: 30_000,
+    confirmedInflowMinor: 0,
+    lines: [],
+    contributionsMTD: [],
+    latestBalance: { asOfDate: AS_OF, balanceMinor: 0 },
+    reservedMinor: 0,
+    inflowArrivals: [{ inflowId: "inf-1", fromAccountId: "current", amountMinor: 30_000 }],
+    inflowSources: [
+      {
+        kind: "account",
+        inflowId: "inf-1",
+        fromAccountId: "current",
+        accountName: "Current account",
+        amountMinor: 30_000,
+        confirmedMinor: 0,
+      },
+    ],
+  };
+
+  function renderEstate(routes: Routes = {}): ReturnType<typeof render> {
+    stub = stubApiFetch({
+      "GET /api/auth/me": { body: ME },
+      "GET /api/accounts": {
+        body: [account("current", "Current account"), account("pot", "Holiday pot")],
+      },
+      "GET /api/overview": {
+        body: {
+          asOfDate: AS_OF,
+          perCurrency: [
+            {
+              currency: "GBP",
+              monthlyIncomeMinor: 100_000,
+              bufferMinor: 0,
+              totalRequiredMinor: 30_000,
+              totalFundedMinor: 30_000,
+              // The API's own netted total; the rows below do not add up to it.
+              leftoverMinor: 40_000,
+              intraEstateMovementMinor: 60_000,
+              shortfallMinor: 0,
+              accounts: [
+                state({
+                  accountId: "current",
+                  name: "Current account",
+                  leftoverMinor: 100_000,
+                  latestBalanceMinor: 100_000,
+                  latestBalanceDate: AS_OF,
+                }),
+                state({
+                  accountId: "pot",
+                  name: "Holiday pot",
+                  leftoverMinor: 0,
+                  allocatedInflowMinor: 30_000,
+                  confirmedInflowMinor: 0,
+                  latestBalanceMinor: 0,
+                  latestBalanceDate: AS_OF,
+                }),
+              ],
+            },
+          ],
+        },
+      },
+      "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
+      "GET /api/accounts/pot/plan": { body: POT_PLAN },
+      ...routes,
+    });
+
+    return render(
+      <MemoryRouter>
+        <QuickAddProvider>
+          <OverviewPage />
+        </QuickAddProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("asks once for the movement, and confirms it against the inflow", async () => {
+    renderEstate({
+      "POST /api/inflows/inf-1/confirm?month=2026-08": {
+        status: 201,
+        body: { confirmation: { id: "conf-move" }, contributions: [] },
+      },
+    });
+
+    expect(await screen.findByText("Current account → Holiday pot")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "mark done" }));
+    await waitFor(() =>
+      expect(stub.calls("POST /api/inflows/inf-1/confirm?month=2026-08")).toBe(1),
+    );
+  });
+
+  it("reads a plan only for the account with money in transit", async () => {
+    renderEstate();
+    await screen.findByText("Current account → Holiday pot");
+
+    expect(stub.calls("GET /api/accounts/pot/plan")).toBe(1);
+    expect(stub.calls("GET /api/accounts/current/plan")).toBe(0);
+  });
+
+  it("nets the movement out of the headline instead of counting it twice", async () => {
+    // £1,000 in, £600 of it spent in the pot: £400 left, which is what the
+    // overview's own `leftoverMinor` says. Summing the rows would say £1,000.
+    const { container } = renderEstate();
+
+    await waitFor(() =>
+      expect(container.querySelector(".fold-figure")).toHaveTextContent("£400.00"),
+    );
+  });
+});
+
+/**
  * The regression this file exists to hold: the Overview used to read a balance
  * list *and* an account plan per account, so an estate of ten accounts cost
  * twenty requests nobody asked for. Everything the checklist needs now comes
