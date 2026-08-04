@@ -31,38 +31,14 @@ const SUB: CSSProperties = { fontSize: "11px", marginTop: "0.15rem" };
 /** Chips wrap rather than stretch the column. */
 const CHIP_ROW: CSSProperties = { display: "flex", flexWrap: "wrap", gap: "0.3rem" };
 
-const DOT: CSSProperties = {
-  display: "inline-block",
-  width: "6px",
-  height: "6px",
-  borderRadius: "50%",
-  marginRight: "0.45rem",
-  verticalAlign: "middle",
+/** Each tone onto the filled-chip class that paints it: amber asks, red is
+ *  short, green is done, grey is only saying how old something is. */
+const TONE_CLASS: Record<AttentionTone, string> = {
+  record: "needs-you",
+  unfunded: "alert",
+  funded: "funded",
+  stale: "neutral",
 };
-
-/** Whose money this is, in the member accent colours. */
-const DOT_COLOR = {
-  you: "var(--member-1)",
-  partner: "var(--member-2)",
-  shared: "var(--member-shared)",
-} as const;
-
-/** Filled chips, one token per meaning: amber asks, red is short, green is done. */
-const CHIP_COLOR: Record<AttentionTone, string> = {
-  record: "var(--needs-you)",
-  unfunded: "var(--alert)",
-  funded: "var(--funded)",
-  stale: "var(--ink-3)",
-};
-
-function chipStyle(tone: AttentionTone): CSSProperties {
-  const token = CHIP_COLOR[tone];
-  return {
-    background: `color-mix(in srgb, ${token} 14%, transparent)`,
-    border: `1px solid color-mix(in srgb, ${token} 35%, transparent)`,
-    color: token,
-  };
-}
 
 /** Whole days from an ISO date to the as-of date; null when there is no date. */
 function daysSince(date: string | null | undefined, asOfDate: string): number | null {
@@ -142,7 +118,7 @@ export function AttentionCell({
   return (
     <div style={CHIP_ROW}>
       {deriveAttention(state, asOfDate).map((chip) => (
-        <span key={chip.tone} className="tag-status" style={chipStyle(chip.tone)}>
+        <span key={chip.tone} className={`tag-status ${TONE_CLASS[chip.tone]}`}>
           {chip.label}
           {chip.amountMinor !== undefined && (
             <>
@@ -222,7 +198,7 @@ export function AccountCell({
 
   return (
     <>
-      <span style={{ ...DOT, background: DOT_COLOR[tone] }} aria-hidden="true" />
+      <span className={`member-dot ${tone}`} aria-hidden="true" />
       <Link to={`/accounts/${account.id}`} className="name">
         {account.name}
       </Link>

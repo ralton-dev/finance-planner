@@ -483,6 +483,17 @@ function ConsequenceLine({
 
 // --- accounts ----------------------------------------------------------------
 
+/**
+ * Whose money the row holds, for the dot before its name — the same three
+ * tones, in the same order of precedence, as the accounts index: a shared pot
+ * belongs to the household first, then it is yours or it is somebody else's.
+ * Decoration only; the sub-line and the role chip say it in words.
+ */
+function memberTone(row: HouseholdAccountRow): "you" | "partner" | "shared" {
+  if (row.assignment?.role === "shared") return "shared";
+  return row.account?.owner ? "you" : "partner";
+}
+
 function AccountsSection({
   householdId,
   members,
@@ -545,6 +556,7 @@ function AccountsSection({
                 <Fragment key={row.accountId}>
                   <tr>
                     <td>
+                      <span className={`member-dot ${memberTone(row)}`} aria-hidden="true" />
                       {row.account ? (
                         <Link to={`/accounts/${row.accountId}`} className="name">
                           {row.name}
