@@ -8,6 +8,7 @@ one agent, owns an explicit file set, and states its acceptance criteria. Do not
 whose dependencies haven't merged.
 
 **Global definition of done (every WP):**
+
 - `pnpm -w typecheck`, `pnpm lint`, `pnpm test` green; engine coverage gate holds when
   `packages/domain` is touched.
 - No new dependencies without explicit approval.
@@ -27,11 +28,12 @@ at the same time.
 Hard-reload an authenticated route against the compose stack (`make up`, log in, F5 on
 `/accounts/:id`). During screenshot capture the silent refresh (`fp_refresh` cookie) did not
 restore the session through the `5173 → 4000` dev proxy.
+
 - Reproduces on compose → it is a session bug; fix jumps ahead of all visual work
   (suspects: cookie `Path`/`SameSite` vs the gateway prefix, `COOKIE_PATH` env, the
   auth-service cookie options vs proxied path rewriting).
 - Dev-proxy-only → add a note to README's dev section and move on.
-Size S (verify) / M (fix). Owns: nothing until diagnosed.
+  Size S (verify) / M (fix). Owns: nothing until diagnosed.
 
 ## WP-1 · Token refactor + dual theme plumbing — FOUNDATION, runs alone
 
@@ -81,11 +83,11 @@ Spec: artifact 03-C + 03½b; findings #3, #9, #10.
      MTD contribution covering it (amount = fundedMonthly).
   4. `checkin` — account whose latest balance is older than the threshold (meta: days +
      next due payment on that account if within 14d).
-  Each item: `{kind, label, amountMinor?, meta, href, action?}` where `action` is a typed
-  descriptor (`confirmTransfer{...}`, `recordContribution{...}`, `checkin{accountId}`)
-  the UI maps to existing endpoints. Deterministic ordering + stable keys.
+     Each item: `{kind, label, amountMinor?, meta, href, action?}` where `action` is a typed
+     descriptor (`confirmTransfer{...}`, `recordContribution{...}`, `checkin{accountId}`)
+     the UI maps to existing endpoints. Deterministic ordering + stable keys.
 - Headline math: `deriveHeadline(...)` → `{kind: "shortfall"|"leftover", amountMinor,
-  sentence}` exactly as the mockups word it (shortfall wins whenever > 0).
+sentence}` exactly as the mockups word it (shortfall wins whenever > 0).
 - Acceptance: unit tests per rule, ordering, thresholds, empty-state ("nothing outstanding"),
   and the headline sentence for both states.
 
@@ -130,9 +132,10 @@ Owns: `components/Fold.tsx` + test, `pages/HouseholdPlanPage.tsx`,
   detail-strip balance source).
 
 Owns: `apps/api/src/server.ts` + test (overview handler section), `pages/AccountsPage.tsx`
-+ test, `lib/types.ts` (overview DTO fields). Size **M**. Depends: WP-1.
-Parallel-safe with WP-3 (disjoint files) — but WP-3 and WP-4 must not both edit
-`lib/api.ts`; WP-4 needs no `api.ts` change (overview method exists), so declare it frozen.
+
+- test, `lib/types.ts` (overview DTO fields). Size **M**. Depends: WP-1.
+  Parallel-safe with WP-3 (disjoint files) — but WP-3 and WP-4 must not both edit
+  `lib/api.ts`; WP-4 needs no `api.ts` change (overview method exists), so declare it frozen.
 
 ## WP-5 · Household detail — one table, consequential shares, demoted danger zone
 
@@ -189,9 +192,9 @@ Depends: WP-2, WP-3, WP-4 (state columns).
   monthly rows show `due in N d` in THIS MONTH (data from plan lines' dueDate).
 - Replace `TagTreemap` usage on both pages with `TagBarList` (new): ranked rows, single
   accent on the largest, greys descending, `tag · £X/mo · %`; delete the treemap component
-  + its tests once both pages migrate. Keep the `groupByTag` lib.
+  - its tests once both pages migrate. Keep the `groupByTag` lib.
 - `ProjectionView`: key line under the grid (`• falls due that month · [swatch] tinted
-  cell = due month · ~ derived date`), due tint switched to the token that reads on light.
+cell = due month · ~ derived date`), due tint switched to the token that reads on light.
 - Acceptance: PlanTable tests for both goal labels + tilde; bar list ordering/accent
   tests; key renders; no `TagTreemap` references remain.
 
@@ -220,13 +223,13 @@ Depends: WP-1…WP-7 merged.
 
 ## Suggested waves
 
-| Wave | Packages | Notes |
-|---|---|---|
-| 0 | WP-0 | whenever Docker is available; result may reprioritise |
-| 1 | WP-1 + WP-2 | disjoint (styles/charts vs one new lib file) |
-| 2 | WP-3 + WP-4 | plan page vs accounts+api; `api.ts` frozen |
-| 3 | WP-5 + WP-7 | household detail vs plan-table/charts; see WP-7's page-file caveat |
-| 4 | WP-6 | needs 2, 3, 4 |
-| 5 | WP-8 | flip + polish |
+| Wave | Packages    | Notes                                                              |
+| ---- | ----------- | ------------------------------------------------------------------ |
+| 0    | WP-0        | whenever Docker is available; result may reprioritise              |
+| 1    | WP-1 + WP-2 | disjoint (styles/charts vs one new lib file)                       |
+| 2    | WP-3 + WP-4 | plan page vs accounts+api; `api.ts` frozen                         |
+| 3    | WP-5 + WP-7 | household detail vs plan-table/charts; see WP-7's page-file caveat |
+| 4    | WP-6        | needs 2, 3, 4                                                      |
+| 5    | WP-8        | flip + polish                                                      |
 
 Rough total: 2 waves of M work in parallel per wave — comparable to one overnight run.
