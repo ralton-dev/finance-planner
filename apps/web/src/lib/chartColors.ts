@@ -21,10 +21,14 @@ export interface ChartColors {
   ground: string;
   /** Raised surface: tooltips. */
   panel: string;
-  /** Hairlines: gridlines and axes. */
+  /** Hairlines drawn against a panel: axis lines, the hover cursor. */
   rule: string;
-  /** The stronger hairline: tooltip borders, inert nodes. */
+  /** The stronger hairline: tooltip borders. */
   ruleStrong: string;
+  /** Gridlines. Not `rule`: a gridline runs over the page's own ground, where
+   *  a panel hairline all but disappears — and it has to stay quieter than the
+   *  axis labels beside it without vanishing under them (finding #11). */
+  grid: string;
   ink: string;
   ink2: string;
   ink3: string;
@@ -36,8 +40,6 @@ export interface ChartColors {
   /** Tag ramp, boldest first — the resolved twin of `tagShade()`'s `var()`s. */
   tags: string[];
   untagged: string;
-  /** Ink for anything drawn *on* a tag colour. */
-  tagInk: string;
   /** One colour per series where the series carry no meaning of their own
    *  (net worth: one line per currency). Drawn from the status palette so the
    *  charts read as one system. */
@@ -52,9 +54,10 @@ export const FALLBACK_CHART_COLORS: ChartColors = {
   panel: "#181818",
   rule: "#232321",
   ruleStrong: "#2e2e2c",
+  grid: "#3f3f3d",
   ink: "#e8e6e0",
   ink2: "#a09b91",
-  ink3: "#5e5a51",
+  ink3: "#8a8780",
   funded: "#7be087",
   needsYou: "#f6c66b",
   alert: "#f47b6b",
@@ -62,7 +65,6 @@ export const FALLBACK_CHART_COLORS: ChartColors = {
   accent: "#b89df0",
   tags: ["#b89df0", "#9c84cf", "#816cae", "#67558e", "#4e3f6d", "#37294e"],
   untagged: "#4a463f",
-  tagInk: "#0c0c0c",
   series: ["#7be087", "#b89df0", "#7eb3f6", "#f6c66b", "#f47b6b"],
   tipShadow: "0 4px 14px rgba(0, 0, 0, 0.45)",
 };
@@ -107,6 +109,7 @@ export function readChartColors(from?: Element | null): ChartColors {
     panel: token("--panel", fb.panel),
     rule: token("--rule", fb.rule),
     ruleStrong: token("--rule-2", fb.ruleStrong),
+    grid: token("--chart-grid", fb.grid),
     ink: token("--ink", fb.ink),
     ink2: token("--ink-2", fb.ink2),
     ink3: token("--ink-3", fb.ink3),
@@ -117,7 +120,6 @@ export function readChartColors(from?: Element | null): ChartColors {
     accent,
     tags: fb.tags.map((value, i) => token(`--tag-${i + 1}`, value)),
     untagged: token("--tag-untagged", fb.untagged),
-    tagInk: token("--tag-ink", fb.tagInk),
     // Deliberately built from the status colours rather than a sixth token set:
     // the net-worth lines mean "a currency", not "a state", and reusing the
     // palette keeps every chart in the app looking like the same chart.

@@ -69,12 +69,12 @@
  * surface, an ink, a state — so a rule never has to know which theme is on:
  *
  *   surfaces   --ground / --ground-2 / --panel / --panel-2 / --rule / --rule-2
- *              plus --shade (a neutral wash) and --scrim (what modals darken).
+ *              plus --shade (a neutral wash), --scrim (what modals darken) and
+ *              --chart-grid (gridlines, which sit on open space, not a panel).
  *   inks       --ink / --ink-2 / --ink-3, and --derived for inferred values.
  *   states     --funded (on track) / --needs-you (your move) / --alert (short).
  *   people     --member-1 / --member-2 / --member-shared.
- *   tags       --tag-1…--tag-6 + --tag-untagged, ranked biggest-first, with
- *              --tag-ink for anything drawn *on* a tag colour.
+ *   tags       --tag-1…--tag-6 + --tag-untagged, ranked biggest-first.
  *
  * Translucent washes are `color-mix()` against a token, never a hand-mixed
  * `rgba()`: the second theme then needs no second set of them. Mixing with
@@ -82,16 +82,115 @@
  * transparent)` is exactly `rgba(X, N/100)` — the dark theme is unchanged to
  * the byte.
  *
- * Dark is the default. Light is reachable through the theme toggle, and — in
- * `system` mode, where ThemeContext leaves `data-theme` off — through the OS
- * preference. An explicit `data-theme` beats the media query in both
- * directions: `:root[data-theme="…"]` is (0,2,0) against the media block's
- * (0,1,0), so the attribute wins wherever the blocks sit.
+ * Light is the default. Dark is reachable through the theme toggle (one click
+ * from a fresh install), and — in `system` mode, where ThemeContext leaves
+ * `data-theme` off — through the OS preference. An explicit `data-theme` beats
+ * the media query in both directions: `:root[data-theme="…"]` is (0,2,0)
+ * against the media block's (0,1,0), so the attribute wins wherever the blocks
+ * sit.
  *
- * The two light blocks are written out rather than derived. Keep them in sync.
+ * `:root` has to carry whatever `ThemeContext.readStored()` defaults to, or the
+ * first paint lands in one theme and React repaints it in the other. The two
+ * blocks per theme are written out rather than derived. Keep each pair in sync.
+ *
+ * Every ink and status colour here clears WCAG AA (4.5:1) against every surface
+ * it is painted on, in both themes — see the WP-8 contrast pass. The hairline
+ * tokens (`--rule`, `--rule-2`) are deliberately below that: they separate, they
+ * never carry meaning on their own.
  * -------------------------------------------------------------------------- */
 
 :root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --ground: #fcfcfa;
+  --ground-2: #f4f3ef;
+  --panel: #ffffff;
+  --panel-2: #f6f5f1;
+  /* Left as literal rgba(): charts hand `--rule` to an SVG presentation
+   * attribute, and a resolved `color-mix()` has to survive serialization into
+   * the exported PNG. The dark theme's are opaque hexes for the same reason. */
+  --rule: rgba(34, 38, 43, 0.14);
+  --rule-2: rgba(34, 38, 43, 0.26);
+  /* What every translucent wash is mixed from: dark-on-light here, light-on-dark
+   * in the dark theme. Never used neat. */
+  --wash: #22262b;
+  --scrim: #22262b;
+  --grid-line: color-mix(in srgb, var(--wash) 3%, transparent);
+  /* Chart gridlines. Their own token because a chart's ground is not a panel:
+   * `--rule` is tuned to separate two filled surfaces and all but vanishes as a
+   * hairline over open space. Sits around 2:1 — present, and comfortably
+   * quieter than the 4.5:1 axis labels it runs behind (finding #11). */
+  --chart-grid: #b4b4b0;
+
+  --ink: #22262b;
+  --ink-2: #58645e;
+  --ink-3: #67706b;
+
+  --funded: #1a6b4f;
+  --needs-you: #8a5f08;
+  --alert: #a4342b;
+  --alert-hover: #8c2c24;
+  --link: #4c5fc4;
+  --accent: #6d4ca8;
+
+  --member-1: #4c5fc4;
+  --member-2: #a0508b;
+  --member-shared: #7a756b;
+
+  /* Inverted ramp: on white a tag gets quieter by going *darker*. */
+  --tag-1: #6d4ca8;
+  --tag-2: #5e4194;
+  --tag-3: #4f3780;
+  --tag-4: #412d6c;
+  --tag-5: #332358;
+  --tag-6: #251944;
+  --tag-untagged: #6b6459;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --ground: #0c0c0c;
+    --ground-2: #131313;
+    --panel: #181818;
+    --panel-2: #1f1f1f;
+    --rule: #232321;
+    --rule-2: #2e2e2c;
+    --wash: #ffffff;
+    --scrim: #000000;
+    --grid-line: color-mix(in srgb, var(--wash) 1.2%, transparent);
+    --chart-grid: #3f3f3d;
+
+    --ink: #e8e6e0;
+    --ink-2: #a09b91;
+    --ink-3: #8a8780;
+
+    --funded: #7be087;
+    --needs-you: #f6c66b;
+    --alert: #f47b6b;
+    --alert-hover: #ff8e7d;
+    --link: #7eb3f6;
+    --accent: #b89df0;
+
+    --member-1: #8e9be8;
+    --member-2: #c58ab6;
+    --member-shared: #9a9080;
+
+    /* Accent purple stepped down toward the panel, plus a grey for the untagged
+     * bucket. Monochrome-ish on purpose: the hue carries no meaning, so it must
+     * not read as a status colour next to funded/needs-you/alert. */
+    --tag-1: #b89df0;
+    --tag-2: #9c84cf;
+    --tag-3: #816cae;
+    --tag-4: #67558e;
+    --tag-5: #4e3f6d;
+    --tag-6: #37294e;
+    --tag-untagged: #4a463f;
+  }
+}
+
 :root[data-theme="dark"] {
   color-scheme: dark;
 
@@ -101,15 +200,14 @@
   --panel-2: #1f1f1f;
   --rule: #232321;
   --rule-2: #2e2e2c;
-  /* What every translucent wash is mixed from: light-on-dark here, dark-on-light
-   * in the light theme. Never used neat. */
   --wash: #ffffff;
   --scrim: #000000;
   --grid-line: color-mix(in srgb, var(--wash) 1.2%, transparent);
+  --chart-grid: #3f3f3d;
 
   --ink: #e8e6e0;
   --ink-2: #a09b91;
-  --ink-3: #5e5a51;
+  --ink-3: #8a8780;
 
   --funded: #7be087;
   --needs-you: #f6c66b;
@@ -122,9 +220,6 @@
   --member-2: #c58ab6;
   --member-shared: #9a9080;
 
-  /* Accent purple stepped down toward the panel, plus a grey for the untagged
-   * bucket. Monochrome-ish on purpose: the hue carries no meaning, so it must
-   * not read as a status colour next to funded/needs-you/alert. */
   --tag-1: #b89df0;
   --tag-2: #9c84cf;
   --tag-3: #816cae;
@@ -132,87 +227,6 @@
   --tag-5: #4e3f6d;
   --tag-6: #37294e;
   --tag-untagged: #4a463f;
-  --tag-ink: #0c0c0c;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-
-    --ground: #fcfcfa;
-    --ground-2: #f4f3ef;
-    --panel: #ffffff;
-    --panel-2: #f6f5f1;
-    --rule: rgba(34, 38, 43, 0.14);
-    --rule-2: rgba(34, 38, 43, 0.26);
-    --wash: #22262b;
-    --scrim: #22262b;
-    --grid-line: color-mix(in srgb, var(--wash) 3%, transparent);
-
-    --ink: #22262b;
-    --ink-2: #6b7a72;
-    --ink-3: #93a099;
-
-    --funded: #1e7a5a;
-    --needs-you: #96690a;
-    --alert: #a4342b;
-    --alert-hover: #8c2c24;
-    --link: #4c5fc4;
-    --accent: #6d4ca8;
-
-    --member-1: #4c5fc4;
-    --member-2: #a0508b;
-    --member-shared: #7a756b;
-
-    /* Inverted ramp: on white a tag gets quieter by going *darker*, and every
-     * step still carries white label ink. */
-    --tag-1: #6d4ca8;
-    --tag-2: #5e4194;
-    --tag-3: #4f3780;
-    --tag-4: #412d6c;
-    --tag-5: #332358;
-    --tag-6: #251944;
-    --tag-untagged: #6b6459;
-    --tag-ink: #ffffff;
-  }
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-
-  --ground: #fcfcfa;
-  --ground-2: #f4f3ef;
-  --panel: #ffffff;
-  --panel-2: #f6f5f1;
-  --rule: rgba(34, 38, 43, 0.14);
-  --rule-2: rgba(34, 38, 43, 0.26);
-  --wash: #22262b;
-  --scrim: #22262b;
-  --grid-line: color-mix(in srgb, var(--wash) 3%, transparent);
-
-  --ink: #22262b;
-  --ink-2: #6b7a72;
-  --ink-3: #93a099;
-
-  --funded: #1e7a5a;
-  --needs-you: #96690a;
-  --alert: #a4342b;
-  --alert-hover: #8c2c24;
-  --link: #4c5fc4;
-  --accent: #6d4ca8;
-
-  --member-1: #4c5fc4;
-  --member-2: #a0508b;
-  --member-shared: #7a756b;
-
-  --tag-1: #6d4ca8;
-  --tag-2: #5e4194;
-  --tag-3: #4f3780;
-  --tag-4: #412d6c;
-  --tag-5: #332358;
-  --tag-6: #251944;
-  --tag-untagged: #6b6459;
-  --tag-ink: #ffffff;
 }
 
 /* Theme-independent: derived from the palette above, so they follow it. */
@@ -279,6 +293,24 @@ select,
 textarea {
   font: inherit;
   color: inherit;
+}
+
+/* Focus.
+ *
+ * Nothing in the app drew a ring, so keyboard users got whatever the browser
+ * felt like — which on the dark theme was a dark-blue halo against a near-black
+ * panel. One ring for everything, in `--link` (5:1 or better against every
+ * surface in both themes), and on `:focus-visible` only so a mouse click
+ * doesn't leave one behind. The outline follows the element's own radius. */
+:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+/* A field already carries a border for the ring to sit against, so it hugs. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline-offset: 0;
 }
 
 /* ============================================================================
@@ -776,10 +808,36 @@ td.dim {
   border: 1px solid color-mix(in srgb, var(--funded) 35%, transparent);
   color: var(--funded);
 }
+/* The one chip with no colour of its own. Its ink is `--ink-2`, not the
+ * `--ink-3` it is tinted from: a quiet ink on its own wash lands under 4.5:1 in
+ * both themes, and a chip is a label, not decoration. */
 .tag-status.neutral {
   background: color-mix(in srgb, var(--ink-3) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--ink-3) 35%, transparent);
-  color: var(--ink-3);
+  color: var(--ink-2);
+}
+
+/* Whose money an account holds, in one mark before its name. Purely
+ * supporting — the sub-line under the name says the same thing in words, so
+ * this is `aria-hidden` wherever it is drawn and never the only teller. */
+.member-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 0.45rem;
+  vertical-align: middle;
+  flex-shrink: 0;
+  background: var(--member-shared);
+}
+.member-dot.you {
+  background: var(--member-1);
+}
+.member-dot.partner {
+  background: var(--member-2);
+}
+.member-dot.shared {
+  background: var(--member-shared);
 }
 
 .row-actions {
@@ -1258,6 +1316,13 @@ button.tiny {
 .danger-zone {
   margin-top: 2rem;
   padding-top: 1.25rem;
+  border-top: 1px dashed color-mix(in srgb, var(--alert) 40%, transparent);
+}
+/* The household page's danger zone is a collapsed panel as well as a danger
+ * zone. `.settings-panel`'s `border` shorthand sits further down the file and
+ * resets every edge including this one, so the combined selector — (0,2,0)
+ * against its (0,1,0) — puts the alert edge back wherever the blocks sit. */
+.danger-zone.settings-panel {
   border-top: 1px dashed color-mix(in srgb, var(--alert) 40%, transparent);
 }
 .danger-zone h3 {
@@ -1813,31 +1878,53 @@ td.row-actions-cell .row-edit:hover {
   color: var(--ink-2);
 }
 
+/* ============================================================================
+ * Disclosures — every <details>/<summary> in the app.
+ *
+ * Two of these grew up apart: the net-worth trend behind a summary here, and
+ * the household's danger zone. Neither had any base styling, so both took the
+ * browser's own marker and whatever margins their contents happened to bring.
+ * One treatment now — a caret we draw ourselves, a pointer cursor, and a
+ * summary line that a heading can sit on without opening a block of its own.
+ * ========================================================================== */
+summary {
+  cursor: pointer;
+  /* Two spellings for the same job: `list-style` is what Chrome and Firefox
+   * read, the pseudo-element below is what WebKit still wants. */
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+}
+summary::-webkit-details-marker {
+  display: none;
+}
+summary::before {
+  content: "▸";
+  flex-shrink: 0;
+  font-size: 10px;
+}
+details[open] > summary::before {
+  content: "▾";
+}
+summary:hover {
+  color: var(--ink-2);
+}
+/* A heading inside a summary IS the summary's text — it keeps its colour and
+ * its tracking, and loses the block margin it would otherwise push down. */
+summary > h3 {
+  margin: 0;
+}
+
 /* Anything worth keeping but not worth leading with: a trend behind a summary
  * that says what opening it will show. */
 .disclosure {
   margin-top: 1rem;
   padding-top: 0.6rem;
   border-top: 1px solid var(--rule);
-}
-.disclosure > summary {
-  cursor: pointer;
-  list-style: none;
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
-  color: var(--ink-3);
-}
-.disclosure > summary::-webkit-details-marker {
-  display: none;
-}
-.disclosure > summary::before {
-  content: "▸ ";
-}
-.disclosure[open] > summary::before {
-  content: "▾ ";
-}
-.disclosure > summary:hover {
-  color: var(--ink-2);
 }
 .disclosure-actions {
   display: flex;
@@ -2403,79 +2490,13 @@ td.row-actions-cell .row-edit:hover {
   user-select: none;
 }
 
-/* ============================================================================
- * Tag bars — where the month goes, ranked. One row per tag: the numbers on the
- * line, a bar under it as long as the tag is expensive.
- *
- * Colour means rank, not identity. The biggest tag takes the accent; the rest
- * step down through a grey ramp mixed off --ink-2, which lands as mid-grey on
- * the dark panel and light grey on the white one. Nothing here may read as a
- * status — green/amber/red are spoken for.
- * ============================================================================ */
-.tag-bars {
-  list-style: none;
-  margin: 0.75rem 0 1.75rem;
-  padding: 0;
-  display: grid;
-  gap: 0.55rem;
-}
-.tag-bar-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  font-size: 11.5px;
-  color: var(--ink-2);
-}
-.tag-bar-name {
-  flex: 1;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tag-bar-head .amount {
-  color: var(--ink);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.tag-bar-head .dim {
-  color: var(--ink-3);
-}
-.tag-bar-share {
-  color: var(--ink-3);
-  font-variant-numeric: tabular-nums;
-  min-width: 3.2rem;
-  text-align: right;
-}
-.tag-bar-track {
-  display: block;
-  margin-top: 0.2rem;
-  height: 8px;
-  background: var(--ground-2);
-  border-radius: 1px;
-  overflow: hidden;
-}
-.tag-bar-fill {
-  display: block;
-  height: 100%;
-  border-radius: 1px;
-  background: color-mix(in srgb, var(--ink-2) 22%, transparent);
-}
-.tag-bar-fill.lead {
-  background: var(--accent);
-}
-.tag-bar-fill[data-rank="1"] {
-  background: color-mix(in srgb, var(--ink-2) 58%, transparent);
-}
-.tag-bar-fill[data-rank="2"] {
-  background: color-mix(in srgb, var(--ink-2) 46%, transparent);
-}
-.tag-bar-fill[data-rank="3"] {
-  background: color-mix(in srgb, var(--ink-2) 36%, transparent);
-}
-.tag-bar-fill[data-rank="4"] {
-  background: color-mix(in srgb, var(--ink-2) 28%, transparent);
-}
+/* The tag bar list is one inline `<svg>` (`components/TagBarList.tsx`) and
+ * carries no classes of its own: its marks are `data-bar="track|fill"` with a
+ * `data-rank`, and every colour is a resolved presentation attribute so the PNG
+ * export comes out looking like the screen. There is deliberately no CSS for it
+ * here — a rule like `.tag-bar-fill { height: 100% }` would apply to an SVG
+ * `<rect>` as a geometry property in Chrome and Firefox and stretch every bar
+ * to the full height of the chart. */
 
 /* ============================================================================
  * Member bars — who carries what, in pure CSS. Full width is the member's
@@ -2525,13 +2546,15 @@ td.row-actions-cell .row-edit:hover {
   height: 100%;
 }
 .member-bar-seg.unfunded {
-  /* Hatched rather than solid: it is money that isn't there. */
+  /* Hatched rather than solid: it is money that isn't there. The stripe carries
+   * 70% so the hatch clears 3:1 against the track on both themes — at the 55%
+   * it started at, the light theme's darker alert only reached 2.55:1. */
   background: repeating-linear-gradient(
     45deg,
-    color-mix(in srgb, var(--alert) 55%, transparent),
-    color-mix(in srgb, var(--alert) 55%, transparent) 3px,
-    color-mix(in srgb, var(--alert) 18%, transparent) 3px,
-    color-mix(in srgb, var(--alert) 18%, transparent) 6px
+    color-mix(in srgb, var(--alert) 70%, transparent),
+    color-mix(in srgb, var(--alert) 70%, transparent) 3px,
+    color-mix(in srgb, var(--alert) 25%, transparent) 3px,
+    color-mix(in srgb, var(--alert) 25%, transparent) 6px
   );
 }
 .member-bar-legend {
@@ -2559,7 +2582,7 @@ td.row-actions-cell .row-edit:hover {
   flex-shrink: 0;
 }
 .member-bar-legend i.unfunded {
-  background: color-mix(in srgb, var(--alert) 55%, transparent);
+  background: color-mix(in srgb, var(--alert) 70%, transparent);
 }
 .member-bar-legend .amount {
   color: var(--ink);

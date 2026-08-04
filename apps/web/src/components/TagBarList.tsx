@@ -39,10 +39,14 @@ import type { TagGroup } from "../lib/tags.js";
 
 /** How many steps the grey ramp has; past that rows share the quietest one. */
 const RANKS = 6;
-/** Opacity of `--ink-2` per rank below the lead — the ramp the stylesheet used
- *  to mix by hand (`color-mix(… var(--ink-2) 58% …)`), as an attribute the
- *  export can carry. Index 0 is unused: rank 0 is the accent. */
-const RANK_INK: readonly number[] = [1, 0.58, 0.46, 0.36, 0.28, 0.22];
+/** Opacity of `--ink-2` per rank below the lead, as an attribute the export can
+ *  carry. Index 0 is unused: rank 0 is the accent.
+ *
+ *  Floored at 0.44 rather than the 0.22 it started at: on the light theme the
+ *  bottom of the old ramp reached 1.29:1 against the track and the bar simply
+ *  wasn't there. Still a descending ramp — and the share is printed as text on
+ *  the same line, so length and colour never have to carry the ranking alone. */
+const RANK_INK: readonly number[] = [1, 0.72, 0.62, 0.54, 0.48, 0.44];
 
 /** Logical width the PNG is drawn at. On screen the SVG is stretched to its
  *  column by an inline width, which leaves this as the export's own size —

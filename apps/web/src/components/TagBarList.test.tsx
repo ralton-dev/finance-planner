@@ -65,8 +65,9 @@ describe("TagBarList", () => {
 
     expect(fills().map((f) => f.dataset.rank)).toEqual(["0", "1", "2"]);
     // Rank is carried into the export as an opacity, not as a class: the
-    // serialized copy has no stylesheet to read a ramp out of.
-    expect(fills().map((f) => f.getAttribute("fill-opacity"))).toEqual(["1", "0.58", "0.46"]);
+    // serialized copy has no stylesheet to read a ramp out of. The ramp floors
+    // at 0.44 so even the quietest bar clears 3:1 against its track on light.
+    expect(fills().map((f) => f.getAttribute("fill-opacity"))).toEqual(["1", "0.72", "0.62"]);
   });
 
   it("clamps the ramp once the ranking runs past it", () => {

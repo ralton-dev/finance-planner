@@ -36,6 +36,14 @@ export function flowLabel(
   return `${((valueMinor / totalMinor) * 100).toFixed(1)}%`;
 }
 
+/**
+ * How solid a ribbon is drawn. Ribbons cross, so they cannot be opaque — but at
+ * the 0.35 they used to carry, every colour in the light theme washed out to
+ * around 1.6:1 against the page and the diagram stopped saying anything. 0.7 is
+ * the lowest value that keeps all four flows over 3:1 in *both* themes.
+ */
+const LINK_OPACITY = 0.7;
+
 /** What each kind of flow is drawn in. Income arrives, spending leaves, a
  *  transfer is a move you make, and left over is what survives. */
 function linkColor(kind: LinkKind, colors: ChartColors): string {
@@ -172,8 +180,8 @@ function FlowNode({
         y={y}
         width={width}
         height={Math.max(height, 1)}
-        fill={isAccount ? colors.accent : colors.ruleStrong}
-        fillOpacity={isAccount ? 0.85 : 0.6}
+        fill={isAccount ? colors.accent : colors.ink2}
+        fillOpacity={isAccount ? 0.85 : 0.7}
       />
       <text
         x={onLeft ? x + width + 8 : x - 8}
@@ -219,7 +227,7 @@ function FlowLink({
       fill="none"
       stroke={color}
       strokeWidth={Math.max(1, linkWidth)}
-      strokeOpacity={0.35}
+      strokeOpacity={LINK_OPACITY}
     />
   );
 }

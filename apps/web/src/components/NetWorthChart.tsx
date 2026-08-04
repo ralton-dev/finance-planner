@@ -81,7 +81,7 @@ export function NetWorthChart({ points }: { points: NetWorthPoint[] }) {
       <div style={{ width: "100%", height: 260 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
-            <CartesianGrid stroke={colors.rule} strokeDasharray="2 4" vertical={false} />
+            <CartesianGrid stroke={colors.grid} strokeDasharray="2 4" vertical={false} />
             <XAxis
               dataKey="month"
               tickFormatter={formatMonthShort}
