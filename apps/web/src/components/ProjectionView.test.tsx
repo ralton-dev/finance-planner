@@ -112,6 +112,23 @@ describe("ProjectionView", () => {
     expect(due).toHaveTextContent("£200");
   });
 
+  it("keys the grid's marks underneath it", async () => {
+    render(<ProjectionView load={loader()} />);
+
+    const key = await screen.findByText(/falls due that month/);
+    expect(key).toHaveTextContent(
+      "• falls due that month · tinted cell = due month · ~ derived date",
+    );
+    // The key sits outside the scroller, so it stays put as the months move.
+    expect(key.closest(".grid-scroll")).toBeNull();
+  });
+
+  it("keeps the key off the page until there is a grid to key", async () => {
+    render(<ProjectionView load={loader({ ...projection, months: [] })} />);
+    await screen.findByText(/nothing to project yet/i);
+    expect(screen.queryByText(/falls due that month/)).toBeNull();
+  });
+
   it("foots each month with what it needs and what is left over", async () => {
     render(<ProjectionView load={loader()} />);
 

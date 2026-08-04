@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AccountPlanDto } from "../lib/types.js";
-import { PlanSummary, PlanTable } from "./PlanTable.js";
+import { daysUntilNextMonthly, PlanSummary, PlanTable } from "./PlanTable.js";
 
 const plan: AccountPlanDto = {
   accountId: "a1",
@@ -173,6 +173,61 @@ describe("PlanTable", () => {
     await waitFor(() => expect(screen.queryByLabelText("amount to record for Holiday")).toBeNull());
   });
 
+  it("tells a dated goal from a paced one in the type column", () => {
+    const paced: AccountPlanDto["lines"][number] = {
+      ...plan.lines[0]!,
+      paymentId: "p9",
+      name: "New bike",
+      fixedMonthlyMinor: 5_000,
+    };
+    render(<PlanTable plan={{ ...plan, lines: [plan.lines[0]!, paced] }} />);
+
+    // Holiday has a deadline and no cap; the bike has a cap and no deadline.
+    expect(screen.getByText("goal · dated")).toBeInTheDocument();
+    expect(screen.getByText("goal · paced")).toBeInTheDocument();
+  });
+
+  it("tildes the due date a paced goal's finish date was worked out from", () => {
+    const paced: AccountPlanDto["lines"][number] = {
+      ...plan.lines[0]!,
+      paymentId: "p9",
+      name: "New bike",
+      targetDate: "2027-02-01",
+      fixedMonthlyMinor: 5_000,
+    };
+    render(<PlanTable plan={{ ...plan, lines: [plan.lines[0]!, paced] }} />);
+
+    const derived = screen.getByText("~2027-02-01");
+    expect(derived).toHaveClass("derived");
+    // The dated goal keeps its date plain: the user typed that one.
+    expect(screen.getByText("2026-09-01")).not.toHaveClass("derived");
+    expect(screen.queryByText("~2026-09-01")).toBeNull();
+  });
+
+  it("treats a zero cap as no cap at all", () => {
+    render(<PlanTable plan={{ ...plan, lines: [{ ...plan.lines[0]!, fixedMonthlyMinor: 0 }] }} />);
+    expect(screen.getByText("goal · dated")).toBeInTheDocument();
+  });
+
+  it("counts a monthly bill down to its next payment", () => {
+    render(<PlanTable plan={{ ...plan, lines: [monthlyBill] }} asOfDate="2026-08-04" />);
+    // Anchored to the 1st, so the next one is 1 sep — 28 days out.
+    expect(screen.getByText("due in 28 d")).toBeInTheDocument();
+  });
+
+  it("says so on the day a monthly bill lands", () => {
+    render(<PlanTable plan={{ ...plan, lines: [monthlyBill] }} asOfDate="2026-08-01" />);
+    expect(screen.getByText("due today")).toBeInTheDocument();
+  });
+
+  it("counts nothing down without an as-of date, and never on a goal", () => {
+    const { rerender } = render(<PlanTable plan={{ ...plan, lines: [monthlyBill] }} />);
+    expect(screen.queryByText(/^due /)).toBeNull();
+
+    rerender(<PlanTable plan={plan} asOfDate="2026-08-04" />);
+    expect(screen.queryByText(/^due /)).toBeNull();
+  });
+
   it("refuses to record a zero amount", async () => {
     const onRecord = vi.fn().mockResolvedValue(undefined);
     render(<PlanTable plan={plan} canRecord onRecord={onRecord} />);
@@ -185,5 +240,35 @@ describe("PlanTable", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/greater than zero/i);
     expect(onRecord).not.toHaveBeenCalled();
+  });
+});
+
+describe("daysUntilNextMonthly", () => {
+  it("counts to the anchor day this month while it is still ahead", () => {
+    expect(daysUntilNextMonthly("2026-03-20", "2026-08-04")).toBe(16);
+  });
+
+  it("rolls to next month once the day has passed", () => {
+    expect(daysUntilNextMonthly("2026-03-01", "2026-08-04")).toBe(28);
+  });
+
+  it("counts zero on the day itself", () => {
+    expect(daysUntilNextMonthly("2026-03-15", "2026-08-15")).toBe(0);
+  });
+
+  it("clamps an end-of-month anchor to the length of the month it lands in", () => {
+    // The 31st in a 30-day month is the 30th, not the 1st of the next.
+    expect(daysUntilNextMonthly("2026-01-31", "2026-09-04")).toBe(26);
+    // February, in a non-leap year.
+    expect(daysUntilNextMonthly("2026-01-31", "2026-02-04")).toBe(24);
+  });
+
+  it("rolls the year over in december", () => {
+    expect(daysUntilNextMonthly("2026-06-05", "2026-12-31")).toBe(5);
+  });
+
+  it("gives back nothing for a date it cannot read", () => {
+    expect(daysUntilNextMonthly("", "2026-08-04")).toBeNull();
+    expect(daysUntilNextMonthly("2026-08-01", "")).toBeNull();
   });
 });

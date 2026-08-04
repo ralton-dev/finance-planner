@@ -10,12 +10,68 @@ const CATEGORY_LABEL: Record<PlanLineDto["category"], string> = {
   fixed_point: "goal",
 };
 
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Is this goal paced rather than dated — "£200 a month until it's done" instead
+ * of "£2,400 by March"?
+ *
+ * Only a `fixed_point` goal can carry a monthly contribution cap; the engine
+ * ignores one anywhere else. With a cap the pace is the promise and the finish
+ * date falls out of it, so the DUE date on the row is something the plan worked
+ * out rather than something the user typed.
+ *
+ * The plan DTO fills `dueDate` either way (`p.dueDate ?? effectiveDate`), so
+ * the cap is the only tell here. A paced goal that *also* carries a deadline —
+ * allowed, and then the date is the user's — would read as derived; give the
+ * DTO an explicit flag if that combination ever needs telling apart.
+ */
+export function isPacedGoal(line: PlanLineDto): boolean {
+  return line.category === "fixed_point" && (line.fixedMonthlyMinor ?? 0) > 0;
+}
+
+/** "monthly" / "yearly" / "recurring", and goals by how they were set. */
+function typeLabel(line: PlanLineDto): string {
+  if (line.category !== "fixed_point") return CATEGORY_LABEL[line.category];
+  return isPacedGoal(line) ? "goal · paced" : "goal · dated";
+}
+
+/**
+ * Days from `asOfDate` to the next time a monthly bill lands, or null when
+ * either date is unusable.
+ *
+ * A monthly recurring payment's `dueDate` is an anchor — the day of the month
+ * the money leaves — so only its day matters, and the next occurrence is that
+ * day this month or, once it has passed, next month. Clamped to the month's
+ * length, so a bill anchored to the 31st lands on the 30th in a 30-day month.
+ */
+export function daysUntilNextMonthly(dueDate: string, asOfDate: string): number | null {
+  const anchorDay = Number(dueDate.slice(8, 10));
+  const year = Number(asOfDate.slice(0, 4));
+  const month = Number(asOfDate.slice(5, 7));
+  const asOf = Date.parse(`${asOfDate.slice(0, 10)}T00:00:00Z`);
+  if (!anchorDay || !year || !month || !Number.isFinite(asOf)) return null;
+
+  // This month, then next: one of the two always lands on or after the as-of date.
+  for (const offset of [0, 1]) {
+    const y = year + Math.floor((month - 1 + offset) / 12);
+    const m = ((month - 1 + offset) % 12) + 1;
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const next = Date.UTC(y, m - 1, Math.min(anchorDay, lastDay));
+    if (next >= asOf) return Math.round((next - asOf) / MS_PER_DAY);
+  }
+  return null;
+}
+
 interface PlanTableProps {
   plan: AccountPlanDto;
   /** When true, non-monthly rows get a "record" action for setting money aside. */
   canRecord?: boolean;
   /** Called with the amount the user typed, in minor units. Rejections surface inline. */
   onRecord?: (paymentId: string, amountMinor: number) => Promise<unknown>;
+  /** Today, as the caller reckons it. Monthly bills count down to their next
+   *  payment from here; without it they say nothing rather than guess. */
+  asOfDate?: string;
 }
 
 /**
@@ -24,7 +80,7 @@ interface PlanTableProps {
  * Monthly recurring bills are excluded from recording — they are paid, not
  * saved for.
  */
-export function PlanTable({ plan, canRecord = false, onRecord }: PlanTableProps) {
+export function PlanTable({ plan, canRecord = false, onRecord, asOfDate }: PlanTableProps) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
@@ -80,11 +136,24 @@ export function PlanTable({ plan, canRecord = false, onRecord }: PlanTableProps)
           const recordedMinor = mtd.get(line.paymentId);
           const recordable = canRecord && !!onRecord && line.category !== "monthly_recurring";
           const isOpen = openId === line.paymentId;
+          const derived = isPacedGoal(line);
+          const dueInDays =
+            asOfDate && line.category === "monthly_recurring"
+              ? daysUntilNextMonthly(line.dueDate, asOfDate)
+              : null;
           return (
             <tr key={line.paymentId} className={line.onTrack ? "" : "at-risk"}>
               <td className="name">{line.name}</td>
-              <td className="muted">{CATEGORY_LABEL[line.category]}</td>
-              <td className="muted">{line.targetDate}</td>
+              <td className="muted">{typeLabel(line)}</td>
+              <td className="muted">
+                {derived ? (
+                  <span className="derived" title="worked out from the pace, not a date you set">
+                    ~{line.targetDate}
+                  </span>
+                ) : (
+                  line.targetDate
+                )}
+              </td>
               <td className="num">{formatMinor(line.amountMinor, plan.currency)}</td>
               <td className="num">
                 {formatMinor(line.requiredMonthlyMinor, plan.currency)}
@@ -114,6 +183,11 @@ export function PlanTable({ plan, canRecord = false, onRecord }: PlanTableProps)
                 )}
               </td>
               <td className="record-cell">
+                {dueInDays !== null && (
+                  <span className="due-in">
+                    {dueInDays === 0 ? "due today" : `due in ${dueInDays} d`}
+                  </span>
+                )}
                 {recordedMinor !== undefined && (
                   <span className="mtd-tick" title="recorded this month">
                     ✓ {formatMinor(recordedMinor, plan.currency)}

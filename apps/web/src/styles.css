@@ -222,6 +222,12 @@
   --derived: var(--ink-3);
   /* Neutral wash for a block that should sit back without a border. */
   --shade: color-mix(in srgb, var(--wash) 3.5%, transparent);
+  /* "This payment actually lands this month", in the projection grid and its
+   * key. Mixed from --accent rather than --needs-you: on white the amber sits
+   * at a mustard that reads as dirt at this alpha, and it would be a hair off
+   * the shortfall tint two rows below it. Falling due is a fact, not a state,
+   * so the neutral emphasis colour is the honest one. */
+  --due-tint: color-mix(in srgb, var(--accent) 12%, transparent);
 
   --shadow-tip: 0 4px 14px color-mix(in srgb, var(--scrim) 45%, transparent);
   --shadow-drawer: -10px 0 32px color-mix(in srgb, var(--scrim) 50%, transparent);
@@ -535,6 +541,13 @@ h3 {
 .muted {
   color: var(--ink-3);
 }
+/* A value the plan worked out rather than one you typed — a goal's finish date
+ * when the pace, not a deadline, decides it. Italic so it reads as inferred
+ * even where the colour is already quiet. */
+.derived {
+  color: var(--derived);
+  font-style: italic;
+}
 .error {
   color: var(--alert);
 }
@@ -739,6 +752,34 @@ td.dim {
   background: var(--ground-2);
   color: var(--ink-3);
   border: 1px solid var(--rule);
+}
+
+/* Filled chips — the state vocabulary the accounts index leads with, named for
+ * the token behind each one rather than the row that first needed it, so any
+ * table can say "your move" or "short" the same way.
+ *
+ * `.ok`/`.warn` above stay as they are: a flat, borderless label inside a busy
+ * table (the plan table's on-track column). These carry a border because they
+ * sit several to a cell and have to read as separate chips. */
+.tag-status.needs-you {
+  background: color-mix(in srgb, var(--needs-you) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--needs-you) 35%, transparent);
+  color: var(--needs-you);
+}
+.tag-status.alert {
+  background: color-mix(in srgb, var(--alert) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--alert) 35%, transparent);
+  color: var(--alert);
+}
+.tag-status.funded {
+  background: color-mix(in srgb, var(--funded) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--funded) 35%, transparent);
+  color: var(--funded);
+}
+.tag-status.neutral {
+  background: color-mix(in srgb, var(--ink-3) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink-3) 35%, transparent);
+  color: var(--ink-3);
 }
 
 .row-actions {
@@ -1512,6 +1553,13 @@ td.row-actions-cell .row-edit:hover {
   margin-right: 0.5rem;
   font-variant-numeric: tabular-nums;
 }
+/* Monthly bills have nothing to record — the money leaves on its own. The
+ * column says when instead. */
+.due-in {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .record-form {
   display: inline-flex;
   align-items: center;
@@ -1825,10 +1873,10 @@ td.row-actions-cell .row-edit:hover {
 .months-grid td.due {
   color: var(--ink);
   font-weight: 600;
-  background: color-mix(in srgb, var(--needs-you) 7%, transparent);
+  background: var(--due-tint);
 }
 .due-dot {
-  color: var(--needs-you);
+  color: var(--accent);
   margin-left: 0.2rem;
 }
 .months-grid tfoot th,
@@ -1847,6 +1895,26 @@ td.row-actions-cell .row-edit:hover {
 .months-grid tfoot td.warn {
   color: var(--alert);
   background: color-mix(in srgb, var(--alert) 8%, transparent);
+}
+
+/* What the grid's marks mean. Outside .grid-scroll, so it stays put while the
+ * months scroll past it. */
+.grid-key {
+  margin-top: 0.4rem;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.grid-key .due-dot {
+  margin-left: 0;
+}
+.grid-key .key-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 1px;
+  vertical-align: -1px;
+  background: var(--due-tint);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 /* Overview: what lands in the next fortnight. */
@@ -2233,40 +2301,78 @@ td.row-actions-cell .row-edit:hover {
   user-select: none;
 }
 
-/* Legend under the tag treemap: the numbers the cells stand for. */
-.tag-legend {
+/* ============================================================================
+ * Tag bars — where the month goes, ranked. One row per tag: the numbers on the
+ * line, a bar under it as long as the tag is expensive.
+ *
+ * Colour means rank, not identity. The biggest tag takes the accent; the rest
+ * step down through a grey ramp mixed off --ink-2, which lands as mid-grey on
+ * the dark panel and light grey on the white one. Nothing here may read as a
+ * status — green/amber/red are spoken for.
+ * ============================================================================ */
+.tag-bars {
   list-style: none;
-  margin: 0.6rem 0 0;
+  margin: 0.75rem 0 1.75rem;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 0.2rem 1rem;
+  gap: 0.55rem;
+}
+.tag-bar-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
   font-size: 11.5px;
   color: var(--ink-2);
 }
-.tag-legend li {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-.tag-legend i {
-  width: 8px;
-  height: 8px;
-  border-radius: 1px;
-  flex-shrink: 0;
-}
-.tag-legend-name {
+.tag-bar-name {
   flex: 1;
   color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.tag-legend .amount {
+.tag-bar-head .amount {
+  color: var(--ink);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.tag-legend-share {
+.tag-bar-head .dim {
+  color: var(--ink-3);
+}
+.tag-bar-share {
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
   min-width: 3.2rem;
   text-align: right;
+}
+.tag-bar-track {
+  display: block;
+  margin-top: 0.2rem;
+  height: 8px;
+  background: var(--ground-2);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.tag-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--ink-2) 22%, transparent);
+}
+.tag-bar-fill.lead {
+  background: var(--accent);
+}
+.tag-bar-fill[data-rank="1"] {
+  background: color-mix(in srgb, var(--ink-2) 58%, transparent);
+}
+.tag-bar-fill[data-rank="2"] {
+  background: color-mix(in srgb, var(--ink-2) 46%, transparent);
+}
+.tag-bar-fill[data-rank="3"] {
+  background: color-mix(in srgb, var(--ink-2) 36%, transparent);
+}
+.tag-bar-fill[data-rank="4"] {
+  background: color-mix(in srgb, var(--ink-2) 28%, transparent);
 }
 
 /* ============================================================================

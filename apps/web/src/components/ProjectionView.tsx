@@ -133,85 +133,111 @@ function MonthsGrid({
   currency: string;
 }) {
   return (
-    <div className="grid-scroll">
-      <table className="months-grid">
-        <thead>
-          <tr>
-            <th className="sticky-col">payment</th>
-            {months.map((m) => (
-              <th key={m.month} className="num" title={formatMonth(m.month)}>
-                {formatMonthShort(m.month)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.paymentId}>
-              <th scope="row" className="sticky-col name">
-                {row.label}
-              </th>
-              {row.cells.map((cell, i) =>
-                cell ? (
-                  <td
-                    key={months[i]!.month}
-                    className={`num${cell.dueThisMonth ? " due" : ""}`}
-                    title={
-                      cell.dueThisMonth
-                        ? `due: ${formatMinor(cell.dueAmountMinor, currency)}`
-                        : formatMinor(cell.requiredMonthlyMinor, currency)
-                    }
-                  >
-                    {formatCompactMinor(cell.requiredMonthlyMinor, currency)}
-                    {cell.dueThisMonth && (
-                      <span className="due-dot" aria-hidden="true">
-                        •
-                      </span>
-                    )}
-                  </td>
-                ) : (
-                  <td key={months[i]!.month} className="num dim" />
-                ),
-              )}
+    <>
+      <div className="grid-scroll">
+        <table className="months-grid">
+          <thead>
+            <tr>
+              <th className="sticky-col">payment</th>
+              {months.map((m) => (
+                <th key={m.month} className="num" title={formatMonth(m.month)}>
+                  {formatMonthShort(m.month)}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          <tr>
-            <th scope="row" className="sticky-col">
-              required
-            </th>
-            {months.map((m) => (
-              <td key={m.month} className="num" title={formatMinor(m.totalRequiredMinor, currency)}>
-                {formatCompactMinor(m.totalRequiredMinor, currency)}
-              </td>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.paymentId}>
+                <th scope="row" className="sticky-col name">
+                  {row.label}
+                </th>
+                {row.cells.map((cell, i) =>
+                  cell ? (
+                    <td
+                      key={months[i]!.month}
+                      className={`num${cell.dueThisMonth ? " due" : ""}`}
+                      title={
+                        cell.dueThisMonth
+                          ? `due: ${formatMinor(cell.dueAmountMinor, currency)}`
+                          : formatMinor(cell.requiredMonthlyMinor, currency)
+                      }
+                    >
+                      {formatCompactMinor(cell.requiredMonthlyMinor, currency)}
+                      {cell.dueThisMonth && (
+                        <span className="due-dot" aria-hidden="true">
+                          •
+                        </span>
+                      )}
+                    </td>
+                  ) : (
+                    <td key={months[i]!.month} className="num dim" />
+                  ),
+                )}
+              </tr>
             ))}
-          </tr>
-          <tr>
-            <th scope="row" className="sticky-col">
-              left over
-            </th>
-            {months.map((m) => {
-              const short = m.shortfallMinor > 0;
-              return (
+          </tbody>
+          <tfoot>
+            <tr>
+              <th scope="row" className="sticky-col">
+                required
+              </th>
+              {months.map((m) => (
                 <td
                   key={m.month}
-                  className={`num${short ? " warn" : " ok"}`}
-                  title={
-                    short
-                      ? `shortfall: ${formatMinor(m.shortfallMinor, currency)}`
-                      : formatMinor(m.leftoverMinor, currency)
-                  }
+                  className="num"
+                  title={formatMinor(m.totalRequiredMinor, currency)}
                 >
-                  {short
-                    ? `-${formatCompactMinor(m.shortfallMinor, currency)}`
-                    : formatCompactMinor(m.leftoverMinor, currency)}
+                  {formatCompactMinor(m.totalRequiredMinor, currency)}
                 </td>
-              );
-            })}
-          </tr>
-        </tfoot>
-      </table>
-    </div>
+              ))}
+            </tr>
+            <tr>
+              <th scope="row" className="sticky-col">
+                left over
+              </th>
+              {months.map((m) => {
+                const short = m.shortfallMinor > 0;
+                return (
+                  <td
+                    key={m.month}
+                    className={`num${short ? " warn" : " ok"}`}
+                    title={
+                      short
+                        ? `shortfall: ${formatMinor(m.shortfallMinor, currency)}`
+                        : formatMinor(m.leftoverMinor, currency)
+                    }
+                  >
+                    {short
+                      ? `-${formatCompactMinor(m.shortfallMinor, currency)}`
+                      : formatCompactMinor(m.leftoverMinor, currency)}
+                  </td>
+                );
+              })}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <GridKey />
+    </>
+  );
+}
+
+/**
+ * What the grid's marks mean. Three of them: the dot and the tint both say
+ * "this payment actually falls due that month" (the tint carries across the
+ * whole cell, the dot survives a screenshot at low contrast), and the tilde is
+ * the plan-table's mark for a date it worked out rather than one you set.
+ */
+function GridKey() {
+  return (
+    <p className="grid-key">
+      <span className="due-dot" aria-hidden="true">
+        •
+      </span>{" "}
+      falls due that month{" · "}
+      <i className="key-swatch" aria-hidden="true" /> tinted cell = due month{" · "}
+      <span className="derived">~</span> derived date
+    </p>
   );
 }

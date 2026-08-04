@@ -1,16 +1,11 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { PlanLineDto } from "../lib/types.js";
 import { TagBreakdown } from "./TagBreakdown.js";
 
-// The treemap itself is recharts inside a ResponsiveContainer, which measures
-// nothing in jsdom. Stub the lazy chunk: what matters here is when the section
-// renders at all, and what the legend says about the grouping.
-vi.mock("./TagTreemap.js", () => ({
-  TagTreemap: ({ groups }: { groups: { tag: string }[] }) => (
-    <svg data-testid="treemap" data-tags={groups.map((g) => g.tag).join(",")} />
-  ),
-}));
+// Nothing is stubbed here any more: the bar list is plain DOM, so it renders in
+// jsdom exactly as it does on screen. (The treemap it replaced was recharts
+// inside a ResponsiveContainer, which measures nothing without a layout engine.)
 
 function line(over: Partial<PlanLineDto> & { paymentId: string }): PlanLineDto {
   return {
@@ -44,12 +39,12 @@ describe("TagBreakdown", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("charts the split once tags are in play, biggest first", async () => {
+  it("charts the split once tags are in play, biggest first", () => {
     render(
       <TagBreakdown
         lines={[
-          line({ paymentId: "rent", tag: "housing", requiredMonthlyMinor: 90_000 }),
           line({ paymentId: "mot", tag: "car", requiredMonthlyMinor: 10_000 }),
+          line({ paymentId: "rent", tag: "housing", requiredMonthlyMinor: 90_000 }),
         ]}
         currency="GBP"
       />,
@@ -57,10 +52,13 @@ describe("TagBreakdown", () => {
 
     expect(screen.getByRole("heading", { name: "where the month goes" })).toBeInTheDocument();
     expect(screen.getByText("[2 tags · required / mo]")).toBeInTheDocument();
-    expect(await screen.findByTestId("treemap")).toHaveAttribute("data-tags", "housing,car");
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "housing£900.00/mo90.0%",
+      "car£100.00/mo10.0%",
+    ]);
   });
 
-  it("lists each tag's monthly cost and share in the legend", () => {
+  it("lists each tag's monthly cost and share", () => {
     render(
       <TagBreakdown
         lines={[
@@ -71,11 +69,11 @@ describe("TagBreakdown", () => {
       />,
     );
 
-    const legend = screen.getByRole("list");
-    expect(legend).toHaveTextContent("housing£900.0090.0%");
-    expect(legend).toHaveTextContent("car£100.0010.0%");
+    const bars = screen.getByRole("list");
+    expect(bars).toHaveTextContent("housing£900.00/mo90.0%");
+    expect(bars).toHaveTextContent("car£100.00/mo10.0%");
     // Every figure carries the class privacy mode blurs.
-    expect(legend.querySelectorAll(".amount")).toHaveLength(2);
+    expect(bars.querySelectorAll(".amount")).toHaveLength(2);
   });
 
   it("keeps an untagged remainder visible alongside real tags", () => {
