@@ -100,16 +100,18 @@ export interface NeedsYouAccountPlan {
    * this month. A whole `AccountPlanDto` carries it; a caller holding only the
    * overview's per-account summary has none, and draws no movement rows.
    *
-   * Household allocations are deliberately *not* in here — they arrive as
-   * member transfers on the household's own plan and have their own rows — so
-   * an account can never be prompted twice for the same arriving money.
+   * **Authored movements only.** A transfer the pass derived is not one of
+   * these — it has no authored row and no `inflowId` to confirm against — and
+   * arrives instead through the member rows of {@link inflowSources}, so an
+   * account can never be prompted twice for the same arriving money.
    */
   inflowArrivals?: readonly InflowArrivalDto[];
   /**
-   * Where the arriving money comes from, when the caller may be told. The only
-   * carrier of a sending account's *name*, and the API withholds it from anyone
-   * who cannot see that account — so an absent name is rendered as an absence
-   * rather than as an id.
+   * Where the arriving money comes from, when the caller may be told. Carries
+   * both senders: the member the pass asks to transfer, and the account an
+   * authored movement drains. The only carrier of a sending account's *name*,
+   * and the API withholds it from anyone who cannot see that account — so an
+   * absent name is rendered as an absence rather than as an id.
    */
   inflowSources?: readonly PlanInflowSourceDto[] | null;
 }
