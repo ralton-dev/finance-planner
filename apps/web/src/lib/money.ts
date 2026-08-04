@@ -37,3 +37,26 @@ export function toMinor(input: string | number): number {
 export function toMajor(minor: number): number {
   return minor / 100;
 }
+
+/**
+ * A sentence with its money kept apart from its words.
+ *
+ * Privacy mode blurs *elements* — `.amount`, `td.num`, `.kpi-value`. A figure
+ * baked into a string has no element of its own, so "£540.00 is short this
+ * month" stayed in the clear on a screen whose entire purpose is that the
+ * person behind you cannot read the numbers. Anything that words a figure into
+ * prose returns these parts instead, and the UI renders each money part as an
+ * `<Amount>` (see `components/Amount.tsx`).
+ */
+export type PhrasePart = string | { minor: number; currency: string };
+export type Phrase = readonly PhrasePart[];
+
+/** A money part, for building a phrase inline. */
+export function money(minor: number, currency: string): PhrasePart {
+  return { minor, currency };
+}
+
+/** The same sentence as plain text — for a `title`, a label, or a test. */
+export function phraseText(phrase: Phrase): string {
+  return phrase.map((p) => (typeof p === "string" ? p : formatMinor(p.minor, p.currency))).join("");
+}

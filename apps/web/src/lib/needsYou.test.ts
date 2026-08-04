@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { phraseText } from "./money.js";
 import {
   deriveHeadline,
   deriveNeedsYou,
@@ -202,6 +203,7 @@ function accLine(over: Partial<PlanLineDto> & { paymentId: string }): PlanLineDt
 
 function accountPlan(over: Partial<AccountPlanDto> & { accountId: string }): AccountPlanDto {
   return {
+    asOfDate: AS_OF,
     currency: "GBP",
     monthlyIncomeMinor: 400_000,
     bufferMinor: 0,
@@ -299,7 +301,7 @@ describe("deriveNeedsYou · shortfall", () => {
 
   it("suggests the two remedies: the share, or the thing funded last", () => {
     const [item] = deriveNeedsYou(fullInput());
-    expect(item!.meta).toBe("raise Alex's share, or move £40.00 from Gym");
+    expect(phraseText(item!.meta)).toBe("raise Alex's share, or move £40.00 from Gym");
   });
 
   it("falls back to the payment name when the short group is untagged", () => {
@@ -321,7 +323,7 @@ describe("deriveNeedsYou · shortfall", () => {
       asOfDate: AS_OF,
       households: [household({ plan: { ...plan, lines: bare } })],
     });
-    expect(items[0]!.meta).toBe("raise Alex's share to cover it");
+    expect(phraseText(items[0]!.meta)).toBe("raise Alex's share to cover it");
   });
 
   it("ignores members whose income covers their obligation", () => {
@@ -349,7 +351,7 @@ describe("deriveNeedsYou · shortfall", () => {
       amountMinor: 12_500,
       href: "/accounts/side",
     });
-    expect(items[0]!.meta).toBe(
+    expect(phraseText(items[0]!.meta)).toBe(
       "income is £125.00 short — trim the plan, or move £125.00 from Van",
     );
   });
@@ -374,9 +376,9 @@ describe("deriveNeedsYou · transfer", () => {
       key: "transfer:hh:alex-current|bills|alex",
       label: "Alex → Bills joint",
       amountMinor: 87_600,
-      meta: "transfer · aug 2026 · 1 of 2 done · waiting on Alex",
       href: "/households/hh/plan",
     });
+    expect(phraseText(items[0]!.meta)).toBe("transfer · aug 2026 · 1 of 2 done · waiting on Alex");
   });
 
   it("hands the UI everything the confirm endpoint needs", () => {
@@ -403,7 +405,7 @@ describe("deriveNeedsYou · transfer", () => {
       households: [household({ confirmations: [stale] })],
     }).filter((i) => i.kind === "transfer");
     expect(items).toHaveLength(2);
-    expect(items[0]!.meta).toContain("0 of 2 done");
+    expect(phraseText(items[0]!.meta)).toContain("0 of 2 done");
   });
 
   it("says nothing when every transfer is confirmed", () => {
@@ -434,7 +436,6 @@ describe("deriveNeedsYou · record", () => {
       key: "record:rainy",
       label: "record Rainy day",
       amountMinor: 20_000,
-      meta: "Ben current · not yet set aside this month",
       href: "/accounts/ben-current",
       action: {
         kind: "recordContribution",
@@ -444,6 +445,7 @@ describe("deriveNeedsYou · record", () => {
         month: "2026-08",
       },
     });
+    expect(phraseText(items[0]!.meta)).toBe("Ben current · not yet set aside this month");
   });
 
   it("never asks for a monthly bill — those are paid, not saved up", () => {
@@ -469,7 +471,7 @@ describe("deriveNeedsYou · record", () => {
     }).filter((i) => i.kind === "record" && i.key === "record:rainy");
 
     expect(items[0]!.amountMinor).toBe(20_000);
-    expect(items[0]!.meta).toBe("Ben current · £50.00 of £200.00 set aside so far");
+    expect(phraseText(items[0]!.meta)).toBe("Ben current · £50.00 of £200.00 set aside so far");
     expect(items[0]!.action).toMatchObject({ amountMinor: 15_000 });
   });
 
@@ -498,10 +500,10 @@ describe("deriveNeedsYou · checkin", () => {
       key: "checkin:bills",
       label: "check in Bills joint balance",
       days: 12,
-      meta: "last confirmed 23 jul · energy £140.00 due in 11d",
       href: "/accounts/bills",
       action: { kind: "checkin", accountId: "bills" },
     });
+    expect(phraseText(items[0]!.meta)).toBe("last confirmed 23 jul · energy £140.00 due in 11d");
     expect(items[0]!.amountMinor).toBeUndefined();
   });
 
@@ -510,7 +512,7 @@ describe("deriveNeedsYou · checkin", () => {
     const items = deriveNeedsYou(fullInput({ upcoming: [far] })).filter(
       (i) => i.kind === "checkin",
     );
-    expect(items[0]!.meta).toBe("last confirmed 23 jul");
+    expect(phraseText(items[0]!.meta)).toBe("last confirmed 23 jul");
   });
 
   it("honours an injected threshold in both directions", () => {
@@ -538,10 +540,8 @@ describe("deriveNeedsYou · checkin", () => {
     const never = billsJoint();
     never.plan.latestBalance = null;
     const [item] = deriveNeedsYou({ asOfDate: AS_OF, accounts: [never], upcoming: [energyDue] });
-    expect(item).toMatchObject({
-      kind: "checkin",
-      meta: "never checked in · energy £140.00 due in 11d",
-    });
+    expect(item!.kind).toBe("checkin");
+    expect(phraseText(item!.meta)).toBe("never checked in · energy £140.00 due in 11d");
     expect(item!.days).toBeUndefined();
   });
 });
@@ -697,13 +697,17 @@ function settled(): NeedsYouInput {
 describe("deriveHeadline", () => {
   it("leads with the shortfall, worded as the mockup words it", () => {
     const input = fullInput();
-    expect(deriveHeadline(input, deriveNeedsYou(input))).toEqual({
-      kind: "shortfall",
-      amountMinor: 4_000,
-      sentence:
-        "Alex's share of housing is £40.00 short this month. Everything else across 2 payments " +
+    const headline = deriveHeadline(input, deriveNeedsYou(input));
+    expect(headline).toMatchObject({ kind: "shortfall", amountMinor: 4_000 });
+    expect(phraseText(headline.sentence)).toBe(
+      "Alex's share of housing is £40.00 short this month. Everything else across 2 payments " +
         "is covered — clear it and you're left with £3,326.62 for the month.",
-    });
+    );
+    // Every figure is its own part, so privacy mode has something to blur.
+    expect(headline.sentence.filter((part) => typeof part !== "string")).toEqual([
+      { minor: 4_000, currency: "GBP" },
+      { minor: 332_662, currency: "GBP" },
+    ]);
   });
 
   it("lets the shortfall win however much is left over", () => {
@@ -735,7 +739,7 @@ describe("deriveHeadline", () => {
     const input: NeedsYouInput = { asOfDate: AS_OF, households: [household({ plan })] };
     const headline = deriveHeadline(input, deriveNeedsYou(input));
     expect(headline.amountMinor).toBe(54_000);
-    expect(headline.sentence).toMatch(
+    expect(phraseText(headline.sentence)).toMatch(
       /^£540\.00 is short this month, most of it Ben's share of housing\./,
     );
   });
@@ -743,7 +747,7 @@ describe("deriveHeadline", () => {
   it("still says something when no member explains the gap", () => {
     const plan = householdPlan({ shortfallMinor: 2_500, members: [], lines: [] });
     const input: NeedsYouInput = { asOfDate: AS_OF, households: [household({ plan })] };
-    expect(deriveHeadline(input, deriveNeedsYou(input)).sentence).toMatch(
+    expect(phraseText(deriveHeadline(input, deriveNeedsYou(input)).sentence)).toMatch(
       /^£25\.00 is short this month\. Everything else across 0 payments is covered/,
     );
   });
@@ -756,7 +760,7 @@ describe("deriveHeadline", () => {
     expect(deriveHeadline(input, items)).toEqual({
       kind: "leftover",
       amountMinor: 332_662,
-      sentence: "All 2 payments funded. 3 things still waiting on a human — see the list.",
+      sentence: ["All 2 payments funded. 3 things still waiting on a human — see the list."],
     });
   });
 
@@ -768,7 +772,7 @@ describe("deriveHeadline", () => {
     });
     const items = deriveNeedsYou(input);
     expect(items).toHaveLength(1);
-    expect(deriveHeadline(input, items).sentence).toBe(
+    expect(phraseText(deriveHeadline(input, items).sentence)).toBe(
       "All 2 payments funded. 1 thing still waiting on a human — see the list.",
     );
   });
@@ -780,8 +784,9 @@ describe("deriveHeadline", () => {
     expect(deriveHeadline(input, items)).toEqual({
       kind: "leftover",
       amountMinor: 332_662,
-      sentence:
+      sentence: [
         "All 2 payments funded, both transfers settled, balances current. Nothing is waiting on you.",
+      ],
     });
   });
 
@@ -792,7 +797,7 @@ describe("deriveHeadline", () => {
       ...input,
       households: [{ ...entry!, plan: { ...entry!.plan, transfers: [] }, confirmations: [] }],
     };
-    expect(deriveHeadline(noTransfers, deriveNeedsYou(noTransfers)).sentence).toBe(
+    expect(phraseText(deriveHeadline(noTransfers, deriveNeedsYou(noTransfers)).sentence)).toBe(
       "All 2 payments funded, balances current. Nothing is waiting on you.",
     );
   });
@@ -802,7 +807,7 @@ describe("deriveHeadline", () => {
     expect(deriveHeadline(input, [])).toEqual({
       kind: "leftover",
       amountMinor: 0,
-      sentence: "Nothing planned yet. Nothing is waiting on you.",
+      sentence: ["Nothing planned yet. Nothing is waiting on you."],
     });
   });
 
@@ -834,7 +839,7 @@ describe("deriveHeadline", () => {
 
     expect(headline.kind).toBe("shortfall");
     expect(headline.amountMinor).toBe(54_000);
-    expect(headline.sentence).toBe(
+    expect(phraseText(headline.sentence)).toBe(
       "£540.00 is short this month, most of it Cass's share of debt. Everything else across " +
         "3 payments is covered — clear it and you're left with £4,326.62 for the month.",
     );
@@ -859,7 +864,9 @@ describe("deriveHeadline", () => {
     // The euro household's rows still reach the list; only the figure is GBP.
     expect(deriveNeedsYou(input).map((i) => i.key)).toContain("shortfall:member:hh-eu:luc");
     expect(headline.amountMinor).toBe(4_000);
-    expect(headline.sentence).toMatch(/^Alex's share of housing is £40\.00 short this month\./);
+    expect(phraseText(headline.sentence)).toMatch(
+      /^Alex's share of housing is £40\.00 short this month\./,
+    );
   });
 
   it("adds up across households and standalone accounts", () => {
@@ -880,7 +887,7 @@ describe("deriveHeadline", () => {
     };
     const headline = deriveHeadline(input, deriveNeedsYou(input));
     expect(headline.amountMinor).toBe(5_000);
-    expect(headline.sentence).toContain("across 3 payments");
-    expect(headline.sentence).toContain("£3,331.62");
+    expect(phraseText(headline.sentence)).toContain("across 3 payments");
+    expect(phraseText(headline.sentence)).toContain("£3,331.62");
   });
 });

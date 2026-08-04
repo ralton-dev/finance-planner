@@ -1,12 +1,12 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Amount } from "../components/Amount.js";
+import { Amount, Sentence } from "../components/Amount.js";
 import { ChartFrame } from "../components/ChartFrame.js";
 import { DownloadButton } from "../components/DownloadButton.js";
 import { Fold } from "../components/Fold.js";
 import { UpcomingDigest } from "../components/UpcomingDigest.js";
 import { api, ApiError } from "../lib/api.js";
-import { formatMinor } from "../lib/money.js";
+import { money, type Phrase } from "../lib/money.js";
 import { deriveNeedsYou, type NeedsYouAccountInput, type NeedsYouInput } from "../lib/needsYou.js";
 import { buildNetWorthSeries, type AccountBalanceHistory } from "../lib/networth.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -456,21 +456,26 @@ export function netWorthTotals(accounts: readonly OverviewAccountDto[]): NetWort
  * already promised most of it to something, and the difference is the only
  * number worth acting on.
  */
-export function netWorthSentence(totals: NetWorthTotals, currency: string): string {
+export function netWorthSentence(totals: NetWorthTotals, currency: string): Phrase {
   if (totals.checkedIn === 0) {
-    return "No balances checked in yet — record one and this becomes real.";
+    return ["No balances checked in yet — record one and this becomes real."];
   }
-  const reserved = formatMinor(totals.reservedMinor, currency);
+  const reserved = money(totals.reservedMinor, currency);
   if (totals.freeMinor < 0) {
-    return (
-      `The plan has ${reserved} set aside — ` +
-      `${formatMinor(-totals.freeMinor, currency)} more than these accounts hold.`
-    );
+    return [
+      "The plan has ",
+      reserved,
+      " set aside — ",
+      money(-totals.freeMinor, currency),
+      " more than these accounts hold.",
+    ];
   }
-  return (
-    `${reserved} of it is already set aside by the plan, ` +
-    `leaving ${formatMinor(totals.freeMinor, currency)} genuinely free.`
-  );
+  return [
+    reserved,
+    " of it is already set aside by the plan, leaving ",
+    money(totals.freeMinor, currency),
+    " genuinely free.",
+  ];
 }
 
 /** What you hold, said in a sentence; the trend is a disclosure behind it. */
@@ -502,7 +507,9 @@ function NetWorth({
               {multi && <span className="dim">{bucket.currency} </span>}
               <Amount minor={totals.cashMinor} currency={bucket.currency} />
             </div>
-            <p className="networth-sentence">{netWorthSentence(totals, bucket.currency)}</p>
+            <p className="networth-sentence">
+              <Sentence phrase={netWorthSentence(totals, bucket.currency)} />
+            </p>
           </div>
         );
       })}

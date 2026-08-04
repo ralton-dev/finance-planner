@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickAddProvider } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
+import { phraseText } from "../lib/money.js";
 import type {
   AccountDto,
   HouseholdPlanDto,
@@ -27,7 +28,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderOverview(routes: Routes = {}): void {
+function renderOverview(routes: Routes = {}): ReturnType<typeof render> {
   stub = stubApiFetch({
     "GET /api/auth/me": { body: ME },
     // Re-read on every call, so a refetch sees what the seed created.
@@ -60,7 +61,7 @@ function renderOverview(routes: Routes = {}): void {
     ...routes,
   });
 
-  render(
+  return render(
     <MemoryRouter>
       <QuickAddProvider>
         <OverviewPage />
@@ -308,7 +309,7 @@ function emptyPlan(accountId: string) {
   };
 }
 
-function renderPlanned(routes: Routes = {}): void {
+function renderPlanned(routes: Routes = {}): ReturnType<typeof render> {
   stub = stubApiFetch({
     "GET /api/auth/me": { body: PLANNED_ME },
     "GET /api/accounts": { body: PLANNED_ACCOUNTS },
@@ -341,7 +342,7 @@ function renderPlanned(routes: Routes = {}): void {
     ...routes,
   });
 
-  render(
+  return render(
     <MemoryRouter>
       <QuickAddProvider>
         <OverviewPage />
@@ -352,11 +353,16 @@ function renderPlanned(routes: Routes = {}): void {
 
 describe("OverviewPage — fold + doorways", () => {
   it("leads with the aggregate headline the checklist derives", async () => {
-    renderPlanned();
+    const { container } = renderPlanned();
 
-    expect(
-      await screen.findByText(/Alex's share of housing is £40\.00 short this month/),
-    ).toBeInTheDocument();
+    // The sentence is assembled from parts (every figure is its own `.amount`
+    // so privacy mode can blur it), so it is read off the element, not matched
+    // as one text node.
+    await waitFor(() =>
+      expect(container.querySelector(".fold-sentence")).toHaveTextContent(
+        /Alex's share of housing is £40\.00 short this month/,
+      ),
+    );
     // Both of the household's transfers are outstanding, so the fold asks.
     expect(screen.getByText("Ada → Bills joint")).toBeInTheDocument();
   });
@@ -385,13 +391,13 @@ describe("OverviewPage — fold + doorways", () => {
   });
 
   it("says what you hold and how much of it the plan has already claimed", async () => {
-    renderPlanned();
+    const { container } = renderPlanned();
 
-    expect(
-      await screen.findByText(
+    await waitFor(() =>
+      expect(container.querySelector(".networth-sentence")).toHaveTextContent(
         "£300.00 of it is already set aside by the plan, leaving £600.00 genuinely free.",
       ),
-    ).toBeInTheDocument();
+    );
     // The trend is a disclosure now, not the section's headline.
     expect(screen.getByText("net worth over time").tagName).toBe("SUMMARY");
   });
@@ -494,26 +500,36 @@ describe("net worth", () => {
   });
 
   it("words the gap between cash and reserved", () => {
-    expect(
-      netWorthSentence(
-        { cashMinor: 300_000, reservedMinor: 100_000, freeMinor: 200_000, checkedIn: 2 },
-        "GBP",
-      ),
-    ).toBe("£1,000.00 of it is already set aside by the plan, leaving £2,000.00 genuinely free.");
+    const phrase = netWorthSentence(
+      { cashMinor: 300_000, reservedMinor: 100_000, freeMinor: 200_000, checkedIn: 2 },
+      "GBP",
+    );
+    expect(phraseText(phrase)).toBe(
+      "£1,000.00 of it is already set aside by the plan, leaving £2,000.00 genuinely free.",
+    );
+    // Both figures come out as parts, so privacy mode has something to blur.
+    expect(phrase.filter((part) => typeof part !== "string")).toEqual([
+      { minor: 100_000, currency: "GBP" },
+      { minor: 200_000, currency: "GBP" },
+    ]);
   });
 
   it("says which way round it is when the plan claims more than you hold", () => {
     expect(
-      netWorthSentence(
-        { cashMinor: 100_000, reservedMinor: 140_000, freeMinor: -40_000, checkedIn: 1 },
-        "GBP",
+      phraseText(
+        netWorthSentence(
+          { cashMinor: 100_000, reservedMinor: 140_000, freeMinor: -40_000, checkedIn: 1 },
+          "GBP",
+        ),
       ),
     ).toBe("The plan has £1,400.00 set aside — £400.00 more than these accounts hold.");
   });
 
   it("refuses to pretend when nothing has been checked in", () => {
     expect(
-      netWorthSentence({ cashMinor: 0, reservedMinor: 0, freeMinor: 0, checkedIn: 0 }, "GBP"),
+      phraseText(
+        netWorthSentence({ cashMinor: 0, reservedMinor: 0, freeMinor: 0, checkedIn: 0 }, "GBP"),
+      ),
     ).toBe("No balances checked in yet — record one and this becomes real.");
   });
 });

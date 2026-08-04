@@ -10,7 +10,7 @@ import {
   type NeedsYouItem,
   type NeedsYouKind,
 } from "../lib/needsYou.js";
-import { Amount } from "./Amount.js";
+import { Amount, Sentence } from "./Amount.js";
 
 /**
  * The top of a planning screen: the one number the month turns on, and the
@@ -186,7 +186,9 @@ export function Fold({ input, loading = false, onActioned }: Props) {
           currency={headlineCurrency(input)}
           className="fold-figure"
         />
-        <p className="fold-sentence">{headline.sentence}</p>
+        <p className="fold-sentence">
+          <Sentence phrase={headline.sentence} />
+        </p>
       </div>
 
       <div className="section-head">
@@ -280,7 +282,9 @@ export function Fold({ input, loading = false, onActioned }: Props) {
                     )}
                   </span>
                 </div>
-                <div className="needs-you-meta">{item.meta}</div>
+                <div className="needs-you-meta">
+                  <Sentence phrase={item.meta} />
+                </div>
                 {error && (
                   <p className="error needs-you-error" role="alert">
                     {error}

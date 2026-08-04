@@ -1,5 +1,5 @@
 import { formatDayMonth, formatMonth, monthOf } from "./months.js";
-import { formatMinor } from "./money.js";
+import { money, type Phrase, type PhrasePart } from "./money.js";
 import { tagKey, UNTAGGED } from "./tags.js";
 import type {
   AccountPlanDto,
@@ -23,6 +23,12 @@ import type {
  * caller could format itself beyond the sentences the design specifies. Dates
  * are compared against an explicit `asOfDate` so a test can sit anywhere in
  * time. Money is integer minor units throughout.
+ *
+ * The sentences come out as `Phrase`s — words and figures as separate parts —
+ * rather than finished strings. Privacy mode blurs elements, so a figure baked
+ * into a template literal is a figure nobody can hide; the UI wraps each money
+ * part in an `<Amount>` and the whole checklist goes soft with everything
+ * else.
  */
 
 /** A balance older than this many days is worth confirming. Injectable. */
@@ -107,9 +113,9 @@ export interface NeedsYouItem {
   label: string;
   /** Absent on `checkin`, where the row's figure is a count of days. */
   amountMinor?: number;
-  /** Currency of `amountMinor`, and of any money inside `meta`. */
+  /** Currency of `amountMinor`. Money inside `meta` carries its own. */
   currency: string;
-  meta: string;
+  meta: Phrase;
   href: string;
   action?: NeedsYouAction;
   /** `checkin` only: days since the last balance; absent when never checked in. */
@@ -120,7 +126,7 @@ export interface NeedsYouItem {
 export interface NeedsYouHeadline {
   kind: "shortfall" | "leftover";
   amountMinor: number;
-  sentence: string;
+  sentence: Phrase;
 }
 
 /**
@@ -222,7 +228,7 @@ function householdShortfalls(entry: NeedsYouHouseholdInput): ShortfallFact[] {
     const who = member.displayName ?? "member";
     const group = unfundedGroup(plan, member.userId);
     const cut = lastFundedForMember(plan, member.userId);
-    const amount = formatMinor(member.shortfallMinor, plan.currency);
+    const amount = money(member.shortfallMinor, plan.currency);
 
     facts.push({
       amountMinor: member.shortfallMinor,
@@ -234,8 +240,8 @@ function householdShortfalls(entry: NeedsYouHouseholdInput): ShortfallFact[] {
         amountMinor: member.shortfallMinor,
         currency: plan.currency,
         meta: cut
-          ? `raise ${who}'s share, or move ${amount} from ${cut}`
-          : `raise ${who}'s share to cover it`,
+          ? [`raise ${who}'s share, or move `, amount, ` from ${cut}`]
+          : [`raise ${who}'s share to cover it`],
         href: `/households/${plan.householdId}`,
       },
     });
@@ -248,7 +254,7 @@ function accountShortfall(entry: NeedsYouAccountInput): ShortfallFact | null {
   const { plan } = entry;
   if (plan.shortfallMinor <= 0) return null;
   const cut = lastFundedOnAccount(plan.lines);
-  const amount = formatMinor(plan.shortfallMinor, plan.currency);
+  const amount = money(plan.shortfallMinor, plan.currency);
 
   return {
     amountMinor: plan.shortfallMinor,
@@ -260,8 +266,8 @@ function accountShortfall(entry: NeedsYouAccountInput): ShortfallFact | null {
       amountMinor: plan.shortfallMinor,
       currency: plan.currency,
       meta: cut
-        ? `income is ${amount} short — trim the plan, or move ${amount} from ${cut}`
-        : `income is ${amount} short of what the plan needs this month`,
+        ? ["income is ", amount, " short — trim the plan, or move ", amount, ` from ${cut}`]
+        : ["income is ", amount, " short of what the plan needs this month"],
       href: `/accounts/${plan.accountId}`,
     },
   };
@@ -299,7 +305,7 @@ function transferItems(entry: NeedsYouHouseholdInput, month: string): NeedsYouIt
         label: `${who} → ${accountName.get(t.toAccountId) ?? "account"}`,
         amountMinor: t.amountMinor,
         currency: plan.currency,
-        meta: `transfer · ${formatMonth(month)} · ${done} of ${total} done · waiting on ${who}`,
+        meta: [`transfer · ${formatMonth(month)} · ${done} of ${total} done · waiting on ${who}`],
         href: `/households/${plan.householdId}/plan`,
         action: {
           kind: "confirmTransfer" as const,
@@ -333,11 +339,14 @@ function recordItems(entry: NeedsYouAccountInput, month: string): NeedsYouItem[]
       currency: plan.currency,
       meta:
         contributed > 0
-          ? `${entry.name} · ${formatMinor(contributed, plan.currency)} of ${formatMinor(
-              line.fundedMonthlyMinor,
-              plan.currency,
-            )} set aside so far`
-          : `${entry.name} · not yet set aside this month`,
+          ? [
+              `${entry.name} · `,
+              money(contributed, plan.currency),
+              " of ",
+              money(line.fundedMonthlyMinor, plan.currency),
+              " set aside so far",
+            ]
+          : [`${entry.name} · not yet set aside this month`],
       href: `/accounts/${plan.accountId}`,
       action: {
         kind: "recordContribution" as const,
@@ -376,9 +385,13 @@ function checkinItem(
   if (days !== undefined && days <= staleAfterDays) return null;
 
   const next = nextDueOn(plan.accountId, upcoming);
-  const dueClause = next
-    ? ` · ${next.name} ${formatMinor(next.amountMinor, next.currency)} due ${dueLabel(next.daysUntil)}`
-    : "";
+  const dueClause: PhrasePart[] = next
+    ? [
+        ` · ${next.name} `,
+        money(next.amountMinor, next.currency),
+        ` due ${dueLabel(next.daysUntil)}`,
+      ]
+    : [];
 
   return {
     key: `checkin:${plan.accountId}`,
@@ -386,8 +399,8 @@ function checkinItem(
     label: `check in ${entry.name} balance`,
     currency: plan.currency,
     meta: latest
-      ? `last confirmed ${formatDayMonth(latest.asOfDate)}${dueClause}`
-      : `never checked in${dueClause}`,
+      ? [`last confirmed ${formatDayMonth(latest.asOfDate)}`, ...dueClause]
+      : ["never checked in", ...dueClause],
     href: `/accounts/${plan.accountId}`,
     action: { kind: "checkin", accountId: plan.accountId },
     ...(days === undefined ? {} : { days }),
@@ -519,24 +532,28 @@ export function deriveHeadline(
       ...households.flatMap(householdShortfalls),
       ...standalone.map(accountShortfall).filter((f): f is ShortfallFact => f !== null),
     ].sort((a, b) => b.amountMinor - a.amountMinor || a.item.key.localeCompare(b.item.key));
-    const amount = formatMinor(shortfallMinor, currency);
+    const amount = money(shortfallMinor, currency);
     // The number is always the total; the sentence names the biggest cause it
     // can find. A household total can exceed what its members individually
     // explain (a buffer nobody's income reached), hence the third form.
     const subject = facts[0]?.subject;
-    const lead =
+    const lead: PhrasePart[] =
       subject === undefined
-        ? `${amount} is short this month.`
+        ? [amount, " is short this month."]
         : facts.length === 1
-          ? `${subject} is ${amount} short this month.`
-          : `${amount} is short this month, most of it ${subject}.`;
+          ? [`${subject} is `, amount, " short this month."]
+          : [amount, ` is short this month, most of it ${subject}.`];
 
     return {
       kind: "shortfall",
       amountMinor: shortfallMinor,
-      sentence:
-        `${lead} Everything else across ${plural(paymentCount, "payment")} is covered — ` +
-        `clear it and you're left with ${formatMinor(leftoverMinor, currency)} for the month.`,
+      sentence: [
+        ...lead,
+        ` Everything else across ${plural(paymentCount, "payment")} is covered — `,
+        "clear it and you're left with ",
+        money(leftoverMinor, currency),
+        " for the month.",
+      ],
     };
   }
 
@@ -544,7 +561,7 @@ export function deriveHeadline(
     return {
       kind: "leftover",
       amountMinor: leftoverMinor,
-      sentence: "Nothing planned yet. Nothing is waiting on you.",
+      sentence: ["Nothing planned yet. Nothing is waiting on you."],
     };
   }
 
@@ -557,5 +574,7 @@ export function deriveHeadline(
         `${transfersClause(households.reduce((n, h) => n + h.plan.transfers.length, 0))}, ` +
         `balances current. Nothing is waiting on you.`;
 
-  return { kind: "leftover", amountMinor: leftoverMinor, sentence };
+  // The left-over sentence never names a figure — the headline above it is the
+  // figure — so it stays one part.
+  return { kind: "leftover", amountMinor: leftoverMinor, sentence: [sentence] };
 }

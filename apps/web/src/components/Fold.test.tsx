@@ -151,6 +151,7 @@ const benConfirmed: TransferConfirmationDto = {
 
 function accountPlan(over: Partial<AccountPlanDto> & { accountId: string }): AccountPlanDto {
   return {
+    asOfDate: AS_OF,
     currency: "GBP",
     monthlyIncomeMinor: 0,
     bufferMinor: 0,
@@ -279,6 +280,23 @@ describe("Fold · headline", () => {
     );
   });
 
+  it("leaves no figure outside something privacy mode can blur", () => {
+    // Privacy mode blurs `.amount`, `td.num` and `.kpi-value` — elements. A
+    // figure baked into a sentence has no element of its own, and for a while
+    // the fold said "£40.00 is short this month" in the clear on a screen whose
+    // entire job is that nobody behind you can read the numbers.
+    const { container } = renderFold();
+
+    for (const prose of container.querySelectorAll(".fold-sentence, .needs-you-meta")) {
+      const clone = prose.cloneNode(true) as HTMLElement;
+      for (const amount of clone.querySelectorAll(".amount")) amount.remove();
+      expect(clone.textContent).not.toMatch(/[£$€]|\d[\d,]*\.\d{2}/);
+    }
+    // …and the prose really does carry figures, so the check above has teeth.
+    expect(container.querySelectorAll(".fold-sentence .amount").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".needs-you-meta .amount").length).toBeGreaterThan(0);
+  });
+
   it("switches to the left-over figure once nothing is missing", () => {
     const { container } = renderFold({}, settledInput());
 
@@ -325,11 +343,17 @@ describe("Fold · the list", () => {
 
   it("shows each row's figure, and a check-in's age instead of money", () => {
     renderFold();
-    expect(within(row("cover Alex's unfunded housing")).getByText("£40.00")).toBeInTheDocument();
-    expect(within(row("Alex → Bills joint")).getByText("£876.00")).toBeInTheDocument();
+    // Scoped to the figure cell: the meta line under it now carries its own
+    // `.amount`s (the remedy names a sum), so the row can hold the same figure
+    // twice.
+    const figure = (label: string): string =>
+      row(label).querySelector(".needs-you-figure")!.textContent!;
+
+    expect(figure("cover Alex's unfunded housing")).toBe("£40.00");
+    expect(figure("Alex → Bills joint")).toBe("£876.00");
     // The month's target, not the remainder still missing.
-    expect(within(row("record Rainy day")).getByText("£200.00")).toBeInTheDocument();
-    expect(within(row("check in Bills joint balance")).getByText("12 d")).toBeInTheDocument();
+    expect(figure("record Rainy day")).toBe("£200.00");
+    expect(figure("check in Bills joint balance")).toBe("12 d");
   });
 
   it("carries the selector's meta line under each row", () => {
@@ -340,6 +364,11 @@ describe("Fold · the list", () => {
     expect(row("check in Bills joint balance")).toHaveTextContent(
       "last confirmed 23 jul · energy £140.00 due in 11d",
     );
+    // Every figure in a meta line is its own `.amount`, so privacy mode blurs
+    // the money inside the prose as well as the money in the tables.
+    expect(
+      row("check in Bills joint balance").querySelector(".needs-you-meta .amount"),
+    ).toHaveTextContent("£140.00");
   });
 });
 
