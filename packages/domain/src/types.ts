@@ -152,6 +152,29 @@ export interface InflowArrival {
   /** What the sending account could afford, which may be less than the row
    *  asks for. */
   amountMinor: number;
+  /**
+   * How much of `amountMinor` has been confirmed as actually moved, clamped to
+   * it. Filled in by `computeEstatePlan` from the account's
+   * `confirmedArrivals`; absent means nobody has said this one moved.
+   */
+  confirmedMinor?: number;
+}
+
+/**
+ * Somebody has said this movement happened.
+ *
+ * Input to the pass, where `InflowArrival` is its output: a confirmation is
+ * about an authored row, so it can be read before anything is known about what
+ * the row managed to deliver. It names no person — the engine is never told who
+ * moved the money, only that it moved.
+ */
+export interface ConfirmedArrival {
+  /** The authored inflow's id. */
+  inflowId: string;
+  /** What was confirmed moved. Clamped by the pass to what actually arrived: a
+   *  confirmation outlives the plan that derived it, and a stale one must not
+   *  credit money this month's plan never sent. */
+  confirmedMinor: number;
 }
 
 export interface AccountInput {
@@ -175,6 +198,16 @@ export interface AccountInput {
   /** Account-sourced inflows **leaving** this account. Funded after every
    *  payment above, in their own priority order (decision 6). */
   outboundInflows?: OutboundInflowInput[];
+  /**
+   * Movements arriving here that have been confirmed as actually moved this
+   * month, by authored inflow.
+   *
+   * Read alongside the inflows rather than merged into `inflow.confirmedMinor`
+   * by the caller, because what a movement delivered is not known until the
+   * pass has planned the sender — so the clamp that keeps a stale confirmation
+   * honest can only be applied there. Absent for an account nothing moves into.
+   */
+  confirmedArrivals?: ConfirmedArrival[];
   /**
    * The accounts in the funding loop this account belongs to, if any, in the
    * order money would travel round it.

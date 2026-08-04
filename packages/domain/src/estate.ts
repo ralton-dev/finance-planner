@@ -260,12 +260,26 @@ export function computeEstatePlan(accounts: AccountInput[], asOfDate: string): E
     // which of two independent senders a depth-first walk reaches first is an
     // accident of the graph, and a plan that reorders its own arrivals for no
     // visible reason is a plan nobody can diff.
-    const sources = (arriving.get(accountId) ?? []).sort(
-      (a, b) =>
-        (a.fromAccountId < b.fromAccountId ? -1 : a.fromAccountId > b.fromAccountId ? 1 : 0) ||
-        (a.inflowId < b.inflowId ? -1 : a.inflowId > b.inflowId ? 1 : 0),
+    const confirmedByInflow = new Map(
+      (account.confirmedArrivals ?? []).map((c) => [c.inflowId, Math.max(0, c.confirmedMinor)]),
     );
+    const sources = (arriving.get(accountId) ?? [])
+      // Clamped to what this movement actually delivered. A confirmation
+      // deliberately outlives the plan that derived it, so one taken in a month
+      // the sender could spare £300 must not still credit £300 in a month it can
+      // only spare £120 — the same rule the household path applies per member,
+      // applied here per inflow.
+      .map((a) => ({
+        ...a,
+        confirmedMinor: Math.min(a.amountMinor, confirmedByInflow.get(a.inflowId) ?? 0),
+      }))
+      .sort(
+        (a, b) =>
+          (a.fromAccountId < b.fromAccountId ? -1 : a.fromAccountId > b.fromAccountId ? 1 : 0) ||
+          (a.inflowId < b.inflowId ? -1 : a.inflowId > b.inflowId ? 1 : 0),
+      );
     const internal = sources.reduce((sum, s) => sum + s.amountMinor, 0);
+    const internalConfirmed = sources.reduce((sum, s) => sum + s.confirmedMinor, 0);
     const household = account.inflow ?? null;
     const allocated = Math.max(0, household?.allocatedMinor ?? 0) + internal;
 
@@ -284,10 +298,12 @@ export function computeEstatePlan(accounts: AccountInput[], asOfDate: string): E
         allocated > 0 || household
           ? {
               allocatedMinor: allocated,
-              // Nothing confirms an account-sourced movement yet, so internal
-              // money arrives planned-but-unconfirmed and the lines leaning on
-              // it read `awaiting_transfer` — which is exactly what it is.
-              confirmedMinor: Math.max(0, household?.confirmedMinor ?? 0),
+              // Money nobody has said they moved arrives planned-but-unconfirmed
+              // and the lines leaning on it read `awaiting_transfer` — which is
+              // exactly what it is. Both producers can be confirmed: a household
+              // member's transfer, and a movement between two of your own
+              // accounts.
+              confirmedMinor: Math.max(0, household?.confirmedMinor ?? 0) + internalConfirmed,
               sources,
             }
           : null,
@@ -367,5 +383,35 @@ export function computeEstatePlan(accounts: AccountInput[], asOfDate: string): E
         (a.inflowId < b.inflowId ? -1 : a.inflowId > b.inflowId ? 1 : 0),
     ),
     cycles,
+  };
+}
+
+/**
+ * One of the pass's inputs with a single movement's money taken back out: the
+ * arrival dropped from `sources`, and its amount off the allocated and confirmed
+ * totals.
+ *
+ * "What did *this* movement pay for" has no answer without it. The pass has
+ * already delivered the money, so the input as it stands is the *after* — a plan
+ * handed the money cannot be diffed against itself, and adding the amount a
+ * second time diffs against a movement that does not exist. This is the before.
+ *
+ * Everything not about that movement is left exactly as it was: the household's
+ * allocation, the other arrivals, and every movement leaving. Unknown inflow id
+ * — or no arriving money at all — hands the input straight back, so a caller
+ * need not check first.
+ */
+export function withoutArrival(input: AccountInput, inflowId: string): AccountInput {
+  const inflow = input.inflow;
+  const arrival = inflow?.sources?.find((s) => s.inflowId === inflowId);
+  if (!inflow || !arrival) return input;
+  return {
+    ...input,
+    inflow: {
+      ...inflow,
+      allocatedMinor: Math.max(0, inflow.allocatedMinor - arrival.amountMinor),
+      confirmedMinor: Math.max(0, inflow.confirmedMinor - (arrival.confirmedMinor ?? 0)),
+      sources: inflow.sources!.filter((s) => s !== arrival),
+    },
   };
 }

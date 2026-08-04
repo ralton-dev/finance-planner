@@ -95,7 +95,12 @@ describe("computePlanForAccount — a standalone pot is part of the plan", () =>
     // left to do.
     expect(plan.lines[0]!.status).toBe("awaiting_transfer");
     expect(plan.inflowArrivals).toEqual([
-      { inflowId: expect.any(String), fromAccountId: current.id, amountMinor: 50_000 },
+      {
+        inflowId: expect.any(String),
+        fromAccountId: current.id,
+        amountMinor: 50_000,
+        confirmedMinor: 0,
+      },
     ]);
   });
 
@@ -242,5 +247,90 @@ describe("buildAccountInput", () => {
     const input = await buildAccountInput(store, current, ASOF);
     expect(input.incomes).toHaveLength(1);
     expect(input.outboundInflows).toEqual([]);
+  });
+});
+
+describe("buildAccountInput — what has actually moved", () => {
+  const MONTH = "2026-08-01";
+
+  const confirm = (
+    userId: string,
+    inflowId: string,
+    from: Account,
+    to: Account,
+    amountMinor: number,
+  ) =>
+    store.createTransferConfirmation({
+      householdId: null,
+      inflowId,
+      month: MONTH,
+      fromAccountId: from.id,
+      toAccountId: to.id,
+      memberUserId: userId,
+      amountMinor,
+    });
+
+  async function movedPair() {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Pot");
+    await salary(current, 100_000);
+    await bill(pot, "Saving", 40_000);
+    const inflow = await movement(current, pot, 40_000);
+    return { userId, current, pot, inflow };
+  }
+
+  it("reports a confirmed movement as funded rather than awaiting for ever", async () => {
+    const { userId, current, pot, inflow } = await movedPair();
+    // Before anyone says it moved: the plan covers the bill, the transfer is
+    // the outstanding thing.
+    expect((await computePlanForAccount(store, pot, ASOF)).lines[0]!.status).toBe(
+      "awaiting_transfer",
+    );
+
+    await confirm(userId, inflow.id, current, pot, 40_000);
+    const plan = await computePlanForAccount(store, pot, ASOF);
+    expect(plan.confirmedInflowMinor).toBe(40_000);
+    expect(plan.inflowArrivals[0]!.confirmedMinor).toBe(40_000);
+    expect(plan.lines[0]!.status).toBe("funded");
+  });
+
+  it("clamps a confirmation the sender can no longer afford", async () => {
+    const { userId, current, pot, inflow } = await movedPair();
+    await confirm(userId, inflow.id, current, pot, 40_000);
+    // The month moves on and a rent bill lands on the sender: only £100 can
+    // leave now, so only £100 can be credited as having arrived.
+    await bill(current, "Rent", 90_000, 1);
+
+    const plan = await computePlanForAccount(store, pot, ASOF);
+    expect(plan.allocatedInflowMinor).toBe(10_000);
+    expect(plan.confirmedInflowMinor).toBe(10_000);
+  });
+
+  it("does not credit money confirmed as leaving an account to that account", async () => {
+    const { userId, current, pot, inflow } = await movedPair();
+    await confirm(userId, inflow.id, current, pot, 40_000);
+    // The same row read from the sending end. It says money left, which is no
+    // reason to think any arrived.
+    const sender = await buildAccountInput(store, current, ASOF);
+    expect(sender.inflow).toBeNull();
+    expect(sender.confirmedArrivals).toEqual([]);
+  });
+
+  it("asks nothing of the store for an account nothing moves into", async () => {
+    const userId = await seedUser();
+    const solo = await account(userId, "Solo");
+    await salary(solo, 100_000);
+    let asked = 0;
+    const counted = new Proxy(store, {
+      get: (target, prop, receiver) => {
+        if (prop === "listTransferConfirmationsForAccount") asked += 1;
+        return Reflect.get(target, prop, receiver) as unknown;
+      },
+    });
+
+    const input = await buildAccountInput(counted, solo, ASOF);
+    expect(input.confirmedArrivals).toEqual([]);
+    expect(asked).toBe(0);
   });
 });

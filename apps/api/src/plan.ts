@@ -5,6 +5,7 @@ import {
   computeAccountPlan,
   computeEstatePlan,
   computeHouseholdPlan,
+  type ConfirmedArrival,
   type EstatePlan,
   type HouseholdAccountInput,
   type HouseholdInput,
@@ -282,6 +283,33 @@ export async function resolveAccountInflow(
 }
 
 /**
+ * How much of each movement into `accountId` has been confirmed as actually
+ * moved this month, one entry per authored inflow.
+ *
+ * Only the arriving side counts. The store answers with every confirmation
+ * touching the account, because a movement is one row read from both ends — but
+ * confirming money *out* of here says nothing about what came *in*, and summing
+ * both would credit an account for its own outgoings.
+ *
+ * Sorted, so an input built twice is byte-identical twice.
+ */
+async function loadConfirmedArrivals(
+  store: Store,
+  accountId: string,
+  month: string,
+): Promise<ConfirmedArrival[]> {
+  const rows = await store.listTransferConfirmationsForAccount(accountId, month);
+  const byInflow = new Map<string, number>();
+  for (const c of rows) {
+    if (!c.inflowId || c.toAccountId !== accountId) continue;
+    byInflow.set(c.inflowId, (byInflow.get(c.inflowId) ?? 0) + c.amountMinor);
+  }
+  return [...byInflow.entries()]
+    .map(([inflowId, confirmedMinor]) => ({ inflowId, confirmedMinor }))
+    .sort((a, b) => (a.inflowId < b.inflowId ? -1 : 1));
+}
+
+/**
  * Load one account's incomes, payments and movements as engine input, before
  * anything is known about the accounts around it.
  *
@@ -289,6 +317,12 @@ export async function resolveAccountInflow(
  * is not funded by its own income alone, and a bills pot has none at all — but
  * what *another account you own* sends is not, because that depends on how the
  * sender's own month works out. `buildAccountInput` adds it.
+ *
+ * What *has* moved is read here too, for both producers: the household's
+ * confirmations come through `resolveAccountInflow`, and a movement between two
+ * of your own accounts through `loadConfirmedArrivals`. Without the second, a
+ * standalone movement you confirmed months ago would still report
+ * `awaiting_transfer` for ever.
  */
 async function loadAccountInput(
   store: Store,
@@ -305,6 +339,14 @@ async function loadAccountInput(
       resolveAccountInflow(store, account, asOfDate, ctx),
     ]);
 
+    // Nothing can be confirmed as arriving at an account nothing moves into, so
+    // an account with no account-sourced inflow — every account in the estate,
+    // until the user authors one — does not pay for the question.
+    const receives = inflows.some((i) => i.source === "account" && i.active !== false);
+    const confirmedArrivals = receives
+      ? await loadConfirmedArrivals(store, account.id, monthStart(asOfDate))
+      : [];
+
     return {
       accountId: account.id,
       currency: account.currency,
@@ -314,10 +356,12 @@ async function loadAccountInput(
       outboundInflows: outbound.map(toOutboundInflowInput),
       payments: payments.map((p) => toPaymentInput(p, saved)),
       // Only the amounts: the engine never learns who sent it, so no plan
-      // response can leak a household member's name by accident.
+      // response can leak a household member's name by accident. The same holds
+      // of `confirmedArrivals`, which names inflows and nobody else.
       inflow: inflow
         ? { allocatedMinor: inflow.allocatedMinor, confirmedMinor: inflow.confirmedMinor }
         : null,
+      confirmedArrivals,
     };
   });
 }

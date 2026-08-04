@@ -1284,7 +1284,12 @@ describe("api service", () => {
   // --- "I moved the money", with no household anywhere in it
 
   /** A holiday pot fed by a movement out of a current account. One user, two
-   *  accounts, no household — the case the old NOT NULL made unrecordable. */
+   *  accounts, no household — the case the old NOT NULL made unrecordable.
+   *
+   *  The current account earns: a sending account that can actually afford the
+   *  movement is the ordinary case, and the one the confirm path has to get
+   *  right. Left penniless, the ordered pass delivers £0 into the pot and every
+   *  assertion below passes on a plan where nothing happened. */
   async function seedMovement(auth: { authorization: string }) {
     const make = async (name: string) =>
       (
@@ -1297,6 +1302,17 @@ describe("api service", () => {
       ).json();
     const current = await make("current");
     const pot = await make("holiday pot");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${current.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
     await app.inject({
       method: "POST",
       url: `/api/accounts/${pot.id}/payments`,
@@ -1386,6 +1402,174 @@ describe("api service", () => {
 
     // ...and it can be confirmed again afterwards.
     expect((await confirm()).statusCode).toBe(201);
+  });
+
+  /**
+   * A current account that can afford the movement, and a pot whose bills the
+   * caller chooses. The regression this pins is the one WP-H's fixture could
+   * not see: with the sender penniless nothing arrives, and a handler that
+   * diffed the plan against a *second* copy of the movement gave the same answer
+   * as one that diffed against the movement's absence.
+   */
+  async function seedFundedMovement(
+    auth: { authorization: string },
+    bills: { name: string; amountMinor: number; priority: number }[],
+  ) {
+    const make = async (name: string) =>
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+    const current = await make("current");
+    const pot = await make("pot");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${current.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    for (const b of bills) {
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${pot.id}/payments`,
+        headers: auth,
+        payload: { ...b, category: "monthly_recurring" },
+      });
+    }
+    const movement = await store.createInflow({
+      accountId: pot.id,
+      name: "Monthly top-up",
+      source: "account",
+      sourceAccountId: current.id,
+      amountMinor: 20000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 50,
+      active: true,
+    });
+    return { current, pot, movement };
+  }
+
+  it("books what a movement funds when the sending account can afford it", async () => {
+    const { auth } = await seedUser(store);
+    // £200 arrives against a £150 bill: the pot is already covered, so a second
+    // imaginary £200 would change nothing and book nothing at all.
+    const { pot, movement } = await seedFundedMovement(auth, [
+      { name: "Council tax", amountMinor: 15000, priority: 1 },
+    ]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/inflows/${movement.id}/confirm`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(201);
+    const { confirmation, contributions } = res.json();
+    // What arrived, not what was authored — here they agree, because the sender
+    // could send the lot.
+    expect(confirmation.amountMinor).toBe(20000);
+    expect(
+      contributions.map((c: { amountMinor: number; accountId: string }) => [
+        c.accountId,
+        c.amountMinor,
+      ]),
+    ).toEqual([[pot.id, 15000]]);
+  });
+
+  it("books what the movement funds, not what a second copy of it would", async () => {
+    const { auth } = await seedUser(store);
+    // £200 arrives against £300 of bills. It pays the first in full and half of
+    // the second; a second imaginary £200 would pay the *rest* of the second —
+    // the same rows, the wrong ones, and the wrong money against each.
+    const { pot, movement } = await seedFundedMovement(auth, [
+      { name: "Council tax", amountMinor: 15000, priority: 1 },
+      { name: "Water", amountMinor: 15000, priority: 2 },
+    ]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/inflows/${movement.id}/confirm`,
+      headers: auth,
+    });
+    const { contributions } = res.json();
+    const payments = (
+      await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/payments`, headers: auth })
+    ).json();
+    const named = (name: string) => payments.find((p: { name: string }) => p.name === name).id;
+    expect(
+      contributions.map((c: { paymentId: string; amountMinor: number }) => [
+        c.paymentId,
+        c.amountMinor,
+      ]),
+    ).toEqual([
+      [named("Council tax"), 15000],
+      [named("Water"), 5000],
+    ]);
+    // Every penny that moved is accounted for, and no penny twice.
+    expect(
+      contributions.reduce((sum: number, c: { amountMinor: number }) => sum + c.amountMinor, 0),
+    ).toBe(20000);
+  });
+
+  it("reports a confirmed movement as funded rather than awaiting for ever", async () => {
+    const { auth } = await seedUser(store);
+    const { pot, movement } = await seedFundedMovement(auth, [
+      { name: "Council tax", amountMinor: 15000, priority: 1 },
+    ]);
+    const planOf = async () =>
+      (
+        await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/plan`, headers: auth })
+      ).json();
+
+    const before = await planOf();
+    expect(before.allocatedInflowMinor).toBe(20000);
+    expect(before.confirmedInflowMinor).toBe(0);
+    expect(before.lines[0].status).toBe("awaiting_transfer");
+
+    await app.inject({
+      method: "POST",
+      url: `/api/inflows/${movement.id}/confirm`,
+      headers: auth,
+    });
+    const after = await planOf();
+    expect(after.confirmedInflowMinor).toBe(20000);
+    expect(after.lines[0].status).toBe("funded");
+    // Nobody else is involved, so there is no household and no member to name.
+    expect(after.inflowSources).toBeNull();
+  });
+
+  it("closes a standalone pot's month on its own income plus what moved into it", async () => {
+    const { auth } = await seedUser(store);
+    const { pot, movement } = await seedFundedMovement(auth, [
+      { name: "Council tax", amountMinor: 15000, priority: 1 },
+    ]);
+    await app.inject({
+      method: "POST",
+      url: `/api/inflows/${movement.id}/confirm`,
+      headers: auth,
+    });
+
+    const closed = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/close`,
+      headers: auth,
+      payload: { month: thisMonth() },
+    });
+    expect(closed.statusCode).toBe(201);
+    // The pot earns nothing; £200 moved in and was confirmed. A close is history
+    // that cannot be recomputed, so £0 here would be permanently wrong.
+    expect(closed.json().incomeMinor).toBe(20000);
+    expect(closed.json().plannedMinor).toBe(15000);
   });
 
   it("refuses to confirm anything that is not a movement", async () => {

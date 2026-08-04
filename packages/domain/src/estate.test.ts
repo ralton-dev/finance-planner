@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computeAccountPlan, computeOverview } from "./engine.js";
-import { computeEstatePlan } from "./estate.js";
+import { computeEstatePlan, withoutArrival } from "./estate.js";
 import type { AccountInput, InflowInput, OutboundInflowInput, PaymentInput } from "./types.js";
 
 const ASOF = "2026-08-04";
@@ -605,7 +605,7 @@ describe("computeEstatePlan — the edges of the graph", () => {
     const estate = computeEstatePlan(chain(), ASOF);
     const pot = planOf(estate, "pot");
     expect(pot.inflowArrivals).toEqual([
-      { inflowId: "to-pot", fromAccountId: "current", amountMinor: 300_000 },
+      { inflowId: "to-pot", fromAccountId: "current", amountMinor: 300_000, confirmedMinor: 0 },
     ]);
 
     // The question "what did *this* movement pay for" only has an answer if the
@@ -640,8 +640,8 @@ describe("computeEstatePlan — the edges of the graph", () => {
     );
     const pot = planOf(estate, "pot");
     expect(pot.inflowArrivals).toEqual([
-      { inflowId: "a-pot", fromAccountId: "a", amountMinor: 30_000 },
-      { inflowId: "b-pot", fromAccountId: "b", amountMinor: 40_000 },
+      { inflowId: "a-pot", fromAccountId: "a", amountMinor: 30_000, confirmedMinor: 0 },
+      { inflowId: "b-pot", fromAccountId: "b", amountMinor: 40_000, confirmedMinor: 0 },
     ]);
     expect(pot.internalInflowUsedMinor).toBe(70_000);
   });
@@ -702,5 +702,189 @@ describe("computeEstatePlan — the edges of the graph", () => {
 
   it("plans an empty estate without complaint", () => {
     expect(computeEstatePlan([], ASOF)).toMatchObject({ order: [], plans: [], cycles: [] });
+  });
+});
+
+describe("computeEstatePlan — money somebody has said they moved", () => {
+  /** current → pot, £300 authored, and a £300 bill in the pot for it to pay. */
+  const pair = (over: Partial<AccountInput> = {}): AccountInput[] => [
+    account("current", {
+      incomes: [external("salary", 100_000)],
+      outboundInflows: [leaving("to-pot", 30_000, "pot")],
+    }),
+    account("pot", {
+      inflows: [arriving("to-pot", 30_000, "current")],
+      payments: [bill("bills", 30_000)],
+      ...over,
+    }),
+  ];
+
+  it("counts a confirmed movement as money that has actually arrived", () => {
+    const estate = computeEstatePlan(
+      pair({ confirmedArrivals: [{ inflowId: "to-pot", confirmedMinor: 30_000 }] }),
+      ASOF,
+    );
+    const pot = planOf(estate, "pot");
+    expect(pot.allocatedInflowMinor).toBe(30_000);
+    expect(pot.confirmedInflowMinor).toBe(30_000);
+    expect(pot.inflowArrivals[0]!.confirmedMinor).toBe(30_000);
+    // The money is here, so the line is funded rather than waiting on a
+    // transfer — the whole point of being able to say you moved it.
+    expect(pot.lines[0]!.status).toBe("funded");
+  });
+
+  it("leaves an unconfirmed movement awaiting its transfer", () => {
+    const pot = planOf(computeEstatePlan(pair(), ASOF), "pot");
+    expect(pot.confirmedInflowMinor).toBe(0);
+    expect(pot.inflowArrivals[0]!.confirmedMinor).toBe(0);
+    expect(pot.lines[0]!.status).toBe("awaiting_transfer");
+  });
+
+  it("will not let a stale confirmation credit more than the movement delivered", () => {
+    // Confirmed when the sender could spare £300; this month a rent bill leaves
+    // it £100. A confirmation deliberately outlives the plan that derived it, so
+    // the clamp is what keeps it honest.
+    const [current, pot] = pair({
+      confirmedArrivals: [{ inflowId: "to-pot", confirmedMinor: 30_000 }],
+    });
+    const estate = computeEstatePlan(
+      [{ ...current!, payments: [bill("rent", 90_000)] }, pot!],
+      ASOF,
+    );
+    const receiver = planOf(estate, "pot");
+    expect(receiver.allocatedInflowMinor).toBe(10_000);
+    expect(receiver.confirmedInflowMinor).toBe(10_000);
+    expect(receiver.inflowArrivals[0]!.confirmedMinor).toBe(10_000);
+  });
+
+  it("ignores a confirmation of a movement that delivered nothing", () => {
+    // The sender's bills eat everything, so nothing arrived to confirm.
+    const [current, pot] = pair({
+      confirmedArrivals: [{ inflowId: "to-pot", confirmedMinor: 30_000 }],
+    });
+    const estate = computeEstatePlan(
+      [{ ...current!, payments: [bill("rent", 100_000)] }, pot!],
+      ASOF,
+    );
+    expect(planOf(estate, "pot").allocatedInflowMinor).toBe(0);
+    expect(planOf(estate, "pot").confirmedInflowMinor).toBe(0);
+    expect(planOf(estate, "pot").inflowArrivals).toEqual([]);
+  });
+
+  it("adds a confirmed movement to a household's confirmed allocation", () => {
+    const estate = computeEstatePlan(
+      pair({
+        inflow: { allocatedMinor: 40_000, confirmedMinor: 20_000 },
+        confirmedArrivals: [{ inflowId: "to-pot", confirmedMinor: 30_000 }],
+      }),
+      ASOF,
+    );
+    const pot = planOf(estate, "pot");
+    expect(pot.allocatedInflowMinor).toBe(70_000);
+    // £200 of the household's £400, plus the whole £300 that moved internally.
+    expect(pot.confirmedInflowMinor).toBe(50_000);
+  });
+
+  it("leaves a household's account exactly as it planned it before", () => {
+    // A household bills pot receives no authored movement, so none of this
+    // machinery touches it: its allocation and its confirmations are attributed
+    // per member, elsewhere, and stay to the penny what they were.
+    const bills = (over: Partial<AccountInput> = {}): AccountInput[] => [
+      account("bills", {
+        inflow: { allocatedMinor: 70_000, confirmedMinor: 40_000 },
+        payments: [bill("rent", 30_000), bill("water", 40_000, 2)],
+        ...over,
+      }),
+    ];
+    const plain = computeEstatePlan(bills(), ASOF);
+    const withRows = computeEstatePlan(
+      bills({ confirmedArrivals: [{ inflowId: "not-here", confirmedMinor: 99_000 }] }),
+      ASOF,
+    );
+    // The plan, to the penny — the input echo differs only by the rows handed
+    // in, which is the caller's own copy coming back.
+    expect(JSON.stringify(withRows.plans)).toBe(JSON.stringify(plain.plans));
+    expect(JSON.stringify(withRows.movements)).toBe(JSON.stringify(plain.movements));
+    expect(planOf(plain, "bills").confirmedInflowMinor).toBe(40_000);
+    expect(planOf(plain, "bills").lines.map((l) => l.status)).toEqual([
+      "funded",
+      "awaiting_transfer",
+    ]);
+  });
+
+  it("ignores a confirmation naming an inflow that arrives nowhere near here", () => {
+    const estate = computeEstatePlan(
+      pair({ confirmedArrivals: [{ inflowId: "some-other-row", confirmedMinor: 30_000 }] }),
+      ASOF,
+    );
+    expect(planOf(estate, "pot").confirmedInflowMinor).toBe(0);
+  });
+});
+
+describe("withoutArrival — taking one movement's money back out", () => {
+  it("rebuilds the plan the account would have had without the movement", () => {
+    const estate = computeEstatePlan(chain(), ASOF);
+    const planned = estate.inputs[estate.order.indexOf("pot")]!;
+    const before = computeAccountPlan(withoutArrival(planned, "to-pot"), ASOF);
+    const after = computeAccountPlan(planned, ASOF);
+
+    expect(before.allocatedInflowMinor).toBe(0);
+    expect(before.lines[0]!.fundedFromInflowMinor).toBe(0);
+    // The difference is what the movement paid for, and it is the movement's
+    // own money — not a second copy of it.
+    expect(after.lines[0]!.fundedFromInflowMinor - before.lines[0]!.fundedFromInflowMinor).toBe(
+      120_000,
+    );
+  });
+
+  it("leaves the household's allocation and the other movements alone", () => {
+    const estate = computeEstatePlan(
+      [
+        account("a", {
+          incomes: [external("a-pay", 100_000)],
+          outboundInflows: [leaving("a-pot", 30_000, "pot")],
+        }),
+        account("b", {
+          incomes: [external("b-pay", 100_000)],
+          outboundInflows: [leaving("b-pot", 40_000, "pot")],
+        }),
+        account("pot", {
+          inflows: [arriving("a-pot", 30_000, "a"), arriving("b-pot", 40_000, "b")],
+          inflow: { allocatedMinor: 50_000, confirmedMinor: 50_000 },
+          confirmedArrivals: [{ inflowId: "a-pot", confirmedMinor: 30_000 }],
+          payments: [bill("bills", 120_000)],
+        }),
+      ],
+      ASOF,
+    );
+    const planned = estate.inputs[estate.order.indexOf("pot")]!;
+    const without = withoutArrival(planned, "a-pot");
+    expect(without.inflow!.allocatedMinor).toBe(90_000);
+    expect(without.inflow!.confirmedMinor).toBe(50_000);
+    expect(without.inflow!.sources!.map((s) => s.inflowId)).toEqual(["b-pot"]);
+  });
+
+  it("takes an arrival out of an input nobody's pass built", () => {
+    // Hand-built rather than taken off the pass: an arrival is allowed to say
+    // nothing about what has been confirmed, and the amounts still come out.
+    const without = withoutArrival(
+      account("pot", {
+        inflow: {
+          allocatedMinor: 30_000,
+          confirmedMinor: 0,
+          sources: [{ inflowId: "to-pot", fromAccountId: "current", amountMinor: 30_000 }],
+        },
+      }),
+      "to-pot",
+    );
+    expect(without.inflow).toEqual({ allocatedMinor: 0, confirmedMinor: 0, sources: [] });
+  });
+
+  it("hands an input straight back when the movement is not one of its arrivals", () => {
+    const planned = { ...account("solo"), incomes: [external("salary", 100_000)] };
+    expect(withoutArrival(planned, "nothing")).toBe(planned);
+    const estate = computeEstatePlan(chain(), ASOF);
+    const pot = estate.inputs[estate.order.indexOf("pot")]!;
+    expect(withoutArrival(pot, "not-a-movement")).toBe(pot);
   });
 });

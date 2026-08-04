@@ -27,8 +27,8 @@ import {
   computeAccountProjection,
   computeHouseholdProjection,
   computeOverview,
-  monthlyIncomeMinor,
   toISODate,
+  withoutArrival,
 } from "@finance-planner/domain";
 import { createMailer, type Mailer } from "@finance-planner/mailer";
 import { type Action, type AppAbility, buildAbility, subject } from "@finance-planner/policies";
@@ -1086,36 +1086,26 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(409, "already_confirmed", "Movement already confirmed this month");
     }
 
-    // What the movement is worth in a month, normalised the same way every
-    // arriving amount is. `monthlyIncomeMinor` is a frequency→monthly
-    // conversion, not a claim that this is income — it is emphatically not.
-    const amountMinor = monthlyIncomeMinor(inflow, new Date(asOfDate));
+    // What the movement actually delivered, as the ordered pass over the estate
+    // settled it: the sending account's own bills come first (decision 6), so
+    // an authored £300 out of an account with £120 to spare moves £120 and this
+    // is that £120. Nothing arrived means the sender could spare nothing —
+    // confirming it books nothing, because there is nothing the plan says it
+    // paid for.
+    const input = await buildAccountInput(store, account, asOfDate);
+    const arrival = input.inflow?.sources?.find((s) => s.inflowId === inflowId);
+    const amountMinor = arrival?.amountMinor ?? 0;
 
     // What this money pays for, answered by the engine rather than by a second
-    // allocator written here: the receiving account's plan as it stands, and the
-    // same plan with the movement's money arriving. The difference, line by
-    // line, is what the movement funds.
-    //
-    // WP-G hand-off: once `buildAccountInput` supplies a standalone account's
-    // authored inflows itself, `input.inflow` will already contain this
-    // movement and the overlay below becomes a double count — at which point
-    // the base plan must instead be computed with this movement *removed*, or
-    // better, the engine should attribute `fundedFromInflowMinor` per source and
-    // this overlay disappears entirely. It fails safe until then: an
-    // already-counted movement books nothing rather than booking twice.
-    const input = await buildAccountInput(store, account, asOfDate);
-    const arriving = input.inflow ?? { allocatedMinor: 0, confirmedMinor: 0 };
-    const before = computeAccountPlan(input, asOfDate);
-    const after = computeAccountPlan(
-      {
-        ...input,
-        inflow: {
-          allocatedMinor: arriving.allocatedMinor + amountMinor,
-          confirmedMinor: arriving.confirmedMinor + amountMinor,
-        },
-      },
-      asOfDate,
-    );
+    // allocator written here. The movement is *already* in the plan — the pass
+    // delivers it whether or not anyone has said it moved — so the base is this
+    // account's month with this one movement taken back out, and the plan as it
+    // stands is the month with it. The difference, line by line, is what the
+    // movement funds. Adding the amount on top instead would diff against an
+    // imaginary second copy of the movement: zero rows on an account that can
+    // absorb it, and rows against the wrong payments on one that cannot.
+    const before = computeAccountPlan(withoutArrival(input, inflowId), asOfDate);
+    const after = computeAccountPlan(input, asOfDate);
 
     const confirmation = await store.createTransferConfirmation({
       householdId: null,
