@@ -186,7 +186,10 @@ export const projects = coreSchema.table("projects", {
 
 export const transferConfirmations = coreSchema.table("transfer_confirmations", {
   id: uuid("id").defaultRandom().primaryKey(),
-  householdId: uuid("household_id").notNull(),
+  // Nullable since 0009: a movement between two accounts you own has no
+  // household in it. `inflow_id` is the scope in that case.
+  householdId: uuid("household_id"),
+  inflowId: uuid("inflow_id"),
   month: date("month").notNull(),
   fromAccountId: uuid("from_account_id").notNull(),
   toAccountId: uuid("to_account_id").notNull(),

@@ -5,7 +5,7 @@ import type {
   PaymentScope,
   Recurrence,
 } from "@finance-planner/contracts";
-import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Database } from "./db.js";
 import type {
   Account,
@@ -914,6 +914,7 @@ export class PgStore implements Store {
       .insert(s.transferConfirmations)
       .values({
         householdId: input.householdId,
+        inflowId: input.inflowId,
         month: input.month,
         fromAccountId: input.fromAccountId,
         toAccountId: input.toAccountId,
@@ -943,6 +944,27 @@ export class PgStore implements Store {
         and(
           eq(s.transferConfirmations.householdId, householdId),
           eq(s.transferConfirmations.month, month),
+        ),
+      )
+      .orderBy(asc(s.transferConfirmations.createdAt));
+    return rows.map(mapTransferConfirmation);
+  }
+
+  async listTransferConfirmationsForAccount(
+    accountId: string,
+    month: string,
+  ): Promise<TransferConfirmation[]> {
+    const rows = await this.db
+      .select()
+      .from(s.transferConfirmations)
+      .where(
+        and(
+          isNotNull(s.transferConfirmations.inflowId),
+          eq(s.transferConfirmations.month, month),
+          or(
+            eq(s.transferConfirmations.fromAccountId, accountId),
+            eq(s.transferConfirmations.toAccountId, accountId),
+          ),
         ),
       )
       .orderBy(asc(s.transferConfirmations.createdAt));
@@ -1157,6 +1179,7 @@ function mapTransferConfirmation(
   return {
     id: r.id,
     householdId: r.householdId,
+    inflowId: r.inflowId,
     month: r.month,
     fromAccountId: r.fromAccountId,
     toAccountId: r.toAccountId,

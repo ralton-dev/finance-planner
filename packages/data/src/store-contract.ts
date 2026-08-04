@@ -474,6 +474,7 @@ export async function exerciseStore(store: Store): Promise<void> {
   });
   const confirmationInput = {
     householdId: household.id,
+    inflowId: null,
     month: "2026-08-01",
     fromAccountId: currentAccount.id,
     toAccountId: account.id,
@@ -488,6 +489,95 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect((await store.listTransferConfirmations(household.id, "2026-09-01")).length).toBe(0);
   // The same transfer can only be confirmed once per month.
   await expect(store.createTransferConfirmation(confirmationInput)).rejects.toThrow();
+
+  // --- standalone confirmations: "I moved the money", with no household ---
+  // `topUp` is an authored movement out of `account` into `pot`. Nothing about
+  // recording that it happened involves a household.
+  const movedInput = {
+    householdId: null,
+    inflowId: topUp.id,
+    month: "2026-08-01",
+    fromAccountId: account.id,
+    toAccountId: pot.id,
+    memberUserId: user.id,
+    amountMinor: 50_000,
+  };
+  const moved = await store.createTransferConfirmation(movedInput);
+  expect((await store.getTransferConfirmation(moved.id))?.householdId).toBeNull();
+  // Read from both ends — arriving in the pot, leaving the account that sends it.
+  expect(
+    (await store.listTransferConfirmationsForAccount(pot.id, "2026-08-01")).map((t) => t.id),
+  ).toEqual([moved.id]);
+  expect(
+    (await store.listTransferConfirmationsForAccount(account.id, "2026-08-01")).map((t) => t.id),
+  ).toEqual([moved.id]);
+  expect((await store.listTransferConfirmationsForAccount(pot.id, "2026-09-01")).length).toBe(0);
+  // The household confirmation above lands on `account` too, and is deliberately
+  // not in that list: it confirms a derived transfer, not an authored inflow.
+  expect(await store.listTransferConfirmations(household.id, "2026-08-01")).toHaveLength(1);
+  // One movement, one confirmation a month — the hole a plain UNIQUE leaves over
+  // NULL household ids.
+  await expect(store.createTransferConfirmation(movedInput)).rejects.toThrow();
+  // A different month is a different movement.
+  const movedSeptember = await store.createTransferConfirmation({
+    ...movedInput,
+    month: "2026-09-01",
+  });
+  await store.deleteTransferConfirmation(movedSeptember.id);
+
+  // Deleting the inflow takes the confirmation of it — and that confirmation's
+  // contributions — with it. Uses its own movement so `topUp` survives.
+  const doomedMovement = await store.createInflow({
+    accountId: currentAccount.id,
+    name: "Doomed movement",
+    source: "account",
+    sourceAccountId: account.id,
+    amountMinor: 1_000,
+    frequency: "monthly",
+    recurrence: null,
+    anchorDate: "2026-08-01",
+    priority: 100,
+    active: true,
+  });
+  const doomedMovementConfirmation = await store.createTransferConfirmation({
+    householdId: null,
+    inflowId: doomedMovement.id,
+    month: "2026-08-01",
+    fromAccountId: account.id,
+    toAccountId: currentAccount.id,
+    memberUserId: user.id,
+    amountMinor: 1_000,
+  });
+  const doomedMovementContribution = await store.createContribution({
+    paymentId: p2.id,
+    accountId: account.id,
+    userId: user.id,
+    month: "2026-08-01",
+    amountMinor: 1_000,
+    note: null,
+    transferConfirmationId: doomedMovementConfirmation.id,
+  });
+  await store.deleteInflow(doomedMovement.id);
+  expect(await store.getTransferConfirmation(doomedMovementConfirmation.id)).toBeNull();
+  expect(await store.getContribution(doomedMovementContribution.id)).toBeNull();
+  // The household confirmation is untouched by any of it.
+  expect(await store.getTransferConfirmation(confirmation.id)).not.toBeNull();
+
+  // Un-confirming a standalone movement cleans up its contributions, exactly as
+  // the household path does.
+  const movedContribution = await store.createContribution({
+    paymentId: p2.id,
+    accountId: account.id,
+    userId: user.id,
+    month: "2026-08-01",
+    amountMinor: 50_000,
+    note: null,
+    transferConfirmationId: moved.id,
+  });
+  await store.deleteTransferConfirmation(moved.id);
+  expect(await store.getTransferConfirmation(moved.id)).toBeNull();
+  expect(await store.getContribution(movedContribution.id)).toBeNull();
+  expect((await store.listTransferConfirmationsForAccount(pot.id, "2026-08-01")).length).toBe(0);
 
   // Contributions a confirmation created die with it.
   const linked = await store.createContribution({
@@ -602,6 +692,7 @@ export async function exerciseStore(store: Store): Promise<void> {
   });
   const doomedConfirmation = await store.createTransferConfirmation({
     householdId: household.id,
+    inflowId: null,
     month: "2026-08-01",
     fromAccountId: doomedAccount.id,
     toAccountId: account.id,
@@ -644,6 +735,7 @@ export async function exerciseStore(store: Store): Promise<void> {
   const doomedHousehold = await store.createHousehold("Doomed", user.id);
   const householdConfirmation = await store.createTransferConfirmation({
     householdId: doomedHousehold.id,
+    inflowId: null,
     month: "2026-08-01",
     fromAccountId: currentAccount.id,
     toAccountId: account.id,

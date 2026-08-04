@@ -255,14 +255,32 @@ export interface BalanceSnapshot {
   createdAt: string;
 }
 
-/** A member's confirmation that a planned monthly transfer was made. */
+/**
+ * "I moved this month's money" — one recorded movement between two accounts.
+ *
+ * It comes in two shapes, and the pair of nullable scope fields is which:
+ *
+ * - **Household**: `householdId` set, `inflowId` null. One member's share of a
+ *   transfer the household plan derived.
+ * - **Standalone**: `inflowId` set, `householdId` null. An account-sourced
+ *   inflow (`Inflow.source === "account"`) you authored and then acted on —
+ *   money moved between two accounts you own, which no household is part of.
+ *
+ * At least one of the two is always set; a movement attributed to a household
+ * *and* authored as an inflow may set both. `memberUserId` is never null: it is
+ * the actor, and a solo movement still has one.
+ */
 export interface TransferConfirmation {
   id: string;
-  householdId: string;
+  /** The household attributing this movement, when one does. */
+  householdId: string | null;
+  /** The account-sourced inflow this confirms, when it confirms one. */
+  inflowId: string | null;
   /** ISO date of the first day of the month. */
   month: string;
   fromAccountId: string;
   toAccountId: string;
+  /** Who moved it — a household member, or just the person who owns both ends. */
   memberUserId: string;
   amountMinor: number;
   createdAt: string;

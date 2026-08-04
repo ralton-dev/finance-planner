@@ -297,10 +297,32 @@ export interface Store {
   listBalanceSnapshots(accountId: string): Promise<BalanceSnapshot[]>;
 
   // ---- transfer confirmations ----
+  /**
+   * Record a movement. Rejects a second confirmation of the same thing in the
+   * same month: for a household row that is the same member's same transfer,
+   * for a standalone row the same inflow — the two unique keys the database
+   * enforces (`transfer_confirmation_unique` and
+   * `transfer_confirmations_inflow_month_unique`).
+   */
   createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation>;
   getTransferConfirmation(id: string): Promise<TransferConfirmation | null>;
   /** Confirmations for a household in one month (ISO first-of-month date). */
   listTransferConfirmations(householdId: string, month: string): Promise<TransferConfirmation[]>;
+  /**
+   * Confirmations of **authored inflows** touching an account in one month,
+   * from either side: money that arrived here and money that left here are the
+   * same row read two ways.
+   *
+   * Household-derived confirmations are not here — they confirm a transfer the
+   * plan derived rather than an inflow anyone authored, and they are read
+   * through `listTransferConfirmations`. Asking this question needs no
+   * household, which is the point: "has this movement happened?" is a fact
+   * about two accounts.
+   */
+  listTransferConfirmationsForAccount(
+    accountId: string,
+    month: string,
+  ): Promise<TransferConfirmation[]>;
   /** Deleting a confirmation also removes the contributions it created. */
   deleteTransferConfirmation(id: string): Promise<void>;
 

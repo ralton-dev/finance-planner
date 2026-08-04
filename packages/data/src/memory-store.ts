@@ -524,6 +524,13 @@ export class MemoryStore implements Store {
 
   async deleteInflow(id: string): Promise<void> {
     this.inflows.delete(id);
+    // A standalone confirmation confirms *this inflow*; with the inflow gone it
+    // is a record of nothing, and the contributions it booked go with it
+    // exactly as un-confirming would take them. The PG side gets the same from
+    // the ON DELETE CASCADE FK added in 0009.
+    for (const [k, c] of this.transferConfirmations) {
+      if (c.inflowId === id) await this.deleteTransferConfirmation(k);
+    }
   }
 
   async createIncome(input: NewIncome): Promise<Income> {
@@ -658,15 +665,19 @@ export class MemoryStore implements Store {
 
   async createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation> {
     for (const t of this.transferConfirmations.values()) {
-      if (
-        t.householdId === input.householdId &&
-        t.month === input.month &&
-        t.fromAccountId === input.fromAccountId &&
-        t.toAccountId === input.toAccountId &&
-        t.memberUserId === input.memberUserId
-      ) {
-        throw new Error("transfer already confirmed");
-      }
+      if (t.month !== input.month) continue;
+      // Two keys, mirroring the two unique indexes in the database. A movement
+      // with no household is one authored inflow, confirmed at most once a
+      // month. A household transfer is one *member's* share of a transfer the
+      // plan derived, so it is keyed by who moved it and between which accounts.
+      const duplicate =
+        input.householdId === null
+          ? t.householdId === null && t.inflowId === input.inflowId
+          : t.householdId === input.householdId &&
+            t.fromAccountId === input.fromAccountId &&
+            t.toAccountId === input.toAccountId &&
+            t.memberUserId === input.memberUserId;
+      if (duplicate) throw new Error("transfer already confirmed");
     }
     const t: TransferConfirmation = { ...input, id: randomUUID(), createdAt: now() };
     this.transferConfirmations.set(t.id, t);
@@ -683,6 +694,20 @@ export class MemoryStore implements Store {
   ): Promise<TransferConfirmation[]> {
     return [...this.transferConfirmations.values()]
       .filter((t) => t.householdId === householdId && t.month === month)
+      .sort(byCreatedAt);
+  }
+
+  async listTransferConfirmationsForAccount(
+    accountId: string,
+    month: string,
+  ): Promise<TransferConfirmation[]> {
+    return [...this.transferConfirmations.values()]
+      .filter(
+        (t) =>
+          t.inflowId !== null &&
+          t.month === month &&
+          (t.fromAccountId === accountId || t.toAccountId === accountId),
+      )
       .sort(byCreatedAt);
   }
 

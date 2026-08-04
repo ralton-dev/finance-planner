@@ -96,6 +96,65 @@ describe("PgStore (Postgres via Testcontainers)", () => {
     });
   });
 
+  it("lets a movement with no household be confirmed exactly once a month", async () => {
+    await withClient(uri, async (c) => {
+      const owner = "44444444-4444-4444-4444-444444444444";
+      const { rows: accounts } = await c.query<{ id: string }>(
+        `INSERT INTO core.accounts (owner_user_id, name) VALUES ($1, 'Current'), ($1, 'Pot')
+         RETURNING id`,
+        [owner],
+      );
+      const [from, to] = accounts.map((r) => r.id);
+      const { rows: inflows } = await c.query<{ id: string }>(
+        `INSERT INTO core.inflows
+           (account_id, name, source, source_account_id, amount_minor, frequency, anchor_date)
+         VALUES ($1, 'Top-up', 'account', $2, 50000, 'monthly', '2026-08-01'),
+                ($1, 'ISA', 'account', $2, 10000, 'monthly', '2026-08-01')
+         RETURNING id`,
+        [to, from],
+      );
+      const [topUp, isa] = inflows.map((r) => r.id);
+      const confirm = (
+        inflowId: string | null,
+        householdId: string | null = null,
+        member = owner,
+      ) =>
+        c.query(
+          `INSERT INTO core.transfer_confirmations
+             (household_id, inflow_id, month, from_account_id, to_account_id,
+              member_user_id, amount_minor)
+           VALUES ($1, $2, '2026-08-01', $3, $4, $5, 1000)`,
+          [householdId, inflowId, from, to, member],
+        );
+
+      // The whole point: household_id may be null now.
+      await expect(confirm(topUp)).resolves.toBeTruthy();
+      // …and the same movement cannot be confirmed twice in one month, which is
+      // what the old UNIQUE constraint cannot see with a null household.
+      await expect(confirm(topUp)).rejects.toThrow(/transfer_confirmations_inflow_month_unique/);
+      // A different movement between the same two accounts is a different thing.
+      await expect(confirm(isa)).resolves.toBeTruthy();
+      // Scoped to nothing at all is still refused.
+      await expect(confirm(null)).rejects.toThrow(/transfer_confirmation_scope/);
+
+      // Household rows behave exactly as they always did: one row per member,
+      // and a second for the same member refused by the original constraint.
+      const household = "55555555-5555-5555-5555-555555555555";
+      const other = "66666666-6666-6666-6666-666666666666";
+      await expect(confirm(null, household)).resolves.toBeTruthy();
+      await expect(confirm(null, household, other)).resolves.toBeTruthy();
+      await expect(confirm(null, household)).rejects.toThrow(/transfer_confirmation_unique/);
+
+      // Deleting the inflow takes its confirmation with it.
+      await c.query(`DELETE FROM core.inflows WHERE id = $1`, [topUp]);
+      const left = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM core.transfer_confirmations WHERE inflow_id = $1`,
+        [topUp],
+      );
+      expect(left.rows[0]).toEqual({ n: 0 });
+    });
+  });
+
   it("backfills incomes exactly once, and never resurrects a deleted inflow", async () => {
     // A separate database, so the backfill can be watched from before it runs:
     // 0001–0007 first, a legacy income row, then 0008 for the first time.
