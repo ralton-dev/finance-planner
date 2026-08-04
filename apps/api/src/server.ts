@@ -42,7 +42,10 @@ import {
   computeHouseholdPlanFor,
   computeHouseholdPlanWithSchedule,
   computePlanForAccount,
+  createPlanContext,
+  type InflowSource,
   previewPlanForAccount,
+  resolveAccountInflow,
   upcomingForUser,
 } from "./plan.js";
 import { buildExport, importExport } from "./portability.js";
@@ -194,9 +197,10 @@ interface PlanLineSummary {
  *
  * Same test as the web checklist's `record` rule (`web/src/lib/needsYou.ts`): a
  * non-monthly line is covered once this month's contributions reach what the
- * plan funded for it. Each line carries the remainder rather than the month's
- * target, so the index chip, the checklist row and its prefill are all read off
- * this one derivation and cannot disagree.
+ * plan funded for it, and a line still waiting on a transfer is not asked for at
+ * all. Each line carries the remainder rather than the month's target, so the
+ * index chip, the checklist row and its prefill are all read off this one
+ * derivation and cannot disagree.
  */
 function summarisePlanLines(
   plan: AccountPlan,
@@ -211,6 +215,12 @@ function summarisePlanLines(
     // priority the plan reached.
     if (line.fundedMonthlyMinor > 0) lastFundedName = line.name;
     if (line.category === "monthly_recurring" || line.fundedMonthlyMinor <= 0) continue;
+    // A line the plan funds with money nobody has moved yet is not money you
+    // can set aside, so asking to record it is the wrong way round: the
+    // outstanding thing is the transfer, and that already has its own prompt.
+    // The straddling line — part own income, part unconfirmed inflow — is
+    // deferred whole rather than split, for the same reason at smaller scale.
+    if (line.status === "awaiting_transfer") continue;
     const contributed = mtd.get(line.paymentId) ?? 0;
     if (contributed >= line.fundedMonthlyMinor) continue;
     unrecorded.push({
@@ -439,6 +449,13 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * The account's plan, plus the reality alongside it: what was contributed
    * this month, what is reserved in total, and the last real balance check-in.
    * Bundled onto the plan so the UI can show plan-vs-reality in one round trip.
+   *
+   * `allocatedInflowMinor` / `confirmedInflowMinor` come off the plan itself and
+   * are always present — what is arriving is a fact about an account the caller
+   * can already see. `inflowSources` **names household members**, and an account
+   * can be shared with someone outside the household that funds it, so it is
+   * attached only for a caller who can see the household. Null means "not yours
+   * to see, or nothing arriving"; the amount on the plan says which.
    */
   app.get("/api/accounts/:id/plan", async (req) => {
     const userId = await authenticate(req);
@@ -446,8 +463,14 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { asOf } = req.query as { asOf?: string };
     const { account } = await requireAccess(userId, id, "view");
     const asOfDate = asOf ?? today();
-    const plan = await computePlanForAccount(store, account, asOfDate);
-    return { ...plan, ...(await accountReality(store, plan, asOfDate)) };
+    const ctx = createPlanContext();
+    const plan = await computePlanForAccount(store, account, asOfDate, ctx);
+    // Memoised by the line above, so this is a map lookup rather than a second
+    // household plan.
+    const inflow = await resolveAccountInflow(store, account, asOfDate, ctx);
+    const inflowSources: InflowSource[] | null =
+      inflow && (await store.getMembership(inflow.householdId, userId)) ? inflow.sources : null;
+    return { ...plan, ...(await accountReality(store, plan, asOfDate)), inflowSources };
   });
 
   /**
@@ -487,7 +510,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { account } = await requireAccess(userId, id, "view");
     const asOfDate = asOf ?? today();
     const [input, balances] = await Promise.all([
-      buildAccountInput(store, account),
+      buildAccountInput(store, account, asOfDate),
       store.listBalanceSnapshots(id),
     ]);
     const latest = balances.at(-1);
@@ -582,7 +605,18 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       householdId: null,
       accountId: id,
       month,
-      incomeMinor: plan.monthlyIncomeMinor,
+      // The money the account actually had this month: its own income plus the
+      // inflow that has been confirmed moving into it. A household-funded pot
+      // has no income of its own, so recording `monthlyIncomeMinor` alone would
+      // freeze £0 against a contributed figure fed entirely by transfers — a
+      // scorecard row that can never say anything, and one that cannot be
+      // recomputed later because closing is what makes it history. Only
+      // *confirmed* inflow counts: a close scores what happened, not what was
+      // planned. Safe against the double-count decision (#3) because account
+      // closes are read per account and never summed across an estate — the
+      // household close a few handlers down keeps summing own income alone,
+      // since inflow inside a household is money it already counted.
+      incomeMinor: plan.monthlyIncomeMinor + plan.confirmedInflowMinor,
       plannedMinor: plan.totalRequiredMinor,
       contributedMinor: contributions.reduce((sum, c) => sum + c.amountMinor, 0),
       closedBy: userId,
@@ -763,10 +797,14 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
 
     const plans: AccountPlan[] = [];
     const state = new Map<string, Record<string, unknown>>();
+    // One memo for the whole loop. Planning an account in a household now means
+    // planning the household, and every account of a one-household estate would
+    // otherwise ask for the identical plan in turn.
+    const ctx = createPlanContext();
     for (const a of access) {
       const account = await store.getAccount(a.accountId);
       if (!account) continue;
-      const plan = await computePlanForAccount(store, account, asOfDate);
+      const plan = await computePlanForAccount(store, account, asOfDate, ctx);
       const reality = await accountReality(store, plan, asOfDate);
       const planSummary = summarisePlanLines(plan, reality.contributionsMTD);
       plans.push(plan);
@@ -774,6 +812,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         name: account.name,
         ...(placements.get(account.id) ?? NO_HOUSEHOLD),
         monthlyIncomeMinor: plan.monthlyIncomeMinor,
+        // Amounts only — the index never names who is sending it, so this needs
+        // no household gate. Own income stays own income (decision #3).
+        allocatedInflowMinor: plan.allocatedInflowMinor,
+        confirmedInflowMinor: plan.confirmedInflowMinor,
         latestBalanceMinor: reality.latestBalance?.balanceMinor ?? null,
         latestBalanceDate: reality.latestBalance?.asOfDate ?? null,
         reservedMinor: reality.reservedMinor,

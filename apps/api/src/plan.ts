@@ -14,7 +14,7 @@ import {
   type UpcomingPayment,
   upcomingPayments,
 } from "@finance-planner/domain";
-import type { Account, Income, Payment, Store } from "@finance-planner/data";
+import type { Account, Income, Payment, Store, TransferConfirmation } from "@finance-planner/data";
 
 /**
  * A payment's effective already-saved: its manual base plus every contribution
@@ -55,16 +55,194 @@ function toPaymentInput(p: Payment, saved: Map<string, number>): PaymentInput {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Allocated inflow: what a household has earmarked into one of its accounts
+// ---------------------------------------------------------------------------
+
+/** ISO date of the first day of the month a date falls in. Transfer
+ *  confirmations are keyed by that, the same as everywhere else. */
+const monthStart = (isoDate: string): string => `${isoDate.slice(0, 7)}-01`;
+
+/** One member's slice of the money arriving into an account this month. */
+export interface InflowSource {
+  memberUserId: string;
+  displayName?: string;
+  /** What the household plan asks this member to move in. */
+  amountMinor: number;
+  /** How much of it they have confirmed moving (<= `amountMinor`). */
+  confirmedMinor: number;
+}
+
+/**
+ * What a household has allocated into one account for the month, and who is
+ * sending it.
+ *
+ * The **amount** is a fact about the account: anyone who can see the account can
+ * already see the bills it pays and that they are covered, so it travels into
+ * the plan unconditionally. **`sources` names household members**, and an
+ * account can be shared with someone who is not one — so the plan endpoint only
+ * attaches them for a caller who can see the household.
+ */
+export interface AccountInflow {
+  householdId: string;
+  allocatedMinor: number;
+  confirmedMinor: number;
+  sources: InflowSource[];
+}
+
+/**
+ * Per-request memo for the household work an account plan now needs.
+ *
+ * Planning an account in a household means planning the whole household, and
+ * some reads plan many accounts at once: the overview plans every account the
+ * caller can see, and the upcoming feed builds an input per account. Without
+ * this, an estate of one household would recompute the identical household plan
+ * once per account. One context per request collapses that to one.
+ *
+ * Deliberately request-scoped and handed in by the call site: it is a memo, not
+ * a cache, so there is nothing to invalidate and no way for a mutation in one
+ * request to be served stale results in the next. Keys carry the as-of date, so
+ * a request that plans two dates cannot cross them.
+ */
+export interface PlanContext {
+  readonly householdPlans: Map<string, Promise<HouseholdPlan>>;
+  readonly confirmations: Map<string, Promise<TransferConfirmation[]>>;
+  readonly inflows: Map<string, Promise<AccountInflow | null>>;
+}
+
+/** A fresh memo. One per request; `buildAccountInput` makes its own when a
+ *  caller has nothing to share, so a single-account read needs no ceremony. */
+export function createPlanContext(): PlanContext {
+  return { householdPlans: new Map(), confirmations: new Map(), inflows: new Map() };
+}
+
+/** Memoised `f`, keyed in `map`. Promises are cached rather than values, so two
+ *  concurrent askers share one computation instead of racing to do it twice. */
+function memo<T>(map: Map<string, Promise<T>>, key: string, f: () => Promise<T>): Promise<T> {
+  const hit = map.get(key);
+  if (hit) return hit;
+  const pending = f();
+  map.set(key, pending);
+  return pending;
+}
+
+/**
+ * Which household plans this account, independent of who is asking.
+ *
+ * There is no account → household index in the Store, and this deliberately
+ * does not ask the *caller* which households they are in: the account may be
+ * shared with someone outside the household that funds it, and their view of it
+ * must still add up. So it looks from the account outwards — the households its
+ * owner belongs to, then the households it is shared into — and takes the first
+ * that has actually assigned it a role. Households come back in a stable order,
+ * so the answer is deterministic, matching `accountPlacements`' rule of taking
+ * the first when an account is assigned in two.
+ */
+async function householdPlanningAccount(store: Store, account: Account): Promise<string | null> {
+  const [owned, shares] = await Promise.all([
+    store.listHouseholdsForUser(account.ownerUserId),
+    store.listSharesForAccount(account.id),
+  ]);
+  const seen = new Set<string>();
+  for (const householdId of [...owned.map((h) => h.id), ...shares.map((s) => s.householdId)]) {
+    if (seen.has(householdId)) continue;
+    seen.add(householdId);
+    if (await store.getAccountAssignment(householdId, account.id)) return householdId;
+  }
+  return null;
+}
+
+/**
+ * The money a household has allocated into `account` this month, or null when
+ * no household plans it.
+ *
+ * `allocatedMinor` is the household plan's derived transfers into the account —
+ * the same figure `HouseholdAccountPlan.transferInMinor` reports, taken off the
+ * transfers so it can be attributed per member. `confirmedMinor` is how much of
+ * it has actually moved, from the confirmations already stored for the month.
+ *
+ * A member's confirmation is clamped to what the plan currently asks of *that
+ * member*: a confirmation outlives the plan that derived it (deliberately — see
+ * the confirm handler's idempotency guard), so a stale one must not credit
+ * another member's slice.
+ */
+export async function resolveAccountInflow(
+  store: Store,
+  account: Account,
+  asOfDate: string,
+  ctx: PlanContext = createPlanContext(),
+): Promise<AccountInflow | null> {
+  return memo(ctx.inflows, `${account.id}@${asOfDate}`, async () => {
+    const householdId = await householdPlanningAccount(store, account);
+    if (!householdId) return null;
+
+    const [plan, confirmations] = await Promise.all([
+      memo(ctx.householdPlans, `${householdId}@${asOfDate}`, () =>
+        computeHouseholdPlanFor(store, householdId, asOfDate),
+      ),
+      memo(ctx.confirmations, `${householdId}@${monthStart(asOfDate)}`, () =>
+        store.listTransferConfirmations(householdId, monthStart(asOfDate)),
+      ),
+    ]);
+
+    const confirmedByMember = new Map<string, number>();
+    for (const c of confirmations) {
+      if (c.toAccountId !== account.id) continue;
+      confirmedByMember.set(
+        c.memberUserId,
+        (confirmedByMember.get(c.memberUserId) ?? 0) + c.amountMinor,
+      );
+    }
+
+    const byMember = new Map<string, number>();
+    for (const t of plan.transfers) {
+      if (t.toAccountId !== account.id) continue;
+      byMember.set(t.memberUserId, (byMember.get(t.memberUserId) ?? 0) + t.amountMinor);
+    }
+
+    const sources: InflowSource[] = [...byMember.entries()]
+      .map(([memberUserId, amountMinor]) => ({
+        memberUserId,
+        displayName: plan.members.find((m) => m.userId === memberUserId)?.displayName,
+        amountMinor,
+        confirmedMinor: Math.min(amountMinor, confirmedByMember.get(memberUserId) ?? 0),
+      }))
+      .sort(
+        (a, b) => b.amountMinor - a.amountMinor || a.memberUserId.localeCompare(b.memberUserId),
+      );
+
+    return {
+      householdId,
+      allocatedMinor: sources.reduce((sum, s) => sum + s.amountMinor, 0),
+      confirmedMinor: sources.reduce((sum, s) => sum + s.confirmedMinor, 0),
+      sources,
+    };
+  });
+}
+
 /**
  * Load an account's incomes + payments as engine input. Shared by every read
  * that reasons about the account's money — the plan, the projection, the
  * upcoming feed — so they all see the same derived already-saved.
+ *
+ * It also fills in what a household has allocated into the account, which is why
+ * it needs the as-of date: an account inside a household is not funded by its
+ * own income alone, and a bills pot has none at all. Doing it here rather than
+ * per call site is the point — every read that reasons about the account's money
+ * comes through this function, so none of them can be left planning the account
+ * as if the money were not coming.
  */
-export async function buildAccountInput(store: Store, account: Account): Promise<AccountInput> {
-  const [incomes, payments, saved] = await Promise.all([
+export async function buildAccountInput(
+  store: Store,
+  account: Account,
+  asOfDate: string,
+  ctx: PlanContext = createPlanContext(),
+): Promise<AccountInput> {
+  const [incomes, payments, saved, inflow] = await Promise.all([
     store.listIncomes(account.id),
     store.listPayments(account.id),
     savedByPayment(store, account.id),
+    resolveAccountInflow(store, account, asOfDate, ctx),
   ]);
 
   return {
@@ -73,6 +251,11 @@ export async function buildAccountInput(store: Store, account: Account): Promise
     monthlyBufferMinor: account.monthlyBufferMinor,
     incomes: incomes.map(toIncomeInput),
     payments: payments.map((p) => toPaymentInput(p, saved)),
+    // Only the amounts: the engine never learns who sent it, so no plan
+    // response can leak a household member's name by accident.
+    inflow: inflow
+      ? { allocatedMinor: inflow.allocatedMinor, confirmedMinor: inflow.confirmedMinor }
+      : null,
   };
 }
 
@@ -89,8 +272,9 @@ export async function computePlanForAccount(
   store: Store,
   account: Account,
   asOfDate: string,
+  ctx: PlanContext = createPlanContext(),
 ): Promise<AccountPlan> {
-  return computeAccountPlan(await buildAccountInput(store, account), asOfDate);
+  return computeAccountPlan(await buildAccountInput(store, account, asOfDate, ctx), asOfDate);
 }
 
 // ---------------------------------------------------------------------------
@@ -119,10 +303,13 @@ export async function upcomingForUser(
 ): Promise<UpcomingItem[]> {
   const access = await store.listAccessibleAccounts(userId);
   const items: UpcomingItem[] = [];
+  // One memo for the whole feed: an estate is usually one household, so its
+  // accounts would otherwise each recompute the same household plan.
+  const ctx = createPlanContext();
   for (const a of access) {
     const account = await store.getAccount(a.accountId);
     if (!account) continue;
-    const input = await buildAccountInput(store, account);
+    const input = await buildAccountInput(store, account, asOfDate, ctx);
     for (const row of upcomingPayments(input.payments, asOfDate, days)) {
       items.push({
         ...row,
@@ -194,6 +381,10 @@ function toOverlayPayment(p: CreatePaymentBody, index: number): PaymentInput {
  *
  * Strictly read-only: the overlay never reaches the store, and the store is only
  * queried for the account's real incomes, payments and contributions.
+ *
+ * Both sides carry the household's *current* allocation. A hypothetical payment
+ * added to a shared pot therefore shows as a shortfall rather than being quietly
+ * covered — which is the honest answer: nobody has agreed to send more yet.
  */
 export async function previewPlanForAccount(
   store: Store,
@@ -201,7 +392,7 @@ export async function previewPlanForAccount(
   asOfDate: string,
   overlay: PlanOverlay,
 ): Promise<PlanPreview> {
-  const input = await buildAccountInput(store, account);
+  const input = await buildAccountInput(store, account, asOfDate);
   const withOverlay: AccountInput = {
     ...input,
     incomes: [...input.incomes, ...(overlay.addIncomes ?? []).map(toOverlayIncome)],

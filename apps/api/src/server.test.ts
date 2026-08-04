@@ -1225,6 +1225,222 @@ describe("api service", () => {
     expect(own.statusCode).toBe(201);
   });
 
+  // --- an account inside a household is planned with what the household sends it
+
+  /** Every transfer the household plan derives into the bills pot, confirmed. */
+  async function confirmAllInflow(h: Awaited<ReturnType<typeof seedHousehold>>) {
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${h.household.id}/plan`,
+        headers: h.auth,
+      })
+    ).json();
+    for (const t of plan.transfers) {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/households/${h.household.id}/transfers/confirm`,
+        headers: h.auth,
+        payload: {
+          fromAccountId: t.fromAccountId,
+          toAccountId: t.toAccountId,
+          memberUserId: t.memberUserId,
+        },
+      });
+      expect(res.statusCode).toBe(201);
+    }
+  }
+
+  it("plans a standalone account from its own income alone", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "solo", currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
+    });
+
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${account.id}/plan`, headers: auth })
+    ).json();
+    // No household, so nothing arrives and the shortfall is the whole bill —
+    // exactly as before allocated inflow existed.
+    expect(plan.monthlyIncomeMinor).toBe(0);
+    expect(plan.allocatedInflowMinor).toBe(0);
+    expect(plan.confirmedInflowMinor).toBe(0);
+    expect(plan.inflowSources).toBeNull();
+    expect(plan.shortfallMinor).toBe(100000);
+    expect(plan.lines.map((l: { status: string }) => l.status)).toEqual(["at_risk"]);
+  });
+
+  it("funds a household pot from the household's allocation, awaiting the transfer", async () => {
+    const h = await seedHousehold(store, app);
+    const householdPlan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${h.household.id}/plan`,
+        headers: h.auth,
+      })
+    ).json();
+    const pot = householdPlan.accounts.find(
+      (a: { accountId: string }) => a.accountId === h.bills.id,
+    );
+
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${h.bills.id}/plan`, headers: h.auth })
+    ).json();
+
+    // The two engines now agree: what the household allocates is what the
+    // account plans with, and the pot's own income is still nothing.
+    expect(plan.monthlyIncomeMinor).toBe(0);
+    expect(plan.allocatedInflowMinor).toBe(pot.transferInMinor);
+    expect(plan.confirmedInflowMinor).toBe(0);
+    expect(plan.shortfallMinor).toBe(0);
+    expect(plan.totalFundedMinor).toBe(plan.totalRequiredMinor);
+    // Nobody has moved anything yet, so every line is waiting on a transfer
+    // rather than at risk — funded on paper, not in the account.
+    expect(
+      plan.lines.every(
+        (l: { status: string; onTrack: boolean }) => l.status === "awaiting_transfer" && l.onTrack,
+      ),
+    ).toBe(true);
+    for (const line of plan.lines) {
+      expect(line.fundedFromOwnMinor + line.fundedFromInflowMinor).toBe(line.fundedMonthlyMinor);
+      expect(line.fundedFromOwnMinor).toBe(0);
+    }
+
+    // ...and it is not yet money to record. The transfer is the outstanding
+    // thing, and it has its own prompt.
+    const overview = (
+      await app.inject({ method: "GET", url: "/api/overview", headers: h.auth })
+    ).json();
+    const chip = overview.perCurrency[0].accounts.find(
+      (a: { accountId: string }) => a.accountId === h.bills.id,
+    );
+    expect(chip.allocatedInflowMinor).toBe(pot.transferInMinor);
+    expect(chip.unrecordedCount).toBe(0);
+    expect(chip.planSummary.unrecorded).toEqual([]);
+  });
+
+  it("marks the pot's lines funded once the transfers are confirmed", async () => {
+    const h = await seedHousehold(store, app);
+    await confirmAllInflow(h);
+
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${h.bills.id}/plan`, headers: h.auth })
+    ).json();
+    expect(plan.confirmedInflowMinor).toBe(plan.allocatedInflowMinor);
+    expect(plan.shortfallMinor).toBe(0);
+    expect(plan.lines.every((l: { status: string }) => l.status === "funded")).toBe(true);
+  });
+
+  it("names who is sending the money only to someone who can see the household", async () => {
+    const h = await seedHousehold(store, app);
+    // Carol can see the pot — it is shared into a household of her own — but
+    // she is not in the household that funds it.
+    const { user: carol, auth: carolAuth } = await seedUser(store, "carol@example.com");
+    const other = await store.createHousehold("Carol's place", carol.id);
+    await store.createAccountShare(h.bills.id, other.id, "view");
+
+    const mine = (
+      await app.inject({ method: "GET", url: `/api/accounts/${h.bills.id}/plan`, headers: h.auth })
+    ).json();
+    expect(mine.inflowSources.map((s: { memberUserId: string }) => s.memberUserId).sort()).toEqual(
+      [h.alice.id, h.bob.id].sort(),
+    );
+    expect(
+      mine.inflowSources.reduce((n: number, s: { amountMinor: number }) => n + s.amountMinor, 0),
+    ).toBe(mine.allocatedInflowMinor);
+
+    const hers = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${h.bills.id}/plan`,
+      headers: carolAuth,
+    });
+    expect(hers.statusCode).toBe(200);
+    // The amount is a fact about an account she can already see, so it is
+    // there and her copy of the plan adds up. The senders' names are not.
+    expect(hers.json().allocatedInflowMinor).toBe(mine.allocatedInflowMinor);
+    expect(hers.json().shortfallMinor).toBe(0);
+    expect(hers.json().inflowSources).toBeNull();
+  });
+
+  it("does not change the estate's income when an account starts receiving inflow", async () => {
+    const h = await seedHousehold(store, app);
+    const overview = async () =>
+      (await app.inject({ method: "GET", url: "/api/overview", headers: h.auth })).json()
+        .perCurrency[0];
+
+    // Take the pot back out of the household plan: nothing is allocated to it.
+    await app.inject({
+      method: "DELETE",
+      url: `/api/households/${h.household.id}/accounts/${h.bills.id}`,
+      headers: h.auth,
+    });
+    const before = await overview();
+    const potBefore = before.accounts.find(
+      (a: { accountId: string }) => a.accountId === h.bills.id,
+    );
+    expect(potBefore.allocatedInflowMinor).toBe(0);
+    expect(potBefore.shortfallMinor).toBeGreaterThan(0);
+
+    // Put it back, and the household starts funding it.
+    await app.inject({
+      method: "PUT",
+      url: `/api/households/${h.household.id}/accounts/${h.bills.id}`,
+      headers: h.auth,
+      payload: { role: "shared" },
+    });
+    const after = await overview();
+    const potAfter = after.accounts.find((a: { accountId: string }) => a.accountId === h.bills.id);
+    expect(potAfter.allocatedInflowMinor).toBeGreaterThan(0);
+    expect(potAfter.shortfallMinor).toBe(0);
+
+    // The guard: inflow is never folded into anyone's income, so the money the
+    // members earn is counted once across the estate however it is moved
+    // around inside it.
+    expect(after.monthlyIncomeMinor).toBe(before.monthlyIncomeMinor);
+    expect(
+      after.accounts.reduce(
+        (n: number, a: { monthlyIncomeMinor: number }) => n + a.monthlyIncomeMinor,
+        0,
+      ),
+    ).toBe(
+      before.accounts.reduce(
+        (n: number, a: { monthlyIncomeMinor: number }) => n + a.monthlyIncomeMinor,
+        0,
+      ),
+    );
+  });
+
+  it("closes a pot's month against the money that actually arrived", async () => {
+    const h = await seedHousehold(store, app);
+    await confirmAllInflow(h);
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${h.bills.id}/plan`, headers: h.auth })
+    ).json();
+    const close = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${h.bills.id}/close`,
+      headers: h.auth,
+      payload: { month: thisMonth() },
+    });
+    expect(close.statusCode).toBe(201);
+    // A pot has no income of its own; freezing £0 here would leave a scorecard
+    // row that can never say anything, and closing is what makes it history.
+    expect(plan.monthlyIncomeMinor).toBe(0);
+    expect(close.json().incomeMinor).toBe(plan.confirmedInflowMinor);
+    expect(close.json().incomeMinor).toBeGreaterThan(0);
+  });
+
   it("closes a household month once, scoring plan against contributions", async () => {
     const h = await seedHousehold(store, app);
     const month = thisMonth();
