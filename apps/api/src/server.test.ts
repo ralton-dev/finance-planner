@@ -5630,6 +5630,56 @@ describe("the overview is the caller's own money", () => {
   });
 
   /**
+   * **The shape every fixture in this repo used to be**, and the one a defect
+   * hides behind: a user with no household at all. `you` is read off the pass's
+   * partition members, and a solo owner is a member of their own scope — a
+   * household of one — so their whole bucket is theirs.
+   */
+  it("gives a solo user with no household their whole bucket", async () => {
+    const { user, auth } = await seedUser(store, "solo-you@example.com");
+    const account = await store.createAccount({
+      ownerUserId: user.id,
+      name: "Current",
+      currency: "GBP",
+    });
+    await store.createIncome({
+      accountId: account.id,
+      name: "Salary",
+      amountMinor: 240_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+    await store.createPayment({
+      accountId: account.id,
+      name: "Rent",
+      category: "monthly_recurring",
+      amountMinor: 90_000,
+      dueDate: null,
+      recurrence: null,
+      targetDate: null,
+      priority: 10,
+      alreadySavedMinor: 0,
+      autoRenew: true,
+      active: true,
+      notes: null,
+      projectId: null,
+      scope: "personal",
+      bearerUserId: null,
+      fixedMonthlyMinor: null,
+      tag: null,
+    });
+
+    const gbp = await gbpFor(auth, "2026-08-04");
+    expect(gbp.you).toEqual({ leftoverMinor: 150_000, shortfallMinor: 0, paymentCount: 1 });
+    // Nothing to be different from: with one owner and one account, the
+    // ownership figure and the access figure are the same money.
+    expect(gbp.you.leftoverMinor).toBe(gbp.leftoverMinor);
+    expect(gbp.accounts[0]!.ownerUserId).toBe(user.id);
+  });
+
+  /**
    * **Decision 20, pinned.** An account a co-member shared into your household
    * is a legitimate row in your list — you can see it, and there are things on
    * it you may be asked to act on — and it is not one penny of your money.
