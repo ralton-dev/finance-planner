@@ -294,6 +294,72 @@ describe("householdPlanFromScope — a member's costs the household's lines do n
     expect(bob().householdObligationMinor).toBe(bob().obligationMinor);
     expect(bob().householdFundedMinor).toBe(bob().fundedMinor);
   });
+
+  /**
+   * WP-X. The feed into `alice-pot` is a real £400 transfer Alice must make and
+   * it is **not the household's** — the same rule `committedMinor` gets, in the
+   * one direction a transfer has and a balance does not.
+   *
+   * It was listed here, because the filter asked whether *either* end was the
+   * household's. On screen it was a row the household could not name — the far
+   * end is not in `accounts`, so the checklist and the fold both printed
+   * "Alice → account" — with a working "mark done" that booked no contributions,
+   * because `POST /households/:id/transfers/confirm` credits `plan.lines`
+   * filtered to the destination and there are no lines on an account this plan
+   * does not hold. Ticking it did nothing, and said it had.
+   *
+   * Alice's pot is fed and confirmed from its own account page instead, off the
+   * pass's own `transfers` (`POST /accounts/:id/transfers/confirm`).
+   */
+  it("lists what arrives at its own accounts, and not what leaves for a member's", () => {
+    expect(plan.transfers).toEqual([
+      {
+        fromAccountId: "alice-cur",
+        toAccountId: "bills",
+        memberUserId: "alice",
+        amountMinor: 60_000,
+      },
+      { fromAccountId: "bob-cur", toAccountId: "bills", memberUserId: "bob", amountMinor: 40_000 },
+    ]);
+    // The pass derived it; this view is the thing that does not report it.
+    expect(computeScopePlan(withOwnPot, ASOF).transfers).toContainEqual(
+      expect.objectContaining({ toAccountId: "alice-pot", amountMinor: 40_000 }),
+    );
+  });
+
+  it("keeps the published transfers coherent with the totals they pay for", () => {
+    // Every row is transport for an obligation these totals count, and nothing
+    // else is: the sum is what the household's own accounts receive, to the
+    // penny. `alice-cur`'s own `transferOutMinor` still counts the £400 leaving
+    // for her pot, because the money really does leave — that is the account's
+    // arithmetic, not the household's instruction list.
+    const received = plan.accounts.reduce((s, a) => s + a.transferInMinor, 0);
+    expect(plan.transfers.reduce((s, t) => s + t.amountMinor, 0)).toBe(received);
+    expect(plan.accounts.find((a) => a.accountId === "alice-cur")!.transferOutMinor).toBe(
+      60_000 + 40_000,
+    );
+    // …and every row has lines on this plan for a confirmation to book against.
+    for (const t of plan.transfers) {
+      expect(plan.lines.some((l) => l.accountId === t.toAccountId)).toBe(true);
+    }
+  });
+
+  it("still lists a transfer arriving from an account the household does not hold", () => {
+    // The other direction, which is the household's business: money a member
+    // sends *in* pays for a line on this list, wherever they send it from. Here
+    // only the pot is the household's, and both members feed it from outside.
+    const potOnly = householdPlanFromScope(
+      computeScopePlan(withOwnPot, ASOF),
+      "hh",
+      ["bills"],
+      "GBP",
+    );
+    expect(potOnly.accounts.map((a) => a.accountId)).toEqual(["bills"]);
+    expect(potOnly.transfers.map((t) => [t.fromAccountId, t.toAccountId])).toEqual([
+      ["alice-cur", "bills"],
+      ["bob-cur", "bills"],
+    ]);
+  });
 });
 
 describe("householdPlanFromScope — the edges", () => {

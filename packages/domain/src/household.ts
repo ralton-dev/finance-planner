@@ -155,6 +155,9 @@ export interface HouseholdPlan {
   members: HouseholdMemberPlan[];
   accounts: HouseholdAccountPlan[];
   lines: HouseholdPlanLine[];
+  /** The transfers that fund **this household's** accounts — money arriving,
+   *  whoever it comes from. What one of its accounts sends on to a member's own
+   *  pot is that member's business and is not listed; see the filter below. */
   transfers: Transfer[];
 }
 
@@ -318,8 +321,26 @@ export function householdPlanFromScope(
     members,
     accounts,
     lines,
+    // Money **arriving** at one of the household's accounts, and only that.
+    //
+    // The same narrowing `committedMinor` gets above, in the one direction a
+    // transfer has and a balance does not. A member's private account feeding
+    // the bills pot is the household's business — it pays for a line on this
+    // list. A household account feeding that member's *own* pot is not: it is
+    // their money going to their own bills, on an account this view does not
+    // report, against an obligation `lines` does not carry — no more the
+    // household's business than their private ISA.
+    //
+    // `||` published both, and the second kind was a row the household could
+    // not even name ("Ben → account", since the far end is not in `accounts`)
+    // with a working "mark done" that booked nothing: the confirm endpoint
+    // credits `plan.lines` filtered to `toAccountId`, and there are no such
+    // lines. Every row published here has some, which is the same statement as
+    // the totals being coherent — the set is exactly the transport for the
+    // obligations `totalRequiredMinor` and `totalFundedMinor` count, and it
+    // sums to `sum(accounts[].transferInMinor)` to the penny.
     transfers: partition.transfers
-      .filter((t) => inHousehold.has(t.toAccountId) || inHousehold.has(t.fromAccountId))
+      .filter((t) => inHousehold.has(t.toAccountId))
       .map((t) => ({
         fromAccountId: t.fromAccountId,
         toAccountId: t.toAccountId,
