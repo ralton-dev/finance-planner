@@ -593,6 +593,189 @@ describe("api service", () => {
       headers: bAuth,
     });
     expect(tryDelete.statusCode).toBe(404);
+
+    // The third ownership route, unasserted until now: a project you cannot
+    // see is a project you cannot rename either, and it 404s for the same
+    // existence-leak reason rather than 403ing and confirming it exists.
+    const tryPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/projects/${project.id}`,
+      headers: bAuth,
+      payload: { name: "B's project now" },
+    });
+    expect(tryPatch.statusCode).toBe(404);
+  });
+
+  /**
+   * A project is a grouping of *your* payments, so the id you file one under
+   * has to be a project of yours. Nothing checked: the body's `projectId` went
+   * to the store, which enforced existence and nothing else — so a payment on
+   * your own account could be filed into a stranger's project, where it then
+   * printed your account's name on their screen (the test below).
+   */
+  it("refuses a payment filed into someone else's project", async () => {
+    const { auth: aAuth } = await seedUser(store, "a@example.com");
+    const { auth: bAuth } = await seedUser(store, "b@example.com");
+
+    const victimProject = (
+      await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        headers: aAuth,
+        payload: { name: "A's project" },
+      })
+    ).json();
+
+    const bAccount = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: bAuth,
+        payload: { name: "B's secret account", currency: "GBP" },
+      })
+    ).json();
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${bAccount.id}/payments`,
+      headers: bAuth,
+      payload: {
+        name: "Nosy",
+        category: "fixed_point",
+        amountMinor: 1000,
+        dueDate: "2026-09-01",
+        projectId: victimProject.id,
+      },
+    });
+    expect(created.statusCode).toBe(422);
+    // The id the caller supplied, never the project's name: echoing that back
+    // would leak exactly what the gate exists to protect.
+    expect(created.json().error.message).toContain(victimProject.id);
+
+    // And the same body arriving one request later, as an update.
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${bAccount.id}/payments`,
+        headers: bAuth,
+        payload: {
+          name: "Nosy",
+          category: "fixed_point",
+          amountMinor: 1000,
+          dueDate: "2026-09-01",
+        },
+      })
+    ).json();
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/api/payments/${payment.id}`,
+      headers: bAuth,
+      payload: { projectId: victimProject.id },
+    });
+    expect(patched.statusCode).toBe(422);
+    expect(patched.json().error.message).toContain(victimProject.id);
+
+    // Nothing got in by either door.
+    const detail = (
+      await app.inject({ method: "GET", url: `/api/projects/${victimProject.id}`, headers: aAuth })
+    ).json();
+    expect(detail.payments).toHaveLength(0);
+  });
+
+  /**
+   * A project's payments cross accounts by design, so its detail route is the
+   * one place in the product that reads accounts the caller was never checked
+   * against. It hydrated each payment with a bare `getAccount`, which answers
+   * for any account in the database.
+   *
+   * The shape that reaches it without anybody doing anything wrong: a payment
+   * filed on an account shared into your household, and then the share is
+   * taken away. The payment stays in your project — it is your project — and
+   * the account behind it stops being yours to name. Gated exactly as
+   * `planInflowSources` gates a sender's name: the amount is a fact about your
+   * own project and always travels; the name does not.
+   */
+  it("names only the accounts a project's owner may still see, and still reports every amount", async () => {
+    const { user: alice, auth: aAuth } = await seedUser(store, "alice@example.com");
+    const { user: bob, auth: bAuth } = await seedUser(store, "bob@example.com");
+    const household = await store.createHousehold("Home", alice.id);
+    await store.addMembership(household.id, bob.id, "member");
+
+    const bobAccount = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: bAuth,
+        payload: { name: "Bob current", currency: "GBP" },
+      })
+    ).json();
+    const share = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${bobAccount.id}/shares`,
+        headers: bAuth,
+        payload: { householdId: household.id, permission: "edit" },
+      })
+    ).json();
+
+    const project = (
+      await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        headers: aAuth,
+        payload: { name: "Kitchen" },
+      })
+    ).json();
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${bobAccount.id}/payments`,
+        headers: aAuth,
+        payload: {
+          name: "Worktop",
+          category: "fixed_point",
+          amountMinor: 120000,
+          dueDate: "2026-09-01",
+          projectId: project.id,
+        },
+      })
+    ).json();
+    expect(payment.projectId).toBe(project.id);
+
+    // While the share stands, Alice may be told whose account it is.
+    const shared = (
+      await app.inject({ method: "GET", url: `/api/projects/${project.id}`, headers: aAuth })
+    ).json();
+    expect(shared.payments[0]).toMatchObject({
+      accountName: "Bob current",
+      currency: "GBP",
+      amountMinor: 120000,
+    });
+
+    await app.inject({
+      method: "DELETE",
+      url: `/api/accounts/${bobAccount.id}/shares/${share.id}`,
+      headers: bAuth,
+    });
+    expect(await store.getAccess(alice.id, bobAccount.id)).toBeNull();
+    expect(bob.id).not.toBe(alice.id);
+
+    const after = (
+      await app.inject({ method: "GET", url: `/api/projects/${project.id}`, headers: aAuth })
+    ).json();
+    expect(after.payments).toHaveLength(1);
+    // The absence is an absence — no name, and no invented one either.
+    expect(after.payments[0].accountName).toBeUndefined();
+    // Amounts are never gated. The money is still in her project — and the
+    // currency travels with it, because a minor-unit integer with no code
+    // cannot be rendered at all, so gating it would gate the amount.
+    expect(after.payments[0]).toMatchObject({
+      accountId: bobAccount.id,
+      name: "Worktop",
+      amountMinor: 120000,
+      alreadySavedMinor: 0,
+      currency: "GBP",
+    });
   });
 
   it("deleting a project leaves member payments intact (just unlinked)", async () => {

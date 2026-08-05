@@ -21,17 +21,31 @@ export type Action =
   | "change_roles"
   | "delete_household";
 
-export type SubjectKind = "Account" | "Household";
+export type SubjectKind = "Account" | "Household" | "Project";
 
-/** Tagged reference to an entity. Use `subject("Account", { id })` to build. */
+/**
+ * Tagged reference to an entity. Use `subject("Account", { id })` to build.
+ *
+ * `ownerUserId` is carried for `Project` alone, and the overloads below make it
+ * mandatory there and unavailable elsewhere. Accounts and households resolve
+ * through the access and membership lists the caller's context already holds; a
+ * project resolves through one field on the row, so passing the row's owner is
+ * cheaper and more honest than loading every project a user has.
+ */
 export interface SubjectRef {
   __subjectType: SubjectKind;
   id: string;
+  /** `Project` only — who the row belongs to. See `subject`. */
+  ownerUserId?: string;
 }
 
 /** Wrap a plain object with its subject kind so `ability.can` can dispatch. */
-export function subject(kind: SubjectKind, obj: { id: string }): SubjectRef {
-  return { __subjectType: kind, id: obj.id };
+export function subject(kind: "Account" | "Household", obj: { id: string }): SubjectRef;
+export function subject(kind: "Project", obj: { id: string; ownerUserId: string }): SubjectRef;
+export function subject(kind: SubjectKind, obj: { id: string; ownerUserId?: string }): SubjectRef {
+  return kind === "Project"
+    ? { __subjectType: kind, id: obj.id, ownerUserId: obj.ownerUserId }
+    : { __subjectType: kind, id: obj.id };
 }
 
 export interface AppAbility {
@@ -62,6 +76,19 @@ export interface UserContext {
 
 const ACCOUNT_OWNER_ACTIONS: readonly Action[] = ["view", "edit", "delete", "share"];
 
+/**
+ * What a project's owner may do with it — which today is everything, because
+ * owner is the only role a project has.
+ *
+ * `edit` is what filing a payment into a project asks for, so a project you do
+ * not own cannot be named as a payment's `projectId`; `view` drives the detail
+ * route, and `hasAnyAccess` its 404. Deliberately a set rather than a bare
+ * `ownerUserId === userId`, so the day a project can be shared into a household
+ * the second arm lands here — where every caller already asks — instead of
+ * becoming a fifth hand-rolled ownership comparison.
+ */
+const PROJECT_OWNER_ACTIONS: readonly Action[] = ["view", "edit", "delete", "share"];
+
 /** Pure function: same inputs → same allowed set. Inexpensive to call per request. */
 export function buildAbility(ctx: UserContext): AppAbility {
   const accountActions = new Map<string, Set<Action>>();
@@ -89,8 +116,19 @@ export function buildAbility(ctx: UserContext): AppAbility {
     householdActions.set(h.id, actions);
   }
 
-  const lookup = (ref: SubjectRef): Set<Action> | undefined =>
-    (ref.__subjectType === "Account" ? accountActions : householdActions).get(ref.id);
+  // A project is not enumerated ahead of time — its whole authorization is one
+  // field on the row the caller already loaded — so it answers from the ref
+  // rather than from a map built per request. `undefined` means no access at
+  // all, which is what `hasAnyAccess` turns into a 404.
+  const projectActions = (ref: SubjectRef): Set<Action> | undefined =>
+    ref.ownerUserId !== undefined && ref.ownerUserId === ctx.userId
+      ? new Set(PROJECT_OWNER_ACTIONS)
+      : undefined;
+
+  const lookup = (ref: SubjectRef): Set<Action> | undefined => {
+    if (ref.__subjectType === "Project") return projectActions(ref);
+    return (ref.__subjectType === "Account" ? accountActions : householdActions).get(ref.id);
+  };
 
   return {
     can(action, ref) {

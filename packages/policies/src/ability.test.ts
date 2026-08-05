@@ -109,3 +109,38 @@ describe("buildAbility — households", () => {
     expect(ability.can("view", subject("Household", householdH))).toBe(false);
   });
 });
+
+describe("buildAbility — projects", () => {
+  const mine = { id: "proj-1", ownerUserId: "u1" };
+  const theirs = { id: "proj-2", ownerUserId: "u2" };
+
+  it("the owner may do everything with their own project", () => {
+    const ability = buildAbility({ userId: "u1", accountAccess: [], households: [] });
+    expect(ability.can("view", subject("Project", mine))).toBe(true);
+    expect(ability.can("edit", subject("Project", mine))).toBe(true);
+    expect(ability.can("delete", subject("Project", mine))).toBe(true);
+    expect(ability.hasAnyAccess(subject("Project", mine))).toBe(true);
+  });
+
+  it("someone else's project is not there at all — which is the 404", () => {
+    const ability = buildAbility({ userId: "u1", accountAccess: [], households: [] });
+    expect(ability.hasAnyAccess(subject("Project", theirs))).toBe(false);
+    expect(ability.can("view", subject("Project", theirs))).toBe(false);
+    // `edit` is what filing a payment into a project asks for.
+    expect(ability.cannot("edit", subject("Project", theirs))).toBe(true);
+  });
+
+  it("a project id does not borrow an account's access, or the other way round", () => {
+    const ability = buildAbility({
+      userId: "u1",
+      accountAccess: [{ id: "shared-id", isOwner: true, permission: "edit" }],
+      households: [{ id: "shared-id", role: "owner" }],
+    });
+    // Same id, three kinds: the project arm reads the ref's owner and nothing
+    // else, so owning an account that happens to share an id grants nothing.
+    expect(ability.can("view", subject("Project", { id: "shared-id", ownerUserId: "u2" }))).toBe(
+      false,
+    );
+    expect(ability.can("view", subject("Account", { id: "shared-id" }))).toBe(true);
+  });
+});

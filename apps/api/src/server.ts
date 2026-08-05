@@ -27,6 +27,7 @@ import {
   type Contribution,
   createStore,
   type MonthClose,
+  type Project,
   type Store,
 } from "@finance-planner/data";
 import {
@@ -504,6 +505,35 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     ]);
     if (!account || !access) throw new HttpError(404, "not_found", "Account not found");
     return { account, access, ability };
+  };
+
+  /**
+   * The project a payment is being filed under, or a 422 naming the id.
+   *
+   * A project is a grouping of *your* payments, so the id in a payment body has
+   * to be a project you may edit. Until this existed, `projectId` went from the
+   * body to the store, which enforced existence and nothing else — so a payment
+   * on your own account could be filed into a stranger's project, and the
+   * detail route below would then print your account's name on their screen.
+   * The two holes composed; this closes the first.
+   *
+   * 422 rather than 404, because the failure is in the body rather than in the
+   * URL: the account named by the route is yours and the request is well
+   * formed, and one field in it names something that is not. The message
+   * carries the **id the caller supplied** and never the project's name —
+   * echoing that back would hand over exactly what the gate protects.
+   *
+   * Returns the project so a caller that needs more of it than its existence
+   * does not fetch it twice. Nothing needs that yet; decision 23's shared-side
+   * constraint (WP-AH) will.
+   */
+  const requireProjectForPayment = async (userId: string, projectId: string): Promise<Project> => {
+    const project = await store.getProject(projectId);
+    const ability = await abilityFor(userId);
+    if (!project || ability.cannot("edit", subject("Project", project))) {
+      throw new HttpError(422, "unknown_project", `No project ${projectId}`);
+    }
+    return project;
   };
 
   const accountIdOf = async (kind: "income" | "payment", id: string): Promise<string> => {
@@ -1229,6 +1259,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { id } = req.params as { id: string };
     await requireAccess(userId, id, "edit");
     const body = createPaymentBody.parse(req.body);
+    if (body.projectId) await requireProjectForPayment(userId, body.projectId);
     const payment = await store.createPayment({
       accountId: id,
       name: body.name,
@@ -1261,6 +1292,12 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     if (body.accountId && body.accountId !== sourceAccountId) {
       await requireAccess(userId, body.accountId, "edit");
     }
+    // Filing it into a project requires that project to be yours, the same as
+    // on create — a gate on the create route alone is a gate one PATCH wide.
+    // `null` is unfiling, which needs no permission on the project it leaves:
+    // the payment is the caller's either way, and letting go of a link cannot
+    // reach anything.
+    if (body.projectId) await requireProjectForPayment(userId, body.projectId);
     return store.updatePayment(paymentId, defined(body));
   });
 
@@ -1972,11 +2009,26 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   /**
    * Projects are cross-account groupings of payments. Each project belongs to
    * exactly one user (the creator). Member payments may live on any account
-   * the user has access to.
+   * the user has access to — which is why this is the one surface in the
+   * product that reads accounts the caller was never checked against, and why
+   * both of its access rules are now stated rather than assumed.
    *
-   * No new permission surface yet — owner == manager == reader. If shared
-   * projects become a thing later, factor into packages/policies.
+   * Owner == manager == reader, and the ownership test lives in
+   * `packages/policies` (`subject("Project", …)`) rather than being spelled out
+   * at each of the four places that need it. That is where a second arm goes if
+   * a project ever becomes shareable.
    */
+  const requireProject = async (userId: string, id: string): Promise<Project> => {
+    const project = await store.getProject(id);
+    const ability = await abilityFor(userId);
+    // 404 rather than 403, by the policy package's leak rule: a project you
+    // have no access to reads exactly like one that does not exist.
+    if (!project || !ability.hasAnyAccess(subject("Project", project))) {
+      throw new HttpError(404, "not_found", "Project not found");
+    }
+    return project;
+  };
+
   app.get("/api/projects", async (req) => {
     const userId = await authenticate(req);
     return store.listProjectsForOwner(userId);
@@ -1995,43 +2047,76 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return reply.code(201).send(project);
   });
 
-  /** GET /api/projects/:id — returns the project plus its member payments and
-   *  per-account totals. Non-owners get 404 (existence leak prevention). */
+  /**
+   * GET /api/projects/:id — the project plus its member payments, each named
+   * with its account wherever this caller may be told.
+   *
+   * `listPaymentsForProject` has no access filter and correctly so: it answers
+   * "what is in this project", and a project's contents legitimately cross
+   * accounts — that is what a project is for. The gate belongs here, where the
+   * caller is known, and it is the gate `planInflowSources` already applies:
+   * `getAccess` decides, and only the **name** turns on it. The amount, the
+   * payment's own name, its due date and its account id all travel — they are
+   * facts about the caller's own project, and withholding them would empty the
+   * page without hiding anything.
+   *
+   * The currency is **not** gated with the name, and deliberately: it is the
+   * amount's unit rather than a second fact about the account. A minor-unit
+   * integer with no currency cannot be rendered at all — `formatMinor` throws
+   * on an absent code — so gating it would be gating the amount by the back
+   * door, which the rule above forbids.
+   *
+   * The name is absent rather than `"(unknown)"`, which is what this route used
+   * to say for an account it could not find. Absent is what every other gated
+   * name on the wire does (`PlanInflowSource.accountName`,
+   * `PlanTransferDeparture.toAccountName`), and it lets a client render one
+   * honest fallback — "another account" — instead of printing a parenthesis at
+   * somebody.
+   *
+   * The shape that reaches this without anybody doing anything wrong: a payment
+   * filed on an account shared into your household, and then the share is taken
+   * away. The payment stays in your project, and the account behind it stops
+   * being yours to name.
+   */
   app.get("/api/projects/:id", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    const project = await store.getProject(id);
-    if (!project || project.ownerUserId !== userId) {
-      throw new HttpError(404, "not_found", "Project not found");
-    }
+    const project = await requireProject(userId, id);
     const payments = await store.listPaymentsForProject(id);
     const accountIds = [...new Set(payments.map((p) => p.accountId))];
-    const accounts = await Promise.all(accountIds.map((aid) => store.getAccount(aid)));
-    const accountMap = new Map<string, { name: string; currency: string }>();
-    for (const a of accounts) if (a) accountMap.set(a.id, { name: a.name, currency: a.currency });
+    /** id → { currency, and the name only if this caller may be told it }. */
+    const seen = new Map<string, { name: string | null; currency: string }>();
+    for (const aid of accountIds) {
+      const [account, access] = await Promise.all([
+        store.getAccount(aid),
+        store.getAccess(userId, aid),
+      ]);
+      if (!account) continue;
+      seen.set(aid, { name: access ? account.name : null, currency: account.currency });
+    }
     return {
       ...project,
-      payments: payments.map((p) => ({
-        id: p.id,
-        accountId: p.accountId,
-        accountName: accountMap.get(p.accountId)?.name ?? "(unknown)",
-        currency: accountMap.get(p.accountId)?.currency ?? "",
-        name: p.name,
-        category: p.category,
-        amountMinor: p.amountMinor,
-        alreadySavedMinor: p.alreadySavedMinor,
-        dueDate: p.dueDate,
-      })),
+      payments: payments.map((p) => {
+        const account = seen.get(p.accountId);
+        return {
+          id: p.id,
+          accountId: p.accountId,
+          ...(account?.name != null ? { accountName: account.name } : {}),
+          currency: account?.currency ?? "",
+          name: p.name,
+          category: p.category,
+          amountMinor: p.amountMinor,
+          alreadySavedMinor: p.alreadySavedMinor,
+          dueDate: p.dueDate,
+        };
+      }),
     };
   });
 
   app.patch("/api/projects/:id", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    const project = await store.getProject(id);
-    if (!project || project.ownerUserId !== userId) {
-      throw new HttpError(404, "not_found", "Project not found");
-    }
+    await requireProject(userId, id);
     const body = updateProjectBody.parse(req.body);
     return store.updateProject(id, defined(body));
   });
@@ -2039,10 +2124,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.delete("/api/projects/:id", async (req, reply) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    const project = await store.getProject(id);
-    if (!project || project.ownerUserId !== userId) {
-      throw new HttpError(404, "not_found", "Project not found");
-    }
+    await requireProject(userId, id);
     await store.deleteProject(id);
     return reply.code(204).send();
   });
