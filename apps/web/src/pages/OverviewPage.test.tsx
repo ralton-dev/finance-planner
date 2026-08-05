@@ -1034,4 +1034,3 @@ describe("householdChips", () => {
     expect(householdChips(empty, AS_OF)).toEqual([{ tone: "neutral", label: "no accounts yet" }]);
   });
 });
-
