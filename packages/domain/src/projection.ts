@@ -529,8 +529,11 @@ export function computeScopeProjection(
  *
  * There is no balance trajectory here, unchanged: household money sits across
  * several accounts, so the meaningful monthly figure is what has to move between
- * them. `transfersTotalMinor` counts the transfers the pass derived that touch
- * one of these accounts, which is what a member has to actually do.
+ * them. `transfersTotalMinor` counts the transfers the pass derived that **land**
+ * in one of them, in this household's currency — the same set, to the penny, that
+ * `householdPlanFromScope` publishes as `transfers`, because month 0 of a walk is
+ * the plan for the as-of date and two surfaces reporting one figure differently
+ * is the defect ONE-ENGINE.md exists to end.
  */
 export function householdProjectionFromScope(
   projection: ScopeProjection,
@@ -560,8 +563,15 @@ export function householdProjectionFromScope(
         // because a walk records months per account.
         leftoverMinor: sum((m) => m.leftoverMinor),
         shortfallMinor: sum((m) => m.shortfallMinor),
+        // Arriving only, and only in this household's currency — the narrowing
+        // `householdPlanFromScope` applies, for its reasons: the destination is
+        // what decides, because that is the set with lines on this plan for a
+        // confirmation to book against. `||` counted money *leaving* a member's
+        // account for their own pot outside the household as well, so a
+        // household that sends anything out read one figure on its plan and a
+        // larger one on its projection for the very same month.
         transfersTotalMinor: month.transfers
-          .filter((t) => inHousehold.has(t.toAccountId) || inHousehold.has(t.fromAccountId))
+          .filter((t) => t.currency === currency && inHousehold.has(t.toAccountId))
           .reduce((n, t) => n + t.amountMinor, 0),
         reservedEndMinor: sum((m) => m.reservedEndMinor),
         lines: slices.flatMap((s) => s.month.lines.map((l) => ({ ...l, accountId: s.accountId }))),

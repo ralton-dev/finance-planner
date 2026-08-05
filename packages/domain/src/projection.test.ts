@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { accountPlanFromScope } from "./engine.js";
+import { householdPlanFromScope } from "./household.js";
 import {
   computeScopeProjection,
   householdProjectionFromScope,
@@ -1444,6 +1445,110 @@ describe("householdProjectionFromScope", () => {
     const before = snapshot(input);
     householdWalk(input, 14);
     expect(input).toEqual(before);
+  });
+});
+
+// --- the household's month 0 is the household's plan --------------------------
+
+/**
+ * Month 0 of a walk is the plan for the as-of date, and the household surfaces
+ * are no exception: `GET /households/:id/projection` and `GET /households/:id/plan`
+ * are handed the same roster and the same currency by `scopeForHousehold`, so
+ * "money the members must move" has to be one figure.
+ *
+ * It was two. `transfersTotalMinor` counted every transfer that *touched* one of
+ * the household's accounts, including money leaving a member's account for their
+ * own pot outside the household — the set `householdPlanFromScope` deliberately
+ * excludes, because the destination is what has lines on this plan for a
+ * confirmation to book against. Any household that sends anything out read a
+ * bigger figure on its projection than on its plan for the same month.
+ */
+describe("householdProjectionFromScope — month 0 is the household plan", () => {
+  /** The household, plus a pot of Alice's own that no member assigned to it. */
+  function withOutsidePot(): ScopeInput {
+    const input = household();
+    input.accounts.push({
+      accountId: "alice-isa",
+      role: "personal",
+      memberUserId: "alice",
+      currency: "GBP",
+      incomes: [],
+      payments: [
+        {
+          id: "isa",
+          name: "ISA",
+          category: "monthly_recurring",
+          amountMinor: 30_000,
+          scope: "personal",
+        },
+      ],
+    });
+    return input;
+  }
+
+  const planFor = (input: ScopeInput) =>
+    householdPlanFromScope(computeScopePlan(input, AS_OF), "hh", HOUSEHOLD_ACCOUNTS, "GBP");
+
+  it("reports the same money to move as the plan does, to the penny", () => {
+    const input = withOutsidePot();
+    const plan = planFor(input);
+    const planTotal = plan.transfers.reduce((n, t) => n + t.amountMinor, 0);
+
+    // The pass really does derive the outbound feed — this is not a fixture that
+    // happens to have nothing to disagree about.
+    expect(
+      computeScopePlan(input, AS_OF).transfers.some((t) => t.toAccountId === "alice-isa"),
+    ).toBe(true);
+    expect(householdWalk(input, 1).months[0]?.transfersTotalMinor).toBe(planTotal);
+    // And the figure is the arriving set, not the touching one: £400 into the
+    // bills pot, with Alice's £300 to her own ISA left off both surfaces.
+    expect(planTotal).toBe(40_000);
+  });
+
+  it("ignores a transfer in a currency this household is not planned in", () => {
+    // Reachable through `PATCH /api/accounts/:id`, which takes a currency: a
+    // roster can hold an account the plan's partition no longer contains. The
+    // plan drops it; the projection's transfer total has to drop it too.
+    const input = withOutsidePot();
+    input.accounts.push(
+      {
+        accountId: "alice-eur",
+        role: "personal",
+        memberUserId: "alice",
+        currency: "EUR",
+        incomes: [income(100_000, { id: "alice-eur-pay" })],
+        payments: [],
+      },
+      {
+        accountId: "eur-pot",
+        role: "shared",
+        currency: "EUR",
+        incomes: [],
+        payments: [
+          {
+            id: "eur-bill",
+            name: "Broadband",
+            category: "monthly_recurring",
+            amountMinor: 20_000,
+            scope: "shared",
+          },
+        ],
+      },
+    );
+    const roster = [...HOUSEHOLD_ACCOUNTS, "eur-pot"];
+    const walk = householdProjectionFromScope(
+      computeScopeProjection(input, AS_OF, { months: 1 }),
+      "hh",
+      roster,
+      "GBP",
+    );
+    const plan = householdPlanFromScope(computeScopePlan(input, AS_OF), "hh", roster, "GBP");
+
+    expect(computeScopePlan(input, AS_OF).transfers.some((t) => t.currency === "EUR")).toBe(true);
+    expect(walk.months[0]?.transfersTotalMinor).toBe(
+      plan.transfers.reduce((n, t) => n + t.amountMinor, 0),
+    );
+    expect(walk.months[0]?.transfersTotalMinor).toBe(40_000);
   });
 });
 
