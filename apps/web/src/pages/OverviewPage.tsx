@@ -18,11 +18,9 @@ import type {
   CurrencyOverviewDto,
   HouseholdDto,
   HouseholdPlanDto,
-  InflowArrivalDto,
   LatestBalanceDto,
   OverviewAccountDto,
   OverviewDto,
-  PlanInflowSourceDto,
   TransferConfirmationDto,
   UpcomingDto,
   UserDto,
@@ -83,33 +81,6 @@ function latestBalanceOf(s: OverviewAccountDto): LatestBalanceDto | null {
   const { latestBalanceDate: asOfDate, latestBalanceMinor: balanceMinor } = s;
   if (!asOfDate || balanceMinor === null || balanceMinor === undefined) return null;
   return { asOfDate, balanceMinor };
-}
-
-/**
- * The overview's arrivals, given the sending accounts' names.
- *
- * The index carries ids and amounts and no name, which is what lets it skip an
- * access gate. The names are then looked up in the account list this page
- * already holds — and that list is exactly the accounts the caller may see,
- * which is precisely the gate `planInflowSources` applies on the server. A
- * sender they cannot see simply has no name here either, and `deriveNeedsYou`
- * renders the absence as "another account" rather than as an id.
- */
-export function namedSenders(
-  arrivals: readonly InflowArrivalDto[],
-  byId: ReadonlyMap<string, AccountDto>,
-): PlanInflowSourceDto[] {
-  return arrivals.map((a) => {
-    const sender = byId.get(a.fromAccountId);
-    return {
-      kind: "account",
-      inflowId: a.inflowId,
-      fromAccountId: a.fromAccountId,
-      ...(sender ? { accountName: sender.name } : {}),
-      amountMinor: a.amountMinor,
-      confirmedMinor: a.confirmedMinor ?? 0,
-    };
-  });
 }
 
 export function OverviewPage() {
@@ -219,12 +190,13 @@ export function OverviewPage() {
             ...(s.allocatedInflowMinor === undefined
               ? {}
               : { allocatedInflowMinor: s.allocatedInflowMinor }),
-            ...(s.inflowArrivals
-              ? {
-                  inflowArrivals: s.inflowArrivals,
-                  inflowSources: namedSenders(s.inflowArrivals, byId),
-                }
-              : {}),
+            ...(s.inflowArrivals ? { inflowArrivals: s.inflowArrivals } : {}),
+            // Straight from the API, which applies the one gate: names are
+            // withheld, ids are not. This page used to name the senders itself
+            // out of the account list it holds — the same answer for an authored
+            // movement, and no answer at all for a transfer the plan derived,
+            // because there is no arrival to name when nobody authored one.
+            ...(s.inflowSources ? { inflowSources: s.inflowSources } : {}),
           },
           ...(s.householdId ? { householdId: s.householdId } : {}),
           ...(s.planSummary ? { lineSummary: s.planSummary } : {}),

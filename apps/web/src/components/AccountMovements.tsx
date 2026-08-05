@@ -1,8 +1,16 @@
 import { useState } from "react";
 import { api } from "../lib/api.js";
+import { currentMonth } from "../lib/months.js";
 import { money, type Phrase } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
-import type { AccountDto, AccountPlanDto, InflowDto, PlanInflowSourceDto } from "../lib/types.js";
+import type {
+  AccountDto,
+  AccountPlanDto,
+  InflowDto,
+  PlanInflowSourceDto,
+  TransferConfirmationDto,
+  UserDto,
+} from "../lib/types.js";
 import { Amount, Sentence } from "./Amount.js";
 import { MovementDrawer, type MovementTarget } from "./MovementDrawer.js";
 
@@ -28,6 +36,12 @@ export interface DerivedRow {
   amountMinor: number;
   /** Whether somebody has said this month's transfer actually moved. */
   settled: boolean;
+  /** The member being asked, and the account they send from — what "I moved it"
+   *  is scoped by, since nobody authored a row to point at. Absent on the
+   *  aggregate row for what *leaves* here, which is one figure over several
+   *  transfers and is nobody's single thing to tick. */
+  fromAccountId?: string;
+  memberUserId?: string;
 }
 
 /** How a movement's cadence reads on one line. */
@@ -80,7 +94,19 @@ export function AccountMovements({
   // list is exactly the accounts they can see, which is the same gate the API
   // applies to a sending account's name.
   const accounts = useAsync<AccountDto[]>(() => api.listAccounts(), []);
+  // "I moved it", for the transfers the plan derives into this account. Who is
+  // asking, because only the member a transfer belongs to may say it moved —
+  // there is no household roster here to make anyone an admin of it — and what
+  // has already been recorded this month, because un-ticking needs the row's id
+  // and a derived confirmation has no authored inflow to find it by.
+  const me = useAsync<UserDto>(() => api.me(), []);
+  const month = currentMonth();
+  const confirmations = useAsync<TransferConfirmationDto[]>(
+    () => api.listAccountConfirmations(account.id, month),
+    [account.id, month],
+  );
   const [target, setTarget] = useState<MovementTarget | null>(null);
+  const [settling, setSettling] = useState<string | null>(null);
 
   const known = new Map((accounts.data ?? NO_ACCOUNTS).map((a) => [a.id, a]));
   const arriving = (inbound.data ?? []).filter((i) => i.source === "account");
@@ -118,6 +144,39 @@ export function AccountMovements({
   // Every movement touching this account, whichever plan derives it: the rows
   // somebody authored, and the transfers the pass works out for the bills.
   const arrivingDerived = derivedArrivals(plan);
+  const settleOf = (row: DerivedRow): DerivedSettle | null => {
+    // Yours only: `POST /accounts/:id/transfers/confirm` refuses anyone else's,
+    // and a household's transfers are ticked on the household's own checklist,
+    // which knows who may tick for whom.
+    if (!canEdit || !row.fromAccountId || row.memberUserId !== me.data?.id) return null;
+    const confirmationId = derivedConfirmationId(confirmations.data ?? [], row, account.id);
+    return {
+      label: confirmationId ? "undo" : "moved",
+      busy: settling === row.key,
+      run: async () => {
+        setSettling(row.key);
+        try {
+          if (confirmationId) {
+            await api.unconfirmDerivedTransfer(account.id, confirmationId);
+          } else {
+            await api.confirmDerivedTransfer(
+              account.id,
+              {
+                fromAccountId: row.fromAccountId!,
+                toAccountId: account.id,
+                memberUserId: row.memberUserId!,
+              },
+              month,
+            );
+          }
+          confirmations.refetch();
+          onChanged();
+        } finally {
+          setSettling(null);
+        }
+      },
+    };
+  };
   const leavingDerived = derivedTransferOutMinor(plan);
   const nothing =
     arriving.length === 0 &&
@@ -142,6 +201,7 @@ export function AccountMovements({
           addLabel="+ money in"
           rows={arriving}
           derived={arrivingDerived}
+          derivedSettle={settleOf}
           derivedArrow={(name) => `${name} →`}
           derivedNote="the plan derives this for the bills here — nobody authored it"
           account={account}
@@ -200,12 +260,20 @@ export function AccountMovements({
   );
 }
 
+/** The one button a derived row can offer: "I moved it", and its undo. */
+interface DerivedSettle {
+  label: string;
+  busy: boolean;
+  run: () => Promise<void>;
+}
+
 function MovementList({
   heading,
   empty,
   addLabel,
   rows,
   derived,
+  derivedSettle,
   derivedArrow,
   derivedNote,
   account,
@@ -224,6 +292,8 @@ function MovementList({
   rows: readonly InflowDto[];
   /** Movements the plan derived, which have no row to edit or remove. */
   derived: readonly DerivedRow[];
+  /** What a derived row may be ticked with, when this caller may tick it. */
+  derivedSettle?: (row: DerivedRow) => DerivedSettle | null;
   derivedArrow: (name: string) => string;
   derivedNote: string;
   account: AccountDto;
@@ -256,24 +326,42 @@ function MovementList({
       )}
       {derived.length > 0 && (
         <ul className="entity-list">
-          {derived.map((row) => (
-            <li key={`derived:${row.key}`}>
-              <span>
-                {/* No name of its own: nobody wrote it down, so what it is
-                    called is what it is — the plan's own feed. */}
-                <span className="name">derived transfer</span>
-                <em>
-                  — <Amount minor={row.amountMinor} currency={account.currency} /> / monthly
-                </em>
-                <span className="shared movement-end" title={row.name}>
-                  {derivedArrow(row.name)}
+          {derived.map((row) => {
+            const settle = derivedSettle?.(row) ?? null;
+            return (
+              <li key={`derived:${row.key}`}>
+                <span>
+                  {/* No name of its own: nobody wrote it down, so what it is
+                      called is what it is — the plan's own feed. */}
+                  <span className="name">derived transfer</span>
+                  <em>
+                    — <Amount minor={row.amountMinor} currency={account.currency} /> / monthly
+                  </em>
+                  <span className="shared movement-end" title={row.name}>
+                    {derivedArrow(row.name)}
+                  </span>
+                  <span className={`tag-status ${row.settled ? "ok" : "idle"}`}>
+                    {row.settled ? "moved" : "derived"}
+                  </span>
                 </span>
-                <span className={`tag-status ${row.settled ? "ok" : "idle"}`}>
-                  {row.settled ? "moved" : "derived"}
-                </span>
-              </span>
-            </li>
-          ))}
+                {/* The only thing there is to do about a transfer nobody
+                    authored: say that you made it, or take it back. There is no
+                    row to edit and none to remove. */}
+                {settle && (
+                  <span className="row-actions">
+                    <button
+                      type="button"
+                      className="ghost tiny"
+                      disabled={settle.busy}
+                      onClick={() => void settle.run()}
+                    >
+                      {settle.busy ? "…" : settle.label}
+                    </button>
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       {derived.length > 0 && (
@@ -465,8 +553,35 @@ export function derivedArrivals(plan: AccountPlanDto | undefined): DerivedRow[] 
         name: source.displayName ?? "a household member",
         amountMinor: source.amountMinor,
         settled: source.confirmedMinor >= source.amountMinor,
+        fromAccountId: source.fromAccountId,
+        memberUserId: source.memberUserId,
       };
     });
+}
+
+/**
+ * This month's confirmation of one derived transfer, if somebody has recorded it.
+ *
+ * A derived transfer carries neither a household nor an inflow — that is exactly
+ * what makes it derived — so it is found the way it is scoped: by its two
+ * accounts, its month and the member who moves it. The household rows are
+ * deliberately excluded: those are un-confirmed through the household route,
+ * which keeps its own rule about whose transfers a plain member may undo.
+ */
+export function derivedConfirmationId(
+  confirmations: readonly TransferConfirmationDto[],
+  row: DerivedRow,
+  accountId: string,
+): string | null {
+  const hit = confirmations.find(
+    (c) =>
+      c.householdId === null &&
+      !c.inflowId &&
+      c.toAccountId === accountId &&
+      c.fromAccountId === row.fromAccountId &&
+      c.memberUserId === row.memberUserId,
+  );
+  return hit?.id ?? null;
 }
 
 /**

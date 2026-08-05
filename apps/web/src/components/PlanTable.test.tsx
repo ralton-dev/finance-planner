@@ -390,6 +390,7 @@ const billsPot: AccountPlanDto = {
       kind: "member",
       memberUserId: "u1",
       displayName: "Ben",
+      fromAccountId: "current",
       amountMinor: 30_320,
       confirmedMinor: 0,
     },
@@ -562,7 +563,13 @@ describe("inflowNote — the sentence, for each kind of sender", () => {
 
   it("says the kind of sender when access control withholds the name", () => {
     expect(
-      senderName({ kind: "member", memberUserId: "u9", amountMinor: 1, confirmedMinor: 0 }),
+      senderName({
+        kind: "member",
+        memberUserId: "u9",
+        fromAccountId: "a9",
+        amountMinor: 1,
+        confirmedMinor: 0,
+      }),
     ).toBe("a household member");
     expect(
       senderName({
@@ -600,6 +607,7 @@ describe("inflowNote — the sentence, for each kind of sender", () => {
             kind: "member",
             memberUserId: "u1",
             displayName: "Ben",
+            fromAccountId: "current",
             amountMinor: 20_000,
             confirmedMinor: 0,
           },

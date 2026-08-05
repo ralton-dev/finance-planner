@@ -407,6 +407,7 @@ describe("AccountMovements — the movements nobody authored", () => {
           kind: "member",
           memberUserId: "me",
           displayName: "Ben",
+          fromAccountId: "current",
           amountMinor: 30_320,
           confirmedMinor: 0,
         },
@@ -415,14 +416,107 @@ describe("AccountMovements — the movements nobody authored", () => {
     }) as AccountPlanDto;
 
   it("lists the derived feed arriving, with no edit or remove on it", async () => {
+    // Nobody authored it, so there is no row to change and none to delete. The
+    // one thing there *is* to do about it — say you moved it — needs to know who
+    // is asking, and this render stubs no `/auth/me`.
     renderFor(POT, {}, { plan: derivedPlan() });
 
     const row = await screen.findByText("derived transfer");
     const item = row.closest("li")!;
     expect(item).toHaveTextContent("£303.20");
     expect(item).toHaveTextContent("Ben →");
-    expect(within(item).queryByRole("button")).toBeNull();
+    expect(within(item).queryByRole("button", { name: "edit" })).toBeNull();
+    expect(within(item).queryByRole("button", { name: "✕" })).toBeNull();
     expect(screen.getByText(/the plan derives this for the bills here/)).toBeInTheDocument();
+  });
+
+  /**
+   * Defect 1: the transfer with no client that could reach it.
+   *
+   * `POST /accounts/:id/transfers/confirm` is scoped by the two accounts, the
+   * month and the member — and the account plan's `inflowSources` named the
+   * member without ever saying which account they send from, so the one screen
+   * that draws the row had nothing to post. The wire carries `fromAccountId`
+   * now, and this is the button.
+   */
+  describe("saying you moved one, and taking it back", () => {
+    const MONTH = new Date().toISOString().slice(0, 7);
+    const CONFIRMATION = {
+      id: "conf-1",
+      householdId: null,
+      inflowId: null,
+      month: `${MONTH}-01`,
+      fromAccountId: "current",
+      toAccountId: "pot",
+      memberUserId: "me",
+      amountMinor: 30_320,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+    const mine = {
+      "GET /api/auth/me": { body: { id: "me", email: "b@example.com", displayName: "Ben" } },
+      [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: { body: [] },
+    };
+
+    it("posts the confirmation the endpoint is keyed on", async () => {
+      renderFor(
+        POT,
+        {
+          ...mine,
+          [`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`]: {
+            status: 201,
+            body: { confirmation: CONFIRMATION, contributions: [] },
+          },
+        },
+        { plan: derivedPlan() },
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "moved" }));
+      await waitFor(() =>
+        expect(stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toBe(1),
+      );
+      expect(stub.bodyOf(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toEqual({
+        fromAccountId: "current",
+        toAccountId: "pot",
+        memberUserId: "me",
+      });
+    });
+
+    it("offers the undo once one is recorded, and drops it", async () => {
+      renderFor(
+        POT,
+        {
+          ...mine,
+          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: {
+            body: [CONFIRMATION],
+          },
+          "DELETE /api/accounts/pot/transfers/confirmations/conf-1": { status: 204 },
+        },
+        { plan: derivedPlan({ confirmedInflowMinor: 30_320 }) },
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "undo" }));
+      await waitFor(() =>
+        expect(stub.calls("DELETE /api/accounts/pot/transfers/confirmations/conf-1")).toBe(1),
+      );
+    });
+
+    it("offers nothing on somebody else's transfer", async () => {
+      // A household's transfers are ticked on the household's own checklist,
+      // which knows who may tick for whom; this endpoint refuses anyone else's.
+      renderFor(
+        POT,
+        {
+          ...mine,
+          "GET /api/auth/me": {
+            body: { id: "someone-else", email: "a@example.com", displayName: "Alex" },
+          },
+        },
+        { plan: derivedPlan() },
+      );
+
+      await screen.findByText("derived transfer");
+      expect(screen.queryByRole("button", { name: "moved" })).toBeNull();
+    });
   });
 
   it("stops claiming nothing moves in, and says the narrower true thing instead", async () => {

@@ -8,6 +8,8 @@ import type {
   AccountDto,
   HouseholdPlanDto,
   OverviewAccountDto,
+  OverviewDto,
+  PlanInflowSourceDto,
   TransferConfirmationDto,
 } from "../lib/types.js";
 import { stubApiFetch, type FetchStub, type Routes } from "../test/apiMock.js";
@@ -493,56 +495,97 @@ describe("OverviewPage — fold + doorways", () => {
  * — and until the checklist could name the movement, that left an
  * `awaiting_transfer` line with no prompt anywhere on the page.
  */
+const ESTATE_OVERVIEW: OverviewDto = {
+  asOfDate: AS_OF,
+  perCurrency: [
+    {
+      currency: "GBP",
+      monthlyIncomeMinor: 100_000,
+      bufferMinor: 0,
+      totalRequiredMinor: 30_000,
+      totalFundedMinor: 30_000,
+      // A plain sum of the rows now: one pass counts the pound that moved in the
+      // sender's surplus and nowhere else, so there is nothing left to net
+      // (ONE-ENGINE.md).
+      leftoverMinor: 100_000,
+      shortfallMinor: 0,
+      accounts: [
+        state({
+          accountId: "current",
+          name: "Current account",
+          leftoverMinor: 100_000,
+          latestBalanceMinor: 100_000,
+          latestBalanceDate: AS_OF,
+        }),
+        state({
+          accountId: "pot",
+          name: "Holiday pot",
+          leftoverMinor: 0,
+          allocatedInflowMinor: 30_000,
+          confirmedInflowMinor: 0,
+          // The itemisation, straight off the index: the authored inflow's id
+          // and what it delivered. The sender's *name* rides beside it in
+          // `inflowSources`, which the API gates — the page used to look it up
+          // in the account list itself, which could name an authored movement's
+          // sender and could say nothing at all about a transfer the plan
+          // derived, because nobody authored one to itemise.
+          inflowArrivals: [{ inflowId: "inf-1", fromAccountId: "current", amountMinor: 30_000 }],
+          inflowSources: [
+            {
+              kind: "account",
+              inflowId: "inf-1",
+              fromAccountId: "current",
+              accountName: "Current account",
+              amountMinor: 30_000,
+              confirmedMinor: 0,
+            },
+          ],
+          latestBalanceMinor: 0,
+          latestBalanceDate: AS_OF,
+        }),
+      ],
+    },
+  ],
+};
+
 describe("OverviewPage — money moving between your own accounts", () => {
+  /** The estate's overview body with the pot fed by `sources` instead. Arrivals
+   *  itemise the authored ones only, because nothing authors a derived one. */
+  function withPotSources(sources: PlanInflowSourceDto[]): OverviewDto {
+    const arrivals = sources
+      .filter((s) => s.kind === "account")
+      .map((s) => ({
+        inflowId: s.inflowId,
+        fromAccountId: s.fromAccountId,
+        amountMinor: s.amountMinor,
+      }));
+    const bucket = ESTATE_OVERVIEW.perCurrency[0]!;
+    return {
+      ...ESTATE_OVERVIEW,
+      perCurrency: [
+        {
+          ...bucket,
+          accounts: bucket.accounts.map((a) =>
+            a.accountId === "pot"
+              ? {
+                  ...a,
+                  inflowSources: sources,
+                  ...(arrivals.length > 0 ? { inflowArrivals: arrivals } : { inflowArrivals: [] }),
+                }
+              : a,
+          ),
+        },
+      ],
+    };
+  }
+
   function renderEstate(routes: Routes = {}): ReturnType<typeof render> {
     stub = stubApiFetch({
       "GET /api/auth/me": { body: ME },
       "GET /api/accounts": {
         body: [account("current", "Current account"), account("pot", "Holiday pot")],
       },
-      "GET /api/overview": {
-        body: {
-          asOfDate: AS_OF,
-          perCurrency: [
-            {
-              currency: "GBP",
-              monthlyIncomeMinor: 100_000,
-              bufferMinor: 0,
-              totalRequiredMinor: 30_000,
-              totalFundedMinor: 30_000,
-              // A plain sum of the rows now: one pass counts the pound that
-              // moved in the sender's surplus and nowhere else, so there is
-              // nothing left to net (ONE-ENGINE.md).
-              leftoverMinor: 100_000,
-              shortfallMinor: 0,
-              accounts: [
-                state({
-                  accountId: "current",
-                  name: "Current account",
-                  leftoverMinor: 100_000,
-                  latestBalanceMinor: 100_000,
-                  latestBalanceDate: AS_OF,
-                }),
-                state({
-                  accountId: "pot",
-                  name: "Holiday pot",
-                  leftoverMinor: 0,
-                  allocatedInflowMinor: 30_000,
-                  confirmedInflowMinor: 0,
-                  // The itemisation, straight off the index: the authored
-                  // inflow's id and what it delivered, and no name anywhere.
-                  // The sender is named from the account list the page holds.
-                  inflowArrivals: [
-                    { inflowId: "inf-1", fromAccountId: "current", amountMinor: 30_000 },
-                  ],
-                  latestBalanceMinor: 0,
-                  latestBalanceDate: AS_OF,
-                }),
-              ],
-            },
-          ],
-        },
-      },
+      "GET /api/overview": { body: ESTATE_OVERVIEW },
       "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
       ...routes,
     });
@@ -582,12 +625,72 @@ describe("OverviewPage — money moving between your own accounts", () => {
   });
 
   it("says only 'another account' when the sender is not one it can see", async () => {
-    // The index carries the sending account's *id*, never its name — so a
-    // sender missing from the account list has no name here, exactly as the
-    // plan's access-gated `inflowSources` would have withheld it.
-    renderEstate({ "GET /api/accounts": { body: [account("pot", "Holiday pot")] } });
+    // The API withholds a sending account's name from a caller who cannot see
+    // it, and sends the id regardless. An absent name is rendered as an absence,
+    // never as an id and never as a guess.
+    renderEstate({
+      "GET /api/overview": {
+        body: withPotSources([
+          {
+            kind: "account",
+            inflowId: "inf-1",
+            fromAccountId: "current",
+            amountMinor: 30_000,
+            confirmedMinor: 0,
+          },
+        ]),
+      },
+    });
 
     expect(await screen.findByText("another account → Holiday pot")).toBeInTheDocument();
+  });
+
+  /**
+   * Defect 1, end to end on the one screen a solo user has.
+   *
+   * A transfer the plan **derives** has no authored row, so there is no arrival
+   * to itemise and the checklist can only learn of it from the member rows of
+   * `inflowSources`. The Overview never sent those, so the row was never drawn —
+   * and the endpoint WP-S shipped for confirming one had no client that could
+   * reach it. Both halves are here: the row, and the button doing what it says.
+   */
+  it("ticks a transfer the plan derived, and unticks it", async () => {
+    renderEstate({
+      "GET /api/overview": {
+        body: withPotSources([
+          {
+            kind: "member",
+            memberUserId: "u1",
+            displayName: "Ben",
+            fromAccountId: "current",
+            amountMinor: 30_000,
+            confirmedMinor: 0,
+          },
+        ]),
+      },
+      "POST /api/accounts/pot/transfers/confirm?month=2026-08": {
+        status: 201,
+        body: { confirmation: { id: "conf-derived" }, contributions: [] },
+      },
+      "DELETE /api/accounts/pot/transfers/confirmations/conf-derived": { status: 204 },
+    });
+
+    expect(await screen.findByText("Ben → Holiday pot")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "mark done" }));
+    await waitFor(() =>
+      expect(stub.calls("POST /api/accounts/pot/transfers/confirm?month=2026-08")).toBe(1),
+    );
+    expect(stub.bodyOf("POST /api/accounts/pot/transfers/confirm?month=2026-08")).toEqual({
+      fromAccountId: "current",
+      toAccountId: "pot",
+      memberUserId: "u1",
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "undo" }));
+    await waitFor(() =>
+      expect(stub.calls("DELETE /api/accounts/pot/transfers/confirmations/conf-derived")).toBe(1),
+    );
   });
 
   it("counts the pound that moved once, with no term to net out of the headline", async () => {

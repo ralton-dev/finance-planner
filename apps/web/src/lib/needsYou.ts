@@ -190,6 +190,22 @@ export type NeedsYouAction =
       amountMinor: number;
     }
   | {
+      /**
+       * The third shape: a transfer the plan **derived**, with no household to
+       * attribute it and no authored row to name it. Scoped by its two accounts,
+       * its month and the member moving it — which is exactly what
+       * `POST /accounts/:id/transfers/confirm` is keyed on.
+       */
+      kind: "confirmDerivedTransfer";
+      /** The receiving account: the one the row is about, and the endpoint's `:id`. */
+      accountId: string;
+      fromAccountId: string;
+      memberUserId: string;
+      /** "YYYY-MM". */
+      month: string;
+      amountMinor: number;
+    }
+  | {
       kind: "recordContribution";
       paymentId: string;
       accountId: string;
@@ -502,12 +518,18 @@ function derivedTransferItems(entry: NeedsYouAccountInput, month: string): Needs
             `${done} of ${sources.length} done · nobody authored it`,
         ],
         href: `/accounts/${plan.accountId}`,
-        // No action. Confirming one is `POST /accounts/:id/transfers/confirm`,
-        // which needs the *sending* account — and an account plan's
-        // `inflowSources` names the member and not the account they send from,
-        // so there is nothing here to post. Reported with this package; until
-        // the wire carries it the row opens the account rather than lying about
-        // a button that cannot work.
+        // `POST /accounts/:id/transfers/confirm`, which is keyed on the two
+        // accounts, the month and the member. The sending account now travels on
+        // the member row (`fromAccountId`); until it did, this row had a label
+        // and no button it could honestly offer.
+        action: {
+          kind: "confirmDerivedTransfer" as const,
+          accountId: plan.accountId,
+          fromAccountId: s.fromAccountId,
+          memberUserId: s.memberUserId,
+          month,
+          amountMinor: s.amountMinor,
+        },
       };
     });
 }

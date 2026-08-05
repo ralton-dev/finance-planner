@@ -1550,6 +1550,7 @@ describe("a solo pot fed by a transfer the plan derived", () => {
               kind: "member",
               memberUserId: "ben",
               displayName: "Ben",
+              fromAccountId: "current",
               amountMinor: 30_320,
               confirmedMinor: 0,
             },
@@ -1573,6 +1574,20 @@ describe("a solo pot fed by a transfer the plan derived", () => {
     expect(phraseText(items[0]!.meta)).toBe(
       "the plan derives this feed · aug 2026 · 0 of 1 done · nobody authored it",
     );
+  });
+
+  it("carries the button, keyed the way the endpoint is", () => {
+    // The row had a label and no action: `POST /accounts/:id/transfers/confirm`
+    // is keyed on the two accounts, the month and the member, and the wire named
+    // the member without ever saying which account they send from. It does now.
+    expect(deriveNeedsYou(soloPot())[0]!.action).toEqual({
+      kind: "confirmDerivedTransfer",
+      accountId: "rent-pot",
+      fromAccountId: "current",
+      memberUserId: "ben",
+      month: "2026-08",
+      amountMinor: 30_320,
+    });
   });
 
   it("draws no shortfall row: the plan funds the pot, it is only unmoved", () => {
@@ -1618,6 +1633,7 @@ describe("a solo pot fed by a transfer the plan derived", () => {
                 kind: "member",
                 memberUserId: "ben",
                 displayName: "Ben",
+                fromAccountId: "current",
                 amountMinor: 30_320,
                 confirmedMinor: 30_320,
               },
@@ -1649,6 +1665,7 @@ describe("a solo pot fed by a transfer the plan derived", () => {
                 kind: "member",
                 memberUserId: "alex",
                 displayName: "Alex",
+                fromAccountId: "alex-cur",
                 amountMinor: 87_600,
                 confirmedMinor: 0,
               },

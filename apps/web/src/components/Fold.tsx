@@ -36,12 +36,15 @@ interface Settled {
 }
 
 /**
- * Rows whose whole action is one button: "I moved it". Two of them, because
- * money can be waiting on a household member or on you moving your own — one
- * row shape, two endpoints, and the checklist ranks them together.
+ * Rows whose whole action is one button: "I moved it". Three of them, because
+ * money can be waiting on a household member, on a transfer the plan derived for
+ * an account no household speaks for, or on you moving your own — one row shape,
+ * three endpoints, and the checklist ranks them together.
  */
 const isMarkDone = (action: NeedsYouAction): boolean =>
-  action.kind === "confirmTransfer" || action.kind === "confirmMovement";
+  action.kind === "confirmTransfer" ||
+  action.kind === "confirmMovement" ||
+  action.kind === "confirmDerivedTransfer";
 
 /** The chip that says what kind of thing a row is. */
 const KIND_LABEL: Record<NeedsYouKind, string> = {
@@ -147,6 +150,25 @@ export function Fold({ input, loading = false, onActioned }: Props) {
           month: action.month,
         });
         return () => api.unconfirmTransfer(action.householdId, result.confirmation.id);
+      });
+      return;
+    }
+
+    // The same tick with no household and no authored row: a transfer the plan
+    // derived, confirmed against the receiving account and scoped by the two
+    // accounts, the month and the member.
+    if (action.kind === "confirmDerivedTransfer") {
+      void run(item, async () => {
+        const result = await api.confirmDerivedTransfer(
+          action.accountId,
+          {
+            fromAccountId: action.fromAccountId,
+            toAccountId: action.accountId,
+            memberUserId: action.memberUserId,
+          },
+          action.month,
+        );
+        return () => api.unconfirmDerivedTransfer(action.accountId, result.confirmation.id);
       });
       return;
     }

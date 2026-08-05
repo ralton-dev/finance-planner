@@ -125,6 +125,20 @@ const monthStart = (isoDate: string): string => `${isoDate.slice(0, 7)}-01`;
 export interface InflowSource {
   memberUserId: string;
   displayName?: string;
+  /**
+   * The account the plan asks them to move it **out of** — their source account
+   * for this currency (decision 11).
+   *
+   * Ungated, like the `account` variant's `fromAccountId` beside it: the gate
+   * `planInflowSources` applies is on *names*, and an account id is not a name.
+   * The rows that reach a caller are already gated — your own always, everyone's
+   * only when you can see the household — and a household member can read the
+   * same id off `GET /households/:id/plan` (`transfers[].fromAccountId`), so
+   * nothing here is a fact they did not have. Without it the browser knew a
+   * person and `POST /accounts/:id/transfers/confirm` wanted an account, which
+   * left the derived-transfer confirmation with no client that could reach it.
+   */
+  fromAccountId: string;
   /** What the plan asks this member to move in. */
   amountMinor: number;
   /** How much of it they have confirmed moving (<= `amountMinor`). */
@@ -715,6 +729,7 @@ export function inflowSourcesFor(
     .map((t) => ({
       memberUserId: t.memberUserId,
       displayName: scope.memberNames.get(t.memberUserId),
+      fromAccountId: t.fromAccountId,
       amountMinor: t.amountMinor,
       confirmedMinor: t.confirmedMinor,
     }))

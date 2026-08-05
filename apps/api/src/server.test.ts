@@ -1392,6 +1392,10 @@ describe("api service", () => {
         kind: "member",
         memberUserId: user.id,
         displayName: "Owner",
+        // Which account to move it out of — ungated, like the sending account
+        // id on an authored movement's row, because an id is not a name. The
+        // confirmation below is posted with exactly this.
+        fromAccountId: current.id,
         amountMinor: 15000,
         confirmedMinor: 0,
       },
@@ -1738,6 +1742,7 @@ describe("api service", () => {
         kind: "member",
         memberUserId: expect.any(String),
         displayName: "Owner",
+        fromAccountId: current.id,
         amountMinor: 15000,
         confirmedMinor: 0,
       },

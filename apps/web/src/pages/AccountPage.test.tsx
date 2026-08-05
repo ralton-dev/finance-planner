@@ -59,6 +59,7 @@ const plan: AccountPlanDto = {
       kind: "member",
       memberUserId: "u1",
       displayName: "Ben",
+      fromAccountId: "current",
       amountMinor: 30_320,
       confirmedMinor: 0,
     },

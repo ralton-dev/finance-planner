@@ -112,7 +112,13 @@ describe("computePlanForAccount — a pot with no income feeds itself", () => {
 
     const scope = await scopeForAccount(store, pot, ASOF);
     expect(inflowSourcesFor(scope, pot.id, "GBP")).toEqual([
-      { memberUserId: userId, displayName: "Owner", amountMinor: 50_000, confirmedMinor: 0 },
+      {
+        memberUserId: userId,
+        displayName: "Owner",
+        fromAccountId: current.id,
+        amountMinor: 50_000,
+        confirmedMinor: 0,
+      },
     ]);
     // And it comes out of the sending account's own surplus, once.
     const sender = await computePlanForAccount(store, current, ASOF);
@@ -393,7 +399,15 @@ describe("the scope loader — what has actually moved", () => {
 
     const scope = await scopeForAccount(store, pot, ASOF);
     expect(inflowSourcesFor(scope, pot.id, "GBP")).toEqual([
-      { memberUserId: userId, displayName: "Owner", amountMinor: 10_000, confirmedMinor: 10_000 },
+      {
+        memberUserId: userId,
+        displayName: "Owner",
+        // The account the plan asks them to move it out of. Not a name, so not
+        // gated — and the thing "I moved it" could not be posted without.
+        fromAccountId: current.id,
+        amountMinor: 10_000,
+        confirmedMinor: 10_000,
+      },
     ]);
   });
 

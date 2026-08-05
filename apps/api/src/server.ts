@@ -1111,6 +1111,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       const plan = planById.get(account.id)!;
       const reality = await accountReality(store, plan, asOfDate);
       const planSummary = summarisePlanLines(plan, reality.contributionsMTD);
+      // The scope is already planned and memoised in `ctx` — this is a map
+      // lookup, not a second pass.
+      const scope = await scopeForAccount(store, account, asOfDate, ctx);
+      const inflowSources = await planInflowSources(userId, account, plan, scope);
       plans.push(plan);
       state.set(account.id, {
         name: account.name,
@@ -1129,6 +1133,18 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         // plan already. Omitted rather than sent empty on the ordinary account
         // nothing moves into.
         ...(plan.inflowArrivals.length > 0 ? { inflowArrivals: plan.inflowArrivals } : {}),
+        // Who is sending it, as much of it as this caller may be told — the same
+        // `planInflowSources` the account plan sends, applying the same gate.
+        //
+        // The index used to carry ids and amounts and no name, and the browser
+        // named the senders it could see off the account list it already held.
+        // That worked for an authored movement, which the arrivals itemise, and
+        // could not work at all for a transfer the pass **derived**: nobody
+        // authored one, so there is no arrival to itemise, and the checklist's
+        // derived-transfer row was drawn from member sources the Overview never
+        // sent. It was therefore never drawn — which is why the confirmation
+        // endpoint had no reachable client (ONE-ENGINE.md, WP-V).
+        ...(inflowSources ? { inflowSources } : {}),
         latestBalanceMinor: reality.latestBalance?.balanceMinor ?? null,
         latestBalanceDate: reality.latestBalance?.asOfDate ?? null,
         reservedMinor: reality.reservedMinor,

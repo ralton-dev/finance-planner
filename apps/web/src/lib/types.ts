@@ -317,6 +317,11 @@ export type PlanInflowSourceDto =
       memberUserId: string;
       /** Only when the caller can see the household. */
       displayName?: string;
+      /** The account the plan asks them to move it out of — their source account
+       *  (decision 11), and what "I moved it" is posted with. Ungated, like the
+       *  `account` variant's `fromAccountId` below: the gate is on names, and an
+       *  id is not one. */
+      fromAccountId: string;
       amountMinor: number;
       confirmedMinor: number;
     }
@@ -474,6 +479,16 @@ export interface OverviewAccountDto {
    * moves into this account, which is the ordinary case.
    */
   inflowArrivals?: InflowArrivalDto[];
+  /**
+   * Where that money is coming from, as much of it as this caller may be told —
+   * the same gated list the account plan carries.
+   *
+   * The arrivals above itemise **authored** movements, and a transfer the plan
+   * *derived* has nothing to itemise, because nobody wrote it down. Without this
+   * the checklist could never draw a derived-transfer row on the one screen a
+   * solo user has, so the confirmation endpoint had no reachable client at all.
+   */
+  inflowSources?: PlanInflowSourceDto[];
   leftoverMinor: number;
   shortfallMinor: number;
   atRiskCount: number;
