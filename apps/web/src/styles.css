@@ -506,17 +506,18 @@ textarea:focus-visible {
   top: 0;
   z-index: 40;
 }
-.mobile-brand {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  font-weight: 700;
-  font-size: 13.5px;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-}
-.mobile-spacer {
+.mobile-header-brand {
   margin-right: auto;
+  min-width: 0;
+}
+.mobile-header-brand .brand-lockup-mark {
+  width: 2.35rem;
+  height: 2.35rem;
+}
+.mobile-header-brand .brand-lockup-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .nav-toggle {
   background: transparent;
@@ -1455,9 +1456,42 @@ button.tiny {
   margin-top: 0.85rem;
 }
 
+@media (min-width: 721px) and (max-width: 1024px) {
+  :root {
+    --sidebar-w: 204px;
+  }
+  .sidebar {
+    padding: 1.15rem 0.75rem;
+  }
+  .sidebar-brand {
+    gap: 0.6rem;
+    margin: 0.05rem 0.25rem 1.25rem;
+  }
+  .sidebar-brand .brand-lockup-mark {
+    width: 2.65rem;
+    height: 2.65rem;
+  }
+  .sidebar-brand .brand-lockup-text {
+    font-size: 12.5px;
+  }
+  .auth-page-brand {
+    top: 1.6rem;
+    left: 1.6rem;
+  }
+  .auth-page-brand .brand-lockup-mark {
+    width: 3.5rem;
+    height: 3.5rem;
+  }
+  .auth-page-brand .brand-lockup-text {
+    font-size: 15px;
+  }
+}
+
 @media (max-width: 720px) {
   .app {
     grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+    align-content: start;
   }
   .mobile-bar {
     display: flex;
@@ -1473,8 +1507,25 @@ button.tiny {
   .sidebar.open {
     display: flex;
   }
+  .sidebar-brand {
+    display: none;
+  }
   .main {
     padding: 1rem;
+  }
+  .auth-page-brand {
+    position: static;
+    width: min(360px, calc(100% - 3rem));
+    margin: 2rem auto 1.25rem;
+  }
+  .auth-page-brand .brand-lockup-mark {
+    width: 3.5rem;
+    height: 3.5rem;
+  }
+  .auth-card {
+    width: min(360px, calc(100% - 3rem));
+    max-width: none;
+    margin: 0 auto 2rem;
   }
 }
 

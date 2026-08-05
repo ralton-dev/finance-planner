@@ -48,7 +48,10 @@ export function Layout() {
   return (
     <div className="app">
       <div className="mobile-bar">
-        <span className="mobile-spacer" aria-hidden="true" />
+        <div className="brand-lockup mobile-header-brand">
+          <ProductLogo className="brand-lockup-mark" decorative />
+          <span className="brand-lockup-text">finance planner</span>
+        </div>
         <ThemeToggle theme={theme} onCycle={cycleTheme} className="nav-toggle" />
         <PrivacyToggle hidden={hidden} onToggle={togglePrivacy} className="nav-toggle" />
         <button
