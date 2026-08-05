@@ -5585,7 +5585,12 @@ describe("the overview is the caller's own money", () => {
     membersLeftoverMinor: number;
     householdLeftoverMinor: number;
     committedMinor: number;
-    members: { userId: string; displayName?: string; personalLeftoverMinor: number }[];
+    members: {
+      userId: string;
+      displayName?: string;
+      personalLeftoverMinor: number;
+      arrivedFromOthers?: { ownerUserId: string; amountMinor: number }[];
+    }[];
     accounts: { accountId: string; leftoverMinor: number }[];
   }> =>
     (
@@ -5886,6 +5891,40 @@ describe("the overview is the caller's own money", () => {
     // genuinely Bob's money. The household total is unaffected: added to her,
     // subtracted from him.
     expect(alice.you.leftoverMinor + bob.you.leftoverMinor).toBe(290_000);
+  });
+
+  /**
+   * **Decision 25 on the wire.** Alice's row reads INCOME £2,000 · THEIR COSTS
+   * £300 · COMMITTED £100 · LEFT OVER £2,100, and a reader adding it up gets
+   * £1,600. £400 of the £500 gap is Bob's money in a pot Alice owns, and the
+   * page can now say so.
+   *
+   * A label and nothing else: every figure the test above pins is asserted
+   * again here, unchanged, because that is the acceptance criterion.
+   */
+  it("names whose money is in a member's left over, and moves none of it", async () => {
+    const seeded = await seedCrossOwner(store);
+    const plan = await householdPlan(
+      seeded.householdId,
+      seeded.auth.get("u-alice")!,
+      CROSS_OWNER_ASOF,
+    );
+    const byId = new Map(plan.members.map((m) => [m.userId, m]));
+    const alice = byId.get(seeded.userIds.get("u-alice")!)!;
+    const bob = byId.get(seeded.userIds.get("u-bob")!)!;
+
+    expect(alice.arrivedFromOthers).toEqual([
+      { ownerUserId: seeded.userIds.get("u-bob")!, amountMinor: 40_000 },
+    ]);
+    // Nothing of anybody else's is in Bob's accounts, and the annotation is
+    // absent rather than an empty list — the ordinary case says nothing at all.
+    expect(bob).not.toHaveProperty("arrivedFromOthers");
+
+    // Unmoved, to the penny.
+    expect(alice.personalLeftoverMinor).toBe(210_000);
+    expect(bob.personalLeftoverMinor).toBe(80_000);
+    expect(plan.membersLeftoverMinor).toBe(290_000);
+    expect(plan.householdLeftoverMinor).toBe(330_000);
   });
 
   /** Month 0 of the household's walk is its plan for the same date — one

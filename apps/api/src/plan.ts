@@ -5,6 +5,7 @@ import {
   type ConfirmedArrival,
   type ConfirmedTransfer,
   computeScopePlan,
+  type HouseholdMemberPlan,
   type HouseholdPlan,
   householdPlanFromScope,
   type IncomeInput,
@@ -944,9 +945,83 @@ export async function previewPlanForAccount(
 // The household plan
 // ---------------------------------------------------------------------------
 
+/**
+ * Somebody else's money, sitting in accounts one member owns.
+ *
+ * `personalLeftoverMinor` is the residuals of the accounts a member owns added
+ * up, and a residual counts what **arrived** as much as what was earned — so a
+ * co-member's authored movement into a pot you own is in your figure, genuinely
+ * in your account and genuinely not your money (`scope.ts:1171–1179` states the
+ * case and declines to net it, rightly: the total is unaffected either way,
+ * because the pound is added to your figure and subtracted from theirs).
+ *
+ * Reporting the place is the whole of decision 19. Saying *whose* it is, is
+ * decision 25, and this is what the sentence is made of.
+ */
+export interface ArrivedFromOwner {
+  /** Whose account sent it. A household member, in every case the page can
+   *  name; anybody else's id reads as "outside the household" and never as a
+   *  name — an owner id is not one. */
+  ownerUserId: string;
+  amountMinor: number;
+}
+
+export interface HouseholdMemberPlanWithArrivals extends HouseholdMemberPlan {
+  /**
+   * Of this member's left over, what arrived from an account somebody else
+   * owns, by that owner. Absent when none did, which is the ordinary case.
+   *
+   * Read straight off the pass's `inflowArrivals` — the itemisation of what
+   * each authored movement delivered — and never recomputed from totals. The
+   * arithmetic of the figure it annotates is untouched.
+   */
+  arrivedFromOthers?: ArrivedFromOwner[];
+}
+
 export interface HouseholdPlanWithSchedule extends HouseholdPlan {
   /** When each member should move their transfers, anchored to their paydays. */
   paydaySchedule: MemberPaydaySchedule[];
+  members: HouseholdMemberPlanWithArrivals[];
+}
+
+/**
+ * For each member, the money in their own accounts that came out of somebody
+ * else's — grouped by the sender's owner, biggest first.
+ *
+ * Summed over exactly the set `leftoverForUser` sums, and for the same reason:
+ * ownership, never access. An arrival whose sender the pass did not plan is
+ * left out rather than guessed at — with no owner for the far end there is no
+ * claim to make.
+ */
+function arrivalsFromOtherOwners(
+  scope: PlannedScope,
+  currency: string,
+): Map<string, ArrivedFromOwner[]> {
+  const partition = scope.plan.partitions.find((p) => p.currency === currency);
+  const ownerOf = new Map((partition?.accounts ?? []).map((a) => [a.accountId, a.ownerUserId]));
+  /** receiving owner → sending owner → amount. */
+  const byReceiver = new Map<string, Map<string, number>>();
+
+  for (const account of partition?.accounts ?? []) {
+    for (const arrival of account.inflowArrivals) {
+      const sender = ownerOf.get(arrival.fromAccountId);
+      if (sender === undefined || sender === account.ownerUserId) continue;
+      const senders = byReceiver.get(account.ownerUserId) ?? new Map<string, number>();
+      senders.set(sender, (senders.get(sender) ?? 0) + arrival.amountMinor);
+      byReceiver.set(account.ownerUserId, senders);
+    }
+  }
+
+  return new Map(
+    [...byReceiver].map(([receiver, senders]) => [
+      receiver,
+      [...senders]
+        .map(([ownerUserId, amountMinor]) => ({ ownerUserId, amountMinor }))
+        .sort(
+          (a, b) => b.amountMinor - a.amountMinor || a.ownerUserId.localeCompare(b.ownerUserId),
+        ),
+    ]),
+  );
 }
 
 /**
@@ -968,7 +1043,18 @@ export async function computeHouseholdPlanWithSchedule(
     ctx,
   );
   const plan = householdPlanFromScope(scope.plan, householdId, accountIds, currency);
-  return { ...plan, paydaySchedule: paydayScheduleFor(scope, plan.transfers, asOfDate) };
+  // Whose money is in whose accounts, annotated onto the rows that report it.
+  // Nothing here changes a figure: `personalLeftoverMinor` is what it was, and
+  // this only says what part of it arrived from somebody else (decision 25).
+  const arrived = arrivalsFromOtherOwners(scope, currency);
+  return {
+    ...plan,
+    members: plan.members.map((m) => {
+      const from = arrived.get(m.userId);
+      return from ? { ...m, arrivedFromOthers: from } : m;
+    }),
+    paydaySchedule: paydayScheduleFor(scope, plan.transfers, asOfDate),
+  };
 }
 
 /**

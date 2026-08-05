@@ -87,6 +87,30 @@ export function memberLeftOverMinor(m: HouseholdMemberPlanDto): number {
 }
 
 /**
+ * Everything in one member's left over that arrived from somebody else, and
+ * whose it was — the two halves of decision 25's sentence.
+ *
+ * Read off `arrivedFromOthers`, which the pass itemises from `inflowArrivals`.
+ * Nothing is recomputed here and nothing is subtracted: the figure the cell
+ * prints is exactly what it printed before.
+ */
+const arrivedFromOthersMinor = (m: HouseholdMemberPlanDto): number =>
+  (m.arrivedFromOthers ?? []).reduce((sum, a) => sum + a.amountMinor, 0);
+
+/**
+ * "Bob", "Bob and Carol", "Bob, Carol and Dave" — a list a person reads rather
+ * than one a machine writes.
+ *
+ * An owner the roster cannot name is described, never printed as an id: the
+ * amount travels ungated and the name does not, which is the same rule every
+ * other cell on this page follows.
+ */
+function nameList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "somebody outside the household";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
  * The class a LEFT OVER cell takes. Green is a month that works; a negative
  * residual is not one.
  *
@@ -127,6 +151,12 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
   // account the household does not hold had a reduced LEFT OVER with no column
   // on the page saying why, which is the reading the figure must never get.
   const committedByMembers = plan.members.reduce((s, m) => s + memberCommitted(m), 0);
+  // What the LEFT OVER column of the account table actually adds to, and what
+  // the KPI has that it does not: money in accounts a member owns and this
+  // household does not hold (decision 25). A difference of two figures already
+  // on the screen — no third derivation, and nothing here changes either.
+  const heldHere = plan.accounts.reduce((s, a) => s + freeMinor(a), 0);
+  const heldElsewhere = left - heldHere;
 
   return (
     <>
@@ -269,6 +299,34 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
               </tr>
             ))}
           </tbody>
+          {/* The column does not add to the KPI above it, and until now nothing
+              said why (decision 25). These are the household's accounts; the
+              household's left over is its **members'**, and a member owns
+              accounts this roster does not hold — an ISA of Alice's reads
+              £2,800 here under a headline of £2,900. Same word the member rows
+              use for the same class of gap, and the footer appears only when
+              there is one, exactly as their notes do. Nothing is recomputed:
+              this is the column added up beside the figure already printed. */}
+          {heldElsewhere !== 0 && (
+            <tfoot>
+              <tr>
+                <th className="sticky-col">these accounts</th>
+                <td className="wide-only" />
+                <td className="num wide-only" />
+                <td className="num" />
+                <td className="num" />
+                {committed > 0 && <td className="num" />}
+                <td className="num">
+                  {formatMinor(heldHere, c)}
+                  <span className="cell-note">
+                    {heldElsewhere > 0 ? "plus " : "less "}
+                    {formatMinor(Math.abs(heldElsewhere), c)} elsewhere
+                  </span>
+                </td>
+                <td className="num" />
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
@@ -353,9 +411,28 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
                   </td>
                 )}
                 {/* Their own accounts' residuals, added up — so this column
-                    sums to the KPI above rather than to nothing on the page. */}
+                    sums to the KPI above rather than to nothing on the page.
+
+                    And the last cell on this table without a note for the gap
+                    between it and its neighbours (decision 25). Alice's row
+                    reads income £2,000, their costs £300, committed £100 and a
+                    left over of £2,100; a reader doing that arithmetic gets
+                    £1,600. £400 of the difference is Bob's money sitting in a
+                    pot she owns — in her account, and not hers. Naming it costs
+                    the figure nothing: a residual counts a movement at both
+                    ends and the household's total is the same either way. */}
                 <td className={leftOverClass(memberLeftOverMinor(m))}>
                   {formatMinor(memberLeftOverMinor(m), c)}
+                  {arrivedFromOthersMinor(m) > 0 && (
+                    <span className="cell-note">
+                      incl. {formatMinor(arrivedFromOthersMinor(m), c)} that arrived from{" "}
+                      {nameList(
+                        (m.arrivedFromOthers ?? []).map(
+                          (a) => memberName.get(a.ownerUserId) ?? "somebody outside the household",
+                        ),
+                      )}
+                    </span>
+                  )}
                 </td>
                 <td className={`num${m.shortfallMinor > 0 ? " warn" : " dim"}`}>
                   {m.shortfallMinor > 0 ? formatMinor(m.shortfallMinor, c) : "—"}

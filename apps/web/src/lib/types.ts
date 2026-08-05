@@ -730,6 +730,18 @@ export interface HouseholdMemberPlanDto {
    * loses the money entirely (decision 19).
    */
   personalLeftoverMinor?: number;
+  /**
+   * Of that left over, what **arrived** from an account somebody else owns, by
+   * that owner (decision 25).
+   *
+   * A residual counts money that arrived as much as money earned, so a
+   * co-member's movement into a pot you own is in your figure — genuinely in
+   * your account, genuinely not your money. The household's total is unaffected
+   * either way, and only the reader was left unable to tell. Itemised by the
+   * pass off `inflowArrivals`; the LEFT OVER cell prints the sum and names the
+   * senders it can. Absent when nothing arrived from anybody else.
+   */
+  arrivedFromOthers?: { ownerUserId: string; amountMinor: number }[];
   shortfallMinor: number;
 }
 

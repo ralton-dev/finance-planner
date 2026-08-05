@@ -585,3 +585,174 @@ describe("HouseholdPlanView · what a member commits elsewhere", () => {
     expect(headers(perPerson!).all).not.toContain("committed");
   });
 });
+
+/**
+ * **Decision 25.** Two cells on this page hold money the reader's arithmetic
+ * cannot account for, and until now only their neighbours said so.
+ *
+ * The figures are the cross-owner fixture's, read off a real browser: Alice's
+ * row prints income £2,000, their costs £300, committed £100 and a left over of
+ * £2,100 — a reader adding it up gets £1,600 — while the account table's LEFT
+ * OVER column adds to £2,800 under a KPI of £2,900. The £400 is Bob's money in
+ * a pot Alice owns; the £100 is an ISA of hers the household does not hold.
+ */
+describe("HouseholdPlanView · money that is somebody else's", () => {
+  /** The cross-owner household, as the API now publishes it. */
+  const CROSS: HouseholdPlanDto = {
+    householdId: "hh-x",
+    asOfDate: "2026-08-04",
+    currency: "GBP",
+    monthlyIncomeMinor: 350_000,
+    totalRequiredMinor: 60_000,
+    totalFundedMinor: 60_000,
+    leftoverMinor: 290_000,
+    householdLeftoverMinor: 330_000,
+    membersLeftoverMinor: 290_000,
+    committedMinor: 50_000,
+    shortfallMinor: 0,
+    members: [
+      {
+        userId: "alice",
+        displayName: "Alice",
+        shareBp: 5_000,
+        monthlyIncomeMinor: 200_000,
+        obligationMinor: 30_000,
+        fundedMinor: 30_000,
+        leftoverMinor: 170_000,
+        committedMinor: 10_000,
+        personalLeftoverMinor: 210_000,
+        arrivedFromOthers: [{ ownerUserId: "bob", amountMinor: 40_000 }],
+        shortfallMinor: 0,
+      },
+      {
+        userId: "bob",
+        displayName: "Bob",
+        shareBp: 5_000,
+        monthlyIncomeMinor: 150_000,
+        obligationMinor: 30_000,
+        fundedMinor: 30_000,
+        leftoverMinor: 120_000,
+        committedMinor: 40_000,
+        personalLeftoverMinor: 80_000,
+        shortfallMinor: 0,
+      },
+    ],
+    accounts: [
+      {
+        accountId: "pot",
+        name: "House pot",
+        role: "shared",
+        memberUserId: null,
+        currency: "GBP",
+        monthlyIncomeMinor: 0,
+        requiredOutflowMinor: 60_000,
+        fundedOutflowMinor: 60_000,
+        transferInMinor: 60_000,
+        transferOutMinor: 0,
+        leftoverMinor: 40_000,
+        shortfallMinor: 0,
+      },
+      {
+        accountId: "alice-cur",
+        name: "Alice current",
+        role: "personal",
+        memberUserId: "alice",
+        currency: "GBP",
+        monthlyIncomeMinor: 200_000,
+        requiredOutflowMinor: 0,
+        fundedOutflowMinor: 0,
+        transferInMinor: 0,
+        transferOutMinor: 30_000,
+        leftoverMinor: 170_000,
+        committedMinor: 10_000,
+        shortfallMinor: 0,
+      },
+      {
+        accountId: "bob-cur",
+        name: "Bob current",
+        role: "personal",
+        memberUserId: "bob",
+        currency: "GBP",
+        monthlyIncomeMinor: 150_000,
+        requiredOutflowMinor: 0,
+        fundedOutflowMinor: 0,
+        transferInMinor: 0,
+        transferOutMinor: 30_000,
+        leftoverMinor: 120_000,
+        committedMinor: 40_000,
+        shortfallMinor: 0,
+      },
+    ],
+    lines: [],
+    transfers: [],
+  };
+
+  const leftOverCell = (row: Element): Element => row.lastElementChild!.previousElementSibling!;
+
+  it("names whose money is in a member's left over", () => {
+    const { container } = render(<HouseholdPlanView plan={CROSS} />);
+    const [alice, bob] = [...tables(container)[1]!.querySelectorAll("tbody tr")];
+
+    // The figure is untouched — this is a label, not arithmetic.
+    expect(leftOverCell(alice!)).toHaveTextContent("£2,100.00");
+    expect(leftOverCell(alice!)).toHaveTextContent("incl. £400.00 that arrived from Bob");
+    // Nothing of anybody else's is in Bob's, so his cell says nothing.
+    expect(leftOverCell(bob!)).toHaveTextContent("£800.00");
+    expect(leftOverCell(bob!).querySelector(".cell-note")).toBeNull();
+  });
+
+  it("uses the same note the cells beside it use", () => {
+    const { container } = render(<HouseholdPlanView plan={CROSS} />);
+    const [alice] = [...tables(container)[1]!.querySelectorAll("tbody tr")];
+    expect(leftOverCell(alice!).querySelector(".cell-note")).not.toBeNull();
+  });
+
+  it("says nothing when nobody else's money is in anybody's accounts", () => {
+    const own: HouseholdPlanDto = {
+      ...CROSS,
+      members: CROSS.members.map((m) => ({ ...m, arrivedFromOthers: [] })),
+    };
+    const { container } = render(<HouseholdPlanView plan={own} />);
+    for (const row of tables(container)[1]!.querySelectorAll("tbody tr")) {
+      expect(leftOverCell(row).querySelector(".cell-note")).toBeNull();
+    }
+  });
+
+  it("names the money the household does not hold under the account column", () => {
+    const { container } = render(<HouseholdPlanView plan={CROSS} />);
+    const foot = tables(container)[0]!.querySelector("tfoot tr")!;
+
+    // The column adds to £2,800; the KPI above reads £2,900.
+    expect(foot).toHaveTextContent("these accounts");
+    expect(foot).toHaveTextContent("£2,800.00");
+    expect(foot).toHaveTextContent("plus £100.00 elsewhere");
+    expect(foot.querySelector(".cell-note")).not.toBeNull();
+    // Under the LEFT OVER column and no other: same cell count as a body row.
+    const body = tables(container)[0]!.querySelector("tbody tr")!;
+    expect(foot.children).toHaveLength(body.children.length);
+  });
+
+  it("draws no footer when the column already adds to the figure above it", () => {
+    const held: HouseholdPlanDto = { ...CROSS, membersLeftoverMinor: 280_000 };
+    const { container } = render(<HouseholdPlanView plan={held} />);
+    expect(tables(container)[0]!.querySelector("tfoot")).toBeNull();
+  });
+
+  it("describes an owner it cannot name rather than printing their id", () => {
+    // An owner the roster cannot name is described, never printed as an id.
+    const stranger: HouseholdPlanDto = {
+      ...CROSS,
+      members: CROSS.members.map((m) =>
+        m.userId === "alice"
+          ? { ...m, arrivedFromOthers: [{ ownerUserId: "u-nobody", amountMinor: 40_000 }] }
+          : m,
+      ),
+    };
+    const { container } = render(<HouseholdPlanView plan={stranger} />);
+    const [alice] = [...tables(container)[1]!.querySelectorAll("tbody tr")];
+    expect(leftOverCell(alice!)).toHaveTextContent(
+      "incl. £400.00 that arrived from somebody outside the household",
+    );
+    expect(leftOverCell(alice!).textContent).not.toContain("u-nobody");
+  });
+});
