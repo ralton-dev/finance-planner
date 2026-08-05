@@ -26,11 +26,14 @@ import {
   type AccountAccess,
   type Contribution,
   createStore,
+  type MonthClose,
   type Store,
 } from "@finance-planner/data";
 import {
   type AccountPlan,
   clampUpcomingDays,
+  type CloseContribution,
+  closeForUser,
   computeScopeProjection,
   flowFromScope,
   householdPlanFromScope,
@@ -39,6 +42,7 @@ import {
   toISODate,
   type Transfer,
   type TransferDeparture,
+  type UserMonthClose,
 } from "@finance-planner/domain";
 import { createMailer, type Mailer } from "@finance-planner/mailer";
 import { type Action, type AppAbility, buildAbility, subject } from "@finance-planner/policies";
@@ -196,6 +200,57 @@ async function accountReality(
     latestBalance: latest ? { asOfDate: latest.asOfDate, balanceMinor: latest.balanceMinor } : null,
     reservedMinor: plan.lines.reduce((sum, l) => sum + l.alreadySavedMinor, 0),
   };
+}
+
+/**
+ * One user's month, per currency: the rows `POST /api/me/closes` freezes.
+ *
+ * Everything a close needs is already derived — `closeForUser` reads a member's
+ * income and obligation straight off the pass and sums the ledger — so all this
+ * does is find the plan to read and the ledger rows to sum.
+ *
+ * **Every scope the caller can see is planned, not just the one they own.** A
+ * scope closes over common ownership, so all of a user's own accounts are always
+ * in one of them; a household member who owns nothing still has a share of the
+ * rent, and their scope is reached through the accounts shared with them. Two
+ * disjoint scopes can each hold the same person in the same currency — they
+ * share no money, which is what makes summing them the right answer and not a
+ * double count — and the store keys one row per (user, month, currency), so they
+ * are merged here rather than written twice.
+ *
+ * Contributions are read per scope, from the scope's own accounts, so a row can
+ * only ever be counted by the plan that knows what currency it is in.
+ */
+async function closesForUser(
+  store: Store,
+  userId: string,
+  asOfDate: string,
+  month: string,
+): Promise<UserMonthClose[]> {
+  const ctx = createPlanContext();
+  const scopes = await scopesFor(store, await accessibleAccounts(store, userId), asOfDate, ctx);
+
+  const byCurrency = new Map<string, UserMonthClose>();
+  for (const scope of scopes) {
+    const contributions: CloseContribution[] = (
+      await Promise.all(
+        scope.accountIds.map((accountId) => store.listContributionsForAccount(accountId, month)),
+      )
+    ).flat();
+    for (const row of closeForUser(scope.plan, contributions, userId)) {
+      const known = byCurrency.get(row.currency);
+      if (!known) {
+        byCurrency.set(row.currency, row);
+        continue;
+      }
+      known.incomeMinor += row.incomeMinor;
+      known.plannedMinor += row.plannedMinor;
+      known.contributedMinor += row.contributedMinor;
+    }
+  }
+  // The pass's own partition order, currency ascending, whichever scope each row
+  // came out of.
+  return [...byCurrency.values()].sort((a, b) => a.currency.localeCompare(b.currency));
 }
 
 /**
@@ -861,59 +916,90 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return store.listBalanceSnapshots(id);
   });
 
-  // ---- month closes for a standalone account ----
-  /** Freeze the month's scorecard: what the plan asked for vs what was actually
-   *  contributed. The household equivalent lives under /api/households. */
-  app.post("/api/accounts/:id/close", async (req, reply) => {
+  // ---- my month closes ----
+  /**
+   * Freeze **my** month: what I earned, what my plan asked of me, and what I
+   * actually set aside — one row per currency I plan in.
+   *
+   * A scorecard is a fact about a person, not a place (`MONTH-CLOSE.md`
+   * decision 14). Asked of an account, "what did you earn?" had to be redefined
+   * as "what arrived here", so a household holding a fed bills pot froze £0 of
+   * income against a contributed figure made entirely of transfers; asked of a
+   * household, the same field meant own income alone, and the two producers of
+   * the one row could not both be right. Asked of a person, it needs no
+   * redefinition — and it partitions by currency, because planning does, and a
+   * household denominated in its first assigned account's currency could not see
+   * a second one at all.
+   *
+   * Nothing here is computed. `closeForUser` reads the figures off the pass the
+   * planning endpoints already read, and the only sum is over the contributions
+   * ledger — freeze the view, never invent a second computation.
+   *
+   * **All partitions or none.** The month is the unit of the action, so an
+   * existing row for it in *any* currency is `409 already_closed`, and a write
+   * that fails part-way takes the rows it already made with it.
+   */
+  app.post("/api/me/closes", async (req, reply) => {
     const userId = await authenticate(req);
-    const { id } = req.params as { id: string };
-    const { account } = await requireAccess(userId, id, "edit");
     const body = closeMonthBody.parse(req.body);
     const asOfDate = closeAsOfDate(body.month);
     const month = monthToFirstDay(body.month);
-    if (await store.getMonthClose({ accountId: id }, month)) {
+    // Named without a currency, this asks about the month rather than about one
+    // partition of it — which is the question, since closing takes them all.
+    if (await store.getMonthClose({ userId }, month)) {
       throw new HttpError(409, "already_closed", "Month already closed");
     }
-    const [plan, contributions] = await Promise.all([
-      computePlanForAccount(store, account, asOfDate),
-      store.listContributionsForAccount(id, month),
-    ]);
-    const close = await store.createMonthClose({
-      householdId: null,
-      accountId: id,
-      month,
-      // The money the account actually had this month: its own income plus the
-      // inflow that has been confirmed moving into it. A household-funded pot
-      // has no income of its own, so recording `monthlyIncomeMinor` alone would
-      // freeze £0 against a contributed figure fed entirely by transfers — a
-      // scorecard row that can never say anything, and one that cannot be
-      // recomputed later because closing is what makes it history. Only
-      // *confirmed* inflow counts: a close scores what happened, not what was
-      // planned. Safe against the double-count decision (#3) because account
-      // closes are read per account and never summed across an estate — the
-      // household close a few handlers down keeps summing own income alone,
-      // since inflow inside a household is money it already counted.
-      incomeMinor: plan.monthlyIncomeMinor + plan.confirmedInflowMinor,
-      plannedMinor: plan.totalRequiredMinor,
-      contributedMinor: contributions.reduce((sum, c) => sum + c.amountMinor, 0),
-      closedBy: userId,
-    });
-    return reply.code(201).send(close);
+
+    const rows = await closesForUser(store, userId, asOfDate, month);
+    const written: MonthClose[] = [];
+    try {
+      for (const row of rows) {
+        written.push(
+          await store.createMonthClose({
+            householdId: null,
+            accountId: null,
+            userId,
+            currency: row.currency,
+            month,
+            incomeMinor: row.incomeMinor,
+            plannedMinor: row.plannedMinor,
+            contributedMinor: row.contributedMinor,
+            closedBy: userId,
+          }),
+        );
+      }
+    } catch (err) {
+      // Half a scorecard is worse than none: it would read as a closed month
+      // missing a currency, and the 409 above would then refuse to complete it.
+      // Two callers racing is how this happens — the second loses its partner's
+      // uniqueness check — so the loser puts the estate back as it found it.
+      for (const close of written) await store.deleteMonthClose(close.id);
+      throw err;
+    }
+    return reply.code(201).send(written);
   });
 
-  app.get("/api/accounts/:id/closes", async (req) => {
+  /** My frozen months, newest first. Mine only: a scorecard names what somebody
+   *  earned, and nobody else's rows are ever in scope here. */
+  app.get("/api/me/closes", async (req) => {
     const userId = await authenticate(req);
-    const { id } = req.params as { id: string };
-    await requireAccess(userId, id, "view");
-    return store.listMonthCloses({ accountId: id });
+    return store.listMonthCloses({ userId });
   });
 
-  app.delete("/api/accounts/:id/closes/:closeId", async (req, reply) => {
+  /**
+   * Re-open one frozen row.
+   *
+   * By id, and only a row whose `userId` is the caller's — someone else's close
+   * answers 404 rather than 403, the existence-leak rule this file applies
+   * everywhere. Re-opening is per row where closing is per month, so a month
+   * left half-open cannot be closed again until its remaining rows go too; the
+   * scorecard offers a re-open beside each card, which is where that shows up.
+   */
+  app.delete("/api/me/closes/:closeId", async (req, reply) => {
     const userId = await authenticate(req);
-    const { id, closeId } = req.params as { id: string; closeId: string };
-    await requireAccess(userId, id, "edit");
+    const { closeId } = req.params as { closeId: string };
     const close = await store.getMonthCloseById(closeId);
-    if (!close || close.accountId !== id) {
+    if (!close || close.userId !== userId) {
       throw new HttpError(404, "not_found", "Month close not found");
     }
     await store.deleteMonthClose(closeId);
@@ -1879,62 +1965,6 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
     await requireAccess(userId, confirmation.toAccountId, "edit");
     await store.deleteTransferConfirmation(confId);
-    return reply.code(204).send();
-  });
-
-  // ---- household month closes ----
-  /**
-   * Freeze the household's month: the plan's income and requirement against
-   * what members actually contributed across the household's accounts.
-   */
-  app.post("/api/households/:id/close", async (req, reply) => {
-    const userId = await authenticate(req);
-    const { id } = req.params as { id: string };
-    await requireMembership(userId, id, ["owner", "admin"]);
-    const body = closeMonthBody.parse(req.body);
-    const asOfDate = closeAsOfDate(body.month);
-    const month = monthToFirstDay(body.month);
-    if (await store.getMonthClose({ householdId: id }, month)) {
-      throw new HttpError(409, "already_closed", "Month already closed");
-    }
-    const [{ scope, accountIds, currency }, assignments] = await Promise.all([
-      scopeForHousehold(store, id, asOfDate),
-      store.listAccountAssignments(id),
-    ]);
-    const plan = householdPlanFromScope(scope.plan, id, accountIds, currency);
-    let contributedMinor = 0;
-    for (const assignment of assignments) {
-      const contributions = await store.listContributionsForAccount(assignment.accountId, month);
-      contributedMinor += contributions.reduce((sum, c) => sum + c.amountMinor, 0);
-    }
-    const close = await store.createMonthClose({
-      householdId: id,
-      accountId: null,
-      month,
-      incomeMinor: plan.monthlyIncomeMinor,
-      plannedMinor: plan.totalRequiredMinor,
-      contributedMinor,
-      closedBy: userId,
-    });
-    return reply.code(201).send(close);
-  });
-
-  app.get("/api/households/:id/closes", async (req) => {
-    const userId = await authenticate(req);
-    const { id } = req.params as { id: string };
-    await requireMembership(userId, id);
-    return store.listMonthCloses({ householdId: id });
-  });
-
-  app.delete("/api/households/:id/closes/:closeId", async (req, reply) => {
-    const userId = await authenticate(req);
-    const { id, closeId } = req.params as { id: string; closeId: string };
-    await requireMembership(userId, id, ["owner", "admin"]);
-    const close = await store.getMonthCloseById(closeId);
-    if (!close || close.householdId !== id) {
-      throw new HttpError(404, "not_found", "Month close not found");
-    }
-    await store.deleteMonthClose(closeId);
     return reply.code(204).send();
   });
 

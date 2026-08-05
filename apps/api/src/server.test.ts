@@ -1,8 +1,13 @@
-import { MemoryStore, type Store } from "@finance-planner/data";
+import { type Account, MemoryStore, type Store } from "@finance-planner/data";
+import { closeForUser, computeScopePlan } from "@finance-planner/domain";
 import { signAccessToken } from "@finance-planner/security";
 import { beforeEach, describe, expect, it } from "vitest";
+// Not `@finance-planner/domain`: the package exports its index and nothing else,
+// and a fixture is not part of a package's public surface.
+import { estate, ESTATE_ASOF } from "../../../packages/domain/src/estate.fixture.js";
 import type { ApiEnv } from "./env.js";
 import { buildDailyDigest } from "./notify.js";
+import { scopeForAccount } from "./plan.js";
 import { buildServer } from "./server.js";
 
 const env: ApiEnv = {
@@ -1845,30 +1850,6 @@ describe("api service", () => {
     expect(plan.lines[0].status).toBe("funded");
   });
 
-  it("closes a standalone pot's month on its own income plus what moved into it", async () => {
-    const { auth } = await seedUser(store);
-    const { pot, movement } = await seedFundedMovement(auth, [
-      { name: "Council tax", amountMinor: 15000, priority: 1 },
-    ]);
-    await app.inject({
-      method: "POST",
-      url: `/api/inflows/${movement.id}/confirm`,
-      headers: auth,
-    });
-
-    const closed = await app.inject({
-      method: "POST",
-      url: `/api/accounts/${pot.id}/close`,
-      headers: auth,
-      payload: { month: thisMonth() },
-    });
-    expect(closed.statusCode).toBe(201);
-    // The pot earns nothing; £200 moved in and was confirmed. A close is history
-    // that cannot be recomputed, so £0 here would be permanently wrong.
-    expect(closed.json().incomeMinor).toBe(20000);
-    expect(closed.json().plannedMinor).toBe(15000);
-  });
-
   it("refuses to confirm anything that is not a movement", async () => {
     const { auth } = await seedUser(store);
     const { pot, movement } = await seedMovement(auth);
@@ -2681,173 +2662,6 @@ describe("api service", () => {
         side.id,
       )!.amountMinor,
     );
-  });
-
-  it("closes a pot's month against the money that actually arrived", async () => {
-    const h = await seedHousehold(store, app);
-    await confirmAllInflow(h);
-    const plan = (
-      await app.inject({ method: "GET", url: `/api/accounts/${h.bills.id}/plan`, headers: h.auth })
-    ).json();
-    const close = await app.inject({
-      method: "POST",
-      url: `/api/accounts/${h.bills.id}/close`,
-      headers: h.auth,
-      payload: { month: thisMonth() },
-    });
-    expect(close.statusCode).toBe(201);
-    // A pot has no income of its own; freezing £0 here would leave a scorecard
-    // row that can never say anything, and closing is what makes it history.
-    expect(plan.monthlyIncomeMinor).toBe(0);
-    expect(close.json().incomeMinor).toBe(plan.confirmedInflowMinor);
-    expect(close.json().incomeMinor).toBeGreaterThan(0);
-  });
-
-  it("closes a household month once, scoring plan against contributions", async () => {
-    const h = await seedHousehold(store, app);
-    const month = thisMonth();
-    const confirmed = (
-      await app.inject({
-        method: "POST",
-        url: `/api/households/${h.household.id}/transfers/confirm`,
-        headers: h.auth,
-        payload: {
-          fromAccountId: h.aliceCur.id,
-          toAccountId: h.bills.id,
-          memberUserId: h.alice.id,
-        },
-      })
-    ).json();
-    const contributed = confirmed.contributions.reduce(
-      (sum: number, c: { amountMinor: number }) => sum + c.amountMinor,
-      0,
-    );
-    const plan = (
-      await app.inject({
-        method: "GET",
-        url: `/api/households/${h.household.id}/plan`,
-        headers: h.auth,
-      })
-    ).json();
-
-    const closed = await app.inject({
-      method: "POST",
-      url: `/api/households/${h.household.id}/close`,
-      headers: h.auth,
-      payload: { month },
-    });
-    expect(closed.statusCode).toBe(201);
-    expect(closed.json().month).toBe(`${month}-01`);
-    expect(closed.json().incomeMinor).toBe(500000);
-    expect(closed.json().plannedMinor).toBe(plan.totalRequiredMinor);
-    expect(closed.json().contributedMinor).toBe(contributed);
-
-    const duplicate = await app.inject({
-      method: "POST",
-      url: `/api/households/${h.household.id}/close`,
-      headers: h.auth,
-      payload: { month },
-    });
-    expect(duplicate.statusCode).toBe(409);
-    expect(duplicate.json().error.code).toBe("already_closed");
-
-    const listed = await app.inject({
-      method: "GET",
-      url: `/api/households/${h.household.id}/closes`,
-      headers: h.auth,
-    });
-    expect(listed.json()).toHaveLength(1);
-
-    const removed = await app.inject({
-      method: "DELETE",
-      url: `/api/households/${h.household.id}/closes/${closed.json().id}`,
-      headers: h.auth,
-    });
-    expect(removed.statusCode).toBe(204);
-  });
-
-  it("restricts household closes to owners/admins and to months that have started", async () => {
-    const h = await seedHousehold(store, app);
-    const asMember = await app.inject({
-      method: "POST",
-      url: `/api/households/${h.household.id}/close`,
-      headers: h.bobAuth,
-      payload: { month: thisMonth() },
-    });
-    expect(asMember.statusCode).toBe(403);
-
-    const future = await app.inject({
-      method: "POST",
-      url: `/api/households/${h.household.id}/close`,
-      headers: h.auth,
-      payload: { month: `${new Date().getUTCFullYear() + 1}-01` },
-    });
-    expect(future.statusCode).toBe(422);
-    expect(future.json().error.code).toBe("future_month");
-  });
-
-  it("closes a standalone account's month", async () => {
-    const { auth } = await seedUser(store);
-    const account = (
-      await app.inject({
-        method: "POST",
-        url: "/api/accounts",
-        headers: auth,
-        payload: { name: "A", currency: "GBP" },
-      })
-    ).json();
-    await app.inject({
-      method: "POST",
-      url: `/api/accounts/${account.id}/incomes`,
-      headers: auth,
-      payload: {
-        name: "Salary",
-        amountMinor: 300000,
-        frequency: "monthly",
-        anchorDate: "2026-01-01",
-      },
-    });
-    const payment = (
-      await app.inject({
-        method: "POST",
-        url: `/api/accounts/${account.id}/payments`,
-        headers: auth,
-        payload: { name: "Rent", category: "monthly_recurring", amountMinor: 100000 },
-      })
-    ).json();
-    // No month given — defaults to the month being closed.
-    await app.inject({
-      method: "POST",
-      url: `/api/payments/${payment.id}/contributions`,
-      headers: auth,
-      payload: { amountMinor: 25000 },
-    });
-
-    const closed = await app.inject({
-      method: "POST",
-      url: `/api/accounts/${account.id}/close`,
-      headers: auth,
-      payload: { month: thisMonth() },
-    });
-    expect(closed.statusCode).toBe(201);
-    expect(closed.json().accountId).toBe(account.id);
-    expect(closed.json().incomeMinor).toBe(300000);
-    expect(closed.json().plannedMinor).toBe(100000);
-    expect(closed.json().contributedMinor).toBe(25000);
-
-    const listed = await app.inject({
-      method: "GET",
-      url: `/api/accounts/${account.id}/closes`,
-      headers: auth,
-    });
-    expect(listed.json()).toHaveLength(1);
-
-    const removed = await app.inject({
-      method: "DELETE",
-      url: `/api/accounts/${account.id}/closes/${closed.json().id}`,
-      headers: auth,
-    });
-    expect(removed.statusCode).toBe(204);
   });
 
   // ---- projections ----
@@ -4190,6 +4004,566 @@ describe("inflows over HTTP", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// My month closes
+// ---------------------------------------------------------------------------
+
+/** Everything the seeded estate is, in the store's own ids. */
+interface SeededEstate {
+  householdId: string;
+  /** Fixture user id → real user id. */
+  userIds: ReadonlyMap<string, string>;
+  /** Fixture account id → real account. */
+  accounts: ReadonlyMap<string, Account>;
+  /** Per fixture user id, an `authorization` header for them. */
+  auth: ReadonlyMap<string, { authorization: string }>;
+}
+
+/**
+ * The estate fixture, walked into a store.
+ *
+ * `@finance-planner/domain` cannot ship this — it does not depend on
+ * `@finance-planner/data`, and a fixture is not a reason to make it — so the
+ * walk lives on this side of the boundary. It is deliberately mechanical: every
+ * figure it writes comes off `estate`, and the only thing it decides for itself
+ * is the mapping from the fixture's readable ids to the ids the store generates.
+ *
+ * **Confirmations that are whole go through the real endpoints**, so the
+ * fixture's hand-set figures are checked against what the running product
+ * derives rather than merely asserted alongside it. The partial ones cannot: both
+ * confirm handlers book the whole planned amount, so a half-moved transfer is
+ * written straight to the store — which is the only way a state the product
+ * genuinely reaches gets into a test at all.
+ *
+ * Lifted from `close.divergence.test.ts`, which `MONTH-CLOSE.md` WP-D deleted
+ * along with the two location-scoped closes its pin condemned.
+ */
+async function seedEstate(
+  store: Store,
+  app: ReturnType<typeof buildServer>,
+  month: string,
+): Promise<SeededEstate> {
+  const userIds = new Map<string, string>();
+  const auth = new Map<string, { authorization: string }>();
+  for (const m of estate.scope.members) {
+    const email = `${m.userId}@example.com`;
+    const user = await store.createUser({
+      email,
+      passwordHash: "x",
+      displayName: m.displayName ?? m.userId,
+    });
+    userIds.set(m.userId, user.id);
+    auth.set(m.userId, {
+      authorization: `Bearer ${await signAccessToken(env.jwtSecret, { sub: user.id, email })}`,
+    });
+  }
+  const [founder, ...rest] = estate.scope.members;
+  const household = await store.createHousehold("Estate", userIds.get(founder!.userId)!);
+  for (const m of rest) await store.addMembership(household.id, userIds.get(m.userId)!, "member");
+  for (const m of estate.scope.members) {
+    await store.updateMembershipShare(household.id, userIds.get(m.userId)!, m.shareBp);
+  }
+
+  const accounts = new Map<string, Account>();
+  for (const a of estate.scope.accounts) {
+    accounts.set(
+      a.accountId,
+      await store.createAccount({
+        ownerUserId: userIds.get(estate.ownerOf[a.accountId]!)!,
+        name: a.name ?? a.accountId,
+        currency: a.currency,
+        monthlyBufferMinor: a.monthlyBufferMinor,
+      }),
+    );
+  }
+  for (const accountId of estate.assignedAccountIds) {
+    const a = estate.scope.accounts.find((x) => x.accountId === accountId)!;
+    await store.upsertAccountAssignment({
+      householdId: household.id,
+      accountId: accounts.get(accountId)!.id,
+      role: a.role,
+      memberUserId: a.memberUserId ? userIds.get(a.memberUserId)! : null,
+    });
+  }
+
+  /** Fixture inflow id → real inflow id, for the authored movements. */
+  const inflowIds = new Map<string, string>();
+  for (const a of estate.scope.accounts) {
+    const accountId = accounts.get(a.accountId)!.id;
+    for (const i of a.incomes) {
+      await store.createIncome({
+        accountId,
+        name: i.id,
+        amountMinor: i.amountMinor,
+        frequency: i.frequency,
+        recurrence: i.recurrence ?? null,
+        anchorDate: i.anchorDate,
+        active: i.active ?? true,
+      });
+    }
+    for (const p of a.payments) {
+      await store.createPayment({
+        accountId,
+        name: p.name,
+        category: p.category,
+        amountMinor: p.amountMinor,
+        dueDate: p.dueDate ?? null,
+        recurrence: p.recurrence ?? null,
+        targetDate: p.targetDate ?? null,
+        priority: p.priority ?? 100,
+        alreadySavedMinor: p.alreadySavedMinor ?? 0,
+        autoRenew: true,
+        active: true,
+        notes: null,
+        projectId: null,
+        scope: p.scope,
+        bearerUserId: p.bearerUserId ? userIds.get(p.bearerUserId)! : null,
+        fixedMonthlyMinor: null,
+        tag: null,
+      });
+    }
+    // One row with two faces: authored on the account the money **arrives** in,
+    // naming the account it leaves. The sending account's `outboundInflows` are
+    // the same rows read from the other end, so they are not seeded again.
+    for (const f of a.inflows ?? []) {
+      const inflow = await store.createInflow({
+        accountId,
+        name: f.id,
+        source: f.source,
+        sourceAccountId: f.sourceAccountId ? accounts.get(f.sourceAccountId)!.id : null,
+        amountMinor: f.amountMinor,
+        frequency: f.frequency,
+        recurrence: f.recurrence ?? null,
+        anchorDate: f.anchorDate,
+        priority: f.priority ?? 100,
+        active: f.active ?? true,
+      });
+      inflowIds.set(f.id, inflow.id);
+    }
+  }
+
+  // Confirmations of **authored** movements. The whole ones go through
+  // `POST /api/inflows/:id/confirm`, which books what the pass says the movement
+  // delivered; a part-moved one has no endpoint and is written directly.
+  for (const a of estate.scope.accounts) {
+    for (const c of a.confirmedArrivals ?? []) {
+      const authored = a.inflows!.find((i) => i.id === c.inflowId)!;
+      const owner = auth.get(estate.ownerOf[a.accountId]!)!;
+      if (c.confirmedMinor === authored.amountMinor) {
+        const res = await app.inject({
+          method: "POST",
+          url: `/api/inflows/${inflowIds.get(c.inflowId)!}/confirm?month=${month.slice(0, 7)}`,
+          headers: owner,
+        });
+        expect(res.statusCode).toBe(201);
+        expect(res.json().confirmation.amountMinor).toBe(c.confirmedMinor);
+      } else {
+        await store.createTransferConfirmation({
+          householdId: null,
+          inflowId: inflowIds.get(c.inflowId)!,
+          month,
+          fromAccountId: accounts.get(authored.sourceAccountId!)!.id,
+          toAccountId: accounts.get(a.accountId)!.id,
+          memberUserId: userIds.get(estate.ownerOf[a.accountId]!)!,
+          amountMinor: c.confirmedMinor,
+        });
+      }
+    }
+  }
+
+  // Confirmations of **derived** transfers, which no row authors. A whole one
+  // into a household account goes through the household endpoint (which also
+  // books the contributions the plan says it paid for); a part-moved one, and
+  // one into an account the household never assigned, are written directly —
+  // the household-free shape `0010` made storable.
+  const planned = computeScopePlan(estate.scope, estate.asOfDate);
+  for (const c of estate.scope.confirmedTransfers ?? []) {
+    const derived = planned.transfers.find(
+      (t) =>
+        t.fromAccountId === c.fromAccountId &&
+        t.toAccountId === c.toAccountId &&
+        t.memberUserId === c.memberUserId,
+    )!;
+    const whole = c.confirmedMinor === derived.amountMinor;
+    const assigned = estate.assignedAccountIds.includes(c.toAccountId);
+    if (whole && assigned) {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/households/${household.id}/transfers/confirm`,
+        headers: auth.get(c.memberUserId)!,
+        payload: {
+          month: month.slice(0, 7),
+          fromAccountId: accounts.get(c.fromAccountId)!.id,
+          toAccountId: accounts.get(c.toAccountId)!.id,
+          memberUserId: userIds.get(c.memberUserId)!,
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      // The fixture's hand-set figure, checked against what the product itself
+      // derives — not merely asserted beside it.
+      expect(res.json().confirmation.amountMinor).toBe(c.confirmedMinor);
+    } else {
+      await store.createTransferConfirmation({
+        householdId: null,
+        inflowId: null,
+        month,
+        fromAccountId: accounts.get(c.fromAccountId)!.id,
+        toAccountId: accounts.get(c.toAccountId)!.id,
+        memberUserId: userIds.get(c.memberUserId)!,
+        amountMinor: c.confirmedMinor,
+      });
+    }
+  }
+
+  return { householdId: household.id, userIds, accounts, auth };
+}
+
+describe("a month close is something a person does", () => {
+  let store: Store;
+  let app: ReturnType<typeof buildServer>;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    app = buildServer({ store, env, registerAuthProxy: false });
+  });
+
+  /** The caller's frozen months, as the API hands them back. */
+  const closesOf = async (headers: { authorization: string }) =>
+    (await app.inject({ method: "GET", url: "/api/me/closes", headers })).json() as {
+      id: string;
+      userId: string;
+      currency: string;
+      month: string;
+      incomeMinor: number;
+      plannedMinor: number;
+      contributedMinor: number;
+    }[];
+
+  /**
+   * The fixture composes: seeded into a store and read back through the real
+   * loader, it plans to exactly what `computeScopePlan` makes of it directly.
+   *
+   * This is the test that guards the estate every close below is scored over. It
+   * also settles the date question: the fixture is planned at `ESTATE_ASOF` and
+   * the store is planned as of today, and the two agree, because every income in
+   * the estate is monthly and every payment a monthly recurring bill.
+   */
+  it("plans identically whether it comes from the fixture or from a store", async () => {
+    const asOfDate = new Date().toISOString().slice(0, 10);
+    const seeded = await seedEstate(store, app, `${thisMonth()}-01`);
+
+    const loaded = await scopeForAccount(
+      store,
+      seeded.accounts.get("acc-alice-current")!,
+      asOfDate,
+    );
+    const direct = computeScopePlan(estate.scope, ESTATE_ASOF);
+
+    // One scope, whichever end it is seeded from: the household's accounts and
+    // the pot alice kept out of it are planned together (`f3acef8`).
+    expect(loaded.accountIds).toHaveLength(estate.scope.accounts.length);
+    expect(loaded.plan.partitions.map((p) => p.currency)).toEqual(["EUR", "GBP"]);
+    expect(direct.partitions.map((p) => p.currency)).toEqual(["EUR", "GBP"]);
+
+    /** The fixture's readable id for a real account id. */
+    const fixtureId = new Map(
+      [...seeded.accounts].map(([fixture, account]) => [account.id, fixture]),
+    );
+    const fixtureUser = new Map([...seeded.userIds].map(([fixture, id]) => [id, fixture]));
+
+    const transfersOf = (plan: typeof direct, translate: boolean) =>
+      plan.transfers
+        .map((t) => ({
+          from: translate ? fixtureId.get(t.fromAccountId) : t.fromAccountId,
+          to: translate ? fixtureId.get(t.toAccountId) : t.toAccountId,
+          member: translate ? fixtureUser.get(t.memberUserId) : t.memberUserId,
+          amountMinor: t.amountMinor,
+          confirmedMinor: t.confirmedMinor,
+        }))
+        .sort((a, b) => `${a.to}${a.member}`.localeCompare(`${b.to}${b.member}`));
+
+    // Every derived transfer, to the penny, with its confirmation state — the
+    // three destinations and the three states the estate exists to carry.
+    expect(transfersOf(loaded.plan, true)).toEqual(transfersOf(direct, false));
+    expect(transfersOf(direct, false)).toEqual([
+      // Part-moved: £30 of the £75 feeding the out-of-household pot.
+      {
+        from: "acc-alice-current",
+        to: "acc-alice-bills",
+        member: "u-alice",
+        amountMinor: 7_500,
+        confirmedMinor: 3_000,
+      },
+      // Whole. The pot's own £500 of lodger rent is Alice's, because the pot is
+      // (MONTH-CLOSE.md decision 15), so it is her share of the pot's bills that
+      // the £500 already sitting there nets off. The two members still transport
+      // £900 between them — the pot's £1,400 less its own £500, which is
+      // `0c35284`'s netting.
+      {
+        from: "acc-alice-current",
+        to: "acc-house-pot",
+        member: "u-alice",
+        amountMinor: 42_400,
+        confirmedMinor: 42_400,
+      },
+      // Nobody has said this one moved. Bob's gross share, un-netted: leaning on
+      // money that is in Alice's budget would have him end the month holding
+      // hers.
+      {
+        from: "acc-bob-current",
+        to: "acc-house-pot",
+        member: "u-bob",
+        amountMinor: 47_600,
+        confirmedMinor: 0,
+      },
+    ]);
+
+    // And the authored movements, with their own three states. Keyed by
+    // destination rather than taken in order: a store hands its accounts back
+    // sorted by the ids it generated, and the fixture's are readable.
+    const arrivals = (plan: typeof direct, translate: boolean) =>
+      plan.accounts
+        .flatMap((a) =>
+          a.inflowArrivals.map((i) => ({
+            to: translate ? fixtureId.get(a.accountId) : a.accountId,
+            amountMinor: i.amountMinor,
+            confirmedMinor: i.confirmedMinor ?? 0,
+          })),
+        )
+        .sort((x, y) => x.to!.localeCompare(y.to!));
+    expect(arrivals(loaded.plan, true)).toEqual(arrivals(direct, false));
+    expect(arrivals(direct, false)).toEqual([
+      { to: "acc-alice-car", amountMinor: 10_000, confirmedMinor: 0 },
+      { to: "acc-alice-holiday", amountMinor: 15_000, confirmedMinor: 5_000 },
+      { to: "acc-alice-savings", amountMinor: 20_000, confirmedMinor: 20_000 },
+    ]);
+  });
+
+  /**
+   * One action, every partition — and every figure the one `closeForUser`
+   * derives, through the HTTP surface, to the penny.
+   *
+   * The estate is why this is per currency. Alice holds a euro account, so she
+   * plans in two partitions; the household close this replaces was denominated
+   * in its first assigned account's currency and could not see the second one at
+   * all, so the €800 landing in it appeared in no close anywhere.
+   */
+  it("freezes one row per currency the caller plans in", async () => {
+    const month = thisMonth();
+    const seeded = await seedEstate(store, app, `${month}-01`);
+    const alice = seeded.auth.get("u-alice")!;
+
+    // Money actually set aside, in both of her currencies, so the ledger half of
+    // the scorecard is a sum over rows that land in different partitions and has
+    // to bucket them by the account's currency to be right.
+    const record = async (fixtureAccountId: string, name: string, amountMinor: number) => {
+      const account = seeded.accounts.get(fixtureAccountId)!;
+      const payment = (await store.listPayments(account.id)).find((p) => p.name === name)!;
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/payments/${payment.id}/contributions`,
+        headers: alice,
+        payload: { amountMinor, month },
+      });
+      expect(res.statusCode).toBe(201);
+    };
+    await record("acc-house-pot", "Rent", 10_000);
+    await record("acc-alice-eur", "Hosting", 2_500);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/me/closes",
+      headers: alice,
+      payload: { month },
+    });
+    expect(res.statusCode).toBe(201);
+
+    const rows = res.json() as { currency: string; incomeMinor: number }[];
+    expect(rows.map((r) => r.currency)).toEqual(["EUR", "GBP"]);
+    expect(res.json()).toEqual(
+      rows.map((r) => ({
+        ...r,
+        userId: seeded.userIds.get("u-alice"),
+        householdId: null,
+        accountId: null,
+        month: `${month}-01`,
+        closedBy: seeded.userIds.get("u-alice"),
+        closedAt: expect.any(String),
+        id: expect.any(String),
+      })),
+    );
+
+    // The figures, hand-checked against `estate.fixture.ts`'s own note:
+    //  - EUR: €800 of income, €120 of hosting, €25 set aside;
+    //  - GBP: £3,000 of salary **plus the pot's own £500** (decision 15 — the
+    //    pot is Alice's account), £924 of the pot's bills at her 66% share plus
+    //    the £75 her out-of-household pot needs, £100 set aside.
+    expect(res.json()).toMatchObject([
+      { currency: "EUR", incomeMinor: 80_000, plannedMinor: 12_000, contributedMinor: 2_500 },
+      { currency: "GBP", incomeMinor: 350_000, plannedMinor: 99_900, contributedMinor: 10_000 },
+    ]);
+
+    // And the same figures the domain derives, over the same estate: the
+    // endpoint's job is to call `closeForUser`, not to recompute it.
+    const scope = await scopeForAccount(
+      store,
+      seeded.accounts.get("acc-alice-current")!,
+      new Date().toISOString().slice(0, 10),
+    );
+    const contributions = (
+      await Promise.all(
+        scope.accountIds.map((id) => store.listContributionsForAccount(id, `${month}-01`)),
+      )
+    ).flat();
+    expect(res.json()).toMatchObject(
+      closeForUser(scope.plan, contributions, seeded.userIds.get("u-alice")!),
+    );
+
+    expect((await closesOf(alice)).map((c) => c.currency)).toEqual(["EUR", "GBP"]);
+  });
+
+  /**
+   * **The identity the deleted pin could not state.** Add up what every member
+   * of a partition says they earned and you get what the partition earned —
+   * exactly, in each currency, with nothing counted twice.
+   *
+   * The two location-scoped producers could not do this: summing account closes
+   * over a household counted every funded transfer at both ends (£6,094 against
+   * the household's own £5,500, at `21ec4e1`, one confirmed £594 transfer
+   * apart), because an account's "income" had to be redefined as what arrived in
+   * it. A person's income needs no redefinition, so the sum is just a sum.
+   */
+  it("sums its members' closes to the partition, per currency", async () => {
+    const month = thisMonth();
+    const seeded = await seedEstate(store, app, `${month}-01`);
+
+    const rows = [];
+    for (const member of ["u-alice", "u-bob"]) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/closes",
+        headers: seeded.auth.get(member)!,
+        payload: { month },
+      });
+      expect(res.statusCode).toBe(201);
+      rows.push(...(res.json() as { currency: string; incomeMinor: number }[]));
+    }
+
+    const direct = computeScopePlan(estate.scope, ESTATE_ASOF);
+    for (const partition of direct.partitions) {
+      const summed = rows
+        .filter((r) => r.currency === partition.currency)
+        .reduce((sum, r) => sum + r.incomeMinor, 0);
+      expect(summed).toBe(partition.monthlyIncomeMinor);
+    }
+    // Not vacuously: both partitions earned something, and both members were
+    // asked. Bob's euro row is the zero it should be — he is in the household
+    // whose estate holds that account and earns nothing in it — and it is what
+    // makes the EUR sum a sum over *every* member rather than over Alice alone.
+    expect(rows.filter((r) => r.currency === "EUR")).toHaveLength(2);
+    expect(direct.partitions.map((p) => p.monthlyIncomeMinor)).toEqual([80_000, 550_000]);
+  });
+
+  it("refuses a second close of the same month, and writes nothing", async () => {
+    const month = thisMonth();
+    const seeded = await seedEstate(store, app, `${month}-01`);
+    const alice = seeded.auth.get("u-alice")!;
+    const close = () =>
+      app.inject({ method: "POST", url: "/api/me/closes", headers: alice, payload: { month } });
+
+    expect((await close()).statusCode).toBe(201);
+    const before = await closesOf(alice);
+
+    const again = await close();
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error.code).toBe("already_closed");
+    // All partitions or none: the second attempt left the first alone and added
+    // nothing of its own, in either currency.
+    expect(await closesOf(alice)).toEqual(before);
+
+    // A month that has not started yet has no plan to freeze.
+    const future = await app.inject({
+      method: "POST",
+      url: "/api/me/closes",
+      headers: alice,
+      payload: { month: `${new Date().getUTCFullYear() + 1}-01` },
+    });
+    expect(future.statusCode).toBe(422);
+    expect(future.json().error.code).toBe("future_month");
+  });
+
+  it("keeps one person's scorecard out of everybody else's hands", async () => {
+    const month = thisMonth();
+    const seeded = await seedEstate(store, app, `${month}-01`);
+    const alice = seeded.auth.get("u-alice")!;
+    const bob = seeded.auth.get("u-bob")!;
+
+    for (const headers of [alice, bob]) {
+      expect(
+        (await app.inject({ method: "POST", url: "/api/me/closes", headers, payload: { month } }))
+          .statusCode,
+      ).toBe(201);
+    }
+
+    // Listing is self-scoped: sharing a household, an estate and a bills pot
+    // does not put Bob's month on Alice's list or hers on his.
+    const hers = await closesOf(alice);
+    const his = await closesOf(bob);
+    expect(hers.every((c) => c.userId === seeded.userIds.get("u-alice"))).toBe(true);
+    expect(his.every((c) => c.userId === seeded.userIds.get("u-bob"))).toBe(true);
+    expect(hers.map((c) => c.id).some((id) => his.map((c) => c.id).includes(id))).toBe(false);
+
+    // Nor can either of them re-open the other's. 404 rather than 403: a close
+    // they cannot touch is a close they are not told about.
+    const stolen = await app.inject({
+      method: "DELETE",
+      url: `/api/me/closes/${hers[0]!.id}`,
+      headers: bob,
+    });
+    expect(stolen.statusCode).toBe(404);
+    expect(await closesOf(alice)).toEqual(hers);
+
+    // Her own, she re-opens.
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/me/closes/${hers[0]!.id}`,
+      headers: alice,
+    });
+    expect(removed.statusCode).toBe(204);
+    expect((await closesOf(alice)).map((c) => c.id)).toEqual(hers.slice(1).map((c) => c.id));
+
+    // And nobody at all, without a token.
+    expect((await app.inject({ method: "GET", url: "/api/me/closes" })).statusCode).toBe(401);
+    expect(
+      (await app.inject({ method: "POST", url: "/api/me/closes", payload: { month } })).statusCode,
+    ).toBe(401);
+  });
+
+  /**
+   * The two location-scoped producers are gone, not hidden. Superseded code is
+   * deleted, not left: a route that still answered would read as a live
+   * alternative, and it was two of them disagreeing that started this.
+   */
+  it("has no account-scoped or household-scoped close left to call", async () => {
+    const month = thisMonth();
+    const seeded = await seedEstate(store, app, `${month}-01`);
+    const alice = seeded.auth.get("u-alice")!;
+    const accountId = seeded.accounts.get("acc-alice-current")!.id;
+
+    for (const [method, url] of [
+      ["POST", `/api/accounts/${accountId}/close`],
+      ["GET", `/api/accounts/${accountId}/closes`],
+      ["DELETE", `/api/accounts/${accountId}/closes/whatever`],
+      ["POST", `/api/households/${seeded.householdId}/close`],
+      ["GET", `/api/households/${seeded.householdId}/closes`],
+      ["DELETE", `/api/households/${seeded.householdId}/closes/whatever`],
+    ] as const) {
+      const res = await app.inject({ method, url, headers: alice, payload: { month } });
+      expect([method, url, res.statusCode]).toEqual([method, url, 404]);
+    }
+  });
+});
+
 describe("export / import", () => {
   let store: MemoryStore;
   let app: ReturnType<typeof buildServer>;
@@ -4251,9 +4625,13 @@ describe("export / import", () => {
       asOfDate: "2026-08-01",
       balanceMinor: 240_000,
     });
+    // The owner's own frozen July, in the currency this account is in. Not
+    // hung off the account: a close is per user, per currency.
     await store.createMonthClose({
       householdId: null,
-      accountId: account.id,
+      accountId: null,
+      userId: ownerId,
+      currency: "GBP",
       month: "2026-07-01",
       incomeMinor: 300_000,
       plannedMinor: 20_000,
@@ -4291,8 +4669,17 @@ describe("export / import", () => {
     expect(account.monthlyBufferMinor).toBe(10_000);
     expect(account.incomes).toHaveLength(1);
     expect(account.balanceSnapshots).toEqual([{ asOfDate: "2026-08-01", balanceMinor: 240_000 }]);
-    expect(account.closes).toEqual([
-      { month: "2026-07-01", incomeMinor: 300_000, plannedMinor: 20_000, contributedMinor: 20_000 },
+    // At the file's top level, naming its currency: a close is one person's
+    // month, and no account is the one it is about.
+    expect(account.closes).toBeUndefined();
+    expect(file.closes).toEqual([
+      {
+        month: "2026-07-01",
+        currency: "GBP",
+        incomeMinor: 300_000,
+        plannedMinor: 20_000,
+        contributedMinor: 20_000,
+      },
     ]);
 
     const payment = account.payments[0];
@@ -4378,9 +4765,27 @@ describe("export / import", () => {
     await seedRichAccount(user.id);
     const file = (await app.inject({ method: "GET", url: "/api/export", headers: auth })).json();
 
-    await app.inject({ method: "POST", url: "/api/import", headers: auth, payload: file });
-    await app.inject({ method: "POST", url: "/api/import", headers: auth, payload: file });
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: auth,
+      payload: file,
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: auth,
+      payload: file,
+    });
     expect(await store.listAccountsForOwner(user.id)).toHaveLength(3); // original + 2
+
+    // …but not of the scorecard. A second account is a coherent thing to own; a
+    // second July is not, and the row that is already there is the record of a
+    // month that was closed once. The importer already had it, so both runs
+    // leave it alone.
+    expect(first.json().closes).toBe(0);
+    expect(second.json().closes).toBe(0);
+    expect(await store.listMonthCloses({ userId: user.id })).toHaveLength(1);
   });
 
   it("rejects a file that isn't an export (422) and an anonymous caller (401)", async () => {

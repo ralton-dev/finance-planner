@@ -370,7 +370,13 @@ export const confirmTransferBody = z.object({
 });
 export type ConfirmTransferBody = z.infer<typeof confirmTransferBody>;
 
-/** Freeze a month's scorecard: planned vs contributed. */
+/**
+ * Freeze a month's scorecard: planned vs contributed.
+ *
+ * The month and nothing else. Closing is a self-scoped action — the caller's
+ * own month, every currency partition they plan in, in one go (`MONTH-CLOSE.md`
+ * decision 14) — so there is no scope to name and no currency to pick.
+ */
 export const closeMonthBody = z.object({
   month: monthString,
 });
@@ -418,9 +424,11 @@ export type DeleteMeBody = z.infer<typeof deleteMeBody>;
  *   - Cross-entity links that only exist as ids (a payment's project, a
  *     payment's bearer, a contribution's author) are not carried; see the
  *     per-field notes below.
- *   - Household data (memberships, shares, transfers, household month closes)
- *     is absent: it belongs to the household, not to one member, and re-creating
- *     it under a single importing user would invent facts about other people.
+ *   - Household data (memberships, shares, transfer confirmations) is absent: it
+ *     belongs to the household, not to one member, and re-creating it under a
+ *     single importing user would invent facts about other people. Month closes
+ *     used to be named here too, as a household's; they are one person's now
+ *     (`MONTH-CLOSE.md` decision 14), so they travel.
  */
 const exportContribution = z.object({
   /** The month this belongs to, as its first day ("2026-08-01"). */
@@ -530,9 +538,27 @@ const exportBalanceSnapshot = z.object({
   balanceMinor: z.number().int(),
 });
 
+/**
+ * A month the exporter has closed, in one currency.
+ *
+ * **At the file's top level, not inside an account**, because that is where the
+ * fact lives: a close is per user, per currency (`MONTH-CLOSE.md` decision 14),
+ * scoring what one person earned, planned and set aside across every account
+ * they plan in. Hanging it off an account would have to pick one, and there is
+ * no account it is about.
+ *
+ * The version does not move for this. A file written before the change carries
+ * its closes inside `accounts[]`, where nothing reads them any more, and the
+ * schema drops unknown keys — so an old file still restores, minus a scorecard.
+ * That is a loss of nothing: no close row has ever been written by a shipped
+ * scope (decision 17, the alpha grant), so there is no data behind the shape.
+ */
 const exportMonthClose = z.object({
   /** The closed month, as its first day ("2026-07-01"). */
   month: isoDate,
+  /** Which currency partition it scores — a user plans in as many as they hold
+   *  accounts in, and closes every one of them at once. */
+  currency: currencyCode,
   incomeMinor: amountMinor,
   plannedMinor: amountMinor,
   contributedMinor: amountMinor,
@@ -552,7 +578,6 @@ const exportAccount = z.object({
   derivedTransferConfirmations: z.array(exportDerivedTransferConfirmation).default([]),
   payments: z.array(exportPayment).default([]),
   balanceSnapshots: z.array(exportBalanceSnapshot).default([]),
-  closes: z.array(exportMonthClose).default([]),
 });
 
 const exportProject = z.object({
@@ -568,6 +593,8 @@ export const exportFileSchema = z.object({
   exportedAt: isoDateTime,
   accounts: z.array(exportAccount).default([]),
   projects: z.array(exportProject).default([]),
+  /** The exporter's own frozen months, one row per month per currency. */
+  closes: z.array(exportMonthClose).default([]),
 });
 export type ExportFile = z.infer<typeof exportFileSchema>;
 export type ExportAccount = z.infer<typeof exportAccount>;

@@ -30,9 +30,14 @@ export interface ImportCounts {
  * member a copy of another member's finances, and importing it back would fork
  * a second, silently diverging copy. The owner exports their own.
  *
- * Household-level data (memberships, shares, household transfer confirmations,
- * household month closes) is likewise absent: it describes an arrangement
- * between people, not one person's records.
+ * Household-level data (memberships, shares, household transfer confirmations)
+ * is likewise absent: it describes an arrangement between people, not one
+ * person's records.
+ *
+ * Month closes are one person's records, and they travel at the file's top
+ * level rather than under an account: a close scores what its owner earned,
+ * planned and set aside in one currency across every account they plan in
+ * (`MONTH-CLOSE.md` decision 14), so there is no account it belongs to.
  *
  * A **standalone** confirmation is not household-level and does travel. "I moved
  * this money" between two accounts you own is a fact about two of your own rows,
@@ -64,14 +69,22 @@ export async function buildExport(
   // export cannot be represented — see `exportAccountInflow`.
   const nameById = new Map(owned.map((a) => [a.id, a.name]));
 
+  // The exporter's own frozen months, whatever accounts they were read across.
+  // Every user-scoped row names its currency (the store's own CHECK); the guard
+  // is what makes the compiler agree, since the column is nullable for the two
+  // location scopes that no longer have a writer.
+  const closes = (await store.listMonthCloses({ userId })).filter(
+    (c): c is typeof c & { currency: string } => c.currency !== null,
+  );
+  const closedMonths = new Set(closes.map((c) => c.month));
+
   const accounts: ExportFile["accounts"] = [];
   for (const account of owned) {
-    const [inflows, payments, contributions, balances, closes] = await Promise.all([
+    const [inflows, payments, contributions, balances] = await Promise.all([
       store.listInflows(account.id),
       store.listPayments(account.id),
       store.listContributionsForAccount(account.id),
       store.listBalanceSnapshots(account.id),
-      store.listMonthCloses({ accountId: account.id }),
     ]);
     const incomes = inflows.filter((i) => i.source === "external");
     const movements = inflows.filter(
@@ -94,9 +107,8 @@ export async function buildExport(
     // awaiting a transfer, and a closed month is frozen history either way. A
     // confirmation in a month with no other trace at all is not carried, which
     // is a limit of asking month by month rather than a decision about it.
-    const months = new Set<string>([monthStart(asOfDate)]);
+    const months = new Set<string>([monthStart(asOfDate), ...closedMonths]);
     for (const c of contributions) months.add(c.month);
-    for (const c of closes) months.add(c.month);
     const confirmedByInflow = new Map<string, { month: string; amountMinor: number }[]>();
     const derivedConfirmations: ExportAccount["derivedTransferConfirmations"] = [];
     for (const month of [...months].sort()) {
@@ -193,12 +205,6 @@ export async function buildExport(
         asOfDate: b.asOfDate,
         balanceMinor: b.balanceMinor,
       })),
-      closes: closes.map((c) => ({
-        month: c.month,
-        incomeMinor: c.incomeMinor,
-        plannedMinor: c.plannedMinor,
-        contributedMinor: c.contributedMinor,
-      })),
     });
   }
 
@@ -209,7 +215,19 @@ export async function buildExport(
     targetDate: p.targetDate,
   }));
 
-  return { version: 1, exportedAt: new Date().toISOString(), accounts, projects };
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    accounts,
+    projects,
+    closes: closes.map((c) => ({
+      month: c.month,
+      currency: c.currency,
+      incomeMinor: c.incomeMinor,
+      plannedMinor: c.plannedMinor,
+      contributedMinor: c.contributedMinor,
+    })),
+  };
 }
 
 /**
@@ -399,24 +417,37 @@ export async function importExport(
       });
       counts.balanceSnapshots += 1;
     }
+  }
 
-    // One close per month is the store's rule; a hand-edited file repeating a
-    // month keeps its first entry rather than blowing up the whole import.
-    const seenMonths = new Set<string>();
-    for (const c of a.closes) {
-      if (seenMonths.has(c.month)) continue;
-      seenMonths.add(c.month);
-      await store.createMonthClose({
-        householdId: null,
-        accountId: account.id,
-        month: c.month,
-        incomeMinor: c.incomeMinor,
-        plannedMinor: c.plannedMinor,
-        contributedMinor: c.contributedMinor,
-        closedBy: userId,
-      });
-      counts.closes += 1;
-    }
+  // The importer's own frozen months, restored under them — outside the account
+  // loop, because that is where they belong: a close is about a person, not one
+  // of their accounts.
+  //
+  // One row per (month, currency) is the store's rule, so a partition that is
+  // already spoken for is skipped rather than allowed to blow up the whole
+  // import. That covers a hand-edited file repeating one **and** the second run
+  // of the same file: importing twice gives two copies of an account, because a
+  // second account is a coherent thing to own, and no second scorecard, because
+  // a month is closed once and a restore must not overwrite the record of one.
+  const seenPartitions = new Set(
+    (await store.listMonthCloses({ userId })).map((c) => `${c.month}|${c.currency}`),
+  );
+  for (const c of file.closes) {
+    const key = `${c.month}|${c.currency}`;
+    if (seenPartitions.has(key)) continue;
+    seenPartitions.add(key);
+    await store.createMonthClose({
+      householdId: null,
+      accountId: null,
+      userId,
+      currency: c.currency,
+      month: c.month,
+      incomeMinor: c.incomeMinor,
+      plannedMinor: c.plannedMinor,
+      contributedMinor: c.contributedMinor,
+      closedBy: userId,
+    });
+    counts.closes += 1;
   }
 
   for (const p of file.projects) {
