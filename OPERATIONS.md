@@ -144,23 +144,36 @@ Plain numbered SQL under `db/migrations/`. Applied:
   `/docker-entrypoint-initdb.d`) — only on a **fresh** volume.
 - Automatically by the Helm Job on install / upgrade (loops every file in
   `files/*.sql`, lexical order, ON_ERROR_STOP=1).
-- Manually via `make migrate` (only applies `0001_init.sql`; extend if you
-  add migrations and need to apply them to an existing dev volume).
+- Manually via `make migrate`, which loops every `db/migrations/*.sql` in
+  lexical order under `ON_ERROR_STOP=1` — the same thing the Job does, against
+  an existing dev volume.
 
 The set, in order:
 
-| File                           | Adds                                                                                                |
-| ------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `0001_init.sql`                | auth/core/calc schemas: users, sessions, households, accounts, incomes, payments.                   |
-| `0002_projects.sql`            | Cross-account projects.                                                                             |
-| `0003_household_shares.sql`    | Contribution shares, shared/personal account + payment scope.                                       |
-| `0004_reality_loop.sql`        | `core.contributions`, `core.balance_snapshots`, `core.transfer_confirmations`, `core.month_closes`. |
-| `0005_auth_hardening.sql`      | `auth.users.totp_secret`/`totp_enabled_at`, `auth.recovery_codes`, `auth.password_reset_tokens`.    |
-| `0006_goal_modes_and_tags.sql` | `core.payments.fixed_monthly_minor` and `core.payments.tag`.                                        |
-| `0007_platform.sql`            | `auth.users.notify_email` opt-in and `core.notification_log` (unique `(user_id, date, kind)`).      |
+| File                                 | Adds                                                                                                                                      |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `0001_init.sql`                      | auth/core/calc schemas: users, sessions, households, accounts, incomes, payments.                                                         |
+| `0002_projects.sql`                  | Cross-account projects.                                                                                                                   |
+| `0003_household_shares.sql`          | Contribution shares, shared/personal account + payment scope.                                                                             |
+| `0004_reality_loop.sql`              | `core.contributions`, `core.balance_snapshots`, `core.transfer_confirmations`, `core.month_closes`.                                       |
+| `0005_auth_hardening.sql`            | `auth.users.totp_secret`/`totp_enabled_at`, `auth.recovery_codes`, `auth.password_reset_tokens`.                                          |
+| `0006_goal_modes_and_tags.sql`       | `core.payments.fixed_monthly_minor` and `core.payments.tag`.                                                                              |
+| `0007_platform.sql`                  | `auth.users.notify_email` opt-in and `core.notification_log` (unique `(user_id, date, kind)`).                                            |
+| `0008_inflows.sql`                   | `core.inflows` — money arriving with a source, so a movement between two of your own accounts is a first-class row rather than an income. |
+| `0009_standalone_confirmations.sql`  | A transfer confirmation with no household: scoped by its two accounts, its month and the member.                                          |
+| `0010_derived_confirmations.sql`     | A confirmation of a transfer the plan _derived_ — there is no authored row to hang it off.                                                |
+| `0011_one_household_per_user.sql`    | One household per user, enforced in the database.                                                                                         |
+| `0012_account_currency_is_fixed.sql` | An account is denominated once, at creation, and never re-denominated.                                                                    |
+| `0013_user_month_closes.sql`         | `core.month_closes.user_id` + `.currency`: a close is per user, per currency (`MONTH-CLOSE.md` decision 14).                              |
 
 All of them are idempotent (`IF NOT EXISTS` throughout), so re-running the Job
 against an already-migrated database is a no-op.
+
+Two of them drop a constraint, which nothing else in this directory is allowed
+to do: `0010` and `0013`, each under a named exception recorded in the plan that
+asked for it. Both re-add under the same name inside a guarded `DO $$` block,
+and both files say at length why the name has to be held. Adding a third means
+asking first.
 
 Drift watch: the chart copies SQL files into
 `deploy/helm/finance-planner/files/`. **Keep that mirror in sync with
@@ -264,22 +277,38 @@ Leave it off outside demo installs.
 ### Data portability and erasure
 
 - `GET /api/export` streams a JSON document (`version: 1`) as a file
-  attachment: **owned accounts only**, with their incomes, payments (each with
-  its contributions), balance snapshots and month closes, plus owned projects.
-  Accounts merely shared _with_ the caller are excluded on purpose — they
-  belong to their owner, and exporting them would hand one household member a
-  copy of another's finances. Household memberships, shares, and transfer
-  confirmations are likewise not in the document.
+  attachment: **owned accounts only**, with their incomes, movements between
+  the exporter's own accounts, payments (each with its contributions) and
+  balance snapshots; plus owned projects; plus the exporter's **month closes at
+  the file's top level**, one row per month per currency. Closes sit there
+  rather than under an account because that is where the fact lives — a close
+  scores one person across every account they plan in (`MONTH-CLOSE.md`
+  decision 14), so there is no account to hang it off. Accounts merely shared
+  _with_ the caller are excluded on purpose — they belong to their owner, and
+  exporting them would hand one household member a copy of another's finances.
+  Household memberships, shares and **household** transfer confirmations are
+  likewise not in the document: they describe an arrangement between people.
+  The exporter's own standalone confirmations do travel — both the kind that
+  rides on an authored movement and the kind confirming a transfer the plan
+  derived — because "I moved this money" between two accounts you own is a fact
+  about your own rows, and dropping it let a restore silently un-move money
+  that moved.
 - `POST /api/import` takes that same schema and is **additive**: every row is
   created fresh under the importing user. Nothing is matched, overwritten, or
   deleted, so importing the same file twice gives two copies. Project and
-  bearer references are dropped (the document doesn't carry those ids), and
-  duplicate months in a hand-edited file are skipped rather than erroring. A
-  file that doesn't match the schema is a 422.
+  bearer references are dropped (the document doesn't carry those ids), and a
+  close for a `(month, currency)` already closed is skipped rather than
+  erroring. A file that doesn't match the schema is a 422.
+- The version did **not** move for the close relocation. A file written before
+  it carries its closes inside `accounts[]`, where the schema drops them as
+  unknown keys — a loss of nothing, because no close row was ever written by a
+  shipped scope (decision 17). An old backup still restores, minus a scorecard
+  nobody had.
 - `DELETE /api/auth/me` erases the account: **owned** accounts (and everything
   under them), owned projects, households the user founded, their memberships
-  of other people's households, sessions, tokens, recovery codes, and
-  notification-log rows — then the user row. Accounts and households owned by
+  of other people's households, sessions, tokens, recovery codes,
+  notification-log rows, and their month closes — which hang off no account and
+  so are deleted by name rather than cascaded — then the user row. Accounts and households owned by
   _other_ people survive. Rate limited to 3/min. The current password is
   required unless the user has none (SSO-only), where the access token is the
   proof. Refresh cookie is cleared; responds 204.

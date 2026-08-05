@@ -6,26 +6,13 @@ endorsement.
 
 ## Product
 
-The first four entries are **defects the one-engine work created**, not polish.
+The first three entries are **defects the one-engine work created**, not polish.
 Each was found in source by the agents that built the scope pass and verified
 again when it closed ([`ONE-ENGINE.md`](./ONE-ENGINE.md)). A follow-up package is
 expected to take them together: they touch the same DTOs and the same pass, and
 picking this class of thing up piecemeal is how the two-engine split survived a
 whole plan.
 
-- **A derived transfer cannot be confirmed from the app.**
-  `POST /api/accounts/:id/transfers/confirm` (`apps/api/src/server.ts:1570`)
-  requires `fromAccountId` and matches the planned transfer on it — but the
-  member variant of `PlanInflowSource` (`apps/api/src/plan.ts:125`, built at
-  `apps/api/src/plan.ts:713`) has no such field: an account plan names the
-  _member_ sending, never the account they send from. There is nothing on the
-  wire to post, so `derivedTransferItems` (`apps/web/src/lib/needsYou.ts:483`)
-  renders the row with no action rather than a button that cannot work — the
-  comment there says so. Everything else is in place: migration `0010`, the
-  store paths, the endpoint, and typed, tested client methods
-  (`confirmDerivedTransfer` / `unconfirmDerivedTransfer`,
-  `apps/web/src/lib/api.ts:457`). The fix is `fromAccountId` on
-  `inflowSourcesFor`'s map and on `PlanInflowSource`'s member variant.
 - **`householdPlanFromScope` mixes two scopes in one response.**
   `packages/domain/src/household.ts:214-228`: `members` comes straight off the
   partition, so a member's `obligationMinor`, `fundedMinor` and
@@ -117,10 +104,6 @@ whole plan.
   `householdPlanFromScope` reports that one, so a household whose accounts span
   two currencies has the rest silently absent from its plan. Presenting one
   needs the FX work below first.
-- **Household plan — shared-pot income.** Income on a _shared_ account is
-  uncommon and currently accumulates as pot surplus rather than reducing each
-  member's contribution. If joint accounts start receiving income directly,
-  offset it against the pot's funding need before splitting.
 - **Household plan — bearer picker in quick-add.** A personal expense's bearer
   is settable per-payment in the engine/API (`bearerUserId`), but the quick-add
   drawer only exposes the shared/personal toggle and defaults a personal expense
@@ -221,6 +204,19 @@ whole plan.
   Several of those were driven by hand against a real API in Chromium at 1280
   and 390 while they were built, which is exactly the evidence a spec file would
   have kept.
+
+  The sharpest instance to date, because it is not a hypothetical: `1409e5f`
+  deleted the six account- and household-scoped close routes
+  (`MONTH-CLOSE.md` decision 14) while `apps/web/src/lib/api.ts` still called
+  all six. The account page and the household plan page therefore fetched 404s
+  on load, and **CI stayed green through it**. It could not have gone
+  otherwise: no job in the matrix drives a real browser against a real API, so
+  a client method pointing at a route that no longer exists is invisible to
+  every one of them. Only opening the page found it, and the next package
+  restored the pages a commit later. A single spec that logs in, opens an
+  account and opens a household would have caught it, and is the smallest
+  version of this entry worth doing first.
+
 - **`TransferChecklist` is household-shaped in three independent ways.**
   `apps/web/src/components/TransferChecklist.tsx:43` renders a **who** column
   keyed on household members, detects orphan confirmations with a
@@ -252,6 +248,33 @@ whole plan.
   that carrying the field directly would be better, and both are a place where a
   future change to the identity breaks a caller silently rather than at the type
   level.
+- **`NewMonthClose` cannot require what a close actually needs.**
+  `packages/data/src/store.ts:100` makes `userId` and `currency` optional
+  (`Omit<…> & Partial<Pick<…>>`) because the Store still admits three scopes,
+  and `packages/data/src/store-contract.ts` writes the two legacy ones at seven
+  of its thirteen `createMonthClose` sites. Nothing else writes them:
+  `MONTH-CLOSE.md` decision 14 deleted both location-scoped endpoints, their
+  handlers, the client methods and the UI, so the only producer of a household
+  or account close left in the repository is the contract test proving the
+  Store can still produce one. Tightening the type is therefore not a type
+  change — it means first deciding **whether the Store keeps the legacy scopes
+  at all**, which is a schema question (`month_close_scope` admits three since
+  `0013`), a migration question (`0013` was additive on purpose), and a
+  portability question (the export carries user closes only). Until that is
+  answered the optionality is honest: it describes a Store deliberately wider
+  than the product.
+- **`core.month_closes` is mixed on referential integrity.** `account_id`
+  references `core.accounts` (`0004`) and `user_id` references `auth.users`
+  (`0013`), both `ON DELETE CASCADE`. `household_id` and `closed_by` are bare
+  `uuid` columns with no foreign key, and never had one — so a deleted
+  household or a deleted actor leaves a close pointing at a row that is gone,
+  and only the application knows. The cross-schema precedent exists
+  (`user_id` → `auth.users`, and `core.notification_log.user_id` before it), so
+  the objection is not technical. Both stores delete a user's own closes by
+  name in `deleteUserCascade`, which is why nothing has been observed; the gap
+  is what happens to the two legacy scopes, and it pairs with the question
+  above — deleting the household scope would retire one of the two columns
+  rather than give it a key.
 - **`MemoryStore.deleteAccount` leaves contributions Postgres would cascade.**
   `packages/data/src/memory-store.ts:486-488` drops every transfer confirmation
   touching the account, but only deletes contributions whose own `accountId` is

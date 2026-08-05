@@ -31,7 +31,7 @@ means "no sharing rules apply", not "planned by something else".
 
 The plan is grounded in reality by a **contributions ledger**: record what you
 actually set aside, check in your real balance, tick off transfers, and close
-the month. From that same history it **projects 12 months forward** and tells
+your month. From that same history it **projects 12 months forward** and tells
 you what's due next.
 
 Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
@@ -44,6 +44,9 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 - **One-engine plan (delivered, WP-O…WP-U):** [`ONE-ENGINE.md`](./ONE-ENGINE.md),
   which supersedes the two-engine architecture the way `INFLOWS.md` superseded
   `HOUSEHOLD-CONTEXT.md`
+- **Month-close plan (delivered, WP-A…WP-F):**
+  [`MONTH-CLOSE.md`](./MONTH-CLOSE.md), which continues `ONE-ENGINE.md`'s
+  decision sequence at 14
 - **Contributing:** [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - **Licence:** [MIT](./LICENSE)
 
@@ -116,7 +119,12 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 - Savings leaving a household account show as one **committed** total rather
   than itemised, and the headline left over is what is free after it. Which ISA
   somebody sweeps into is the account's business; the flow diagram itemises it.
-- Household-wide month closes.
+- **A shared pot's own income is its owner's.** A "joint" account is one
+  person's account shared into a household, so the lodger's rent paid into it is
+  that person's income exactly as a salary into their current account is —
+  whatever role the household gives the account. It joins their budget, and the
+  transfers into the pot are net of what the pot pays for itself, so nobody is
+  asked to send money that is already there.
 
 **Reality loop**
 
@@ -141,10 +149,13 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   accounts, its month and the person moving the money — no household anywhere,
   no authored row to hang it on (migration `0010`, and
   `POST /api/accounts/:id/transfers/confirm`). It is listed as something to do
-  on the Overview and in the digest, with the payday it is anchored to; the tick
-  itself is not wired up yet — see `BACKLOG.md`.
-- **Month closes** freeze income / planned / saved for a month, and the
-  **savings scorecard** shows the resulting savings rate per month.
+  on the Overview and in the digest, with the payday it is anchored to, and the
+  tick beside it works.
+- **Closing a month is something you do, not something a place has.** It freezes
+  what you earned, planned and set aside — one frozen row per currency you plan
+  in, every one of them closed by the single action — and the **savings
+  scorecard** on the Overview shows the resulting savings rate per month, one
+  card per currency, with re-open beside each month.
 - **Net-worth chart** built from balance check-ins, one line per currency,
   carrying the last known balance forward.
 
@@ -254,7 +265,10 @@ Browser ──/api──▶ api (gateway/BFF) ──┬─ core domain (accounts
   tree and observed failing there. The API builds one scope per request
   (`apps/api/src/plan.ts`), closing over funding edges _and_ household
   assignment, so which accounts are planned together is a property of the
-  accounts rather than of the question asked about them.
+  accounts rather than of the question asked about them. A month close obeys the
+  same rule over time: `closeForUser` freezes figures the pass has already
+  produced, per currency, rather than deriving a second set that could disagree
+  with the screen they came from.
 - **Savings can loop; expense transport cannot.** An authored movement spends
   what its sending account has left, so A → B → C → A is a real cycle: found
   when the plan is computed, reported with the accounts in the order money
@@ -285,7 +299,7 @@ packages/
   policies  per-request authorisation rules (action + subject)
   security  scrypt password hashing, HS256 JWT (jose), TOTP
   mailer    Mailer interface + SmtpMailer (nodemailer) / LogMailer fallback
-db/          SQL migrations (0001_init.sql … 0010_derived_confirmations.sql) + seed
+db/          SQL migrations (0001_init.sql … 0013_user_month_closes.sql) + seed
 deploy/
   local/     docker-compose stack, compose nginx, kind helper
   helm/      cloud-agnostic chart (services, ingress, migrate Job, HPA, PDB, …)
