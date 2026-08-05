@@ -210,6 +210,17 @@ export function accountPlanFromScope(
   // money, and asking `confirmedInflowMinor` — which counts confirmed savings
   // arrivals too — let a confirmed £400 movement declare a bill funded that was
   // still waiting on an unconfirmed £303.20 feed.
+  //
+  // `plan.transfers` is every currency partition flattened, and this filters on
+  // `toAccountId` alone — no currency in the predicate. That is safe because an
+  // account belongs to exactly one partition, so at most one partition can hold
+  // a transfer into it. WP-AC called that safe by construction rather than by
+  // intent; it is now safe by intent too. An account's currency is fixed at
+  // creation and can never be changed (Ben, 2026-08-05) — refused by
+  // `updateAccountBody`, kept out of the Store's `AccountPatch`, and floored by
+  // `0012_account_currency_is_fixed.sql` — so "one account, one partition" is
+  // permanently true rather than incidentally so, and no currency test is
+  // needed here to keep it that way.
   const confirmedTransferMinor = plan.transfers
     .filter((t) => t.toAccountId === accountId)
     .reduce((sum, t) => sum + t.confirmedMinor, 0);

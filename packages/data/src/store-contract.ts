@@ -104,6 +104,16 @@ export async function exerciseStore(store: Store): Promise<void> {
   });
   expect(account.monthlyBufferMinor).toBe(10_000);
 
+  // An account is denominated once, when it is created. `AccountPatch` has no
+  // `currency` for a caller to pass, so both stores must leave the column where
+  // it is under every patch they *can* be handed — and in Postgres the column
+  // never reaches a SET clause, so `accounts_currency_is_fixed` (0012) never
+  // fires on this path.
+  const renamed = await store.updateAccount(account.id, { name: "Everyday spending" });
+  expect(renamed?.name).toBe("Everyday spending");
+  expect(renamed?.currency).toBe("GBP");
+  await store.updateAccount(account.id, { name: "Everyday" });
+
   const income = await store.createIncome({
     accountId: account.id,
     name: "Salary",

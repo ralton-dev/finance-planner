@@ -1866,20 +1866,24 @@ describe("api service", () => {
   });
 
   /**
-   * The zero the handler used to write, from the partition that cannot see the
-   * sender.
+   * The state `36c90bf` had to cope with, closed at the source instead.
    *
-   * `ScopePlan.movements` is every currency partition flattened in alphabetical
-   * order, and a movement whose ends sit in different partitions appears twice:
-   * really, where the sender is, and as an `unknown_source` £0 twin where the
-   * destination is. `find` on `inflowId` alone took EUR's zero for a GBP→EUR
-   * movement and recorded "I moved the money" as £0 — a wrong figure about
-   * money, written on the user's say-so and never shown to them again.
+   * `ScopePlan.movements` is every currency partition flattened, and a movement
+   * whose ends sit in different partitions appears twice: really, where the
+   * sender is, and as an `unknown_source` £0 twin where the destination is.
+   * `find` on `inflowId` alone took EUR's zero for a GBP→EUR movement and
+   * recorded "I moved the money" as £0 — a wrong figure about money, written on
+   * the user's say-so and never shown to them again.
    *
-   * The POST-time guard refuses authoring one; `PATCH /api/accounts/:id` takes a
-   * currency, so the state is reached afterwards, by moving an end.
+   * The POST-time guard always refused *authoring* one; the state was reached
+   * afterwards, by moving an end — `PATCH /api/accounts/:id` used to take a
+   * currency. It does not any more, so the state has no way in. This test used
+   * to redenominate the pot to EUR and assert the confirmation still booked the
+   * sender's £200; the redenomination is the thing now refused, so that is what
+   * it asserts. The handler's status filter stays for rows that pre-date this
+   * refusal and for a sender the scope never loaded.
    */
-  it("confirms what the sender's own partition moved, not another currency's zero", async () => {
+  it("refuses to redenominate an account, so a movement cannot cross partitions", async () => {
     const { auth } = await seedUser(store);
     const { current, pot, movement } = await seedMovement(auth);
     const moved = await app.inject({
@@ -1888,21 +1892,53 @@ describe("api service", () => {
       headers: auth,
       payload: { currency: "EUR" },
     });
-    expect(moved.statusCode).toBe(200);
+    expect(moved.statusCode).toBe(422);
+    expect(moved.json().error.code).toBe("validation_error");
+    expect(
+      (await app.inject({ method: "GET", url: `/api/accounts/${pot.id}`, headers: auth })).json()
+        .currency,
+    ).toBe("GBP");
 
+    // Both ends still in one partition, so the confirmation books what really
+    // leaves the sender — the figure the EUR twin used to steal.
     const res = await app.inject({
       method: "POST",
       url: `/api/inflows/${movement.id}/confirm`,
       headers: auth,
     });
     expect(res.statusCode).toBe(201);
-    // £200 really leaves the GBP account — `GET /api/accounts/:id/plan` says so
-    // for the sender, off the same partition — so £200 is what was moved.
     expect(res.json().confirmation.amountMinor).toBe(20000);
     const sender = (
       await app.inject({ method: "GET", url: `/api/accounts/${current.id}/plan`, headers: auth })
     ).json();
     expect(sender.outboundInflowMinor).toBe(20000);
+  });
+
+  /** Renaming an account is not redenominating it, and a client that PATCHes
+   *  its whole form back — which `AccountSettingsDrawer` does on every save —
+   *  is not asking for anything. Refusing on the field's mere presence would
+   *  have made the settings drawer unable to save at all. */
+  it("lets a patch carry back the currency the account already has", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "Everyday", currency: "GBP" },
+      })
+    ).json();
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/accounts/${account.id}`,
+      headers: auth,
+      // Lower case, as the drawer's own uppercasing would not have applied.
+      payload: { name: "Everyday spending", currency: "gbp", monthlyBufferMinor: 5000 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().name).toBe("Everyday spending");
+    expect(res.json().monthlyBufferMinor).toBe(5000);
+    expect(res.json().currency).toBe("GBP");
   });
 
   /**

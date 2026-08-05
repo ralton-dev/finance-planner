@@ -24,6 +24,7 @@ import type {
 } from "./entities.js";
 import {
   type AccountAccess,
+  type AccountPatch,
   assertInflowShape,
   type ContributionTotal,
   HouseholdExclusivityError,
@@ -524,14 +525,15 @@ export class MemoryStore implements Store {
     return [...this.accounts.values()].filter((a) => a.ownerUserId === ownerUserId);
   }
 
-  async updateAccount(id: string, patch: Partial<NewAccount>): Promise<Account | null> {
+  async updateAccount(id: string, patch: AccountPatch): Promise<Account | null> {
     const a = this.accounts.get(id);
     if (!a) return null;
     const updated: Account = {
       ...a,
       name: patch.name ?? a.name,
       description: patch.description === undefined ? a.description : patch.description,
-      currency: patch.currency ?? a.currency,
+      // `currency` is deliberately absent: an account is denominated once, when
+      // it is created. `AccountPatch` says so, so there is nothing to carry over.
       openingBalanceMinor: patch.openingBalanceMinor ?? a.openingBalanceMinor,
       monthlyBufferMinor: patch.monthlyBufferMinor ?? a.monthlyBufferMinor,
       updatedAt: now(),

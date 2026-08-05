@@ -549,10 +549,31 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return { ...account, owner: access.owner, permission: access.permission };
   });
 
+  /**
+   * Change what an account is called, what it opened with, what it holds back.
+   *
+   * **Not what it is denominated in** — see `updateAccountBody`. The attempt is
+   * rejected rather than silently dropped, the same answer re-pointing an
+   * inflow's ends gets: an account that redenominated itself crossed a currency
+   * partition after the POST-time guard that refuses to author a movement across
+   * one, and a caller who believes they have converted their money must be told
+   * they have not. Sending back the currency the account already has is not an
+   * attempt to change it and passes through untouched.
+   */
   app.patch("/api/accounts/:id", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    const { access } = await requireAccess(userId, id, "edit");
+    const { account, access } = await requireAccess(userId, id, "edit");
+    if (req.body && typeof req.body === "object" && "currency" in req.body) {
+      const asked = (req.body as { currency: unknown }).currency;
+      if (String(asked).toUpperCase() !== account.currency) {
+        throw new HttpError(
+          422,
+          "validation_error",
+          "currency cannot be changed; an account is denominated once, when it is created",
+        );
+      }
+    }
     const body = updateAccountBody.parse(req.body);
     const updated = await store.updateAccount(id, defined(body));
     if (!updated) return null;
@@ -1530,11 +1551,18 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     // flattened in alphabetical currency order, and a movement whose two ends
     // are in different currencies appears twice: really, in the sender's
     // partition, and as an `unknown_source` £0 twin in the partition that cannot
-    // see the sender. `PATCH /api/accounts/:id` takes a currency, so an account
-    // can cross partitions after the POST-time cross-currency guard — and an
-    // unfiltered `find` returned the EUR zero for a GBP→EUR movement and wrote
-    // the user's confirmation as £0. A `broken_cycle` edge is the other one: the
-    // pass has decided it is not happening, so there is nothing to confirm.
+    // see the sender — and an unfiltered `find` returned the EUR zero for a
+    // GBP→EUR movement and wrote the user's confirmation as £0.
+    //
+    // **No new account can reach that state.** `PATCH /api/accounts/:id` used to
+    // take a currency, which let an account cross partitions after the POST-time
+    // cross-currency guard; it is refused now, so an account is denominated once
+    // (see the handler). The filter stays for the two cases that remain: rows
+    // that pre-date the refusal — the API allowed this and `0012` deliberately
+    // does not rewrite them — and a sender the scope never loaded at all, which
+    // `scope.ts` also reports as `unknown_source`. A `broken_cycle` edge is the
+    // third: the pass has decided it is not happening, so there is nothing to
+    // confirm.
     const scope = await scopeForAccount(store, account, asOfDate);
     const movement = scope.plan.movements.find(
       (m) =>

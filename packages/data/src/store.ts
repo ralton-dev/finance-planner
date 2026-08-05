@@ -39,6 +39,10 @@ export interface NewAccount {
   monthlyBufferMinor?: number;
 }
 
+/** What an existing account will accept: a `NewAccount` minus the two things
+ *  settled at creation — whose it is, and what money it is counted in. */
+export type AccountPatch = Partial<Omit<NewAccount, "ownerUserId" | "currency">>;
+
 export type NewIncome = Omit<Income, "id" | "createdAt" | "updatedAt">;
 export type NewInflow = Omit<Inflow, "id" | "createdAt" | "updatedAt">;
 
@@ -319,7 +323,18 @@ export interface Store {
   createAccount(input: NewAccount): Promise<Account>;
   getAccount(id: string): Promise<Account | null>;
   listAccountsForOwner(ownerUserId: string): Promise<Account[]>;
-  updateAccount(id: string, patch: Partial<NewAccount>): Promise<Account | null>;
+  /**
+   * Everything about an account is editable except its `currency`, which is
+   * fixed when the account is created and never afterwards (Ben, 2026-08-05).
+   * The rule is stated in the type so the API is not the only thing holding it:
+   * the pass plans per currency, and an account that changes the money it is
+   * denominated in moves between partitions under a plan that has already
+   * refused to author anything crossing between them.
+   *
+   * `db/migrations/0012_account_currency_is_fixed.sql` is the floor under this,
+   * for writes that never come through a Store at all.
+   */
+  updateAccount(id: string, patch: AccountPatch): Promise<Account | null>;
   deleteAccount(id: string): Promise<void>;
 
   // ---- inflows (money arriving, whatever its source) ----

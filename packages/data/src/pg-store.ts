@@ -35,6 +35,7 @@ import type {
 import * as s from "./schema.js";
 import {
   type AccountAccess,
+  type AccountPatch,
   assertInflowShape,
   type ContributionTotal,
   HouseholdExclusivityError,
@@ -711,13 +712,15 @@ export class PgStore implements Store {
     return rows.map((r) => this.mapAccount(r));
   }
 
-  async updateAccount(id: string, patch: Partial<NewAccount>): Promise<Account | null> {
+  async updateAccount(id: string, patch: AccountPatch): Promise<Account | null> {
     const [row] = await this.db
       .update(s.accounts)
       .set({
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.description !== undefined ? { description: patch.description } : {}),
-        ...(patch.currency !== undefined ? { currency: patch.currency } : {}),
+        // No `currency`: an account is denominated once, when it is created, so
+        // the column never appears in a SET clause and
+        // `accounts_currency_is_fixed` (0012) never has cause to fire.
         ...(patch.openingBalanceMinor !== undefined
           ? { openingBalanceMinor: patch.openingBalanceMinor }
           : {}),

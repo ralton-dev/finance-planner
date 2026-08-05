@@ -137,7 +137,29 @@ export const createAccountBody = z.object({
   monthlyBufferMinor: amountMinor.default(0),
 });
 export type CreateAccountBody = z.infer<typeof createAccountBody>;
-export const updateAccountBody = createAccountBody.partial();
+
+/**
+ * What may be changed about an account: everything except the money it is
+ * denominated in.
+ *
+ * **An account's currency is fixed at creation** (Ben, 2026-08-05). Planning is
+ * per currency (ONE-ENGINE decision 10): the pass partitions the scope by
+ * currency and derives transfers only within a partition, and a movement whose
+ * two ends sit in different partitions has no rate anywhere in this system to
+ * convert it with — which is why authoring one is refused. Redenominating an
+ * account moved an end *after* that refusal, so a movement could cross a
+ * partition boundary that nothing had ever agreed to. Fixing the currency does
+ * not handle that state; it stops it existing.
+ *
+ * `.omit()` is not the whole answer — on its own zod would *strip* the field and
+ * answer 200, telling a caller who asked to redenominate an account that they
+ * had. The handler rejects the attempt, the same way re-pointing an inflow's
+ * ends is rejected. Re-sending the currency the account already has is not an
+ * attempt and passes: a client that PATCHes its whole form is not asking for
+ * anything.
+ */
+export const updateAccountBody = createAccountBody.omit({ currency: true }).partial();
+export type UpdateAccountBody = z.infer<typeof updateAccountBody>;
 
 export const createIncomeBody = z.object({
   name: z.string().min(1),
