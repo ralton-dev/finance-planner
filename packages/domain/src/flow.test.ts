@@ -489,8 +489,18 @@ describe("one account, three surfaces, one number", () => {
    * The direction the pin above does not cover: an account that is *sent* money
    * and does not spend all of it, and sends some of what it has on.
    *
-   * The pot earns £200 of its own, is owed £1,000 of rent that its members'
-   * transfers cover, and forwards £100 a month to an ISA. It keeps £100.
+   * Alice's bills account earns £800 of its own, carries £1,000 of rent she and
+   * Bob share 60/40, and forwards £100 a month to an ISA. Her own £600 never
+   * moves — the account is already holding it, so the pass derives no transport
+   * for it (decision 9). Bob's £400 does move; £200 of it pays the part of the
+   * rent her £800 could not; £100 goes on to the ISA; £100 stays.
+   *
+   * It was a **shared** pot with £200 of its own income, until decision 9's
+   * netting was implemented as written (ONE-ENGINE.md, WP-AB). A pot nobody owns
+   * now ends the month at exactly its buffer — its own income offsets its
+   * members' transfers pound for pound — so it can no longer be an account that
+   * is sent more than it spends. An account with income of its own and a
+   * co-member's share on it still can, which is the case this needs.
    */
   const allocationDirection = household({
     accounts: [
@@ -501,9 +511,8 @@ describe("one account, three surfaces, one number", () => {
       }),
       scopeAccount("bob-cur", { memberUserId: "bob", incomes: salary(200_000, "inc2") }),
       scopeAccount("bills", {
-        role: "shared",
-        memberUserId: null,
-        incomes: salary(20_000, "rebate"),
+        memberUserId: "alice",
+        incomes: salary(80_000, "rebate"),
         payments: [owed("rent", 100_000, { scope: "shared" })],
         outboundInflows: [leaving("bills-isa", 10_000, "isa")],
       }),
@@ -524,10 +533,10 @@ describe("one account, three surfaces, one number", () => {
   it("shows why the old arithmetic could not reach it", () => {
     const plan = computeScopePlan(allocationDirection, ASOF);
     const account = accountPlanFromScope(allocationDirection, plan, "bills");
-    // The account's *own* surplus is nothing — its £200 rebate went on the rent —
-    // and £100 is committed out, so the pre-pass formula reads minus £100 for an
-    // account that ends the month holding £100. Two deltas, one figure: the
-    // allocation it did not spend, and the movement it did make.
+    // The account's *own* surplus is nothing — its £800 of income went on the
+    // rent — and £100 is committed out, so the pre-pass formula reads minus £100
+    // for an account that ends the month holding £100. Two deltas, one figure:
+    // the allocation it did not spend, and the movement it did make.
     expect(account.leftoverMinor).toBe(0);
     expect(account.outboundInflowMinor).toBe(10_000);
     expect(account.leftoverMinor - account.outboundInflowMinor).toBe(-10_000);
@@ -542,15 +551,15 @@ describe("one account, three surfaces, one number", () => {
     );
     expectExactlyBalanced(flow);
     // Derived transports first, then the savings movement — the order the pass
-    // funded them in, and the order decision 8 puts them in.
+    // funded them in, and the order decision 8 puts them in. Alice sends
+    // nothing: her share of the rent is already in the account it is paid from.
     expect(flow.edges.map((e) => [e.fromAccountId, e.toAccountId, e.amountMinor])).toEqual([
-      ["alice-cur", "bills", 60_000],
       ["bob-cur", "bills", 40_000],
       ["bills", "isa", 10_000],
     ]);
-    // Money in is the three accounts' own income and nothing else: a transfer is
+    // Money in is the accounts' own income and nothing else: a transfer is
     // redistribution, and counting it again at each hop is the old error.
-    expect(flow.totalInflowMinor).toBe(520_000);
+    expect(flow.totalInflowMinor).toBe(580_000);
   });
 });
 

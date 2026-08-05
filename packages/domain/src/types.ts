@@ -260,15 +260,22 @@ export interface AccountPlan {
    * Surplus of the account's **own** income after funding all goals (>= 0).
    *
    * Allocated inflow that was never needed is deliberately **not** counted here.
-   * The account that sent it has no idea it left — its own plan still reports
-   * that money as its leftover — so counting it at both ends would double it in
-   * every figure that sums leftover across accounts (`overviewFromPlans`).
-   * Unspent inflow is still recoverable: `allocatedInflowMinor` minus the sum of
-   * `fundedFromInflowMinor` over the lines.
+   * This used to say why in terms of a double-count — "the account that sent it
+   * has no idea it left, so its own plan still reports that money as its
+   * leftover" — and that stopped being true when there stopped being two
+   * engines. A derived transfer **is** subtracted at the sender (see below), so
+   * counting it again at the receiver would not double it; the same comment said
+   * so two paragraphs on and contradicted itself.
+   *
+   * The real reason is the field's meaning, which decision 13 keeps: this is the
+   * account's **own** income after the account's own obligations, which is what
+   * makes a rollup over these a plain sum with nothing to net. What is actually
+   * *in* the account afterwards is a different question, and `residualMinor`
+   * below answers it. Unspent inflow is still recoverable: `allocatedInflowMinor`
+   * minus the sum of `fundedFromInflowMinor` over the lines.
    *
    * The derived transfers this account's owner has to make out of it *are*
-   * subtracted, because those are the account's own money leaving — which is
-   * what makes a rollup over these a plain sum with nothing to net.
+   * subtracted, because those are the account's own money leaving.
    */
   leftoverMinor: number;
   /**

@@ -379,12 +379,27 @@ export interface Overview {
  * `AccountPlan.leftoverMinor` reports — is the account's own income after its own
  * bills **and after the derived transfers its owner has to make**, so a pound
  * that leaves is already gone from the sender's surplus before this function
- * sees it. Money that merely arrived is excluded at the receiver for the same
- * reason. Every pound is therefore counted exactly once, and the identity
+ * sees it. Money that merely arrived is excluded at the receiver, because it is
+ * not the receiver's income. Every pound is therefore counted exactly once, and
+ * the identity
  *
  *     totalFundedMinor + leftoverMinor === monthlyIncomeMinor - bufferMinor
  *
  * holds for a scope that funds itself with no term to subtract.
+ *
+ * Those two rules only meet in the middle while every derived pound that leaves
+ * a sender is spent or reserved where it lands — a pound subtracted at one end
+ * and excluded at the other is counted nowhere, and the total is short by
+ * exactly it. That is what decision 9's netting buys: the pass derives transport
+ * only for what the destination cannot pay for out of its own income, so it
+ * stops asking a member to move £40 into an account whose own interest already
+ * covered the £40 subscription — a transfer that funded nothing and left this
+ * identity £40 down (`scope.ts`, phase 3). The case it does not reach is a
+ * co-member's transfer into a **personal** account with income of its own: Bob
+ * really does owe Alice his half of the rent that leaves her current account,
+ * her own salary pays the bill first, and his money lands as her reimbursement
+ * rather than as funding. Genuinely arriving, genuinely not income — and no
+ * netting can make it either.
  *
  * That matters beyond tidiness. The netted term meant "inflow the bills consumed
  * that came from another account **of the scope**", and a scope contains a

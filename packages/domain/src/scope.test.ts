@@ -544,6 +544,251 @@ describe("computeScopePlan — a pot with no income feeds itself", () => {
 });
 
 // =============================================================================
+// Decision 9 — transport is for what the destination cannot pay for itself
+// =============================================================================
+
+/**
+ * The netting decision 9 always described and the pass never did.
+ *
+ * "An in-scope account with obligations **and no income** gets its feed derived"
+ * — and phase 3 derived one for every funded obligation off the member's source
+ * account, income or no income. So an account holding the money for its own bill
+ * was sent it again: a row on the transfer checklist that funds nothing, and a
+ * rollup identity short by exactly it (`inflows.invariant.test.ts`).
+ */
+describe("computeScopePlan — an account pays for what it can out of its own income", () => {
+  it("asks for nothing when the destination's income already covers the bill", () => {
+    const p = only(
+      plan({
+        accounts: [
+          acc({
+            accountId: "current",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(300_000),
+          }),
+          acc({
+            accountId: "savings",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(5_000),
+            payments: [pay({ id: "subscription", amountMinor: 4_000, scope: "personal" })],
+          }),
+        ],
+      }),
+    );
+    expect(p.transfers).toEqual([]);
+    expect(accountOf(p, "savings").transferInMinor).toBe(0);
+    expect(accountOf(p, "current").transferOutMinor).toBe(0);
+    // The bill is funded either way; only the transport changed.
+    expect(lineOf(p, "subscription").fundedFromOwnMinor).toBe(4_000);
+    expect(memberOf(p, "owner").leftoverMinor).toBe(301_000);
+  });
+
+  it("transports only the part the destination's income cannot reach", () => {
+    const p = only(
+      plan({
+        accounts: [
+          acc({
+            accountId: "current",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(300_000),
+          }),
+          acc({
+            accountId: "pot",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(30_000),
+            payments: [pay({ id: "rent", amountMinor: 90_000, scope: "personal" })],
+          }),
+        ],
+      }),
+    );
+    expect(transfer(p, "current", "pot")).toBe(60_000);
+    expect(accountOf(p, "pot").leftoverMinor).toBe(0);
+  });
+
+  it("relieves each member by their share, not by their place in the queue", () => {
+    // A pot's own income belongs to no member's budget, so every obligation on
+    // it may lean on the rebate — and the pass hands it out by what each share
+    // is for, rather than to whichever member the list happens to name first.
+    const p = only(
+      plan({
+        members: [
+          { userId: "alice", shareBp: 6_000 },
+          { userId: "bob", shareBp: 4_000 },
+        ],
+        accounts: [
+          acc({
+            accountId: "alice-cur",
+            role: "personal",
+            memberUserId: "alice",
+            incomes: income(300_000),
+          }),
+          acc({
+            accountId: "bob-cur",
+            role: "personal",
+            memberUserId: "bob",
+            incomes: income(200_000),
+          }),
+          acc({
+            accountId: "bills",
+            incomes: income(20_000, "rebate"),
+            payments: [pay({ id: "rent", amountMinor: 100_000 })],
+          }),
+        ],
+      }),
+    );
+    // £1,000 of rent, £200 of rebate: £120 off Alice's £600 and £80 off Bob's £400.
+    expect(transfer(p, "alice-cur", "bills")).toBe(48_000);
+    expect(transfer(p, "bob-cur", "bills")).toBe(32_000);
+    // A pot nobody owns now ends the month at exactly its buffer.
+    expect(accountOf(p, "bills").leftoverMinor).toBe(0);
+  });
+
+  it("hands a rebate that will not divide out a penny at a time, in queue order", () => {
+    // Floors and then the remainder, because rounding each share up the way
+    // `splitByShares` does would net a penny the account has not got — and the
+    // pot would end the month a penny short of paying its own rent.
+    const p = only(
+      plan({
+        members: [
+          { userId: "alice", shareBp: 6_000 },
+          { userId: "bob", shareBp: 4_000 },
+        ],
+        accounts: [
+          acc({
+            accountId: "alice-cur",
+            role: "personal",
+            memberUserId: "alice",
+            incomes: income(300_000),
+          }),
+          acc({
+            accountId: "bob-cur",
+            role: "personal",
+            memberUserId: "bob",
+            incomes: income(200_000),
+          }),
+          acc({
+            accountId: "bills",
+            incomes: income(1, "rebate"),
+            payments: [pay({ id: "rent", amountMinor: 100_000 })],
+          }),
+        ],
+      }),
+    );
+    expect(transfer(p, "alice-cur", "bills")).toBe(59_999);
+    expect(transfer(p, "bob-cur", "bills")).toBe(40_000);
+    expect(accountOf(p, "bills").leftoverMinor).toBe(0);
+  });
+
+  it("keeps a co-member owing their share of a bill on somebody else's account", () => {
+    // The netting's one limit, and it is not an oversight. Alice's salary is
+    // already inside Alice's budget (phase 1), so leaning Bob's half of the rent
+    // on it would spend the same money twice and tell him he owes her nothing.
+    const p = only(
+      plan({
+        members: [
+          { userId: "alice", shareBp: 5_000 },
+          { userId: "bob", shareBp: 5_000 },
+        ],
+        accounts: [
+          acc({
+            accountId: "alice-cur",
+            role: "personal",
+            memberUserId: "alice",
+            incomes: income(300_000),
+            payments: [pay({ id: "rent", amountMinor: 100_000 })],
+          }),
+          acc({
+            accountId: "bob-cur",
+            role: "personal",
+            memberUserId: "bob",
+            incomes: income(200_000),
+          }),
+        ],
+      }),
+    );
+    expect(p.transfers).toHaveLength(1);
+    expect(transfer(p, "bob-cur", "alice-cur")).toBe(50_000);
+  });
+
+  it("lets a pot's own income hold its own reserve, once", () => {
+    // The buffer is the account's income held back, and the reserve obligation
+    // is the members funding that buffer. A pot earning enough to hold its own
+    // reserve was having it sent in as well, and reserving it twice.
+    const p = only(
+      plan({
+        accounts: [
+          acc({
+            accountId: "current",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(100_000),
+          }),
+          acc({ accountId: "pot", monthlyBufferMinor: 20_000, incomes: income(30_000) }),
+        ],
+      }),
+    );
+    expect(p.transfers).toEqual([]);
+    expect(accountOf(p, "pot").leftoverMinor).toBe(30_000);
+    // £100 of it is spare: the buffer holds £200 and no more.
+    expect(accountOf(p, "pot").ownLeftoverMinor).toBe(10_000);
+  });
+
+  it("derives nothing for a bill on the source account itself, however short it is", () => {
+    // A member's transfers leave their source account (decision 11), so there is
+    // no transfer to derive for a bill that is already paid from it. Their other
+    // account's income funded £300 of this one, and the money has to be
+    // consolidated by hand — which the residual says by going negative rather
+    // than by inventing a transfer out of the account into itself.
+    const p = only(
+      plan({
+        accounts: [
+          acc({
+            accountId: "current",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(100_000),
+            payments: [pay({ id: "rent", amountMinor: 130_000, scope: "personal" })],
+          }),
+          acc({
+            accountId: "savings",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(60_000),
+          }),
+        ],
+      }),
+    );
+    expect(memberOf(p, "owner").sourceAccountId).toBe("current");
+    expect(p.transfers).toEqual([]);
+    expect(lineOf(p, "rent").fundedMonthlyMinor).toBe(130_000);
+    expect(accountOf(p, "current").leftoverMinor).toBe(-30_000);
+    expect(accountOf(p, "savings").leftoverMinor).toBe(60_000);
+  });
+
+  it("still sends a reserve the pot's own income cannot cover", () => {
+    const p = only(
+      plan({
+        accounts: [
+          acc({
+            accountId: "current",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(100_000),
+          }),
+          acc({ accountId: "pot", monthlyBufferMinor: 20_000, incomes: income(5_000) }),
+        ],
+      }),
+    );
+    expect(transfer(p, "current", "pot")).toBe(15_000);
+    expect(accountOf(p, "pot").leftoverMinor).toBe(20_000);
+  });
+});
+
+// =============================================================================
 // Decision 8 — expenses beat savings, in both directions
 // =============================================================================
 

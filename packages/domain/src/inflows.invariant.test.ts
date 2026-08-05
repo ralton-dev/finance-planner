@@ -324,3 +324,85 @@ describe("the rollup adds up without netting anything", () => {
     expect(bucket.leftoverMinor).toBe(260_000);
   });
 });
+
+/**
+ * The transfer that funded nothing — WP-AA's repro, and WP-AB's completion
+ * signal.
+ *
+ * Alice has a current account her £3,000 salary lands in (her source account,
+ * decision 11) and a savings account earning £50 a month with a £40 subscription
+ * on it. Nothing here is exotic. The pass derived `current → savings £40`
+ * anyway, because phase 3 emitted transport for **every** funded obligation
+ * whose account was not the member's source account, and never asked whether the
+ * destination already held the money.
+ *
+ * It did. Phase 4 funded the subscription out of savings' own income
+ * (`fundedFromOwn 4000, fundedFromInflow 0`), the £40 arrived and sat, and two
+ * things were wrong with it: `needsYou` and the transfer checklist asked Alice
+ * to move £40 that paid for nothing, and the rollup identity came out at
+ * £3,010 against £3,050 — short by exactly the transfer, which
+ * `ownLeftoverMinor` subtracted at the sender and no account counted at the
+ * destination.
+ *
+ * Decision 9 always said transport was for "an in-scope account with obligations
+ * **and no income**". The netting was in the wording and not in the code.
+ */
+describe("the transfer nobody needed to make", () => {
+  const repro = solo(
+    owned({ accountId: "current", incomes: [external("salary", 300_000)] }),
+    owned({
+      accountId: "savings",
+      incomes: [external("interest", 5_000)],
+      payments: [bill("subscription", 4_000, 10)],
+    }),
+  );
+
+  it("derives no transport for an account already holding the money", () => {
+    const plan = computeScopePlan(repro, ASOF);
+    expect(plan.transfers).toEqual([]);
+    // Funded exactly as it was — out of savings' own income, which is the whole
+    // reason the transfer was never needed.
+    const line = plan.lines.find((l) => l.paymentId === "subscription")!;
+    expect(line.fundedMonthlyMinor).toBe(4_000);
+    expect(line.fundedFromOwnMinor).toBe(4_000);
+    expect(line.fundedFromInflowMinor).toBe(0);
+  });
+
+  it("adds up: funded plus left over is what came in", () => {
+    const plan = computeScopePlan(repro, ASOF);
+    const bucket = overviewFromPlans(
+      ["current", "savings"].map((id) => accountPlanFromScope(repro, plan, id)),
+      ASOF,
+    ).perCurrency[0]!;
+    expect(bucket.monthlyIncomeMinor).toBe(305_000);
+    expect(bucket.bufferMinor).toBe(0);
+    expect(bucket.totalFundedMinor).toBe(4_000);
+    // £3,010 before: £2,960 of it in the current account, the £40 gone.
+    expect(bucket.leftoverMinor).toBe(301_000);
+    expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(
+      bucket.monthlyIncomeMinor - bucket.bufferMinor,
+    );
+  });
+
+  it("still transports what the destination's own income cannot reach", () => {
+    // The same fixture with the subscription raised past the interest: £30 of it
+    // is the account's own money, £10 has to travel. Netting is not a switch.
+    const short = solo(
+      owned({ accountId: "current", incomes: [external("salary", 300_000)] }),
+      owned({
+        accountId: "savings",
+        incomes: [external("interest", 3_000)],
+        payments: [bill("subscription", 4_000, 10)],
+      }),
+    );
+    const plan = computeScopePlan(short, ASOF);
+    expect(plan.transfers).toMatchObject([
+      { fromAccountId: "current", toAccountId: "savings", amountMinor: 1_000 },
+    ]);
+    const bucket = overviewFromPlans(
+      ["current", "savings"].map((id) => accountPlanFromScope(short, plan, id)),
+      ASOF,
+    ).perCurrency[0]!;
+    expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(bucket.monthlyIncomeMinor);
+  });
+});

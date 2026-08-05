@@ -48,8 +48,11 @@ import type {
  *    (decision 8). No account funds in a private order of its own.
  * 3. **Derived transfers.** Funded obligations that cross an account boundary
  *    become the transfers each member must make, out of their source account
- *    (decision 11). This is how an expense-bearing account with no income gets
- *    fed — household or not, authored by nobody (decision 9).
+ *    (decision 11) — and only for the part the destination cannot pay for out of
+ *    its **own** income. This is how an expense-bearing account with no income
+ *    gets fed — household or not, authored by nobody (decision 9); an account
+ *    that already holds the money is not asked for a transfer that would fund
+ *    nothing.
  * 4. **Savings.** Authored movements fund **last**, per sending account, out of
  *    what the expenses and the derived transfers left, in their own priority
  *    order, through the estate machinery unchanged: dependency-ordered,
@@ -360,10 +363,45 @@ interface Obligation {
   memberIdx: number;
   requiredMinor: number;
   fundedMinor: number;
+  /** Of `fundedMinor`, the part the destination account's own income already
+   *  covers, so it needs no transport (decision 9). Settled in phase 2's queue —
+   *  see `selfFunding`. */
+  selfFundedMinor: number;
   priority: number;
   sortDate: string;
   /** Set for payment-derived obligations; absent for buffer reservations. */
   lineIdx?: number;
+}
+
+/**
+ * What an account can pay for out of its own income, and who may draw on it.
+ *
+ * Decision 9 derives transport for an account "with obligations and no income".
+ * The netting was in the wording and not in the code, so the pass asked a member
+ * to move £40 into an account whose own £50 of interest had already paid the £40
+ * subscription: money that funds nothing, on the transfer checklist and in
+ * `needsYou`, and a rollup identity short by exactly it.
+ *
+ * Two pools, because the account's own income is already split two ways
+ * everywhere else in this file. `spendable` is `income − buffer`, the money
+ * `ownPool` lets bills spend; `reserve` is `min(income, buffer)`, the part the
+ * buffer holds back — which on a shared pot is claimed by a reserve obligation
+ * at `RESERVE_PRIORITY` and would otherwise be reserved twice, once out of the
+ * account's own income and again out of the members' transfers. They sum to the
+ * account's income exactly, so nothing is netted twice and nothing is missed.
+ *
+ * `owner` is the member whose budget phase 1 already counted this income into —
+ * set only for a personal account belonging to a member of the scope. Their
+ * obligations here are paid for by money that is already here; a **co-member's**
+ * are not, and netting those would tell Bob he owes Alice nothing for the rent
+ * that leaves her current account. Income no member's budget counted — a shared
+ * pot's, chiefly — has no owner and is available to whoever the queue reaches
+ * first.
+ */
+interface SelfFunding {
+  spendable: number;
+  reserve: number;
+  owner: number | null;
 }
 
 /**
@@ -520,6 +558,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
             memberIdx: i,
             requiredMinor: allocReq[i]!,
             fundedMinor: 0,
+            selfFundedMinor: 0,
             priority,
             sortDate: sortDateOf(p),
             lineIdx,
@@ -540,6 +579,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
             memberIdx: i,
             requiredMinor: v,
             fundedMinor: 0,
+            selfFundedMinor: 0,
             priority: RESERVE_PRIORITY,
             sortDate: FAR_FUTURE,
           });
@@ -574,6 +614,79 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     }
   }
 
+  // ---- decision 9's netting: what each account pays for itself -------------
+  //
+  // Down the queue phase 2 just spent the month in, because "what this account
+  // can fund itself" is not simply its income. Obligations queue globally
+  // (decision 8), so which of an account's obligations its own money reaches is
+  // a fact about the *global* order, not about the account — and that order is
+  // the one immediately above. One queue, walked twice; no second ordering to
+  // drift out of step with the first.
+  //
+  // A whole line at a time. One payment's obligations sit at one position in
+  // that queue — same priority, same date, pushed together — so the account's
+  // own money reaches all of them or none, and splitting it between them by
+  // queue position would hand a shared pot's rebate to whichever member the
+  // list happens to name first. Split by what each of them is for instead, and
+  // a £200 rebate against £1,000 of rent shared 60/40 relieves £120 and £80.
+  const selfFunding = new Map<string, SelfFunding>(
+    accounts.map((a) => {
+      const income = accountIncome.get(a.accountId)!;
+      const buffer = Math.max(0, a.monthlyBufferMinor ?? 0);
+      const owner =
+        a.role === "personal" && a.memberUserId != null ? memberIdx.get(a.memberUserId) : undefined;
+      return [
+        a.accountId,
+        {
+          spendable: Math.max(0, income - buffer),
+          reserve: Math.min(income, buffer),
+          owner: owner ?? null,
+        },
+      ];
+    }),
+  );
+  for (let i = 0; i < orderedObligations.length; ) {
+    const head = orderedObligations[i]!.o;
+    let end = i;
+    while (
+      end < orderedObligations.length &&
+      orderedObligations[end]!.o.accountId === head.accountId &&
+      orderedObligations[end]!.o.lineIdx === head.lineIdx
+    ) {
+      end++;
+    }
+    const group = orderedObligations.slice(i, end).map(({ o }) => o);
+    i = end;
+
+    const self = selfFunding.get(head.accountId)!;
+    // Only the member whose budget already counted this income may lean on it —
+    // see `SelfFunding`. A reserve obligation is claiming the buffer, so it
+    // draws on the part of the income the buffer holds back; a bill draws on
+    // the part `ownPool` lets bills spend.
+    const drawing = group.filter(
+      (o) => o.fundedMinor > 0 && (self.owner === null || self.owner === o.memberIdx),
+    );
+    const want = drawing.reduce((s, o) => s + o.fundedMinor, 0);
+    if (want <= 0) continue;
+    const pool = head.lineIdx === undefined ? "reserve" : "spendable";
+    const covered = Math.min(want, self[pool]);
+    self[pool] -= covered;
+    // Floors, then the remainder a penny at a time in queue order: rounding up
+    // the way `splitByShares` does would net more than the account has. Each
+    // share stays under its own obligation because `covered <= want`, so the
+    // spare penny can never over-credit one.
+    let handed = 0;
+    for (const o of drawing) {
+      o.selfFundedMinor = Math.floor((covered * o.fundedMinor) / want);
+      handed += o.selfFundedMinor;
+    }
+    for (const o of drawing) {
+      if (handed >= covered) break;
+      o.selfFundedMinor++;
+      handed++;
+    }
+  }
+
   // The lines in the order the money was spent — the same key the obligations
   // queued by, so an account's slice of this list is that account's funding
   // order and a view can read the own/inflow split straight off it.
@@ -599,8 +712,9 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
   // ---- phase 3: derived transfers -----------------------------------------
   //
   // Funded obligations that cross an account boundary, radiating from each
-  // member's source account. Nothing waits on anything: see the module comment
-  // for why this cannot cycle however the stars overlap.
+  // member's source account — less whatever the destination's own income already
+  // covers (phase 2's `selfFunding`). Nothing waits on anything: see the module
+  // comment for why this cannot cycle however the stars overlap.
   const confirmedTransfers = new Map<string, number>();
   for (const c of input.confirmedTransfers ?? []) {
     const key = transferKey(c.fromAccountId, c.toAccountId, c.memberUserId);
@@ -609,20 +723,21 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
 
   const transferMap = new Map<string, DerivedTransfer>();
   for (const o of obligations) {
-    if (o.fundedMinor <= 0) continue;
+    const moving = o.fundedMinor - o.selfFundedMinor;
+    if (moving <= 0) continue; // unfunded, or the money is already there
     const from = money[o.memberIdx]!.sourceAccountId;
     if (!from || from === o.accountId) continue; // no source, or internal
     const key = `${from}→${o.accountId}→${o.memberIdx}`;
     const existing = transferMap.get(key);
     if (existing) {
-      existing.amountMinor += o.fundedMinor;
+      existing.amountMinor += moving;
     } else {
       transferMap.set(key, {
         fromAccountId: from,
         toAccountId: o.accountId,
         memberUserId: members[o.memberIdx]!.userId,
         currency,
-        amountMinor: o.fundedMinor,
+        amountMinor: moving,
         confirmedMinor: 0,
       });
     }
