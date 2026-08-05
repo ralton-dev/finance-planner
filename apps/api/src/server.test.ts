@@ -1708,8 +1708,24 @@ describe("api service", () => {
     expect(plan.allocatedInflowMinor).toBe(50000);
   });
 
-  it("reports a confirmed movement as funded rather than awaiting for ever", async () => {
-    const { auth } = await seedUser(store);
+  /**
+   * Two arrivals, two confirmations, and a line that must only answer to one.
+   *
+   * Money reaches this pot both ways: £150 of transfer the pass derived for the
+   * bill, and a £200 movement the user authored as savings on top (decision 12).
+   * Each is separately confirmable, and the bill is funded out of the derived
+   * one — every expense is paid from member budgets before a single savings
+   * movement runs (decision 8), so the money a line leans on is never authored
+   * money.
+   *
+   * This test used to assert the opposite, and pinned the defect: `status` was
+   * decided against `confirmedInflowMinor`, which counts both, so confirming the
+   * savings movement declared the bill funded while the transfer that actually
+   * pays it had not been made. Wrong status about money, which is the category
+   * this project exists to get right (ONE-ENGINE.md, WP-V).
+   */
+  it("does not let a confirmed savings movement declare a bill's transfer made", async () => {
+    const { auth, user } = await seedUser(store);
     const { current, pot, movement } = await seedFundedMovement(auth, [
       { name: "Council tax", amountMinor: 15000, priority: 1 },
     ]);
@@ -1722,6 +1738,7 @@ describe("api service", () => {
     // £150 of derived feed for the bill, plus the £200 the movement authors.
     expect(before.allocatedInflowMinor).toBe(35000);
     expect(before.confirmedInflowMinor).toBe(0);
+    expect(before.confirmedTransferMinor).toBe(0);
     expect(before.lines[0].status).toBe("awaiting_transfer");
 
     await app.inject({
@@ -1729,18 +1746,21 @@ describe("api service", () => {
       url: `/api/inflows/${movement.id}/confirm`,
       headers: auth,
     });
-    const after = await planOf();
-    expect(after.confirmedInflowMinor).toBe(20000);
-    expect(after.lines[0].status).toBe("funded");
+    const afterMovement = await planOf();
+    // The savings arrived; the bill's transfer did not. £200 of the £350 has
+    // moved and none of it is the £150 this line is funded with.
+    expect(afterMovement.confirmedInflowMinor).toBe(20000);
+    expect(afterMovement.confirmedTransferMinor).toBe(0);
+    expect(afterMovement.lines[0].status).toBe("awaiting_transfer");
     // Nobody else is involved, so there is no household — but there is very much
     // a sender, and it is one of the caller's own accounts. Membership of a
     // household was never what made that safe to say. Both producers show:
     // the transfer the pass derived (the caller's own, so nameable) and the
     // movement they authored.
-    expect(after.inflowSources).toEqual([
+    expect(afterMovement.inflowSources).toEqual([
       {
         kind: "member",
-        memberUserId: expect.any(String),
+        memberUserId: user.id,
         displayName: "Owner",
         fromAccountId: current.id,
         amountMinor: 15000,
@@ -1755,6 +1775,42 @@ describe("api service", () => {
         confirmedMinor: 20000,
       },
     ]);
+
+    // And the converse: confirming the derived transfer settles the line, with
+    // the savings movement's own confirmation neither needed nor consulted.
+    const confirmed = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/transfers/confirm`,
+      headers: auth,
+      payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
+    });
+    expect(confirmed.statusCode).toBe(201);
+    const afterTransfer = await planOf();
+    expect(afterTransfer.confirmedInflowMinor).toBe(35000);
+    expect(afterTransfer.confirmedTransferMinor).toBe(15000);
+    expect(afterTransfer.lines[0].status).toBe("funded");
+  });
+
+  /** The same converse from the other side: the transfer alone settles the line,
+   *  with no authored movement confirmed at any point. */
+  it("settles a line on its derived transfer alone, savings untouched", async () => {
+    const { auth, user } = await seedUser(store);
+    const { current, pot } = await seedFundedMovement(auth, [
+      { name: "Council tax", amountMinor: 15000, priority: 1 },
+    ]);
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/transfers/confirm`,
+      headers: auth,
+      payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
+    });
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${pot.id}/plan`, headers: auth })
+    ).json();
+    expect(plan.confirmedTransferMinor).toBe(15000);
+    // The £200 movement is still unconfirmed, and says nothing about the bill.
+    expect(plan.confirmedInflowMinor).toBe(15000);
+    expect(plan.lines[0].status).toBe("funded");
   });
 
   it("closes a standalone pot's month on its own income plus what moved into it", async () => {

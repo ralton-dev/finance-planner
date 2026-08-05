@@ -174,6 +174,11 @@ describe("requiredMonthlyForPayment", () => {
  * expectation from the code under test would make it agree with itself. The one
  * field dropped is `internalInflowUsedMinor`, which existed solely to feed the
  * rollup netting deleted with it (see `overviewFromPlans`).
+ *
+ * `confirmedTransferMinor` is the one field *added* since — the derived half of
+ * `confirmedInflowMinor`, which line statuses are now decided against (WP-V).
+ * Nothing arrives at this account, so it is zero and no figure here moves; the
+ * pin is otherwise untouched.
  */
 const ACCOUNT_ENGINE_AT_40F65D8: AccountPlan = {
   accountId: "current",
@@ -182,6 +187,7 @@ const ACCOUNT_ENGINE_AT_40F65D8: AccountPlan = {
   monthlyIncomeMinor: 150000,
   allocatedInflowMinor: 0,
   confirmedInflowMinor: 0,
+  confirmedTransferMinor: 0,
   bufferMinor: 20000,
   totalRequiredMinor: 163462,
   totalFundedMinor: 130000,
@@ -504,6 +510,108 @@ describe("accountPlanFromScope — arriving money and what it funds", () => {
     expect(plan.leftoverMinor).toBe(20_000);
     expect(plan.totalRequiredMinor).toBe(0);
     expect(plan.lines).toEqual([]);
+  });
+});
+
+/**
+ * Two arrivals, two confirmations, and a status that must only answer to one.
+ *
+ * Money reaches this pot both ways: the £600 transfer the pass derives for the
+ * rent, and a £200 movement authored as savings on top of it (decision 12). A
+ * line is only ever funded from the first — every expense is paid out of member
+ * budgets before a single savings movement runs (decision 8) — and `status` was
+ * being decided against the total of both, so confirming the savings declared
+ * the rent's transfer made.
+ */
+describe("accountPlanFromScope — the two confirmations are not one figure", () => {
+  const scopeWith = (over: {
+    transferConfirmedMinor?: number;
+    movementConfirmedMinor?: number;
+  }): ScopeInput => ({
+    scopeId: "owner",
+    members: [{ userId: "owner", shareBp: 10_000 }],
+    accounts: [
+      {
+        accountId: "current",
+        role: "personal",
+        memberUserId: "owner",
+        currency: "GBP",
+        incomes: [{ id: "inc", amountMinor: 100_000, frequency: "monthly", anchorDate: AS_OF }],
+        payments: [],
+        outboundInflows: [
+          {
+            id: "topup",
+            toAccountId: "pot",
+            amountMinor: 20_000,
+            frequency: "monthly",
+            anchorDate: AS_OF,
+            priority: 10,
+          },
+        ],
+      },
+      {
+        accountId: "pot",
+        role: "personal",
+        memberUserId: "owner",
+        currency: "GBP",
+        incomes: [],
+        payments: [
+          {
+            id: "rent",
+            name: "rent",
+            category: "monthly_recurring",
+            scope: "personal",
+            amountMinor: 60_000,
+            priority: 1,
+          },
+        ],
+        confirmedArrivals:
+          over.movementConfirmedMinor === undefined
+            ? []
+            : [{ inflowId: "topup", confirmedMinor: over.movementConfirmedMinor }],
+      },
+    ],
+    ...(over.transferConfirmedMinor === undefined
+      ? {}
+      : {
+          confirmedTransfers: [
+            {
+              fromAccountId: "current",
+              toAccountId: "pot",
+              memberUserId: "owner",
+              confirmedMinor: over.transferConfirmedMinor,
+            },
+          ],
+        }),
+  });
+
+  const planOf = (over: Parameters<typeof scopeWith>[0]) => {
+    const scope = scopeWith(over);
+    return accountPlanFromScope(scope, computeScopePlan(scope, AS_OF), "pot");
+  };
+
+  it("splits the confirmed total into the transfer's part and the movement's", () => {
+    const plan = planOf({});
+    expect(plan.allocatedInflowMinor).toBe(80_000);
+    expect(plan.confirmedInflowMinor).toBe(0);
+    expect(plan.confirmedTransferMinor).toBe(0);
+    expect(plan.lines[0]!.status).toBe("awaiting_transfer");
+  });
+
+  it("leaves the line awaiting when only the savings movement has moved", () => {
+    const plan = planOf({ movementConfirmedMinor: 20_000 });
+    expect(plan.confirmedInflowMinor).toBe(20_000);
+    // None of it is the money the rent is funded with.
+    expect(plan.confirmedTransferMinor).toBe(0);
+    expect(plan.lines[0]!.fundedFromInflowMinor).toBe(60_000);
+    expect(plan.lines[0]!.status).toBe("awaiting_transfer");
+  });
+
+  it("settles the line on the derived transfer alone, savings untouched", () => {
+    const plan = planOf({ transferConfirmedMinor: 60_000 });
+    expect(plan.confirmedInflowMinor).toBe(60_000);
+    expect(plan.confirmedTransferMinor).toBe(60_000);
+    expect(plan.lines[0]!.status).toBe("funded");
   });
 });
 

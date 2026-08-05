@@ -385,6 +385,10 @@ export interface AccountPlanDto {
   /** Of `allocatedInflowMinor`, how much somebody has said actually moved. The
    *  rest funds the arithmetic while its lines read `awaiting_transfer`. */
   confirmedInflowMinor?: number;
+  /** Of that, the part confirming transfers the plan **derived**, which is the
+   *  only money a payment line is ever funded with — the rest confirms authored
+   *  savings movements and decides no line's status. */
+  confirmedTransferMinor?: number;
   /** Of `allocatedInflowMinor`, what each movement from another account
    *  delivered. Empty for an account nothing moves into. */
   inflowArrivals?: InflowArrivalDto[];

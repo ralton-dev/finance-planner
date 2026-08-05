@@ -202,6 +202,18 @@ export function accountPlanFromScope(
     for (const p of acc.payments) payments.set(p.id, p);
   }
 
+  // What has been confirmed of the transfers the pass **derived** into this
+  // account, and only those. A line's `fundedFromInflowMinor` is derived-transfer
+  // money by construction: phase 2 funds every expense out of member budgets from
+  // a pool holding nothing but the derived feed, and authored movements are
+  // savings funded afterwards (decision 8). So the money a line leans on is this
+  // money, and asking `confirmedInflowMinor` — which counts confirmed savings
+  // arrivals too — let a confirmed £400 movement declare a bill funded that was
+  // still waiting on an unconfirmed £303.20 feed.
+  const confirmedTransferMinor = plan.transfers
+    .filter((t) => t.toAccountId === accountId)
+    .reduce((sum, t) => sum + t.confirmedMinor, 0);
+
   // How much of the arriving money the lines above have already leaned on.
   // Confirmed money is spent before merely promised money, so a line rests on a
   // transfer nobody has made exactly when its slice runs past the confirmed
@@ -215,7 +227,7 @@ export function accountPlanFromScope(
       const funded = l.fundedFromOwnMinor + l.fundedFromInflowMinor;
       const drewOnUnconfirmed =
         l.fundedFromInflowMinor > 0 &&
-        inflowUsed + l.fundedFromInflowMinor > account.confirmedInflowMinor;
+        inflowUsed + l.fundedFromInflowMinor > confirmedTransferMinor;
       inflowUsed += l.fundedFromInflowMinor;
       const status: PaymentPlanStatus = !l.onTrack
         ? "at_risk"
@@ -298,6 +310,7 @@ export function accountPlanFromScope(
     monthlyIncomeMinor: account.monthlyIncomeMinor,
     allocatedInflowMinor: account.allocatedInflowMinor,
     confirmedInflowMinor: account.confirmedInflowMinor,
+    confirmedTransferMinor,
     bufferMinor: account.bufferMinor,
     totalRequiredMinor: account.requiredOutflowMinor,
     totalFundedMinor: account.fundedOutflowMinor,

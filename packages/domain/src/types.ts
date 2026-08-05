@@ -234,6 +234,22 @@ export interface AccountPlan {
   allocatedInflowMinor: number;
   /** How much of `allocatedInflowMinor` has actually been moved (>= 0). */
   confirmedInflowMinor: number;
+  /**
+   * Of `confirmedInflowMinor`, the part confirming transfers the pass **derived**
+   * (>= 0). The rest of it confirms **authored** movements, and is itemised per
+   * movement on `inflowArrivals`.
+   *
+   * Two arrivals, two confirmations, and one total could not answer both
+   * questions. A line is only ever funded from a derived transfer — every
+   * expense is paid out of member budgets before a single savings movement runs
+   * (decision 8), so `fundedFromInflowMinor` is expense transport by
+   * construction — and while `status` was decided against the combined total,
+   * confirming a £400 savings movement flipped a bill still waiting on an
+   * unconfirmed £303.20 derived feed from `awaiting_transfer` to `funded`. This
+   * is the figure that decides it, and it is the one the money it describes
+   * actually came from.
+   */
+  confirmedTransferMinor: number;
   /** Monthly amount reserved before funding goals (>= 0). */
   bufferMinor: number;
   totalRequiredMinor: number;
