@@ -481,6 +481,27 @@ const exportAccountInflow = z.object({
   confirmations: z.array(exportInflowConfirmation).default([]),
 });
 
+/**
+ * "I moved this money", for a transfer the **plan derived** rather than one
+ * anybody authored.
+ *
+ * The same fact as `exportInflowConfirmation` about a movement with no row: an
+ * expense pot with no income of its own is fed by a transfer the pass works
+ * out, and since migration 0010 that transfer can be confirmed by a user with
+ * no household. There is no `accountInflow` to hang it off — that is the whole
+ * point of a derived feed — so it travels beside them, on the account the money
+ * lands in, naming its sender the way `exportAccountInflow` does: by name,
+ * because ids are minted fresh on import.
+ *
+ * Confirmations belonging to a household stay out of the file for the reason
+ * the header gives, and so does one recorded by anybody but the exporter: it is
+ * somebody else's record of their own money moving.
+ */
+const exportDerivedTransferConfirmation = exportInflowConfirmation.extend({
+  /** The exported account this money left. */
+  fromAccountName: z.string().min(1),
+});
+
 const exportBalanceSnapshot = z.object({
   asOfDate: isoDate,
   /** May be negative (overdraft). */
@@ -503,6 +524,10 @@ const exportAccount = z.object({
   monthlyBufferMinor: amountMinor.default(0),
   incomes: z.array(exportIncome).default([]),
   accountInflows: z.array(exportAccountInflow).default([]),
+  /** Confirmed transfers into this account that no movement above describes,
+   *  because the plan derived them. Defaulted, so a file written before this
+   *  field existed still reads. */
+  derivedTransferConfirmations: z.array(exportDerivedTransferConfirmation).default([]),
   payments: z.array(exportPayment).default([]),
   balanceSnapshots: z.array(exportBalanceSnapshot).default([]),
   closes: z.array(exportMonthClose).default([]),

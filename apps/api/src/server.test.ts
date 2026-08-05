@@ -3907,6 +3907,7 @@ describe("export / import", () => {
       incomes: 1,
       accountInflows: 0,
       accountInflowConfirmations: 0,
+      derivedTransferConfirmations: 0,
       payments: 1,
       contributions: 1,
       balanceSnapshots: 1,

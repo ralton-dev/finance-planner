@@ -222,6 +222,102 @@ describe("importExport — movements survive the round trip", () => {
     expect(await store.listTransferConfirmations(household.id, "2026-08-01")).toHaveLength(1);
   });
 
+  /**
+   * The other kind of "I moved it", and the one the export could not see.
+   *
+   * A pot with bills and no income of its own is fed by a transfer the *plan*
+   * derives — nobody authors a movement for it (decision 9) — and since
+   * migration 0010 a user with no household can confirm one. It carries neither
+   * a household id nor an inflow id, so the movements-only export walked
+   * straight past it and a restore flipped those lines back to
+   * `awaiting_transfer`. There is deliberately no authored movement anywhere in
+   * this fixture: the whole point is that this confirmation exists without one.
+   */
+  it("carries a confirmation of a transfer the plan derived, with no movement to hang it on", async () => {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Bills pot");
+    await salary(current, 300_000);
+    await store.createTransferConfirmation({
+      householdId: null,
+      inflowId: null,
+      month: "2026-08-01",
+      fromAccountId: current.id,
+      toAccountId: pot.id,
+      memberUserId: userId,
+      amountMinor: 30_320,
+    });
+
+    const file = await buildExport(store, userId, ASOF);
+    const exported = file.accounts.find((a) => a.name === "Bills pot")!;
+    expect(exported.accountInflows).toEqual([]);
+    expect(exported.derivedTransferConfirmations).toEqual([
+      { fromAccountName: "Current", month: "2026-08-01", amountMinor: 30_320 },
+    ]);
+    // Once, under the account the money lands in — not again under the sender.
+    expect(file.accounts.find((a) => a.name === "Current")!.derivedTransferConfirmations).toEqual(
+      [],
+    );
+    expect(exportFileSchema.parse(JSON.parse(JSON.stringify(file)))).toBeTruthy();
+
+    const targetId = await seedUser("restore@example.com");
+    expect(await importExport(store, targetId, file)).toMatchObject({
+      accountInflowConfirmations: 0,
+      derivedTransferConfirmations: 1,
+    });
+    const restored = await store.listAccountsForOwner(targetId);
+    const newPot = restored.find((a) => a.name === "Bills pot")!;
+    const newCurrent = restored.find((a) => a.name === "Current")!;
+    expect(await store.listDerivedTransferConfirmationsForAccount(newPot.id, "2026-08-01")).toEqual(
+      [
+        expect.objectContaining({
+          householdId: null,
+          inflowId: null,
+          fromAccountId: newCurrent.id,
+          toAccountId: newPot.id,
+          memberUserId: targetId,
+          amountMinor: 30_320,
+        }),
+      ],
+    );
+  });
+
+  /** Whose record it is decides whether it travels. A derived confirmation
+   *  belonging to a household is an arrangement between people; one another
+   *  member recorded on your account is their fact about their own money. Both
+   *  stay behind, for the reason the file header gives. */
+  it("leaves behind a derived confirmation that is not the exporter's own", async () => {
+    const userId = await seedUser();
+    const otherId = await seedUser("other@example.com");
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Bills pot");
+    await salary(current, 300_000);
+    const household = await store.createHousehold("Home", userId);
+    await store.createTransferConfirmation({
+      householdId: household.id,
+      inflowId: null,
+      month: "2026-08-01",
+      fromAccountId: current.id,
+      toAccountId: pot.id,
+      memberUserId: userId,
+      amountMinor: 10_000,
+    });
+    await store.createTransferConfirmation({
+      householdId: null,
+      inflowId: null,
+      month: "2026-08-01",
+      fromAccountId: current.id,
+      toAccountId: pot.id,
+      memberUserId: otherId,
+      amountMinor: 20_000,
+    });
+
+    const file = await buildExport(store, userId, ASOF);
+    expect(file.accounts.find((a) => a.name === "Bills pot")!.derivedTransferConfirmations).toEqual(
+      [],
+    );
+  });
+
   it("restores a chain whatever order the accounts appear in", async () => {
     // The account a movement comes from can appear after the account it pays
     // into — which is why accounts are all created before anything inside them.

@@ -905,6 +905,9 @@ export interface ImportCountsDto {
   accountInflows?: number;
   /** "I moved the money", restored against those movements. */
   accountInflowConfirmations?: number;
+  /** The same, for the transfers the plan derives — which have no movement to
+   *  be restored against. */
+  derivedTransferConfirmations?: number;
   payments: number;
   contributions: number;
   balanceSnapshots: number;

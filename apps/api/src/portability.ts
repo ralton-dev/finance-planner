@@ -1,4 +1,4 @@
-import type { ExportFile } from "@finance-planner/contracts";
+import type { ExportAccount, ExportFile } from "@finance-planner/contracts";
 import type { Account, Store } from "@finance-planner/data";
 
 /** The ISO first-of-month a date falls in — how a confirmation is keyed. */
@@ -12,6 +12,9 @@ export interface ImportCounts {
   accountInflows: number;
   /** "I moved the money", restored against those movements. */
   accountInflowConfirmations: number;
+  /** "I moved the money" for a transfer the plan derived, which has no movement
+   *  to be restored against. */
+  derivedTransferConfirmations: number;
   payments: number;
   contributions: number;
   balanceSnapshots: number;
@@ -37,6 +40,13 @@ export interface ImportCounts {
  * funded or `awaiting_transfer` — so leaving it behind meant a restore silently
  * un-moved money that had moved. See `inflowConfirmations` for which months are
  * carried.
+ *
+ * There are **two** shapes of that, not one, and both travel. A confirmation of
+ * an authored movement rides on the movement (`accountInflows[].confirmations`);
+ * a confirmation of a transfer the plan *derived* has no movement to ride on —
+ * nobody wrote the feed down — so it rides on the receiving account, naming its
+ * sender (`derivedTransferConfirmations`). Carrying only the first meant a
+ * backup of a solo user's fed pot came back with every "I moved it" undone.
  *
  * Money arriving is read from `inflows`, both faces of it. Reading it through
  * `listIncomes` — which projects the external rows only — silently dropped every
@@ -88,10 +98,11 @@ export async function buildExport(
     for (const c of contributions) months.add(c.month);
     for (const c of closes) months.add(c.month);
     const confirmedByInflow = new Map<string, { month: string; amountMinor: number }[]>();
-    // Skipped entirely for an account with no movements, which is every account
-    // until the user authors one.
-    if (movements.length > 0) {
-      for (const month of [...months].sort()) {
+    const derivedConfirmations: ExportAccount["derivedTransferConfirmations"] = [];
+    for (const month of [...months].sort()) {
+      // Skipped entirely for an account with no movements, which is every
+      // account until the user authors one.
+      if (movements.length > 0) {
         for (const c of await store.listTransferConfirmationsForAccount(account.id, month)) {
           // Only the arriving side: a movement's confirmation is exported once,
           // under the account the money lands in, which is the account the row
@@ -101,6 +112,29 @@ export async function buildExport(
           list.push({ month: c.month, amountMinor: c.amountMinor });
           confirmedByInflow.set(c.inflowId, list);
         }
+      }
+      // The other kind, which has no movement to hang off and so no `movements`
+      // gate either: a transfer the plan derived, confirmed by a user with no
+      // household (migration 0010). Left out of the file, a restore quietly
+      // flipped those lines back to `awaiting_transfer` — the user's record of
+      // money they really moved, dropped without a word.
+      for (const c of await store.listDerivedTransferConfirmationsForAccount(account.id, month)) {
+        // Arriving side only, same rule as above.
+        if (c.toAccountId !== account.id) continue;
+        // Not the exporter's to carry: a confirmation somebody else recorded is
+        // their record of their own money, and re-creating it under the
+        // importing user would invent a fact — the reasoning that keeps
+        // household-level rows out of the file entirely.
+        if (c.memberUserId !== userId) continue;
+        const fromAccountName = nameById.get(c.fromAccountId);
+        // A sender this file does not carry cannot be named, so it cannot be
+        // restored — the rule `exportAccountInflow` already applies.
+        if (fromAccountName === undefined) continue;
+        derivedConfirmations.push({
+          fromAccountName,
+          month: c.month,
+          amountMinor: c.amountMinor,
+        });
       }
     }
 
@@ -129,6 +163,7 @@ export async function buildExport(
         active: i.active,
         confirmations: confirmedByInflow.get(i.id) ?? [],
       })),
+      derivedTransferConfirmations: derivedConfirmations,
       payments: payments.map((p) => ({
         name: p.name,
         category: p.category,
@@ -204,6 +239,7 @@ export async function importExport(
     incomes: 0,
     accountInflows: 0,
     accountInflowConfirmations: 0,
+    derivedTransferConfirmations: 0,
     payments: 0,
     contributions: 0,
     balanceSnapshots: 0,
@@ -279,6 +315,31 @@ export async function importExport(
         });
         counts.accountInflowConfirmations += 1;
       }
+    }
+
+    // The confirmations with no movement to hang off, restored the same way:
+    // household-free, member is the importing user, one per (sender, month)
+    // because that is what the store keys them by. The contributions such a
+    // confirmation once booked come back under their payments and arrive
+    // unlinked, exactly as an authored movement's do — the limitation above,
+    // unchanged and not widened: what is lost is the tie, never the row.
+    const seenDerived = new Set<string>();
+    for (const c of a.derivedTransferConfirmations) {
+      const fromAccountId = created.get(c.fromAccountName);
+      if (!fromAccountId || fromAccountId === account.id) continue;
+      const key = `${fromAccountId}|${c.month}`;
+      if (seenDerived.has(key)) continue;
+      seenDerived.add(key);
+      await store.createTransferConfirmation({
+        householdId: null,
+        inflowId: null,
+        month: c.month,
+        fromAccountId,
+        toAccountId: account.id,
+        memberUserId: userId,
+        amountMinor: c.amountMinor,
+      });
+      counts.derivedTransferConfirmations += 1;
     }
 
     for (const i of a.incomes) {
