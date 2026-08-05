@@ -263,12 +263,16 @@ export class ApiClient {
   getAccount(id: string) {
     return this.request<AccountDto>("GET", `/api/accounts/${id}`);
   }
+  /**
+   * No `currency`: an account is denominated once, when it is created. The
+   * server answers 422 to a body asking for a different one, so a field here
+   * would only offer callers a request that cannot succeed.
+   */
   updateAccount(
     id: string,
     body: {
       name?: string;
       description?: string | null;
-      currency?: string;
       openingBalanceMinor?: number;
       monthlyBufferMinor?: number;
     },

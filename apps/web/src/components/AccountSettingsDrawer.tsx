@@ -17,7 +17,6 @@ interface Props {
 export function AccountSettingsDrawer({ account, onClose, onSaved, onDeleted, focusField }: Props) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [currency, setCurrency] = useState("GBP");
   const [buffer, setBuffer] = useState("0");
   const [confirmName, setConfirmName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -30,7 +29,6 @@ export function AccountSettingsDrawer({ account, onClose, onSaved, onDeleted, fo
     if (!account) return;
     setName(account.name);
     setDescription(account.description ?? "");
-    setCurrency(account.currency);
     setBuffer((account.monthlyBufferMinor / 100).toFixed(2));
     setConfirmName("");
     setErr(null);
@@ -59,7 +57,6 @@ export function AccountSettingsDrawer({ account, onClose, onSaved, onDeleted, fo
       const updated = await api.updateAccount(account.id, {
         name: name.trim(),
         description: description.trim() === "" ? null : description.trim(),
-        currency: currency.toUpperCase(),
         monthlyBufferMinor: toMinor(buffer),
       });
       onSaved(updated);
@@ -142,20 +139,16 @@ export function AccountSettingsDrawer({ account, onClose, onSaved, onDeleted, fo
           />
         </label>
 
-        <label>
-          currency
-          <input
-            value={currency}
-            onChange={(e) => setCurrency(e.target.value.toUpperCase())}
-            disabled={!canEdit}
-            maxLength={3}
-            required
-            style={{ width: "6rem" }}
-          />
+        {/* A fact, not a field: the chip `RoleCell` uses for a role that cannot
+         *  change. An input here would look editable and be refused with a 422. */}
+        <div className="field">
+          <span className="field-label">currency</span>
+          <span className="tag-status idle">{account.currency}</span>
           <span className="field-hint">
-            iso 4217 code. changing it does not convert existing amounts.
+            fixed when the account was created — planning runs per currency, and every amount here
+            is already in this one. an account in a different currency is a different account.
           </span>
-        </label>
+        </div>
 
         <label>
           monthly buffer
@@ -168,8 +161,8 @@ export function AccountSettingsDrawer({ account, onClose, onSaved, onDeleted, fo
             placeholder="0.00"
           />
           <span className="field-hint">
-            major units of {currency.toUpperCase() || "GBP"} (e.g. <code>100.00</code>). reserved
-            off the top before goals are funded.
+            major units of {account.currency} (e.g. <code>100.00</code>). reserved off the top
+            before goals are funded.
           </span>
         </label>
 

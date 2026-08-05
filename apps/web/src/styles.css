@@ -2619,6 +2619,12 @@ summary > h3 {
 .field-label {
   color: var(--ink-2);
 }
+/* A `.field` whose value is a fact rather than a control — an account's
+ * currency. `.field` is a column, so a chip would blockify and run the drawer's
+ * full width; a chip is a label, and labels are as wide as their word. */
+.field > .tag-status {
+  align-self: flex-start;
+}
 .mode-switch {
   display: inline-flex;
   gap: 0.3rem;

@@ -47,8 +47,16 @@ describe("AccountSettingsDrawer", () => {
     );
     expect(screen.getByDisplayValue("Test Account")).toBeInTheDocument();
     expect(screen.getByDisplayValue("primary current account")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("GBP")).toBeInTheDocument();
     expect(screen.getByDisplayValue("100.00")).toBeInTheDocument();
+  });
+
+  it("shows the currency as a fact, with no input to change it", () => {
+    render(
+      <AccountSettingsDrawer account={account} onClose={noop} onSaved={noop} onDeleted={noop} />,
+    );
+    expect(screen.getByText("GBP")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("GBP")).toBeNull();
+    expect(screen.getByText(/fixed when the account was created/)).toBeInTheDocument();
   });
 
   it("disables the delete button until the user types the exact account name", () => {
@@ -93,9 +101,11 @@ describe("AccountSettingsDrawer", () => {
     const body = JSON.parse(init.body);
     expect(body).toMatchObject({
       name: "Test Account Personal",
-      currency: "GBP",
       monthlyBufferMinor: 10000,
     });
+    // The server refuses a *different* currency, not the field's presence — so
+    // this is the client no longer asking, which is what makes it moot.
+    expect(body).not.toHaveProperty("currency");
   });
 
   it("hides the danger zone for non-owners and disables the form", () => {
