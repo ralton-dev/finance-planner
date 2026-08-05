@@ -1,6 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { QuickAddProvider } from "../contexts/QuickAddContext.js";
 import { phraseText } from "../lib/money.js";
+import { AccountsPage } from "../pages/AccountsPage.js";
+import { OverviewPage } from "../pages/OverviewPage.js";
+import { stubApiFetch } from "../test/apiMock.js";
 import type { AccountPlanDto, PlanInflowSourceDto } from "../lib/types.js";
 import {
   daysUntilNextMonthly,
@@ -727,5 +732,180 @@ describe("PlanSummary — one number, on every surface", () => {
     const older: AccountPlanDto = { ...sender, residualMinor: undefined };
     render(<PlanSummary plan={older} />);
     expect(screen.getByText("left over").parentElement).toHaveTextContent("£2,625.80");
+  });
+});
+
+/**
+ * **The acceptance this package exists for: one account, three screens, one
+ * figure.**
+ *
+ * The fixture is the savings pot the report opened with — no income of its own,
+ * £200 left in it after the month, and `leftoverMinor` of nought because the
+ * money that reached it is the sender's surplus and not the pot's. The pot read
+ * **£0.00** on the accounts index and on the dashboard while its own page read
+ * **£200.00**, which is one account described two ways by three screens.
+ *
+ * All three now go through `leftOverMinor`, so the only way to break this is to
+ * add a fourth surface that does not — and `LeftOverCell` is there so that a
+ * fourth surface has nothing to get wrong.
+ */
+describe("one account's left over, on all three surfaces", () => {
+  const ME = { id: "u1", email: "ada@example.com", displayName: "Ada", households: [] };
+
+  /** The pot as `GET /api/accounts` lists it. */
+  const POT_ACCOUNT = {
+    id: "pot",
+    name: "Holiday pot",
+    description: null,
+    currency: "GBP",
+    openingBalanceMinor: 0,
+    monthlyBufferMinor: 0,
+    owner: true,
+    permission: "edit" as const,
+    ownerUserId: "u1",
+  };
+
+  /** The same pot as `GET /api/overview` summarises it. `leftoverMinor` is
+   *  nought and the residual is £200 — the exact divergence that made the two
+   *  lists disagree with the account page. */
+  const POT_STATE = {
+    accountId: "pot",
+    name: "Holiday pot",
+    householdId: null,
+    householdRole: null,
+    monthlyIncomeMinor: 0,
+    allocatedInflowMinor: 40_000,
+    confirmedInflowMinor: 40_000,
+    ownerUserId: "u1",
+    leftoverMinor: 0,
+    residualMinor: 20_000,
+    shortfallMinor: 0,
+    atRiskCount: 0,
+    latestBalanceMinor: 20_000,
+    latestBalanceDate: AS_OF,
+    reservedMinor: 0,
+    unrecordedCount: 0,
+    unrecordedTotalMinor: 0,
+  };
+
+  /** And as `GET /api/accounts/pot/plan` computes it: the same two fields. */
+  const POT_PLAN: AccountPlanDto = {
+    ...plan,
+    accountId: "pot",
+    monthlyIncomeMinor: 0,
+    totalRequiredMinor: 20_000,
+    totalFundedMinor: 20_000,
+    allocatedInflowMinor: 40_000,
+    confirmedInflowMinor: 40_000,
+    leftoverMinor: 0,
+    residualMinor: 20_000,
+    lines: [],
+  };
+
+  const routes = {
+    "GET /api/auth/me": { body: ME },
+    "GET /api/accounts": { body: [POT_ACCOUNT] },
+    "GET /api/overview": {
+      body: {
+        asOfDate: AS_OF,
+        perCurrency: [
+          {
+            currency: "GBP",
+            monthlyIncomeMinor: 0,
+            bufferMinor: 0,
+            totalRequiredMinor: 20_000,
+            totalFundedMinor: 20_000,
+            leftoverMinor: 0,
+            shortfallMinor: 0,
+            you: { leftoverMinor: 20_000, shortfallMinor: 0, paymentCount: 0 },
+            accounts: [POT_STATE],
+          },
+        ],
+      },
+    },
+    "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
+    "GET /api/me/closes": { body: [] },
+    "GET /api/meta": { body: { demoSeedEnabled: false } },
+  };
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  /** The LEFT OVER / MO cell of the pot's row, on whichever page is rendered. */
+  async function rowFigure(page: React.ReactElement): Promise<string> {
+    stubApiFetch(routes);
+    const { container } = render(<MemoryRouter>{page}</MemoryRouter>);
+    const row = await waitFor(() => {
+      const found = [...container.querySelectorAll("tbody tr")].find((r) =>
+        r.textContent?.includes("Holiday pot"),
+      );
+      expect(found).toBeDefined();
+      return found!;
+    });
+    // Third column on both tables: account, balance, left over / mo.
+    return row.querySelectorAll("td")[2]!.textContent ?? "";
+  }
+
+  it("reads the same on its own page, the accounts index and the dashboard", async () => {
+    render(<PlanSummary plan={POT_PLAN} />);
+    const own = screen.getByText("left over").parentElement!.textContent ?? "";
+    cleanup();
+
+    const index = await rowFigure(
+      <QuickAddProvider>
+        <AccountsPage />
+      </QuickAddProvider>,
+    );
+    cleanup();
+    vi.unstubAllGlobals();
+
+    const dashboard = await rowFigure(
+      <QuickAddProvider>
+        <OverviewPage />
+      </QuickAddProvider>,
+    );
+
+    expect(own).toContain("£200.00");
+    expect(index).toBe("£200.00");
+    expect(dashboard).toBe("£200.00");
+    // And the field the two lists used to print, so this cannot pass by all
+    // three quietly reading `leftoverMinor` again.
+    expect(index).not.toBe("£0.00");
+    expect(dashboard).not.toBe("£0.00");
+  });
+
+  it("shows the em dash on all three when the pot never had a surplus", async () => {
+    const empty = { ...POT_STATE, residualMinor: 0, allocatedInflowMinor: 0 };
+    routes["GET /api/overview"] = {
+      body: {
+        ...(routes["GET /api/overview"].body as { asOfDate: string; perCurrency: unknown[] }),
+        perCurrency: [
+          {
+            currency: "GBP",
+            monthlyIncomeMinor: 0,
+            bufferMinor: 0,
+            totalRequiredMinor: 0,
+            totalFundedMinor: 0,
+            leftoverMinor: 0,
+            shortfallMinor: 0,
+            you: { leftoverMinor: 0, shortfallMinor: 0, paymentCount: 0 },
+            accounts: [empty],
+          },
+        ],
+      },
+    };
+
+    render(<PlanSummary plan={{ ...POT_PLAN, residualMinor: 0, allocatedInflowMinor: 0 }} />);
+    expect(screen.getByText("left over").parentElement).toHaveTextContent("—");
+    cleanup();
+
+    const index = await rowFigure(
+      <QuickAddProvider>
+        <AccountsPage />
+      </QuickAddProvider>,
+    );
+    expect(index).toBe("—");
   });
 });

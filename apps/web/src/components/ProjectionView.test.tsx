@@ -216,6 +216,98 @@ describe("ProjectionView", () => {
   });
 });
 
+/**
+ * **The account page stops disagreeing with itself.**
+ *
+ * The strip's footer is labelled `left over` and sat a few hundred pixels under
+ * a KPI with the same label. It printed `MonthProjection.leftoverMinor`, which
+ * is `plan.leftoverMinor` verbatim, while the KPI printed the residual — £2,501
+ * under £2,051, and £0.00 under £200.00 for a savings pot. ONE-ENGINE WP-Q's
+ * acceptance already read "an account's projection month 1 equals its plan for
+ * the same date, asserted directly", and it did: against the field the strip
+ * happened to read. That is the fifth instance in this repo of a test asserting
+ * the field its component reads.
+ *
+ * Both surfaces now read one derivation, and the strip never reconstructs it —
+ * `residualMinor` on an account, `membersLeftoverMinor` on a household, and
+ * `leftoverMinor` only where an older payload carries nothing better.
+ */
+describe("the strip's left over, and the figure above it", () => {
+  /** The savings pot: £400 arriving, £200 of it spent, £200 still in it. */
+  const pot: AccountProjectionDto = {
+    ...projection,
+    months: projection.months.map((m, i) => ({
+      ...m,
+      leftoverMinor: 0,
+      shortfallMinor: 0,
+      residualMinor: 20_000 + i,
+    })),
+  };
+
+  it("prints the month's residual, which is what the KPI above it prints", async () => {
+    render(<ProjectionView load={loader(pot)} />);
+    await screen.findByText("aug 26");
+
+    const footer = [...document.querySelectorAll(".months-grid tfoot tr")].find(
+      (r) => r.querySelector("th")?.textContent === "left over",
+    )!;
+    const cells = [...footer.querySelectorAll("td")].map((c) => c.textContent);
+    expect(cells).toEqual(["£200", "£200", "£200"]);
+    // The old field is nought in every month, so this cannot pass by accident.
+    expect(cells).not.toContain("£0");
+    // The full figure is on the title, and month 1 is the account page's KPI.
+    expect(footer.querySelectorAll("td")[0]!.getAttribute("title")).toBe("£200.00");
+  });
+
+  it("prints the members' sum on a household, not the roster's", async () => {
+    const household: ProjectionData = {
+      currency: "GBP",
+      months: projection.months.map((m) => ({
+        ...m,
+        shortfallMinor: 0,
+        // The roster figure and the members' figure are two derivations, and
+        // WP-AF established they differ: £4,705 against £4,025 on the estate.
+        leftoverMinor: 470_500,
+        membersLeftoverMinor: 402_500,
+      })),
+    };
+    render(<ProjectionView load={loader(household)} />);
+    await screen.findByText("aug 26");
+
+    const footer = [...document.querySelectorAll(".months-grid tfoot tr")].find(
+      (r) => r.querySelector("th")?.textContent === "left over",
+    )!;
+    expect(footer.querySelectorAll("td")[0]!.getAttribute("title")).toBe("£4,025.00");
+  });
+
+  it("says a negative month in amber rather than in green", async () => {
+    // A residual is signed on purpose (decision 11), and the one reading it must
+    // never get is a green minus.
+    const overdrawn: AccountProjectionDto = {
+      ...projection,
+      months: [{ ...projection.months[0]!, shortfallMinor: 0, residualMinor: -24_400 }],
+    };
+    render(<ProjectionView load={loader(overdrawn)} />);
+    await screen.findByText("aug 26");
+
+    const footer = [...document.querySelectorAll(".months-grid tfoot tr")].find(
+      (r) => r.querySelector("th")?.textContent === "left over",
+    )!;
+    const cell = footer.querySelectorAll("td")[0]!;
+    expect(cell.className).toContain("warn");
+    expect(cell.className).not.toContain("ok");
+  });
+
+  it("falls back to leftoverMinor when the wire carries neither", async () => {
+    render(<ProjectionView load={loader()} />);
+    await screen.findByText("aug 26");
+    const footer = [...document.querySelectorAll(".months-grid tfoot tr")].find(
+      (r) => r.querySelector("th")?.textContent === "left over",
+    )!;
+    expect(footer.querySelectorAll("td")[0]!.getAttribute("title")).toBe("£1,600.00");
+  });
+});
+
 describe("projection series", () => {
   it("carries reserved, balance and shortfall per month", () => {
     expect(buildProjectionPoints(projection.months)[1]).toEqual({
