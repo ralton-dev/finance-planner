@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "../lib/api.js";
 import type { AccountDto, AccountPlanDto, InflowDto } from "../lib/types.js";
@@ -75,6 +75,27 @@ function renderFor(
   );
 }
 
+/**
+ * Everything the section fetches on mount, arrived and rendered.
+ *
+ * Five requests go out when it mounts — the account list, the rows arriving,
+ * the rows leaving, who you are, and this month's confirmations — and a
+ * synchronous test body ends before a single one of them lands. React reported
+ * all five state updates as unwrapped by `act`, which is how a permanent
+ * warning came to sit in the suite; and worse, an assertion made before them is
+ * an assertion about the loading state, where "there is nothing on screen"
+ * holds whatever the rule underneath it says. Draining them inside `act` is
+ * what makes the assertion after it one about the section *with its data* —
+ * which is the only version of it worth making.
+ *
+ * A timer rather than a microtask: each of those five is a fetch, then a body
+ * read, then a set-state, so there is a chain to drain and not a tick.
+ */
+const mounted = (): Promise<void> =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
 beforeEach(() => {
   api.setToken(null);
 });
@@ -126,17 +147,26 @@ describe("AccountMovements — the two faces of one row", () => {
 
   it("offers remove on a row it may not edit — the rules differ and so do the buttons", async () => {
     renderFor(POT, {
-      "GET /api/accounts/pot/inflows": {
+      // Answering as the server would — the row is gone once it has been
+      // deleted — so the assertion below can be the row leaving rather than the
+      // request being sent. A request has gone out well before the refetch
+      // behind it has come back, and waiting on the count settles for the first
+      // of those and leaves the second to land after the test.
+      "GET /api/accounts/pot/inflows": () => ({
         body: [
           movement({ id: "mine", accountId: "pot", sourceAccountId: "current" }),
-          movement({
-            id: "theirs",
-            accountId: "pot",
-            sourceAccountId: "theirs",
-            name: "Their gift",
-          }),
+          ...(stub.calls("DELETE /api/inflows/theirs") > 0
+            ? []
+            : [
+                movement({
+                  id: "theirs",
+                  accountId: "pot",
+                  sourceAccountId: "theirs",
+                  name: "Their gift",
+                }),
+              ]),
         ],
-      },
+      }),
       "DELETE /api/inflows/theirs": { status: 204 },
     });
 
@@ -147,12 +177,29 @@ describe("AccountMovements — the two faces of one row", () => {
     expect(theirs!.getByRole("button", { name: "edit" })).toBeDisabled();
 
     fireEvent.click(theirs!.getByRole("button", { name: "✕" }));
-    await waitFor(() => expect(stub.calls("DELETE /api/inflows/theirs")).toBe(1));
+    await waitFor(() => expect(screen.queryByText("Their gift")).toBeNull());
+    expect(stub.calls("DELETE /api/inflows/theirs")).toBe(1);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
 
-  it("shows nothing at all to somebody who can only look, and has nothing to look at", () => {
+  it("shows nothing at all to somebody who can only look, and has nothing to look at", async () => {
     renderFor(POT, {}, { canEdit: false });
+    // The rule is about what the lists say once they have arrived. Asserted
+    // before they do, it was a claim about an empty first paint.
+    await mounted();
     expect(screen.queryByText("movements")).toBeNull();
+  });
+
+  it("shows the same viewer the section the moment there is one thing in it", async () => {
+    // The other half of the rule, and what proves the lists above really had
+    // landed: nothing is hidden from a viewer except an empty section.
+    renderFor(
+      POT,
+      { "GET /api/accounts/pot/inflows": { body: [movement({ id: "in-1", accountId: "pot" })] } },
+      { canEdit: false },
+    );
+    expect(await screen.findByText("movements")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "edit" })).toBeNull();
   });
 });
 
@@ -457,11 +504,25 @@ describe("AccountMovements — the movements nobody authored", () => {
       [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: { body: [] },
     };
 
+    /**
+     * The month's confirmations, answering as the server would: whatever the
+     * ticking and un-ticking so far has left. So the assertion each of these
+     * tests waits on is the button changing what it offers, which is the whole
+     * path — the request, the refetch behind it, and the row coming out of its
+     * busy state. Waiting on the request count instead settles the moment it is
+     * *sent*, and everything after that lands once the test is over.
+     */
     it("posts the confirmation the endpoint is keyed on", async () => {
       renderFor(
         POT,
         {
           ...mine,
+          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: () => ({
+            body:
+              stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`) > 0
+                ? [CONFIRMATION]
+                : [],
+          }),
           [`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`]: {
             status: 201,
             body: { confirmation: CONFIRMATION, contributions: [] },
@@ -471,9 +532,9 @@ describe("AccountMovements — the movements nobody authored", () => {
       );
 
       fireEvent.click(await screen.findByRole("button", { name: "moved" }));
-      await waitFor(() =>
-        expect(stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toBe(1),
-      );
+      // Ticked, and now offering to un-tick it.
+      expect(await screen.findByRole("button", { name: "undo" })).toBeEnabled();
+      expect(stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toBe(1);
       expect(stub.bodyOf(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toEqual({
         fromAccountId: "current",
         toAccountId: "pot",
@@ -486,18 +547,20 @@ describe("AccountMovements — the movements nobody authored", () => {
         POT,
         {
           ...mine,
-          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: {
-            body: [CONFIRMATION],
-          },
+          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: () => ({
+            body: stub.calls("DELETE /api/accounts/pot/transfers/confirmations/conf-1")
+              ? []
+              : [CONFIRMATION],
+          }),
           "DELETE /api/accounts/pot/transfers/confirmations/conf-1": { status: 204 },
         },
         { plan: derivedPlan({ confirmedInflowMinor: 30_320 }) },
       );
 
       fireEvent.click(await screen.findByRole("button", { name: "undo" }));
-      await waitFor(() =>
-        expect(stub.calls("DELETE /api/accounts/pot/transfers/confirmations/conf-1")).toBe(1),
-      );
+      // Un-ticked, and back to asking whether you moved it.
+      expect(await screen.findByRole("button", { name: "moved" })).toBeEnabled();
+      expect(stub.calls("DELETE /api/accounts/pot/transfers/confirmations/conf-1")).toBe(1);
     });
 
     it("offers nothing on somebody else's transfer", async () => {
