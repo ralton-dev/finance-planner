@@ -56,7 +56,34 @@ export interface HouseholdMemberPlan {
   displayName?: string;
   /** Share normalised to sum 10000 across members, for display. */
   shareBp: number;
+  /** Everything this member earns anywhere in the scope. Scope-wide, and it
+   *  keeps that meaning exactly — the split below is added alongside it
+   *  (decision 4/13). */
   monthlyIncomeMinor: number;
+  /** Of that, what lands in the member's own accounts **on this household's
+   *  roster** — the INCOME column of the account table above, for their rows. */
+  householdIncomeMinor: number;
+  /**
+   * The rest of it, named: what they earn into accounts this household does not
+   * hold.
+   *
+   * Two accounts an owner keeps out of a household used to be two accounts it
+   * could not see the income of, because a member's budget was only ever the
+   * roster's. `f3acef8` closed ownership and assignment into one relation so a
+   * member's private pot could reach their salary, and their salary joined the
+   * budget that pays their household share — correctly, and visibly, on a page
+   * whose every other member figure was already scope-wide.
+   *
+   * Published as an amount and no more (Ben, 2026-08-05): a co-member reading
+   * "incl. £1,000 elsewhere" can judge whether the hand-set `contributionShareBp`
+   * split still makes sense, and *which* account it arrives in tells them
+   * nothing they need. `elsewhereObligationMinor`'s sibling on the other side of
+   * the row, and permanent like it — the figure has two halves whether or not
+   * any money crosses between them.
+   *
+   * `householdIncomeMinor + elsewhereIncomeMinor === monthlyIncomeMinor`.
+   */
+  elsewhereIncomeMinor: number;
   /** Total monthly cost attributed to this member (their personal + their
    *  proportional slice of shared costs). Scope-wide, and it keeps that meaning
    *  exactly — the split below is added alongside it (decision 4/13). */
@@ -333,14 +360,26 @@ export function householdPlanFromScope(
       householdObligationMinor += allocation.requiredMinor;
       householdFundedMinor += allocation.fundedMinor;
     }
-    const householdCommittedMinor = accounts
-      .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
-      .reduce((s, a) => s + a.committedMinor, 0);
+    // And what this household's own account rows earn for them and commit for
+    // them — the same accounts, read once, for the same reason: both figures are
+    // printed on the page beneath the halves they explain.
+    let householdIncomeMinor = 0;
+    let householdCommittedMinor = 0;
+    for (const a of accounts) {
+      if (a.role !== "personal" || a.memberUserId !== m.userId) continue;
+      householdIncomeMinor += a.monthlyIncomeMinor;
+      householdCommittedMinor += a.committedMinor;
+    }
     return {
       userId: m.userId,
       displayName: m.displayName,
       shareBp: m.shareBp,
       monthlyIncomeMinor: m.monthlyIncomeMinor,
+      householdIncomeMinor,
+      // Floored like the two below, and for the same reason: the halves come off
+      // one pass, and only a caller pairing a plan with a roster that disagrees
+      // about the roster can make the difference negative.
+      elsewhereIncomeMinor: Math.max(0, m.monthlyIncomeMinor - householdIncomeMinor),
       obligationMinor: m.obligationMinor,
       fundedMinor: m.fundedMinor,
       householdObligationMinor,

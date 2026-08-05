@@ -321,6 +321,71 @@ describe("householdPlanFromScope — the scope is wider than the household", () 
     expect(plan.committedMinor).toBe(0);
     expect(plan.accounts.every((a) => a.committedMinor === 0)).toBe(true);
   });
+
+  /**
+   * WP-AG. The same assumption on the other side of the row, and the one
+   * `f3acef8` created: closing ownership and household assignment into one
+   * relation put a member's private salary into the budget that pays their
+   * household share, so `monthlyIncomeMinor` — scope-wide, like every other
+   * member figure here — began counting £500 the account table beneath it does
+   * not hold and cannot explain.
+   *
+   * The amount is published; the source is not (Ben, 2026-08-05). A co-member
+   * needs it to judge the hand-set share split, and needs nothing more.
+   */
+  it("names what a member earns into an account the household does not hold", () => {
+    const alice = plan.members.find((m) => m.userId === "alice")!;
+    // Decision 4/13: the scope-wide figure is untouched — £3,000 salary plus the
+    // £500 landing in the account nobody assigned here.
+    expect(alice.monthlyIncomeMinor).toBe(350_000);
+    expect(alice.householdIncomeMinor).toBe(300_000);
+    expect(alice.elsewhereIncomeMinor).toBe(50_000);
+  });
+
+  it("reconciles income the same way: the two halves are the pass's whole", () => {
+    const scope = computeScopePlan(wider, ASOF).partitions.find((p) => p.currency === "GBP")!;
+    for (const m of plan.members) {
+      expect(m.householdIncomeMinor + m.elsewhereIncomeMinor).toBe(m.monthlyIncomeMinor);
+      expect(m.monthlyIncomeMinor).toBe(
+        scope.members.find((s) => s.userId === m.userId)!.monthlyIncomeMinor,
+      );
+    }
+    // And the household half is the INCOME column of the table above, for this
+    // member's rows — figure and breakdown off one set of accounts (WP-V).
+    const fromAccounts = plan.accounts
+      .filter((a) => a.role === "personal" && a.memberUserId === "alice")
+      .reduce((s, a) => s + a.monthlyIncomeMinor, 0);
+    expect(fromAccounts).toBe(plan.members.find((m) => m.userId === "alice")!.householdIncomeMinor);
+  });
+
+  it("leaves a member who banks only here with no elsewhere half", () => {
+    const bob = plan.members.find((m) => m.userId === "bob")!;
+    expect(bob.elsewhereIncomeMinor).toBe(0);
+    expect(bob.householdIncomeMinor).toBe(bob.monthlyIncomeMinor);
+  });
+
+  it("names it whether or not any of that money crosses into the household", () => {
+    // The same £500, in an account that sends the household nothing. The figure
+    // has two halves permanently — like every other `elsewhere*` field on this
+    // interface — rather than a note that appears when money moves.
+    const sealed = view(
+      household({
+        accounts: [
+          ...household().accounts,
+          acc({
+            accountId: "alice-private",
+            role: "personal",
+            memberUserId: "alice",
+            incomes: [income("side", 50_000)],
+          }),
+        ],
+      }),
+    );
+    expect(sealed.transfers.every((t) => t.fromAccountId !== "alice-private")).toBe(true);
+    const alice = sealed.members.find((m) => m.userId === "alice")!;
+    expect(alice.householdIncomeMinor).toBe(300_000);
+    expect(alice.elsewhereIncomeMinor).toBe(50_000);
+  });
 });
 
 describe("householdPlanFromScope — a member's costs the household's lines do not carry", () => {

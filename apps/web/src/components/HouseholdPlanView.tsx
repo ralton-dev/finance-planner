@@ -281,7 +281,24 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
                   <span className="row-sub">{pct(m.shareBp)} share</span>
                 </td>
                 <td className="num wide-only">{pct(m.shareBp)}</td>
-                <td className="num">{formatMinor(m.monthlyIncomeMinor, c)}</td>
+                {/* INCOME is scope-wide too, and became so in production the
+                    moment a member's own accounts stopped having to be on this
+                    roster to reach their budget (`f3acef8`). A salary paid into
+                    an account the household does not hold is in this figure and
+                    in nothing the page prints beneath it, so it gets THEIR
+                    COSTS's word for the same gap. The amount, never the account:
+                    it is what tells a co-member whether the share split still
+                    makes sense, and nothing about *where* it lands is theirs.
+                    Unconditional, like the column — a member's income is a
+                    standing fact, not something a month can make absent. */}
+                <td className="num">
+                  {formatMinor(m.monthlyIncomeMinor, c)}
+                  {(m.elsewhereIncomeMinor ?? 0) > 0 && (
+                    <span className="cell-note">
+                      incl. {formatMinor(m.elsewhereIncomeMinor ?? 0, c)} elsewhere
+                    </span>
+                  )}
+                </td>
                 {/* THEIR COSTS is what the pass attributes to this person
                     across the whole scope; the lines beneath this table are
                     only the household's own accounts. Decision 9 made those two

@@ -594,7 +594,15 @@ export interface HouseholdMemberPlanDto {
   userId: string;
   displayName?: string;
   shareBp: number;
+  /** Scope-wide: everything they earn, into this household's accounts and
+   *  anywhere else. Split by the pair below. */
   monthlyIncomeMinor: number;
+  /** Of that, what lands in their own accounts on this household's roster. */
+  householdIncomeMinor?: number;
+  /** The rest: what they earn into accounts the household does not hold. An
+   *  amount and no more — a co-member needs it to judge the share split, and the
+   *  account it arrives in is not theirs to see. */
+  elsewhereIncomeMinor?: number;
   /** Scope-wide: everything the pass attributes to them, on the household's
    *  accounts and anywhere else. Split by the two pairs below. */
   obligationMinor: number;

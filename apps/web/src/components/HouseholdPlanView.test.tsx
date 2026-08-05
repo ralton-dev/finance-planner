@@ -383,6 +383,63 @@ describe("HouseholdPlanView · costs the household's lines do not carry", () => 
 });
 
 /**
+ * The same shape one column back, and the one `f3acef8` created.
+ *
+ * Closing ownership and household assignment into one relation put every account
+ * a member owns into one scope with the household's, so a salary paid into an
+ * account nobody assigned here now funds their household share — and shows in
+ * INCOME, which is scope-wide like every other cell on the row. Bo banks
+ * entirely outside this household: the £2,000 was in the figure and in nothing
+ * the account table above it holds.
+ *
+ * The amount is published and the account is not (Ben, 2026-08-05): a co-member
+ * reads it to judge whether the hand-set share split still makes sense, and
+ * which account it lands in tells them nothing they need.
+ */
+describe("HouseholdPlanView · income the household's accounts do not hold", () => {
+  /** Alex's salary lands in a household account; Bo's lands nowhere near one. */
+  const elsewhere: HouseholdPlanDto = {
+    ...PLAN,
+    members: [
+      { ...PLAN.members[0]!, householdIncomeMinor: 260_000, elsewhereIncomeMinor: 0 },
+      { ...PLAN.members[1]!, householdIncomeMinor: 0, elsewhereIncomeMinor: 200_000 },
+    ],
+  };
+
+  /** The INCOME cell of one person row — column three, after the folding share. */
+  const incomeCell = (container: HTMLElement, row: number): HTMLTableCellElement =>
+    [...tables(container)[1]!.querySelectorAll("tbody tr")[row]!.querySelectorAll("td")][2]!;
+
+  it("says how much of a member's income is somewhere this page is not", () => {
+    const { container } = render(<HouseholdPlanView plan={elsewhere} />);
+    const cell = incomeCell(container, 1);
+    expect(cell).toHaveTextContent("£2,000.00");
+    expect(cell.querySelector(".cell-note")).toHaveTextContent("incl. £2,000.00 elsewhere");
+    // The amount, and no route to the account it arrives in.
+    expect(cell.textContent).not.toMatch(/account/i);
+  });
+
+  it("says nothing at all for a member who banks entirely in the household", () => {
+    const { container } = render(<HouseholdPlanView plan={elsewhere} />);
+    expect(incomeCell(container, 0).querySelector(".cell-note")).toBeNull();
+  });
+
+  /**
+   * The column itself never goes away — the mistake WP-AA made one column along,
+   * where COMMITTED was gated on the household's total and vanished for a
+   * household whose members commit only elsewhere. Income has no such gate to
+   * get wrong: everyone on this table has some, wherever it lands, and a page
+   * with no elsewhere income anywhere still owes every member the figure.
+   */
+  it("prints the income column for a payload that has never heard of the split", () => {
+    const { container } = render(<HouseholdPlanView plan={PLAN} />);
+    expect(incomeCell(container, 0)).toHaveTextContent("£2,600.00");
+    expect(incomeCell(container, 1)).toHaveTextContent("£2,000.00");
+    expect(tables(container)[1]!.querySelectorAll("tbody .cell-note")).toHaveLength(0);
+  });
+});
+
+/**
  * The same shape one column along, and the money it was paying people twice.
  *
  * Every cell on a per-person row is scope-wide — their income, their costs,
