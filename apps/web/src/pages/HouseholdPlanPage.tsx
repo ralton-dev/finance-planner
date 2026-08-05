@@ -3,7 +3,6 @@ import { Link, useParams } from "react-router-dom";
 import { Fold } from "../components/Fold.js";
 import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
 import { MemberTagBars } from "../components/MemberTagBars.js";
-import { MonthScorecard } from "../components/MonthScorecard.js";
 import { ProjectionView } from "../components/ProjectionView.js";
 import { TagBreakdown } from "../components/TagBreakdown.js";
 import { TransferChecklist } from "../components/TransferChecklist.js";
@@ -16,7 +15,6 @@ import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import type {
   HouseholdDetailDto,
   HouseholdPlanDto,
-  MonthCloseDto,
   TransferConfirmationDto,
   UpcomingDto,
 } from "../lib/types.js";
@@ -34,7 +32,6 @@ export function HouseholdPlanPage() {
     () => api.listTransferConfirmations(id, month),
     [id, month],
   );
-  const closes = useAsync<MonthCloseDto[]>(() => api.listHouseholdCloses(id), [id]);
 
   // The fold's checklist needs the reality half of each account — contributions
   // this month, the last balance check-in — which only the *account* plan
@@ -65,8 +62,6 @@ export function HouseholdPlanPage() {
   if (plan.loading || !plan.data) return <p className="muted">loading…</p>;
   const p = plan.data;
   const c = p.currency;
-  const role = household.data?.yourRole;
-  const canClose = role === "owner" || role === "admin";
 
   const accountName = new Map(p.accounts.map((a) => [a.accountId, a.name ?? "account"]));
 
@@ -195,21 +190,6 @@ export function HouseholdPlanPage() {
         load={(months) => api.householdProjection(id, months)}
         scopeKey={id}
         accountNames={Object.fromEntries(accountName)}
-      />
-
-      <MonthScorecard
-        closes={closes.data ?? []}
-        currency={c}
-        month={month}
-        canClose={canClose}
-        onClose={async (m) => {
-          await api.closeHouseholdMonth(id, m);
-          closes.refetch();
-        }}
-        onReopen={async (closeId) => {
-          await api.reopenHouseholdMonth(id, closeId);
-          closes.refetch();
-        }}
       />
     </section>
   );

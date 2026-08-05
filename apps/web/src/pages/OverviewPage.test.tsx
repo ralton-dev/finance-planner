@@ -3,10 +3,12 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickAddProvider } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
+import { currentMonth } from "../lib/months.js";
 import { phraseText } from "../lib/money.js";
 import type {
   AccountDto,
   HouseholdPlanDto,
+  MonthCloseDto,
   OverviewAccountDto,
   OverviewDto,
   PlanInflowSourceDto,
@@ -19,10 +21,13 @@ const ME = { id: "u1", email: "ada@example.com", displayName: "Ada", households:
 
 /** Accounts the stubbed API currently holds — seeding pushes into this. */
 let accounts: AccountDto[];
+/** The caller's frozen months, re-read on every call so a close can move them. */
+let closes: MonthCloseDto[];
 let stub: FetchStub;
 
 beforeEach(() => {
   accounts = [];
+  closes = [];
   api.setToken(null);
 });
 
@@ -57,6 +62,9 @@ function renderOverview(routes: Routes = {}): ReturnType<typeof render> {
       },
     }),
     "GET /api/upcoming?days=14": { body: { asOfDate: "2026-08-04", days: 14, items: [] } },
+    // The scorecard's one producer. Self-scoped: no id in the path, because a
+    // close is the caller's own (`MONTH-CLOSE.md` decision 14).
+    "GET /api/me/closes": () => ({ body: closes }),
     ...routes,
   });
 
@@ -826,6 +834,7 @@ describe("OverviewPage — request cost", () => {
         },
       },
       "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
+      "GET /api/me/closes": { body: [] },
     });
 
     render(
@@ -846,16 +855,148 @@ describe("OverviewPage — request cost", () => {
   }
 
   it("costs the same whether you have three accounts or five", async () => {
-    // me, accounts, overview, upcoming — and nothing per row.
-    expect(await requestsFor(3)).toBe(4);
-    expect(await requestsFor(5)).toBe(4);
+    // me, accounts, overview, upcoming, my closes — and nothing per row. The
+    // scorecard's read is self-scoped, so it is one request however many
+    // accounts, households or currencies are behind it.
+    expect(await requestsFor(3)).toBe(5);
+    expect(await requestsFor(5)).toBe(5);
   });
 
   it("costs the same again when every account has money in transit", async () => {
     // Was 4 + one account plan per row: 7 and 9. The ids the confirm rows are
     // keyed on come down with the index now.
-    expect(await requestsFor(3, true)).toBe(4);
-    expect(await requestsFor(5, true)).toBe(4);
+    expect(await requestsFor(3, true)).toBe(5);
+    expect(await requestsFor(5, true)).toBe(5);
+  });
+});
+
+// --- the scorecard, where the person is --------------------------------------
+
+describe("OverviewPage — the month scorecard", () => {
+  const close = (
+    over: Partial<MonthCloseDto> & { id: string; currency: string },
+  ): MonthCloseDto => ({
+    userId: "u1",
+    month: "2026-07-01",
+    incomeMinor: 320_000,
+    plannedMinor: 90_900,
+    contributedMinor: 90_900,
+    closedBy: "u1",
+    closedAt: "2026-08-01T10:00:00.000Z",
+    ...over,
+  });
+
+  /** The estate's shape: a GBP partition with money in it, and a EUR one. */
+  const ESTATE = [
+    close({
+      id: "c-eur",
+      currency: "EUR",
+      incomeMinor: 90_000,
+      plannedMinor: 30_000,
+      contributedMinor: 12_000,
+    }),
+    close({ id: "c-gbp", currency: "GBP" }),
+  ];
+
+  function renderSeeded(routes: Routes = {}): ReturnType<typeof render> {
+    accounts = [SEEDED];
+    return renderOverview(routes);
+  }
+
+  it("shows one card per currency, from the caller's own closes", async () => {
+    closes = ESTATE;
+    renderSeeded();
+
+    await screen.findByText("months");
+    await waitFor(() => expect(document.querySelectorAll(".scorecard-card")).toHaveLength(2));
+    expect(screen.getByText("EUR")).toBeInTheDocument();
+    expect(screen.getByText("GBP")).toBeInTheDocument();
+    expect(screen.getByText("€900.00")).toBeInTheDocument();
+    expect(screen.getByText("£3,200.00")).toBeInTheDocument();
+  });
+
+  it("asks for closes once, with no scope in the path", async () => {
+    renderSeeded();
+
+    await screen.findByText("months");
+    await waitFor(() => expect(stub.calls("GET /api/me/closes")).toBe(1));
+  });
+
+  it("closes the month and re-reads what that froze", async () => {
+    renderSeeded({
+      "POST /api/me/closes": () => {
+        closes = ESTATE;
+        return { status: 201, body: ESTATE };
+      },
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /^close / }));
+
+    // Two rows out of one action: the month is the unit, the currency is the
+    // partition, and both cards appear together or not at all.
+    await waitFor(() => expect(document.querySelectorAll(".scorecard-card")).toHaveLength(2));
+    expect(stub.bodyOf("POST /api/me/closes")).toEqual({ month: currentMonth() });
+    expect(stub.calls("GET /api/me/closes")).toBe(2);
+  });
+
+  it("re-opens one row and leaves the other frozen", async () => {
+    closes = ESTATE;
+    renderSeeded({
+      "DELETE /api/me/closes/c-eur": () => {
+        closes = [ESTATE[1]!];
+        return { status: 204 };
+      },
+    });
+
+    await waitFor(() => expect(document.querySelectorAll(".scorecard-card")).toHaveLength(2));
+    fireEvent.click(screen.getAllByRole("button", { name: "reopen" })[0]!);
+
+    await waitFor(() => expect(document.querySelectorAll(".scorecard-card")).toHaveLength(1));
+    expect(screen.getByText("GBP")).toBeInTheDocument();
+    expect(screen.queryByText("EUR")).toBeNull();
+  });
+
+  it("says so when the month is already closed, and changes nothing", async () => {
+    closes = ESTATE;
+    renderSeeded({
+      "POST /api/me/closes": {
+        status: 409,
+        body: { error: { code: "already_closed", message: "Month already closed" } },
+      },
+    });
+
+    await waitFor(() => expect(document.querySelectorAll(".scorecard-card")).toHaveLength(2));
+    fireEvent.click(screen.getByRole("button", { name: /^close / }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("already_closed");
+    // The server wrote nothing, so nothing was re-read and nothing moved.
+    expect(document.querySelectorAll(".scorecard-card")).toHaveLength(2);
+    expect(stub.calls("GET /api/me/closes")).toBe(1);
+  });
+
+  it("keeps a currency the caller holds no money in, and says why", async () => {
+    closes = [
+      close({ id: "c-eur", currency: "EUR", incomeMinor: 0, plannedMinor: 0, contributedMinor: 0 }),
+      close({ id: "c-gbp", currency: "GBP" }),
+    ];
+    renderSeeded();
+
+    await waitFor(() => expect(document.querySelectorAll(".scorecard-card")).toHaveLength(2));
+    expect(screen.getByText(/none of this money is yours/i)).toBeInTheDocument();
+  });
+
+  it("has nothing to show, and no card, before the first close", async () => {
+    renderSeeded();
+
+    expect(await screen.findByText(/no months closed yet/i)).toBeInTheDocument();
+    expect(document.querySelectorAll(".scorecard-card")).toHaveLength(0);
+  });
+
+  it("stays off the first-run screen — there is nothing to close yet", async () => {
+    renderOverview({ "GET /api/meta": { body: { demoSeedEnabled: false } } });
+
+    expect(await screen.findByText(/no accounts yet/i)).toBeInTheDocument();
+    expect(screen.queryByText("months")).toBeNull();
   });
 });
 

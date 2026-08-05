@@ -341,24 +341,18 @@ export class ApiClient {
   }
 
   // ---- month closes ----
-  closeAccountMonth(accountId: string, month: string) {
-    return this.request<MonthCloseDto>("POST", `/api/accounts/${accountId}/close`, { month });
+  /** Freeze my month. Every currency partition I plan in, or none of them —
+   *  a month already closed in any one of them comes back 409. */
+  closeMyMonth(month: string) {
+    return this.request<MonthCloseDto[]>("POST", "/api/me/closes", { month });
   }
-  /** Newest first. */
-  listAccountCloses(accountId: string) {
-    return this.request<MonthCloseDto[]>("GET", `/api/accounts/${accountId}/closes`);
+  /** My frozen months, newest first. Mine only; there is nothing to scope. */
+  listMyCloses() {
+    return this.request<MonthCloseDto[]>("GET", "/api/me/closes");
   }
-  reopenAccountMonth(accountId: string, closeId: string) {
-    return this.request<void>("DELETE", `/api/accounts/${accountId}/closes/${closeId}`);
-  }
-  closeHouseholdMonth(householdId: string, month: string) {
-    return this.request<MonthCloseDto>("POST", `/api/households/${householdId}/close`, { month });
-  }
-  listHouseholdCloses(householdId: string) {
-    return this.request<MonthCloseDto[]>("GET", `/api/households/${householdId}/closes`);
-  }
-  reopenHouseholdMonth(householdId: string, closeId: string) {
-    return this.request<void>("DELETE", `/api/households/${householdId}/closes/${closeId}`);
+  /** Re-open one row. Per row, where closing is per month. */
+  reopenMyMonth(closeId: string) {
+    return this.request<void>("DELETE", `/api/me/closes/${closeId}`);
   }
 
   // ---- transfer confirmations ----

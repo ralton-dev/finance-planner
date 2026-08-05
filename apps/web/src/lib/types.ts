@@ -954,12 +954,19 @@ export interface TransferConfirmationDto {
   createdAt: string;
 }
 
-/** A frozen month scorecard for a household or a standalone account. */
+/**
+ * A frozen month scorecard: one row per (user, month, currency).
+ *
+ * A scorecard is a question about a person, not a place (`MONTH-CLOSE.md`
+ * decision 14), so the row names its owner and the currency partition it froze.
+ * The wire still carries `householdId` and `accountId` — the column pair the two
+ * deleted location closes wrote — but they are `null` on every row this client
+ * can now see, so nothing here reads them.
+ */
 export interface MonthCloseDto {
   id: string;
-  /** Exactly one of householdId / accountId is set. */
-  householdId: string | null;
-  accountId: string | null;
+  userId: string;
+  currency: string;
   month: string;
   incomeMinor: number;
   plannedMinor: number;

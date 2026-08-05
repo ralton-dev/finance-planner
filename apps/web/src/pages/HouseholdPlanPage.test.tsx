@@ -148,7 +148,6 @@ function renderPage(routes: ApiRoutes = {}) {
       },
     },
     [`GET /api/households/hh/transfers/confirmations?month=${currentMonth()}`]: { body: [] },
-    "GET /api/households/hh/closes": { body: [] },
     "GET /api/accounts/alex-current/plan": { body: ALEX_PLAN },
     "GET /api/accounts/bills/plan": { body: accountPlan({ accountId: "bills" }) },
     "GET /api/upcoming?days=14": { body: { asOfDate: AS_OF, days: 14, items: [] } },
@@ -218,5 +217,29 @@ describe("HouseholdPlanPage · the fold", () => {
     expect(shortfallKpi?.querySelector(".kpi-value")).toHaveTextContent("£40.00");
     expect(figure).toHaveTextContent("£40.00");
     expect(container.querySelector(".fold-headline")).toHaveClass("shortfall");
+  });
+
+  /**
+   * A household is an attribution layer, not a calculation boundary
+   * (`ONE-ENGINE.md`), so it has no month of its own to freeze. The close it
+   * used to offer wrote `monthlyIncomeMinor` alone — £0 for a household whose
+   * bills pot is fed entirely by transfers, against a contributed figure made
+   * of nothing else. The scorecard now asks the person instead.
+   *
+   * The fetch assertion is the load-bearing half: `/households/:id/closes` no
+   * longer exists, so a leftover read is a 404 in the console every time this
+   * page loads, and a mocked route would hide it.
+   */
+  it("neither offers a close nor asks anything about one", async () => {
+    const { container, stub } = renderPage();
+    await screen.findByText("cost breakdown");
+
+    expect(screen.queryByRole("button", { name: /close/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "reopen" })).toBeNull();
+    const headings = [...container.querySelectorAll(".section-head h2")].map((h) => h.textContent);
+    expect(headings).not.toContain("months");
+
+    const asked = stub.mock.mock.calls.map(([url]) => String(url));
+    expect(asked.filter((url) => url.includes("close"))).toEqual([]);
   });
 });

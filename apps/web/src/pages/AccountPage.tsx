@@ -3,20 +3,17 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { AccountMovements } from "../components/AccountMovements.js";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { Amount } from "../components/Amount.js";
-import { MonthScorecard } from "../components/MonthScorecard.js";
 import { PlanSummary, PlanTable } from "../components/PlanTable.js";
 import { ProjectionView } from "../components/ProjectionView.js";
 import { RealityStrip } from "../components/RealityStrip.js";
 import { TagBreakdown } from "../components/TagBreakdown.js";
 import { api } from "../lib/api.js";
-import { currentMonth } from "../lib/months.js";
 import { useAsync } from "../lib/useAsync.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import type {
   AccountDto,
   AccountPlanDto,
   IncomeDto,
-  MonthCloseDto,
   PaymentDto,
   ProjectDto,
 } from "../lib/types.js";
@@ -32,7 +29,6 @@ export function AccountPage() {
   const payments = useAsync<PaymentDto[]>(() => api.listPayments(id), [id]);
   // Project labels for the chips next to payment names. Cheap call; no per-account scope.
   const projects = useAsync<ProjectDto[]>(() => api.listProjects(), []);
-  const closes = useAsync<MonthCloseDto[]>(() => api.listAccountCloses(id), [id]);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerFocus, setDrawerFocus] = useState<"monthlyBuffer" | undefined>(undefined);
@@ -315,21 +311,6 @@ export function AccountPage() {
         plan={plan.data}
         canEdit={canEdit}
         onChanged={refresh}
-      />
-
-      <MonthScorecard
-        closes={closes.data ?? []}
-        currency={currency}
-        month={currentMonth()}
-        canClose={canEdit}
-        onClose={async (month) => {
-          await api.closeAccountMonth(id, month);
-          closes.refetch();
-        }}
-        onReopen={async (closeId) => {
-          await api.reopenAccountMonth(id, closeId);
-          closes.refetch();
-        }}
       />
 
       <AccountSettingsDrawer

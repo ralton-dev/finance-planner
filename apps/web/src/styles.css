@@ -2111,6 +2111,67 @@ td.row-actions-cell .row-edit:hover {
   color: var(--ink-2);
 }
 
+/* Overview: the month scorecard, one card per currency.
+ *
+ * Planning partitions by currency and so does closing, so these figures cannot
+ * be stacked into one table — a card each keeps every number on screen in the
+ * same money.
+ *
+ * Stacked, not side by side like the household doorways: a doorway is four
+ * words and this is a six-column table, and squeezing two of those into one
+ * row pushed the re-open button off the end of both. Side by side would also
+ * be inviting a comparison that cannot be made — the whole reason these are
+ * separate cards is that the two columns of figures are in different money.
+ * A screen wide enough for two full tables still gets them. */
+.scorecard-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 620px), 1fr));
+  gap: 0.7rem;
+  margin-bottom: 1.75rem;
+}
+.scorecard-card {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.85rem 0.75rem;
+}
+.scorecard-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 13px;
+}
+.scorecard-card-head .name {
+  color: var(--ink);
+  font-weight: 600;
+}
+.scorecard-card-head .meta {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+/* Why a wall of zeroes is not a bug. Reads as quiet context, not as an alert:
+ * nothing is wrong, there is simply no money of yours in this currency. */
+.scorecard-note {
+  margin: 0 0 0.55rem;
+  max-width: 52ch;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+/* The card is already a panel; a second border inside it would draw a box in a
+ * box. Everything else the wrapper does — the scroll, the edge fade, the sticky
+ * month column — is kept, and its surface is already `--panel`, so the fade
+ * lands on exactly the colour the card is painted in. */
+.scorecard-card .table-scroll {
+  border: 0;
+  border-radius: 0;
+}
+.scorecard-error {
+  margin: 0 0 0.5rem;
+  font-size: 12px;
+}
+
 /* ============================================================================
  * Disclosures — every <details>/<summary> in the app.
  *

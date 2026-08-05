@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickAddProvider } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import type { AccountPlanDto } from "../lib/types.js";
-import { stubApiFetch, type Routes } from "../test/apiMock.js";
+import { stubApiFetch, type FetchStub, type Routes } from "../test/apiMock.js";
 import { AccountPage } from "./AccountPage.js";
 
 /**
@@ -67,15 +67,14 @@ const plan: AccountPlanDto = {
   lines: [line("b1", "Council tax", 15_320), line("b2", "Broadband", 15_000)],
 };
 
-function renderAccount(extra?: Routes) {
-  stubApiFetch({
+function renderAccount(extra?: Routes): FetchStub {
+  const stub = stubApiFetch({
     "GET /api/accounts/pot": {
       body: { id: "pot", name: "Bills joint", currency: "GBP", owner: true },
     },
     "GET /api/accounts/pot/plan": { body: plan },
     "GET /api/accounts/pot/incomes": { body: [] },
     "GET /api/accounts/pot/payments": { body: [] },
-    "GET /api/accounts/pot/closes": { body: [] },
     "GET /api/accounts/pot/inflows": { body: [] },
     "GET /api/accounts/pot/inflows/outbound": { body: [] },
     "GET /api/accounts": {
@@ -97,6 +96,7 @@ function renderAccount(extra?: Routes) {
       </QuickAddProvider>
     </MemoryRouter>,
   );
+  return stub;
 }
 
 beforeEach(() => {
@@ -156,5 +156,34 @@ describe("AccountPage — a pot with no income of its own", () => {
     expect(screen.getByText("leaving here")).toBeInTheDocument();
     // The income column keeps its own door and says what it is for.
     expect(screen.getByText("[0 active · from outside]")).toBeInTheDocument();
+  });
+
+  /**
+   * A scorecard is a question about a person, so it is asked once, on the
+   * Overview (`MONTH-CLOSE.md` decision 14). This screen used to ask it of a
+   * place, and had to redefine "income" as "what arrived here" to get an answer
+   * — which is the defect that ended the location close.
+   *
+   * The fetch assertion is the load-bearing half: the routes behind it no
+   * longer exist, so a leftover read here is a 404 in the console of every
+   * account page, and a component test that mocked it would never say so.
+   */
+  it("neither offers a close nor asks anything about one", async () => {
+    const stub = renderAccount();
+    await screen.findByText("movements");
+
+    expect(screen.queryByRole("button", { name: /close/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "reopen" })).toBeNull();
+    expect(screen.queryByText("months")).toBeNull();
+
+    const asked = stub.mock.mock.calls.map(([url]) => String(url));
+    expect(asked.filter((url) => url.includes("close"))).toEqual([]);
+  });
+
+  it("keeps the check-in where it is — a balance really is a fact about a place", async () => {
+    renderAccount();
+    await screen.findByText("arriving");
+
+    expect(document.querySelector(".reality-strip")).not.toBeNull();
   });
 });

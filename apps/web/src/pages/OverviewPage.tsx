@@ -4,8 +4,10 @@ import { Amount, Sentence } from "../components/Amount.js";
 import { ChartFrame } from "../components/ChartFrame.js";
 import { DownloadButton } from "../components/DownloadButton.js";
 import { Fold } from "../components/Fold.js";
+import { MonthScorecard } from "../components/MonthScorecard.js";
 import { UpcomingDigest } from "../components/UpcomingDigest.js";
 import { api, ApiError } from "../lib/api.js";
+import { currentMonth } from "../lib/months.js";
 import { money, type Phrase } from "../lib/money.js";
 import { deriveNeedsYou, type NeedsYouAccountInput, type NeedsYouInput } from "../lib/needsYou.js";
 import { buildNetWorthSeries, type AccountBalanceHistory } from "../lib/networth.js";
@@ -19,6 +21,7 @@ import type {
   HouseholdDto,
   HouseholdPlanDto,
   LatestBalanceDto,
+  MonthCloseDto,
   OverviewAccountDto,
   OverviewDto,
   TransferConfirmationDto,
@@ -89,6 +92,10 @@ export function OverviewPage() {
   const overview = useAsync<OverviewDto>(() => api.overview(), []);
   const accounts = useAsync<AccountDto[]>(() => api.listAccounts(), []);
   const upcoming = useAsync<UpcomingDto>(() => api.upcoming(UPCOMING_DAYS), []);
+  // The scorecard's one producer. A close is the caller's own, so this asks for
+  // nothing and scopes to nothing — which is why it lives here, on the only
+  // screen that is about the person rather than about a place.
+  const closes = useAsync<MonthCloseDto[]>(() => api.listMyCloses(), []);
 
   // The household plans are read for one reason: the fold derives the
   // shortfall and transfer rows from them, and the link cards print the totals
@@ -260,6 +267,23 @@ export function OverviewPage() {
             buckets={buckets}
             histories={histories.data ?? null}
             onOpenTrend={() => setTrendOpen(true)}
+          />
+
+          {/* Last, because it is the only backward-looking thing here: every
+              section above is what to do now, and this is what already
+              happened. Not in `refetchAll` — a close is frozen, so nothing a
+              quick-add or a seed can do moves a row that already exists. */}
+          <MonthScorecard
+            closes={closes.data ?? []}
+            month={currentMonth()}
+            onClose={async (m) => {
+              await api.closeMyMonth(m);
+              closes.refetch();
+            }}
+            onReopen={async (closeId) => {
+              await api.reopenMyMonth(closeId);
+              closes.refetch();
+            }}
           />
         </>
       )}
