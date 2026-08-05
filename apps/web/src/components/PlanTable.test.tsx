@@ -94,6 +94,33 @@ describe("PlanTable", () => {
     expect(screen.getByText(/no payments yet/i)).toBeInTheDocument();
   });
 
+  /**
+   * "add one to see your savings plan" was wrong twice on an account the page
+   * beside it labels `shared · view`: the reader cannot add a payment, and the
+   * plan they would be shown is not theirs. Ownership, never access (decision
+   * 20) — an account shared to you with `edit` is still somebody else's, so it
+   * keeps the instruction and loses the possessive.
+   */
+  it("does not call a co-member's plan yours, or tell a reader to add what they cannot", () => {
+    const empty = { ...plan, lines: [] };
+
+    render(<PlanTable plan={empty} canRecord owned />);
+    expect(screen.getByText("no payments yet. add one to see your savings plan.")).toBeVisible();
+    cleanup();
+
+    // Shared with edit: the instruction stands, the claim of ownership does not.
+    render(<PlanTable plan={empty} canRecord />);
+    expect(
+      screen.getByText("no payments yet. add one to see this account's savings plan."),
+    ).toBeVisible();
+    cleanup();
+
+    // Shared, view-only: neither stands.
+    render(<PlanTable plan={empty} />);
+    expect(screen.getByText("no payments yet.")).toBeVisible();
+    expect(screen.queryByText(/add one/)).toBeNull();
+  });
+
   it("annotates save/mo with the occurrence count for sub-monthly recurrences", () => {
     const fortnightly: AccountPlanDto = {
       ...plan,

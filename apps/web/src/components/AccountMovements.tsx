@@ -55,8 +55,13 @@ function cadence(inflow: InflowDto): string {
 }
 
 /**
- * Money moving between two accounts you own, from whichever end you are
- * standing on.
+ * Money moving between two accounts, from whichever end you are standing on.
+ *
+ * Not "two accounts you own": authoring one takes `edit` at both ends and never
+ * ownership (see `MovementDrawer`), so a co-member's account shared into your
+ * household with edit is a legitimate end — and this section renders on such an
+ * account as readily as on your own. The sentences below say only what they can
+ * know from `account.owner`.
  *
  * Both lists are the same authored rows read from opposite sides — arriving on
  * `accountId`, leaving `sourceAccountId` — so the two ends can never drift.
@@ -446,21 +451,30 @@ function MovementList({
  * wrong number — and LEFT OVER now prints `residualMinor`, which has the sweep
  * in it already (see `PlanTable.leftOverMinor`). So the note says which side of
  * the movement that figure is on, and quotes nothing it would only restate.
+ *
+ * ## Whose income it asks to be consolidated
+ *
+ * The negative branch is an instruction, and this page renders on an account a
+ * co-member shared to you as readily as on your own. Told to consolidate **your**
+ * income into somebody else's account, a reader is being asked to do a thing
+ * about money that is not theirs and in a place they may not even be able to
+ * edit. Ownership, never access (decision 20): the account's owner is who has
+ * to move it, and `owner` absent reads as "cannot say" and so as not yours. The
+ * diagnosis is unchanged either way — only who is being asked.
  */
 export function outboundNote(plan: AccountPlanDto | undefined, account: AccountDto): Phrase | null {
   const leaving = plan?.outboundInflowMinor ?? 0;
   if (leaving <= 0) return null;
   const c = account.currency;
   const residual = plan?.residualMinor;
+  const consolidate = account.owner
+    ? " more than reaches this account — consolidate your income here first, or the month cannot happen."
+    : " more than reaches this account — its owner has to consolidate their income here first, or the month cannot happen.";
   const tail: Phrase =
     residual === undefined
       ? [" left over above is what this account has before any of it moves on, not after."]
       : residual < 0
-        ? [
-            " that is ",
-            money(-residual, c),
-            " more than reaches this account — consolidate your income here first, or the month cannot happen.",
-          ]
+        ? [" that is ", money(-residual, c), consolidate]
         : [" left over above is what stays once it has."];
   return [money(leaving, c), " a month is already committed to leave.", ...tail];
 }
@@ -480,8 +494,26 @@ export function outboundNote(plan: AccountPlanDto | undefined, account: AccountD
  * Neither is on the wire by name, and both are exact: what authored movements
  * delivered is the sum of `inflowArrivals`, and what the derived feed delivered
  * is the rest of `allocatedInflowMinor`. Nothing is gated — the arrivals ride on
- * this very plan — so the flag reads the same for every caller who can see the
- * account.
+ * this very plan — so the **figure** reads the same for every caller who can see
+ * the account. Verified rather than assumed: `scope.ts` pushes an arrival and
+ * tallies `movementInMinor` under the same `inPartition` guard, so the sum of
+ * the arrivals is exactly `movementInMinor` and `derived` is exactly
+ * `transferInMinor`, for every caller.
+ *
+ * ## The two things the sentence used to claim, and could not
+ *
+ * It said "a movement **you** authored". Nothing here knows who authored one:
+ * an inflow belongs to a pair of accounts and carries no author, authoring takes
+ * `edit` on both ends, and this page renders on a pot a co-member shared to you
+ * — so the movement landing on it may be theirs, out of an account of theirs
+ * this reader cannot even see. The claim was unprovable rather than merely
+ * unlikely, so it goes; the movement is named by what it is, which is authored
+ * rather than derived.
+ *
+ * And it told the reader to delete it. `MovementList` draws the ✕ only when the
+ * caller may edit **this** account, so on a view-only share the instruction
+ * pointed at a control that is not on the page. It is now conditional on the
+ * same access that decides whether the button exists.
  */
 export function duplicateFeedNote(
   plan: AccountPlanDto | undefined,
@@ -491,9 +523,11 @@ export function duplicateFeedNote(
   const authored = (plan.inflowArrivals ?? []).reduce((sum, a) => sum + a.amountMinor, 0);
   const derived = (plan.allocatedInflowMinor ?? 0) - authored;
   if (authored <= 0 || derived <= 0) return null;
+  const canRemove = account.owner || account.permission === "edit";
   return [
     money(derived, account.currency),
-    " a month already arrives here as a transfer the plan derives for these bills. a movement you authored lands on top of it as savings, not instead of it — if it was meant to cover the bills, delete it.",
+    " a month already arrives here as a transfer the plan derives for these bills. an authored movement lands on top of it as savings, not instead of it" +
+      (canRemove ? " — if it was meant to cover the bills, delete it." : "."),
   ];
 }
 

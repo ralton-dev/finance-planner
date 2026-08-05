@@ -67,6 +67,24 @@ export function FlowPage() {
   const drawn = flow ? visibleFlow(flow, hidden) : null;
   const households = (me.data?.households ?? []) as HouseholdDto[];
 
+  /**
+   * What the "everything you own" preset selects.
+   *
+   * Ownership, never access (decision 20). The preset used to select every
+   * account the caller can *see*, which on a household includes a co-member's
+   * account shared in — so every aggregate on this page was then computed over
+   * somebody else's money under a button that explicitly claimed it was theirs.
+   * The filter is `AccountsPage`'s idiom, and `owner` absent reads as "not
+   * yours" there too.
+   *
+   * Nothing is lost by narrowing it: the household buttons beside it still give
+   * the wider view, and the chips below add any visible account back by hand.
+   * And no figure's derivation moves — WP-AE established the diagram's
+   * denominator is legitimately a set the user chooses, and this changes only
+   * which set the preset hands it.
+   */
+  const owned = useMemo(() => (accounts.data ?? []).filter((a) => a.owner), [accounts.data]);
+
   /** Point the page at a set of accounts. Always writes an explicit set: a
    *  preset is a starting point, not a mode to be stuck in. */
   function setScope(ids: readonly string[], hide: readonly string[] = []): void {
@@ -145,8 +163,8 @@ export function FlowPage() {
           <button
             type="button"
             className="ghost tiny"
-            onClick={() => setScope((accounts.data ?? []).map((a) => a.id))}
-            disabled={(accounts.data ?? []).length === 0}
+            onClick={() => setScope(owned.map((a) => a.id))}
+            disabled={owned.length === 0}
           >
             everything you own
           </button>

@@ -356,6 +356,35 @@ describe("outboundNote", () => {
     ]);
   });
 
+  it("asks the owner to consolidate, never the reader, on an account that is not theirs", () => {
+    // The same diagnosis, and a different person being asked to act on it. This
+    // page renders on an account a co-member shared to you, where "consolidate
+    // your income here first" is an instruction about somebody else's money in
+    // a place this reader may not even edit (decision 20).
+    expect(
+      outboundNote(
+        { outboundInflowMinor: 90_000, residualMinor: -20_000 } as AccountPlanDto,
+        SHARED_VIEW,
+      ),
+    ).toEqual([
+      { minor: 90_000, currency: "GBP" },
+      " a month is already committed to leave.",
+      " that is ",
+      { minor: 20_000, currency: "GBP" },
+      " more than reaches this account — its owner has to consolidate their income here first, or the month cannot happen.",
+    ]);
+    // Ownership, never access: an account shared to you with `edit` is still not
+    // yours, and an absent `owner` cannot say that it is.
+    expect(
+      outboundNote({ outboundInflowMinor: 90_000, residualMinor: -20_000 } as AccountPlanDto, {
+        ...SHARED_VIEW,
+        permission: "edit",
+      }),
+    ).toContainEqual(
+      " more than reaches this account — its owner has to consolidate their income here first, or the month cannot happen.",
+    );
+  });
+
   it("says the old sentence when the wire is too old to carry a residual", () => {
     expect(outboundNote({ outboundInflowMinor: 55_000 } as AccountPlanDto, CURRENT)).toEqual([
       { minor: 55_000, currency: "GBP" },
@@ -842,6 +871,38 @@ describe("AccountMovements — a movement that duplicates the derived feed", () 
     );
     await screen.findByText(/a month already arrives here/);
     expect(screen.queryByText(/short/i)).toBeNull();
+  });
+
+  /**
+   * The note claimed an author it never knew, and offered an action that was
+   * not on the page.
+   *
+   * An inflow belongs to a pair of accounts and carries no author; authoring one
+   * takes `edit` on both ends. So on a pot a co-member shared to you, "a
+   * movement **you** authored" may be describing their movement out of their
+   * account — and "delete it" points at a ✕ that `MovementList` does not draw
+   * for a reader who cannot edit this account.
+   */
+  it("claims no author and offers no deletion on an account you may only look at", async () => {
+    renderFor(
+      SHARED_VIEW,
+      {
+        "GET /api/accounts/theirs/inflows": {
+          body: [movement({ id: "inf-1", accountId: "theirs" })],
+        },
+      },
+      { plan: { ...bothPlan, accountId: "theirs" }, canEdit: false },
+    );
+
+    const note = await screen.findByText(/a month already arrives here/);
+    expect(note).toHaveTextContent(
+      /an authored movement lands on top of it as savings, not instead of it\./,
+    );
+    expect(note).not.toHaveTextContent(/you authored/);
+    expect(note).not.toHaveTextContent(/delete it/);
+    // And the reason: there is nothing here to delete it with.
+    const authored = screen.getByText("Monthly top-up").closest("li")!;
+    expect(within(authored).queryByRole("button", { name: "✕" })).toBeNull();
   });
 
   it("stays quiet when only one of the two feeds an account", async () => {

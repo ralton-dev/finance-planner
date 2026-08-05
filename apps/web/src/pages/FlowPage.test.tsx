@@ -90,6 +90,19 @@ const ACCOUNTS: AccountDto[] = FLOW.accounts.map((a) => ({
   permission: "edit",
 }));
 
+/** A co-member's account, shared into the household and visible here. Theirs,
+ *  whoever can see it (decision 20). */
+const BOBS: AccountDto = {
+  id: "bob-current",
+  name: "bob current",
+  description: null,
+  currency: "GBP",
+  openingBalanceMinor: 0,
+  monthlyBufferMinor: 0,
+  owner: false,
+  permission: "view",
+};
+
 const ME: UserDto = {
   id: "alice",
   email: "alice@example.com",
@@ -322,6 +335,42 @@ describe("FlowPage", () => {
     expect(short).not.toHaveClass("ok");
     // The accounts that are fine keep the colour that says so.
     expect(screen.getByText("£600.00")).toHaveClass("num", "ok");
+  });
+
+  /**
+   * The preset says "everything you own", so it must not select an account
+   * somebody else owns.
+   *
+   * Bob's current account is shared into the household and appears in
+   * `GET /api/accounts` like any other. Before the filter, the preset mapped
+   * that whole list to ids, and every aggregate on the page — the money in from
+   * outside, each row of the per-account table — was then computed over a set
+   * containing a co-member's account, under a button that had just claimed the
+   * lot was the caller's (decision 20).
+   */
+  it("scopes the preset to accounts you own, not accounts you can see", async () => {
+    const stub = stubApiFetch({
+      ...routes(),
+      "GET /api/accounts": { body: [...ACCOUNTS, BOBS] },
+    });
+    renderAt("");
+    // The chip for Bob's account is there — it can be added by hand, and the
+    // preset is the only thing being narrowed.
+    expect(await screen.findByRole("button", { name: "bob current" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "everything you own" }));
+
+    await waitFor(() => expect(stub.calls(`GET /api/flow?accounts=${SCOPE}`)).toBe(1));
+    expect(stub.mock.mock.calls.some(([url]) => String(url).includes("bob-current"))).toBe(false);
+  });
+
+  /** With nothing of your own to draw, the preset has nothing to offer — and
+   *  must not fall through to clearing the scope. */
+  it("offers no preset when every account you can see is somebody else's", async () => {
+    stubApiFetch({ ...routes(), "GET /api/accounts": { body: [BOBS] } });
+    renderAt("");
+    await screen.findByRole("button", { name: "bob current" });
+    expect(screen.getByRole("button", { name: "everything you own" })).toBeDisabled();
   });
 
   it("says so when a scope cannot be drawn", async () => {

@@ -106,6 +106,14 @@ interface PlanTableProps {
   /** Today, as the caller reckons it. Monthly bills count down to their next
    *  payment from here; without it they say nothing rather than guess. */
   asOfDate?: string;
+  /**
+   * Whether the account this plan is for is the caller's own — ownership, never
+   * access (decision 20). Only the empty state reads it, and only to decide
+   * whether the plan may be called *yours*: an account a co-member shared into
+   * the household is theirs, whatever this reader may do to it. Absent reads as
+   * "cannot say", and so as not yours.
+   */
+  owned?: boolean;
 }
 
 /**
@@ -114,14 +122,34 @@ interface PlanTableProps {
  * Monthly recurring bills are excluded from recording — they are paid, not
  * saved for.
  */
-export function PlanTable({ plan, canRecord = false, onRecord, asOfDate }: PlanTableProps) {
+export function PlanTable({
+  plan,
+  canRecord = false,
+  onRecord,
+  asOfDate,
+  owned = false,
+}: PlanTableProps) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   if (plan.lines.length === 0) {
-    return <p className="muted">no payments yet. add one to see your savings plan.</p>;
+    // Two claims in one sentence, and on a shared account both were false: the
+    // reader of an account marked "shared · view" cannot add a payment, and the
+    // plan they would see is not theirs. `canRecord` is the account's edit
+    // access at the only call site — the same gate that decides whether there
+    // is anything on this page to act with — and an owner always has it, so a
+    // reader without it is never being denied the possessive they were owed.
+    return (
+      <p className="muted">
+        {!canRecord
+          ? "no payments yet."
+          : owned
+            ? "no payments yet. add one to see your savings plan."
+            : "no payments yet. add one to see this account's savings plan."}
+      </p>
+    );
   }
 
   const mtd = new Map((plan.contributionsMTD ?? []).map((c) => [c.paymentId, c.amountMinor]));

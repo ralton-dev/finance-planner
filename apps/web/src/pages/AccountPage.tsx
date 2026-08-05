@@ -114,6 +114,9 @@ export function AccountPage() {
           plan={plan.data}
           asOfDate={plan.data.asOfDate}
           canRecord={canEdit}
+          // Ownership, never access (decision 20) — the same `owner` the
+          // subhead above prints as "owned" or "shared".
+          owned={account.data.owner}
           onRecord={async (paymentId, amountMinor) => {
             await api.recordContribution(paymentId, { amountMinor });
             plan.refetch();
