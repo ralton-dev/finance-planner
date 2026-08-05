@@ -125,6 +125,36 @@ export interface AccountAccess {
 }
 
 /**
+ * Refusal to put one user in a second household.
+ *
+ * A user belongs to exactly one household — product direction, and the thing
+ * that keeps a scope's member vector single-valued (see
+ * `db/migrations/0011_one_household_per_user.sql`). This is raised by
+ * `createHousehold` and `addMembership`, which are the only two ways in.
+ *
+ * It carries `validation` because that is the one hook both services'
+ * error handlers already share. `apps/api` and `apps/auth` each define their
+ * own private `HttpError`, so neither can recognise the other's — but both
+ * answer `422 validation_error` with this message for any error carrying
+ * `validation`, and unprocessable is exactly what such a request is. Without
+ * it a perfectly ordinary "they are already in a household" would surface as a
+ * 500, and the auth service's add-member route is not ours to edit.
+ */
+export class HouseholdExclusivityError extends Error {
+  /** Fastify's marker for "the request did not validate". See above. */
+  readonly validation = true;
+
+  constructor(
+    readonly userId: string,
+    /** The household they are already in. */
+    readonly householdId: string,
+  ) {
+    super("That user already belongs to a household; they must leave it before joining another.");
+    this.name = "HouseholdExclusivityError";
+  }
+}
+
+/**
  * Persistence boundary. Two implementations: MemoryStore (tests/dev) and
  * PgStore (Drizzle + Postgres). Methods are async so both satisfy one contract.
  */
@@ -179,11 +209,41 @@ export interface Store {
   consumePasswordResetToken(token: string): Promise<PasswordResetToken | null>;
 
   // ---- households / sharing ----
+  /**
+   * Found a household, with the founder as its owner.
+   *
+   * Throws `HouseholdExclusivityError` when the founder is already in one, and
+   * throws it **before** the household row is written, so a refused call leaves
+   * nothing behind: `createHousehold` is `addMembership` with a household
+   * attached, and a household whose founder could not join it would be an
+   * orphan nobody could reach or delete.
+   */
   createHousehold(name: string, createdBy: string): Promise<Household>;
   getHousehold(id: string): Promise<Household | null>;
-  /** Hard-delete a household: removes its shares, memberships, then itself. */
+  /**
+   * Hard-delete a household: dissolves what every member held through it (see
+   * `removeMember`), then its shares, assignments, confirmations, closes,
+   * memberships, and itself.
+   */
   deleteHousehold(id: string): Promise<void>;
+  /**
+   * The user's household, as a list of at most one.
+   *
+   * Still a list, and deliberately. The rule is enforced from
+   * `0011_one_household_per_user.sql` forward, not retroactively — no migration
+   * may delete the rows of an instance that predates it — so data written
+   * before then can still hold a second membership, and every reader takes the
+   * first in a stable order rather than pretending the second cannot exist.
+   */
   listHouseholdsForUser(userId: string): Promise<Household[]>;
+  /**
+   * Add a user to a household.
+   *
+   * Throws `HouseholdExclusivityError` when they already belong to a different
+   * one: a user is in exactly one household, and the way into a second is out
+   * of the first. Re-adding someone to the household they are already in is
+   * not this rule's business (the auth service answers 409 for it).
+   */
   addMembership(
     householdId: string,
     userId: string,
@@ -191,6 +251,33 @@ export interface Store {
   ): Promise<HouseholdMembership>;
   getMembership(householdId: string, userId: string): Promise<HouseholdMembership | null>;
   listMembersForHousehold(householdId: string): Promise<HouseholdMembership[]>;
+  /**
+   * Take a member out of a household, and dissolve what they held through it.
+   *
+   * "You don't get to keep any of the household's benefits if you leave" (Ben,
+   * 2026-08-04), and the household does not get to keep theirs either. In
+   * order — each step still true of a member, so a failure part-way leaves the
+   * household smaller but never leaves a non-member's money attached to it:
+   *
+   *  1. **Movements across the boundary are deactivated.** An account-sourced
+   *     inflow with one end owned by the leaver and the other owned by another
+   *     member existed only because the household's share grant made both ends
+   *     editable by one person. Deactivated rather than deleted: an inactive
+   *     inflow is not a funding edge and funds nothing, so the forward-looking
+   *     claim dissolves, while the row and every confirmation and contribution
+   *     hanging off it survive — deleting it would cascade those away and make
+   *     the ledger lie about money that really did move.
+   *  2. **Plan roles go.** The household's assignments for the leaver's
+   *     accounts, and any assignment naming them as its personal member.
+   *  3. **Access grants go.** Shares of the leaver's accounts into the
+   *     household. Accounts shared the *other* way need nothing: the leaver's
+   *     access to them was only ever their membership.
+   *  4. **The membership row goes.** The commit point.
+   *
+   * Retained throughout: transfer confirmations, contributions and month
+   * closes. Those record what happened, and what happened does not stop having
+   * happened.
+   */
   removeMember(householdId: string, userId: string): Promise<void>;
   updateMembershipRole(
     householdId: string,

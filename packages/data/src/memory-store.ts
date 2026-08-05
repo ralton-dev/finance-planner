@@ -26,6 +26,7 @@ import {
   type AccountAccess,
   assertInflowShape,
   type ContributionTotal,
+  HouseholdExclusivityError,
   type MonthCloseScope,
   type NewAccount,
   type NewAccountAssignment,
@@ -232,7 +233,21 @@ export class MemoryStore implements Store {
     return t;
   }
 
+  /** The household this user is already in, if any — the exclusivity rule's
+   *  one question. `exceptHouseholdId` is the household being joined, which is
+   *  never an answer to it. */
+  private otherHouseholdOf(userId: string, exceptHouseholdId?: string): string | null {
+    for (const m of this.memberships.values()) {
+      if (m.userId === userId && m.householdId !== exceptHouseholdId) return m.householdId;
+    }
+    return null;
+  }
+
   async createHousehold(name: string, createdBy: string): Promise<Household> {
+    // Before the row, not after: a household whose founder was refused
+    // membership would be an orphan nobody could reach or delete.
+    const already = this.otherHouseholdOf(createdBy);
+    if (already) throw new HouseholdExclusivityError(createdBy, already);
     const h: Household = { id: randomUUID(), name, createdBy, createdAt: now() };
     this.households.set(h.id, h);
     await this.addMembership(h.id, createdBy, "owner");
@@ -244,6 +259,12 @@ export class MemoryStore implements Store {
   }
 
   async deleteHousehold(id: string): Promise<void> {
+    // Every member leaves at once, so a movement that only existed because two
+    // people were in this household stops claiming money — the same dissolution
+    // `removeMember` performs, for everybody.
+    for (const m of await this.listMembersForHousehold(id)) {
+      await this.dissolveMembershipBenefits(id, m.userId);
+    }
     for (const [k, s] of this.shares) if (s.householdId === id) this.shares.delete(k);
     for (const [k, m] of this.memberships) if (m.householdId === id) this.memberships.delete(k);
     for (const [k, a] of this.assignments) if (a.householdId === id) this.assignments.delete(k);
@@ -266,6 +287,8 @@ export class MemoryStore implements Store {
     userId: string,
     role: HouseholdRole,
   ): Promise<HouseholdMembership> {
+    const already = this.otherHouseholdOf(userId, householdId);
+    if (already) throw new HouseholdExclusivityError(userId, already);
     const m: HouseholdMembership = {
       id: randomUUID(),
       householdId,
@@ -289,8 +312,55 @@ export class MemoryStore implements Store {
   }
 
   async removeMember(householdId: string, userId: string): Promise<void> {
+    await this.dissolveMembershipBenefits(householdId, userId);
     for (const [k, m] of this.memberships) {
       if (m.householdId === householdId && m.userId === userId) this.memberships.delete(k);
+    }
+  }
+
+  /**
+   * Steps 1–3 of the departure cascade (see `Store.removeMember`). Called
+   * while the membership still stands, so the ordering guarantee holds: at no
+   * point is a non-member's account still attached to the household.
+   *
+   * Idempotent, so `deleteHousehold` may run it for every member in turn and
+   * `removeMember` may run it for a membership that has already gone.
+   */
+  private async dissolveMembershipBenefits(householdId: string, userId: string): Promise<void> {
+    const mine = new Set(
+      [...this.accounts.values()].filter((a) => a.ownerUserId === userId).map((a) => a.id),
+    );
+    const otherMembers = new Set(
+      (await this.listMembersForHousehold(householdId))
+        .map((m) => m.userId)
+        .filter((id) => id !== userId),
+    );
+
+    // 1. Movements across the boundary: deactivated, never deleted. The row's
+    //    confirmations — and the contributions they booked — are the record of
+    //    money that really moved, and `deleteInflow` would cascade them away.
+    for (const [k, i] of this.inflows) {
+      if (i.source !== "account" || !i.sourceAccountId) continue;
+      const ends = [i.accountId, i.sourceAccountId];
+      if (!ends.some((id) => mine.has(id))) continue;
+      const acrossBoundary = ends.some((id) => {
+        const owner = this.accounts.get(id)?.ownerUserId;
+        return owner !== undefined && owner !== userId && otherMembers.has(owner);
+      });
+      if (acrossBoundary && i.active) this.inflows.set(k, { ...i, active: false, updatedAt: now() });
+    }
+
+    // 2. Plan roles: their accounts' roles here, and any role naming them.
+    for (const [k, a] of this.assignments) {
+      if (a.householdId !== householdId) continue;
+      if (mine.has(a.accountId) || a.memberUserId === userId) this.assignments.delete(k);
+    }
+
+    // 3. Access grants of their accounts into this household. What the
+    //    household shared with *them* needs nothing: that access was their
+    //    membership, and the membership is about to go.
+    for (const [k, s] of this.shares) {
+      if (s.householdId === householdId && mine.has(s.accountId)) this.shares.delete(k);
     }
   }
 

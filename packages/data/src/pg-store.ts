@@ -5,7 +5,7 @@ import type {
   PaymentScope,
   Recurrence,
 } from "@finance-planner/contracts";
-import { and, asc, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { Database } from "./db.js";
 import type {
   Account,
@@ -37,6 +37,7 @@ import {
   type AccountAccess,
   assertInflowShape,
   type ContributionTotal,
+  HouseholdExclusivityError,
   type MonthCloseScope,
   type NewAccount,
   type NewAccountAssignment,
@@ -314,7 +315,40 @@ export class PgStore implements Store {
     return { token: row.token, userId: row.userId, expiresAt: row.expiresAt.toISOString() };
   }
 
+  /**
+   * The household this user is already in, if any — the exclusivity rule's one
+   * question. `exceptHouseholdId` is the household being joined, which is never
+   * an answer to it.
+   *
+   * The same rule lives in the database as a trigger
+   * (`0011_one_household_per_user.sql`), which is the floor under this and
+   * catches a write that never came through here. Asking first is what turns
+   * it into a readable refusal instead of a raw SQLSTATE 23505.
+   */
+  private async otherHouseholdOf(
+    userId: string,
+    exceptHouseholdId?: string,
+  ): Promise<string | null> {
+    const [row] = await this.db
+      .select({ householdId: s.memberships.householdId })
+      .from(s.memberships)
+      .where(
+        exceptHouseholdId
+          ? and(
+              eq(s.memberships.userId, userId),
+              ne(s.memberships.householdId, exceptHouseholdId),
+            )
+          : eq(s.memberships.userId, userId),
+      )
+      .limit(1);
+    return row?.householdId ?? null;
+  }
+
   async createHousehold(name: string, createdBy: string): Promise<Household> {
+    // Before the row, not after: a household whose founder was refused
+    // membership would be an orphan nobody could reach or delete.
+    const already = await this.otherHouseholdOf(createdBy);
+    if (already) throw new HouseholdExclusivityError(createdBy, already);
     const [row] = await this.db.insert(s.households).values({ name, createdBy }).returning();
     await this.addMembership(row!.id, createdBy, "owner");
     return {
@@ -337,6 +371,12 @@ export class PgStore implements Store {
   }
 
   async deleteHousehold(id: string): Promise<void> {
+    // Every member leaves at once, so a movement that only existed because two
+    // people were in this household stops claiming money — the same dissolution
+    // `removeMember` performs, for everybody.
+    for (const m of await this.listMembersForHousehold(id)) {
+      await this.dissolveMembershipBenefits(id, m.userId);
+    }
     // account_shares + assignments live in other schemas with no FK back to
     // households, so wipe them first; memberships cascade via ON DELETE CASCADE.
     await this.db.delete(s.accountShares).where(eq(s.accountShares.householdId, id));
@@ -373,6 +413,8 @@ export class PgStore implements Store {
     userId: string,
     role: HouseholdRole,
   ): Promise<HouseholdMembership> {
+    const already = await this.otherHouseholdOf(userId, householdId);
+    if (already) throw new HouseholdExclusivityError(userId, already);
     const [row] = await this.db
       .insert(s.memberships)
       .values({ householdId, userId, role })
@@ -397,9 +439,86 @@ export class PgStore implements Store {
   }
 
   async removeMember(householdId: string, userId: string): Promise<void> {
+    await this.dissolveMembershipBenefits(householdId, userId);
     await this.db
       .delete(s.memberships)
       .where(and(eq(s.memberships.householdId, householdId), eq(s.memberships.userId, userId)));
+  }
+
+  /**
+   * Steps 1–3 of the departure cascade (see `Store.removeMember`). Called
+   * while the membership still stands, so the ordering guarantee holds: at no
+   * point is a non-member's account still attached to the household.
+   *
+   * Reads the two account sets into memory rather than expressing them as
+   * subqueries. A household is a handful of people holding a handful of
+   * accounts, so the round trips are trivial and the statements stay legible —
+   * the same trade `deleteHousehold` already makes for confirmations.
+   *
+   * Idempotent, so `deleteHousehold` may run it for every member in turn and
+   * `removeMember` may run it for a membership that has already gone.
+   */
+  private async dissolveMembershipBenefits(householdId: string, userId: string): Promise<void> {
+    const mine = (await this.listAccountsForOwner(userId)).map((a) => a.id);
+    const otherOwners = (await this.listMembersForHousehold(householdId))
+      .map((m) => m.userId)
+      .filter((id) => id !== userId);
+    const theirs = (
+      await Promise.all(otherOwners.map((id) => this.listAccountsForOwner(id)))
+    ).flatMap((accounts) => accounts.map((a) => a.id));
+
+    // 1. Movements across the boundary: deactivated, never deleted. The row's
+    //    confirmations — and the contributions they booked — are the record of
+    //    money that really moved, and deleting the inflow would cascade them
+    //    away (0009). An inactive inflow is not a funding edge and funds
+    //    nothing, so the forward-looking claim dissolves and the history stays.
+    if (mine.length > 0 && theirs.length > 0) {
+      await this.db
+        .update(s.inflows)
+        .set({ active: false, updatedAt: new Date() })
+        .where(
+          and(
+            eq(s.inflows.source, "account"),
+            eq(s.inflows.active, true),
+            or(
+              and(inArray(s.inflows.accountId, mine), inArray(s.inflows.sourceAccountId, theirs)),
+              and(inArray(s.inflows.sourceAccountId, mine), inArray(s.inflows.accountId, theirs)),
+            ),
+          ),
+        );
+    }
+
+    // 2. Plan roles: their accounts' roles here, and any role naming them as
+    //    the member a personal account belongs to.
+    if (mine.length > 0) {
+      await this.db
+        .delete(s.householdAccountAssignments)
+        .where(
+          and(
+            eq(s.householdAccountAssignments.householdId, householdId),
+            inArray(s.householdAccountAssignments.accountId, mine),
+          ),
+        );
+    }
+    await this.db
+      .delete(s.householdAccountAssignments)
+      .where(
+        and(
+          eq(s.householdAccountAssignments.householdId, householdId),
+          eq(s.householdAccountAssignments.memberUserId, userId),
+        ),
+      );
+
+    // 3. Access grants of their accounts into this household. What the
+    //    household shared with *them* needs nothing: that access was their
+    //    membership, and the membership is about to go.
+    if (mine.length > 0) {
+      await this.db
+        .delete(s.accountShares)
+        .where(
+          and(eq(s.accountShares.householdId, householdId), inArray(s.accountShares.accountId, mine)),
+        );
+    }
   }
 
   async updateMembershipRole(

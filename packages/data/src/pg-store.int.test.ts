@@ -213,6 +213,87 @@ describe("PgStore (Postgres via Testcontainers)", () => {
     });
   });
 
+  /**
+   * 0011's whole argument, exercised: the rule holds against a `psql` prompt,
+   * and it applies cleanly to a database that already breaks it.
+   *
+   * A `CREATE UNIQUE INDEX (user_id)` would state the same rule and would fail
+   * on the second half of this test — and, because every file here is
+   * re-applied in full on every sync, would then fail on every deploy after it,
+   * forever, with no `DELETE` available to clear the way. A trigger is never
+   * validated against rows that already exist, so it constrains the next write
+   * and leaves history alone. That difference is the reason this file exists.
+   */
+  it("refuses a second household at the database, and applies over one that already has two", async () => {
+    const user = "99999999-9999-9999-9999-999999999999";
+    await withClient(uri, async (c) => {
+      const { rows } = await c.query<{ id: string }>(
+        `INSERT INTO auth.households (name, created_by) VALUES ('Home', $1), ('Flat', $1)
+         RETURNING id`,
+        [user],
+      );
+      const [home, flat] = rows.map((r) => r.id);
+      const join = (householdId: string, member = user) =>
+        c.query(`INSERT INTO auth.household_memberships (household_id, user_id) VALUES ($1, $2)`, [
+          householdId,
+          member,
+        ]);
+
+      await expect(join(home)).resolves.toBeTruthy();
+      await expect(join(flat)).rejects.toThrow(/already belongs to a household/);
+      // Somebody else joining the second one is nobody's business but theirs.
+      await expect(join(flat, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).resolves.toBeTruthy();
+      // A duplicate row for the household they are *already* in is a different
+      // hole, guarded by the auth service, and deliberately not this trigger's.
+      await expect(join(home)).resolves.toBeTruthy();
+    });
+
+    // A database that predates the rule and breaks it: 0001–0010, a user in two
+    // households, then every migration applied twice on top.
+    await withClient(uri, (c) => c.query("CREATE DATABASE exclusivity_probe"));
+    const probe = new URL(uri);
+    probe.pathname = "/exclusivity_probe";
+    const probeUri = probe.toString();
+    await applyMigrations(probeUri, "0010_zzz");
+    await withClient(probeUri, async (c) => {
+      const { rows } = await c.query<{ id: string }>(
+        `INSERT INTO auth.households (name, created_by) VALUES ('Legacy home', $1),
+                                                              ('Legacy flat', $1) RETURNING id`,
+        [user],
+      );
+      for (const r of rows) {
+        await c.query(
+          `INSERT INTO auth.household_memberships (household_id, user_id) VALUES ($1, $2)`,
+          [r.id, user],
+        );
+      }
+    });
+
+    await applyMigrations(probeUri);
+    await applyMigrations(probeUri);
+
+    await withClient(probeUri, async (c) => {
+      // The offending rows are still there — untouched, not deleted, exactly as
+      // an additive migration must leave them.
+      const legacy = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM auth.household_memberships WHERE user_id = $1`,
+        [user],
+      );
+      expect(legacy.rows[0]).toEqual({ n: 2 });
+      // …and the rule is in force from here on, for that same user.
+      const { rows } = await c.query<{ id: string }>(
+        `INSERT INTO auth.households (name, created_by) VALUES ('A third', $1) RETURNING id`,
+        [user],
+      );
+      await expect(
+        c.query(`INSERT INTO auth.household_memberships (household_id, user_id) VALUES ($1, $2)`, [
+          rows[0]!.id,
+          user,
+        ]),
+      ).rejects.toThrow(/already belongs to a household/);
+    });
+  });
+
   it("backfills incomes exactly once, and never resurrects a deleted inflow", async () => {
     // A separate database, so the backfill can be watched from before it runs:
     // 0001–0007 first, a legacy income row, then 0008 for the first time.

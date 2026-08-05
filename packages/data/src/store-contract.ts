@@ -337,14 +337,94 @@ export async function exerciseStore(store: Store): Promise<void> {
   await store.deleteAccountAssignment(household.id, account.id);
   expect(await store.getAccountAssignment(household.id, account.id)).toBeNull();
 
-  // remove the partner from the household; their access goes away.
+  // --- a user belongs to exactly one household ---
+  // The way into a second is out of the first, and the Store is the choke
+  // point both services go through, so it is the Store that refuses.
+  const joiner = await store.createUser({
+    email: "joiner@example.com",
+    passwordHash: "hash",
+    displayName: "Joiner",
+  });
+  const elsewhere = await store.createHousehold("Elsewhere", joiner.id);
+  await expect(store.addMembership(household.id, joiner.id, "member")).rejects.toThrow(
+    /already belongs to a household/,
+  );
+  await expect(store.createHousehold("A third", joiner.id)).rejects.toThrow(
+    /already belongs to a household/,
+  );
+  // Refused before the row is written: no orphan household is left behind.
+  expect((await store.listHouseholdsForUser(joiner.id)).map((h) => h.id)).toEqual([elsewhere.id]);
+  // Leaving is what lets them in.
+  await store.removeMember(elsewhere.id, joiner.id);
+  expect(await store.addMembership(household.id, joiner.id, "member")).toBeTruthy();
+  await store.removeMember(household.id, joiner.id);
+
+  // --- leaving dissolves what the household gave, and keeps what happened ---
+  // The partner's own account, shared into the household and fed by a movement
+  // out of the founder's — an arrangement that only exists because they are in
+  // a household together.
+  const partnerPot = await store.createAccount({
+    ownerUserId: other.id,
+    name: "Partner pot",
+    currency: "GBP",
+  });
+  const partnerShare = await store.createAccountShare(partnerPot.id, household.id, "edit");
+  await store.upsertAccountAssignment({
+    householdId: household.id,
+    accountId: partnerPot.id,
+    role: "personal",
+    memberUserId: other.id,
+  });
+  expect(await store.getAccountAssignment(household.id, partnerPot.id)).not.toBeNull();
+  const crossMovement = await store.createInflow({
+    accountId: partnerPot.id,
+    name: "Top-up from the founder",
+    source: "account",
+    sourceAccountId: account.id,
+    amountMinor: 20_000,
+    frequency: "monthly",
+    recurrence: null,
+    anchorDate: "2026-08-01",
+    priority: 50,
+    active: true,
+  });
+  // In a month of its own, so it does not join the confirmation listings the
+  // household's own assertions further down count row for row.
+  const movedMoney = await store.createTransferConfirmation({
+    householdId: household.id,
+    inflowId: crossMovement.id,
+    month: "2026-06-01",
+    fromAccountId: account.id,
+    toAccountId: partnerPot.id,
+    memberUserId: other.id,
+    amountMinor: 20_000,
+  });
+
   await store.removeMember(household.id, other.id);
+
+  // Gone: the membership, the access it carried, the plan role, the share.
+  expect(await store.getMembership(household.id, other.id)).toBeNull();
   expect(await store.getAccess(other.id, account.id)).toBeNull();
+  expect(await store.getAccountAssignment(household.id, partnerPot.id)).toBeNull();
+  expect((await store.listSharesForHousehold(household.id)).map((s) => s.id)).not.toContain(
+    partnerShare.id,
+  );
+  // Dissolved, not deleted: the movement stops claiming money — an inactive
+  // inflow is not a funding edge — and the account itself is untouched.
+  expect((await store.getInflow(crossMovement.id))?.active).toBe(false);
+  expect(await store.getAccount(partnerPot.id)).not.toBeNull();
+  // Retained: money that really moved still says so.
+  expect(await store.getTransferConfirmation(movedMoney.id)).not.toBeNull();
 
   // deleting the household removes its shares and memberships
-  const tempHousehold = await store.createHousehold("Temp", user.id);
+  const temper = await store.createUser({
+    email: "temper@example.com",
+    passwordHash: "hash",
+    displayName: "Temper",
+  });
+  const tempHousehold = await store.createHousehold("Temp", temper.id);
   const tempAccount = await store.createAccount({
-    ownerUserId: user.id,
+    ownerUserId: temper.id,
     name: "Temp",
     currency: "GBP",
   });
@@ -354,6 +434,9 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(await store.getHousehold(tempHousehold.id)).toBeNull();
   expect((await store.listSharesForHousehold(tempHousehold.id)).length).toBe(0);
   expect((await store.listMembersForHousehold(tempHousehold.id)).length).toBe(0);
+  // ...and the founder is free to join another one.
+  expect(await store.addMembership(household.id, temper.id, "member")).toBeTruthy();
+  await store.removeMember(household.id, temper.id);
 
   const stranger = await store.createUser({
     email: "stranger@example.com",
@@ -813,7 +896,14 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect((await store.listInflows(pot.id)).map((i) => i.id)).toEqual([topUp.id]);
 
   // --- deleting a household clears its confirmations (and their contributions) ---
-  const doomedHousehold = await store.createHousehold("Doomed", user.id);
+  // Founded by somebody with no household of their own: `user` already has
+  // one, and a user belongs to exactly one.
+  const doomer = await store.createUser({
+    email: "doomer@example.com",
+    passwordHash: "hash",
+    displayName: "Doomer",
+  });
+  const doomedHousehold = await store.createHousehold("Doomed", doomer.id);
   const householdConfirmation = await store.createTransferConfirmation({
     householdId: doomedHousehold.id,
     inflowId: null,
@@ -906,13 +996,14 @@ export async function exerciseStore(store: Store): Promise<void> {
     contributedMinor: 3_000,
     closedBy: leaver.id,
   });
-  // A household they founded, and one they merely joined.
-  const foundedHousehold = await store.createHousehold("Leaver's place", leaver.id);
-  const joinedHousehold = await store.createHousehold("Someone else's place", user.id);
+  // Somebody else's household, which they merely joined — `user`'s, the one
+  // `account` is already shared into. It used to be a household they founded
+  // *and* one they joined; a user belongs to exactly one now, so the founded
+  // case is erased on its own below.
+  const joinedHousehold = household;
   await store.addMembership(joinedHousehold.id, leaver.id, "member");
   // An account of someone else's, shared into the household they joined: it must
   // survive, because it belongs to its owner.
-  await store.createAccountShare(account.id, joinedHousehold.id, "view");
   expect(await store.getAccess(leaver.id, account.id)).not.toBeNull();
   // Credentials + session state.
   const leaverSession = await store.createSession({
@@ -942,7 +1033,6 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(await store.getContribution(leaverContribution.id)).toBeNull();
   expect(await store.getProject(leaverProject.id)).toBeNull();
   expect(await store.getMonthCloseById(leaverClose.id)).toBeNull();
-  expect(await store.getHousehold(foundedHousehold.id)).toBeNull();
   expect(await store.getMembership(joinedHousehold.id, leaver.id)).toBeNull();
   expect(await store.getSessionByTokenHash(leaverSession.refreshTokenHash)).toBeNull();
   expect(await store.consumeEmailVerificationToken("leaver-verify")).toBeNull();
@@ -952,4 +1042,25 @@ export async function exerciseStore(store: Store): Promise<void> {
   // The other user's household and account are untouched.
   expect(await store.getHousehold(joinedHousehold.id)).not.toBeNull();
   expect(await store.getAccount(account.id)).not.toBeNull();
+
+  // The other half of erasure, which used to ride on the same user: a
+  // household you *founded* goes with you, and takes its memberships with it.
+  const founder = await store.createUser({
+    email: "founder@example.com",
+    passwordHash: "hash",
+    displayName: "Founder",
+  });
+  const guest = await store.createUser({
+    email: "guest@example.com",
+    passwordHash: "hash",
+    displayName: "Guest",
+  });
+  const foundedHousehold = await store.createHousehold("Founder's place", founder.id);
+  await store.addMembership(foundedHousehold.id, guest.id, "member");
+  await store.deleteUserCascade(founder.id);
+  expect(await store.getHousehold(foundedHousehold.id)).toBeNull();
+  expect(await store.getMembership(foundedHousehold.id, guest.id)).toBeNull();
+  // The guest survives their household's founder, and is free to join another.
+  expect(await store.getUserById(guest.id)).not.toBeNull();
+  expect(await store.listHouseholdsForUser(guest.id)).toEqual([]);
 }
