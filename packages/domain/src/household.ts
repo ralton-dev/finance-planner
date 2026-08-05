@@ -158,7 +158,51 @@ export interface HouseholdPlan {
   monthlyIncomeMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
+  /**
+   * The **members'** discretionary surplus, scope-wide, plus income sitting in
+   * one of this household's accounts that no member's budget counted.
+   *
+   * Scope-wide, and it keeps that meaning exactly (decision 13) — but it is the
+   * only field on this interface that is, and that is what made it wrong as a
+   * headline. Everything else here is the household's own accounts: the income,
+   * the requirement, the funded total, the committed total, the shortfall, the
+   * lines, the transfers. Printed beside them, this said "left over £2,000" over
+   * an income of £0 for a household holding nothing but its bills pot — money
+   * its own income figure did not contain, sitting in accounts its own account
+   * table does not list.
+   *
+   * `householdLeftoverMinor` below is the figure a household headline wants.
+   * The two are not two halves of one thing and there is no "elsewhere" term
+   * that would make them so: this one measures **people** (budget less
+   * obligations, wherever their accounts are), and that one measures
+   * **accounts** (what is in them when the month's flows have happened). They
+   * coincide for a household that holds every account its members own, which is
+   * why nobody noticed, and decision 9 ended that by feeding a member's own
+   * bills pot with a derived transfer.
+   */
   leftoverMinor: number;
+  /**
+   * What is left **in this household's accounts** once the month has happened —
+   * before the savings movements leaving them, exactly as
+   * `HouseholdAccountPlan.leftoverMinor` is.
+   *
+   * Summed off the very rows the page prints beneath the figure (WP-V's
+   * discipline: figure and breakdown can never again be computed over different
+   * sets of accounts), so free-after-committed at the top of the page is the
+   * LEFT OVER column of the account table, added up.
+   *
+   *     householdLeftoverMinor
+   *       === Σ accounts[].leftoverMinor
+   *       === monthlyIncomeMinor + Σ transferInMinor + Σ movementInMinor
+   *           − Σ fundedOutflowMinor − Σ transferOutMinor
+   *
+   * The second line is the household's ribbons meeting: every term is a
+   * published field of the accounts listed below, so a reader can check it and
+   * a test does (`household.test.ts`). Signed, like the account figure — a
+   * household committed to sending out more than reaches it is a fact the screen
+   * has to be able to say.
+   */
+  householdLeftoverMinor: number;
   /** Of that leftover, what the household's funded savings movements have
    *  spoken for (decision 13). */
   committedMinor: number;
@@ -328,6 +372,10 @@ export function householdPlanFromScope(
     totalRequiredMinor: totalRequired,
     totalFundedMinor: totalFunded,
     leftoverMinor: members.reduce((s, m) => s + m.leftoverMinor, 0) + unattributedIncome,
+    // Off the account rows above, not off the members: the household's money is
+    // what is in the household's accounts. See the field's comment for why the
+    // two are different questions rather than a whole and a part.
+    householdLeftoverMinor: accounts.reduce((s, a) => s + a.leftoverMinor, 0),
     committedMinor: committedByAccount,
     shortfallMinor: Math.max(0, totalRequired - totalFunded),
     members,

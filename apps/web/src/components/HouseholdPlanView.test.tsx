@@ -1,10 +1,19 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { formatMinor } from "../lib/money.js";
 import type { HouseholdPlanDto } from "../lib/types.js";
 import { HouseholdPlanView } from "./HouseholdPlanView.js";
 
-/** A two-account, two-member household: one shared pot, one personal account
- *  with a salary landing in it. Enough for both tables to have every shape. */
+/**
+ * A two-account, two-member household: one shared pot, one personal account
+ * with a salary landing in it. Enough for both tables to have every shape.
+ *
+ * Bo is a member whose own account the household does not hold, which is the
+ * ordinary shape decision 9 made possible and the reason the two leftover
+ * figures differ here: `leftoverMinor` is both members' surplus scope-wide
+ * (£1,286 + £1,124), `householdLeftoverMinor` is what is in the two accounts
+ * listed below (£0 + £1,286).
+ */
 const PLAN: HouseholdPlanDto = {
   householdId: "hh",
   asOfDate: "2026-08-04",
@@ -13,6 +22,7 @@ const PLAN: HouseholdPlanDto = {
   totalRequiredMinor: 219_000,
   totalFundedMinor: 219_000,
   leftoverMinor: 241_000,
+  householdLeftoverMinor: 128_600,
   shortfallMinor: 0,
   members: [
     {
@@ -191,9 +201,12 @@ describe("HouseholdPlanView · the committed bucket", () => {
     const kpis = [...container.querySelectorAll(".kpi")].map((k) => k.textContent ?? "");
 
     expect(kpis).toContainEqual(expect.stringContaining("committed£400.00"));
-    // £2,410 left over on the wire, £400 of it already spoken for.
-    expect(kpis).toContainEqual(expect.stringContaining("left over£2,010.00"));
+    // £1,286 in the household's accounts, £400 of it already spoken for.
+    expect(kpis).toContainEqual(expect.stringContaining("left over£886.00"));
+    // Neither the members' scope-wide surplus nor that surplus net of the
+    // committed — both are figures over accounts this page does not list.
     expect(kpis.join(" ")).not.toContain("£2,410.00");
+    expect(kpis.join(" ")).not.toContain("£2,010.00");
   });
 
   it("shows the same subtraction per account and per member", () => {
@@ -217,6 +230,82 @@ describe("HouseholdPlanView · the committed bucket", () => {
       expect(headers(table).all).not.toContain("committed");
     }
     // ...and the headline is the plain figure, unchanged to the penny.
+    expect([...container.querySelectorAll(".kpi")].map((k) => k.textContent)).toContainEqual(
+      expect.stringContaining("left over£1,286.00"),
+    );
+  });
+});
+
+/**
+ * WP-Z: the headline and the table beneath it are one sum.
+ *
+ * `leftoverMinor` was the only scope-wide figure in a KPI row of household-only
+ * ones — the fourth instance of "a figure derived over the scope published as
+ * the household's" — and the row read as if it were not. A household holding
+ * nothing but its bills pot reported income £0, required £1,410 and left over
+ * £2,000: a headline derived from income its own income figure does not
+ * contain, over accounts its own account table does not list.
+ */
+describe("HouseholdPlanView · the headline is the accounts it lists", () => {
+  /** The reported shape: the household holds the shared pot and nothing else. */
+  const POT_ONLY: HouseholdPlanDto = {
+    ...PLAN,
+    monthlyIncomeMinor: 0,
+    totalRequiredMinor: 141_000,
+    totalFundedMinor: 141_000,
+    // Both members' whole surplus, none of it in an account below.
+    leftoverMinor: 200_000,
+    householdLeftoverMinor: 0,
+    accounts: [
+      {
+        ...PLAN.accounts[0]!,
+        requiredOutflowMinor: 141_000,
+        fundedOutflowMinor: 141_000,
+        transferInMinor: 141_000,
+      },
+    ],
+  };
+
+  it("reports what is in the household's accounts, not what its members hold", () => {
+    const { container } = render(<HouseholdPlanView plan={POT_ONLY} />);
+    const kpis = [...container.querySelectorAll(".kpi")].map((k) => k.textContent ?? "");
+    expect(kpis).toContainEqual(expect.stringContaining("left over£0.00"));
+    expect(kpis.join(" ")).not.toContain("£2,000.00");
+  });
+
+  it("says an income of £0 is an income of £0, and where the money comes from", () => {
+    const { container } = render(<HouseholdPlanView plan={POT_ONLY} />);
+    const kpis = [...container.querySelectorAll(".kpi")].map((k) => k.textContent ?? "");
+    expect(kpis[0]).toContain("monthly income£0.00");
+    expect(kpis[0]).toContain("+ £1,410.00 arriving by transfer");
+  });
+
+  it("adds up to the LEFT OVER column printed beneath it, in every fixture", () => {
+    for (const plan of [PLAN, POT_ONLY]) {
+      const { container } = render(<HouseholdPlanView plan={plan} />);
+      const column = plan.accounts.reduce(
+        (sum, a) => sum + (a.leftoverMinor - (a.committedMinor ?? 0)),
+        0,
+      );
+      expect([...container.querySelectorAll(".kpi")].map((k) => k.textContent)).toContainEqual(
+        expect.stringContaining(`left over${formatMinor(column, plan.currency)}`),
+      );
+    }
+  });
+
+  it("names which accounts it means, whether or not anything is committed", () => {
+    const { container } = render(<HouseholdPlanView plan={PLAN} />);
+    const kpi = [...container.querySelectorAll(".kpi")].find((k) =>
+      k.textContent?.startsWith("left over"),
+    )!;
+    expect(kpi.querySelector(".kpi-delta")).toHaveTextContent("in these accounts");
+  });
+
+  /** A payload from an API that predates the field means what it always did. */
+  it("falls back to the scope-wide figure when the API sent none", () => {
+    const older: HouseholdPlanDto = { ...PLAN };
+    delete older.householdLeftoverMinor;
+    const { container } = render(<HouseholdPlanView plan={older} />);
     expect([...container.querySelectorAll(".kpi")].map((k) => k.textContent)).toContainEqual(
       expect.stringContaining("left over£2,410.00"),
     );

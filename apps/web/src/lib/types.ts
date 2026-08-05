@@ -671,7 +671,25 @@ export interface HouseholdPlanDto {
   monthlyIncomeMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
+  /**
+   * The **members'** surplus, scope-wide — their whole budgets less everything
+   * the pass attributes to them, on this household's accounts and anywhere
+   * else. The one scope-wide figure in an interface of household-only ones, and
+   * kept that way to the penny (decision 13).
+   *
+   * Not a headline. A household holding nothing but its bills pot printed this
+   * beside an income of £0, which is money its own income figure does not
+   * contain. Use `householdLeftoverMinor`.
+   */
   leftoverMinor: number;
+  /**
+   * What is left in **this household's accounts** when the month's flows have
+   * happened — `accounts[].leftoverMinor` added up, which is the LEFT OVER
+   * column of the table on the page. Before the savings movements leaving,
+   * exactly as the per-account figure is, so free-after-committed is this minus
+   * `committedMinor`.
+   */
+  householdLeftoverMinor?: number;
   /** Of that leftover, what the household's funded savings movements have
    *  spoken for (decision 13). */
   committedMinor?: number;

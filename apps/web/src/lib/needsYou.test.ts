@@ -1423,6 +1423,93 @@ describe("deriveHeadline", () => {
   });
 
   /**
+   * WP-Z. A household contributes its **own accounts**, not its members'
+   * surplus across the whole scope.
+   *
+   * `HouseholdPlanDto.leftoverMinor` is the one scope-wide figure a household
+   * plan carries, and this total is otherwise a sum of accounts. Two things
+   * went wrong at once: the household half counted money in accounts the
+   * household does not hold, and — because an account nobody assigned to a
+   * household is standalone here — the same money was then counted a second
+   * time on its own row. `householdLeftoverMinor` is the household's accounts,
+   * so the two sets are disjoint and every pound is counted once.
+   */
+  describe("a household whose members hold money it does not", () => {
+    /** The household holds the bills pot; both members' current accounts are
+     *  their own, and the input lists them as standalone accounts. */
+    const potOnly = householdPlan({
+      monthlyIncomeMinor: 0,
+      totalRequiredMinor: 100_000,
+      totalFundedMinor: 100_000,
+      shortfallMinor: 0,
+      // Ben's £1,541.62 and Alex's £1,985 — none of it in the account below.
+      leftoverMinor: 352_662,
+      householdLeftoverMinor: 10_000,
+      members: [
+        member({ userId: "ben", displayName: "Ben", leftoverMinor: 154_162 }),
+        member({ userId: "alex", displayName: "Alex", leftoverMinor: 198_500 }),
+      ],
+      accounts: [
+        {
+          accountId: "bills",
+          name: "Bills joint",
+          role: "shared",
+          memberUserId: null,
+          currency: "GBP",
+          monthlyIncomeMinor: 0,
+          requiredOutflowMinor: 100_000,
+          fundedOutflowMinor: 100_000,
+          transferInMinor: 100_000,
+          transferOutMinor: 0,
+          leftoverMinor: 10_000,
+          shortfallMinor: 0,
+        },
+      ],
+      lines: [hhLine({ paymentId: "rent", name: "Rent", requiredMonthlyMinor: 100_000 })],
+      transfers: [],
+    });
+
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      households: [household({ plan: potOnly, confirmations: [] })],
+      accounts: [
+        {
+          name: "Ben current",
+          plan: accountPlan({ accountId: "ben-current", leftoverMinor: 154_162 }),
+        },
+        {
+          name: "Alex current",
+          plan: accountPlan({ accountId: "alex-current", leftoverMinor: 198_500 }),
+        },
+      ],
+    };
+
+    it("counts each account once, whoever the plan for it belongs to", () => {
+      // £100 in the pot + £1,541.62 + £1,985. The scope-wide field would have
+      // made it £7,051.62 by counting both current accounts twice.
+      expect(deriveHeadline(input, deriveNeedsYou(input)).amountMinor).toBe(362_662);
+    });
+
+    it("says the household's own figure when it is the only input", () => {
+      const alone: NeedsYouInput = { asOfDate: AS_OF, households: input.households };
+      expect(deriveHeadline(alone, deriveNeedsYou(alone))).toMatchObject({
+        kind: "leftover",
+        amountMinor: 10_000,
+      });
+    });
+
+    it("falls back to the scope-wide figure when the API sent none", () => {
+      const older: HouseholdPlanDto = { ...potOnly };
+      delete older.householdLeftoverMinor;
+      const alone: NeedsYouInput = {
+        asOfDate: AS_OF,
+        households: [household({ plan: older, confirmations: [] })],
+      };
+      expect(deriveHeadline(alone, deriveNeedsYou(alone)).amountMinor).toBe(352_662);
+    });
+  });
+
+  /**
    * current → pot → ISA, and the netting term that used to be subtracted here.
    *
    * The premise is gone, not the fixture. Two engines each counted the pound

@@ -814,12 +814,10 @@ export function deriveHeadline(
   const households = (input.households ?? []).filter((h) => h.plan.currency === currency);
   const standalone = standaloneAccounts(input).filter((a) => a.plan.currency === currency);
 
-  const sum = (pick: (p: { shortfallMinor: number; leftoverMinor: number }) => number): number =>
-    households.reduce((n, h) => n + pick(h.plan), 0) +
-    standalone.reduce((n, a) => n + pick(a.plan), 0);
-
-  const shortfallMinor = sum((p) => p.shortfallMinor);
-  // A plain sum, less what the households have committed to savings.
+  const shortfallMinor =
+    households.reduce((n, h) => n + h.plan.shortfallMinor, 0) +
+    standalone.reduce((n, a) => n + a.plan.shortfallMinor, 0);
+  // A sum of accounts, and every account is counted once.
   //
   // **The netting term is gone with the engine that needed it.** Two
   // derivations of the same money each counted a transferred pound — once in
@@ -831,8 +829,17 @@ export function deriveHeadline(
   // `computeOverview`, which computed the term, no longer exists
   // (ONE-ENGINE.md).
   //
-  // What is subtracted now is decision 13's, and only for a household, which is
-  // the one input here that reports it: `leftoverMinor` is surplus *before* the
+  // A household contributes `householdLeftoverMinor` — its own accounts —
+  // rather than `leftoverMinor`, which is its members' surplus across the whole
+  // scope (WP-Z). The old field double-counted here as well as misreporting the
+  // household page: a member's personal account that nobody assigned to the
+  // household is standalone by {@link standaloneAccounts} and is summed on its
+  // own row, while the household's scope-wide figure already contained that
+  // member's whole surplus. Two disjoint sets of accounts is the only way this
+  // total means anything.
+  //
+  // What is subtracted is decision 13's, and only for a household, which is the
+  // one input here that reports it: `leftoverMinor` is surplus *before* the
   // month's savings movements everywhere, and this figure sits directly above
   // the household page's LEFT OVER, which shows free-after-committed. A
   // standalone account's summary carries no committed figure at all, so its
@@ -840,7 +847,12 @@ export function deriveHeadline(
   // the movements section saying so. Floored, because a movement can be funded
   // out of money that arrived rather than out of the surplus.
   const committedMinor = households.reduce((n, h) => n + (h.plan.committedMinor ?? 0), 0);
-  const leftoverMinor = Math.max(0, sum((p) => p.leftoverMinor) - committedMinor);
+  const leftoverMinor = Math.max(
+    0,
+    households.reduce((n, h) => n + (h.plan.householdLeftoverMinor ?? h.plan.leftoverMinor), 0) +
+      standalone.reduce((n, a) => n + a.plan.leftoverMinor, 0) -
+      committedMinor,
+  );
   const paymentCount =
     households.reduce((n, h) => n + h.plan.lines.length, 0) +
     standalone.reduce((n, a) => n + accountLines(a).lineCount, 0);

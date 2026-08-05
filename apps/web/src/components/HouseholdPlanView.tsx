@@ -30,6 +30,26 @@ export function freeMinor(of: { leftoverMinor: number; committedMinor?: number }
 }
 
 /**
+ * The headline's free-after-committed, which is **not** `freeMinor(plan)`.
+ *
+ * `HouseholdPlanDto.leftoverMinor` is the members' surplus scope-wide; every
+ * other figure in the KPI row beside it — the income, the requirement, the
+ * committed total, the shortfall — is this household's own accounts. A
+ * household holding nothing but the bills pot read "income £0 · required
+ * £1,410 · left over £2,000", the last of those being money the first does not
+ * contain and the account table below does not hold (WP-Z).
+ *
+ * `householdLeftoverMinor` is the same accounts' LEFT OVER column, added up, so
+ * this figure is the sum of the ones printed beneath it and cannot drift from
+ * them again. A payload from an older API has no such field and falls back —
+ * for a household that holds every account its members own, which is the case
+ * those payloads came from, the two are equal anyway.
+ */
+export function householdFreeMinor(plan: HouseholdPlanDto): number {
+  return (plan.householdLeftoverMinor ?? plan.leftoverMinor) - (plan.committedMinor ?? 0);
+}
+
+/**
  * The class a LEFT OVER cell takes. Green is a month that works; a negative
  * residual is not one.
  *
@@ -56,6 +76,12 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
   const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName ?? "member"]));
   const sankeyRef = useRef<HTMLDivElement>(null);
   const committed = plan.committedMinor ?? 0;
+  const free = householdFreeMinor(plan);
+  // Every KPI here is about the household's own accounts, and for a household
+  // that holds only a shared pot the income one is £0 — true, and unreadable on
+  // its own, because the money the bills are paid with arrives by transfer.
+  // Named here rather than left for the reader to find in the table below.
+  const arriving = plan.accounts.reduce((s, a) => s + a.transferInMinor, 0);
 
   return (
     <>
@@ -63,6 +89,9 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
         <div className="kpi">
           <div className="kpi-label">monthly income</div>
           <div className="kpi-value">{formatMinor(plan.monthlyIncomeMinor, c)}</div>
+          {arriving > 0 && (
+            <div className="kpi-delta">+ {formatMinor(arriving, c)} arriving by transfer</div>
+          )}
         </div>
         <div className="kpi">
           <div className="kpi-label">required / mo</div>
@@ -78,10 +107,17 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
             <div className="kpi-delta">to savings movements out</div>
           </div>
         )}
-        <div className={freeMinor(plan) < 0 ? "kpi warn" : "kpi ok"}>
+        <div className={free < 0 ? "kpi warn" : "kpi ok"}>
           <div className="kpi-label">left over</div>
-          <div className="kpi-value">{formatMinor(freeMinor(plan), c)}</div>
-          {committed > 0 && <div className="kpi-delta">after what is committed</div>}
+          <div className="kpi-value">{formatMinor(free, c)}</div>
+          {/* Which accounts, always — this is the household's, and a member's
+              own surplus is the per-person table's business two sections down.
+              The two differ the moment a member holds money the household does
+              not (decision 9), and the figure that says nothing about which it
+              means is the one that was wrong. */}
+          <div className="kpi-delta">
+            {committed > 0 ? "in these accounts, after what is committed" : "in these accounts"}
+          </div>
         </div>
         <div className={plan.shortfallMinor > 0 ? "kpi warn" : "kpi"}>
           <div className="kpi-label">shortfall</div>

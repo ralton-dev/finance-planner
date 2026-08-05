@@ -100,6 +100,7 @@ describe("householdPlanFromScope", () => {
     expect(plan.totalFundedMinor).toBe(105_000);
     expect(plan.shortfallMinor).toBe(0);
     expect(plan.leftoverMinor).toBe(395_000);
+    expect(plan.householdLeftoverMinor).toBe(395_000);
     expect(plan.committedMinor).toBe(0);
   });
 
@@ -410,6 +411,152 @@ describe("householdPlanFromScope — a member's costs the household's lines do n
   });
 });
 
+/**
+ * WP-Z. `leftoverMinor` was the one scope-wide figure in a KPI row of
+ * household-only ones, and the row read as if it were not.
+ *
+ * The fourth instance of one assumption — *"a figure derived over the scope can
+ * be published as the household's without re-deriving it"* — after
+ * `obligationMinor` (WP-V), `committedMinor` and `transfers` (WP-X). Same
+ * answer: keep the field, add the household's own alongside it (decision 4/13),
+ * and sum the new one off the very rows the page prints beneath the figure.
+ */
+describe("householdPlanFromScope — what is left in the household's accounts", () => {
+  /** Every term is a published field of the accounts this plan lists. */
+  const ribbons = (plan: ReturnType<typeof view>): number =>
+    plan.monthlyIncomeMinor +
+    plan.accounts.reduce((s, a) => s + a.transferInMinor + a.movementInMinor, 0) -
+    plan.accounts.reduce((s, a) => s + a.fundedOutflowMinor + a.transferOutMinor, 0);
+
+  it("is the account table's LEFT OVER column, added up", () => {
+    // The whole point of deriving it here rather than off `partition.members`:
+    // the figure and the breakdown beneath it cannot be computed over different
+    // sets of accounts, because they are the same sum.
+    const plan = view(household());
+    expect(plan.householdLeftoverMinor).toBe(
+      plan.accounts.reduce((s, a) => s + a.leftoverMinor, 0),
+    );
+    expect(plan.householdLeftoverMinor - plan.committedMinor).toBe(
+      plan.accounts.reduce((s, a) => s + (a.leftoverMinor - a.committedMinor), 0),
+    );
+  });
+
+  /**
+   * The reported defect, in the smallest fixture that shows it: a household
+   * that holds nothing but the bills pot. Its own income is £0 and its own
+   * accounts spend every penny that reaches them, and it reported the members'
+   * whole scope-wide surplus as its left over — a headline derived from income
+   * its own income figure does not contain.
+   */
+  it("does not report the members' surplus as the household's", () => {
+    const potOnly = view(household(), ["bills"]);
+    expect(potOnly.monthlyIncomeMinor).toBe(0);
+    expect(potOnly.totalRequiredMinor).toBe(100_000);
+    // Preserved to the penny (decision 13) — and this is what the page used to
+    // print beside an income of £0.
+    expect(potOnly.leftoverMinor).toBe(395_000);
+    // What the household's own accounts actually hold when the month is over.
+    expect(potOnly.householdLeftoverMinor).toBe(0);
+    expect(potOnly.householdLeftoverMinor).toBe(ribbons(potOnly));
+  });
+
+  it("keeps the household's ribbons meeting, in every shape this file plans", () => {
+    const withISA = household({
+      accounts: household().accounts.map((a) =>
+        a.accountId === "alice-cur"
+          ? {
+              ...a,
+              outboundInflows: [
+                {
+                  id: "to-isa",
+                  toAccountId: "isa",
+                  amountMinor: 70_000,
+                  frequency: "monthly" as const,
+                  anchorDate: "2026-08-25",
+                  priority: 10,
+                },
+              ],
+            }
+          : a,
+      ),
+    });
+    for (const plan of [
+      view(household()),
+      view(household(), ["bills"]),
+      view(household({ members: [] })),
+      view(withISA),
+    ]) {
+      expect(plan.householdLeftoverMinor).toBe(ribbons(plan));
+      expect(plan.householdLeftoverMinor).toBe(
+        plan.accounts.reduce((s, a) => s + a.leftoverMinor, 0),
+      );
+    }
+    // …and the savings leaving are alongside it, never netted into it: what a
+    // headline shows is the difference, and it is the one the flow diagram and
+    // the account page print for the same accounts.
+    const isa = view(withISA);
+    expect(isa.householdLeftoverMinor).toBe(395_000);
+    expect(isa.committedMinor).toBe(70_000);
+    expect(isa.householdLeftoverMinor - isa.committedMinor).toBe(325_000);
+  });
+
+  it("counts a shared pot's reserve, which no member's surplus does", () => {
+    // The buffer on a shared pot is funded as an obligation and then *stays in
+    // the pot*. It is money the household has; it is not any member's
+    // discretionary surplus, so `leftoverMinor` counts it nowhere — one more
+    // way the two figures are answers to different questions.
+    const reserved = household({
+      accounts: household().accounts.map((a) =>
+        a.accountId === "bills" ? { ...a, monthlyBufferMinor: 25_000 } : a,
+      ),
+    });
+    const plan = view(reserved);
+    const bills = plan.accounts.find((a) => a.accountId === "bills")!;
+    expect(bills.leftoverMinor).toBe(25_000);
+    expect(plan.householdLeftoverMinor).toBe(395_000);
+    expect(plan.leftoverMinor).toBe(370_000);
+    expect(plan.householdLeftoverMinor).toBe(ribbons(plan));
+  });
+
+  it("stays signed, so a household sending on more than reaches it can say so", () => {
+    // Alice's transfers all leave `alice-cur` (decision 11 — her personal
+    // account with the most income), and her budget counts the £50 sitting in
+    // `alice-savings` too. So she is committed to moving £150 out of an account
+    // holding £100, and has to consolidate first. Flooring would hide the thing
+    // to do, exactly as it would on the account page.
+    const split = household({
+      members: [{ userId: "alice", displayName: "Alice", shareBp: 10_000 }],
+      accounts: [
+        acc({
+          accountId: "alice-cur",
+          role: "personal",
+          memberUserId: "alice",
+          incomes: [income("alice-pay", 10_000)],
+        }),
+        acc({
+          accountId: "alice-savings",
+          role: "personal",
+          memberUserId: "alice",
+          incomes: [income("alice-interest", 5_000)],
+        }),
+        acc({ accountId: "bills", payments: [owed("rent", 100_000)] }),
+      ],
+    });
+    const plan = householdPlanFromScope(
+      computeScopePlan(split, ASOF),
+      "hh",
+      ["alice-cur", "bills"],
+      "GBP",
+    );
+    expect(plan.householdLeftoverMinor).toBe(-5_000);
+    expect(plan.householdLeftoverMinor).toBe(ribbons(plan));
+    expect(plan.shortfallMinor).toBe(85_000);
+    // Her budget is spent to the penny, so the scope-wide figure says zero and
+    // has nothing to say about the £50 that is in the wrong account.
+    expect(plan.leftoverMinor).toBe(0);
+  });
+});
+
 describe("householdPlanFromScope — the edges", () => {
   it("reports the shortfall of a household nobody is a member of", () => {
     // The finding WP-P raised and declined to patch in a live surface: the old
@@ -434,6 +581,9 @@ describe("householdPlanFromScope — the edges", () => {
     const plan = view(orphan, [...HOUSEHOLD_ACCOUNTS, "joint-savings"]);
     expect(plan.monthlyIncomeMinor).toBe(501_000);
     expect(plan.leftoverMinor).toBe(396_000);
+    // A household that holds every account its members own is the case where
+    // the two agree — which is exactly why the difference went unnoticed.
+    expect(plan.householdLeftoverMinor).toBe(396_000);
   });
 
   it("plans an empty household without complaint", () => {
