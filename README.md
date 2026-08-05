@@ -3,7 +3,13 @@
 A web app for planning savings toward upcoming payments. Record your income and
 your payments (with due dates and recurrence) and the app tells you how much to
 set aside each month per goal to hit its target date, and how much you have
-left over — per account and across all accounts.
+left over — per account, and across the accounts you own. **Left over is one
+derivation read at three altitudes:** what is actually in an account when the
+month has happened, that summed over the accounts one person owns, and a
+household's members' added up. Every figure with that label is one of the three,
+so the rows on a screen add up to the total above them. A figure of yours counts
+what you **own**, never what you can see: a co-member's account shared into your
+household is theirs, and it appears in their figure rather than yours.
 
 **The unit of planning is the user, not the account.** An account is a location
 money sits in, not a planning universe: a bills pot fed by your current account
@@ -47,6 +53,12 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 - **Month-close plan (delivered, WP-A…WP-F):**
   [`MONTH-CLOSE.md`](./MONTH-CLOSE.md), which continues `ONE-ENGINE.md`'s
   decision sequence at 14
+- **Mine-and-ours plan (delivered, WP-AB…WP-AM):**
+  [`MINE-AND-OURS.md`](./MINE-AND-OURS.md), which continues `MONTH-CLOSE.md`'s
+  decision sequence at 19 and supersedes one clause of `ONE-ENGINE.md`'s
+  decision 13
+- **How a plan gets run with parallel agents:**
+  [`ORCHESTRATION.md`](./ORCHESTRATION.md)
 - **Contributing:** [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - **Licence:** [MIT](./LICENSE)
 
@@ -91,7 +103,14 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   left) or **contribution-first** — set a fixed monthly amount and the finish
   date becomes a consequence of the pace. A contribution-first goal needs no
   target date at all.
-- **Projects** group payments across accounts.
+- **Projects** group payments across accounts, and a project is **personal or
+  shared**. Shared means shared into your household — you belong to exactly one,
+  so there is nothing to pick — and a shared project may only hold payments on
+  accounts that are themselves shared into the household, which is why it can
+  name every payment's account without leaking anything. A personal project may
+  hold any payment on any account you own. Leaving a household keeps your
+  projects and not its contents: your shared projects drop the payments on
+  accounts you do not own and flip back to personal.
 - Free-form **tags** (≤ 40 chars) on payments, with suggestions from tags
   already used on the account.
 - **What-if preview**: overlay up to five hypothetical payments/incomes on an
@@ -117,8 +136,12 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
 - **Payday-anchored schedule** splits each transfer across that member's actual
   pay dates, derived from the incomes on their personal accounts.
 - Savings leaving a household account show as one **committed** total rather
-  than itemised, and the headline left over is what is free after it. Which ISA
-  somebody sweeps into is the account's business; the flow diagram itemises it.
+  than itemised. Which ISA somebody sweeps into is the account's business; the
+  flow diagram itemises it. The committed total sits **beside** the headline
+  rather than being subtracted from it: a household's left over is its members'
+  added up, and a member's has already counted the movement at both ends — down
+  where it left, up where it landed — so netting committed off again would lose
+  the money twice over.
 - **A shared pot's own income is its owner's.** A "joint" account is one
   person's account shared into a household, so the lodger's rent paid into it is
   that person's income exactly as a salary into their current account is —
@@ -156,8 +179,6 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   in, every one of them closed by the single action — and the **savings
   scorecard** on the Overview shows the resulting savings rate per month, one
   card per currency, with re-open beside each month.
-- **Net-worth chart** built from balance check-ins, one line per currency,
-  carrying the last known balance forward.
 
 **Forecasting**
 

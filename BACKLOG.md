@@ -6,38 +6,51 @@ endorsement.
 
 ## Product
 
-The first three entries are **defects the one-engine work created**, not polish.
-Each was found in source by the agents that built the scope pass and verified
-again when it closed ([`ONE-ENGINE.md`](./ONE-ENGINE.md)). A follow-up package is
-expected to take them together: they touch the same DTOs and the same pass, and
-picking this class of thing up piecemeal is how the two-engine split survived a
-whole plan.
+The first three entries are what is **left** of four **defects the one-engine
+work created**, each found in source by the agents that built the scope pass and
+verified again when it closed ([`ONE-ENGINE.md`](./ONE-ENGINE.md)). Three later
+plans took most of them where they showed on a screen — the fourth is gone
+entirely, and the first two here are the residue of theirs, narrowed to the part
+no surface depends on. That is the pattern to expect and the reason to re-read
+an entry before working it: a backlog entry is dated evidence about the tree on
+the day it was written, and the half of it that hurt a reader is the half that
+gets fixed first.
 
-- **`householdPlanFromScope` mixes two scopes in one response.**
-  `packages/domain/src/household.ts:214-228`: `members` comes straight off the
-  partition, so a member's `obligationMinor`, `fundedMinor` and
-  `shortfallMinor` are **whole-scope** figures, while `lines`,
-  `totalRequiredMinor` and `totalFundedMinor` are restricted to the household's
-  own accounts. Measured in a browser: a person's costs exceeded everything the
-  cost breakdown could explain, and the unexplained tail painted red on a month
-  with a shortfall of zero. WP-T patched the symptom where it showed
-  (`elsewhereMinor` in `apps/web/src/lib/tags.ts`, quiet and never red); the DTO
-  still publishes two scopes side by side without saying which is which. Fixing
-  it means deciding what a member's obligation _means_ when the same pass funds
-  their bills on an account this household cannot see — restrict the figure, or
-  publish both and name them.
-- **`confirmedInflowMinor` conflates two questions.**
-  `packages/domain/src/scope.ts:802-803` adds derived-transfer confirmations and
-  authored-arrival confirmations into one total, and `accountPlanFromScope`
-  (`packages/domain/src/engine.ts:216-224`) tests each line's
-  `fundedFromInflowMinor` against a running sum of it. So confirming an authored
-  movement into a pot can flip a line actually fed by an **unconfirmed** derived
+- **`HouseholdMemberPlan.shortfallMinor` is the last figure published over two
+  scopes without saying so.** This entry used to name four: a member's
+  `obligationMinor`, `fundedMinor`, `committedMinor` and `shortfallMinor` all
+  came straight off the whole-scope partition while `lines`,
+  `totalRequiredMinor` and `totalFundedMinor` were restricted to the household's
+  own accounts, so a person's costs exceeded everything the breakdown beneath
+  them could explain. The first three took the "publish both and name them"
+  option — `householdObligationMinor` / `elsewhereObligationMinor` and their
+  funded and committed siblings (`packages/domain/src/household.ts:101-156`),
+  each pair summing to the pass's figure, which is what lets the page reconcile.
+  `shortfallMinor` (`packages/domain/src/household.ts:467`) did not: it is still
+  `m.shortfallMinor` verbatim, a whole-scope figure sitting beside two halved
+  ones. It has never been observed wrong on a screen because a member short on
+  the household's bills is normally short overall, and that is a coincidence
+  about the fixtures rather than a property of the figure. Splitting it means
+  first deciding what "short" _means_ restricted to one household when the same
+  income funds bills the household cannot see — the same question the other
+  three answered, on the one figure where the answer is not obviously additive.
+- **`confirmedInflowMinor` still conflates two questions; nothing depends on it
+  any more.** `packages/domain/src/scope.ts:979-980` adds derived-transfer
+  confirmations and authored-arrival confirmations into one total. That used to
+  be load-bearing: `accountPlanFromScope` tested each line's
+  `fundedFromInflowMinor` against a running sum of it, so confirming an authored
+  movement into a pot flipped a line actually fed by an **unconfirmed** derived
   transfer from `awaiting_transfer` to `funded` — amber to green on money nobody
-  has moved. The two kinds of arrival need separate totals, and a line's status
-  needs to ask about the one that funded it.
+  had moved. That half is fixed; the status test now asks
+  `confirmedTransferMinor`, derived-transfer money only, and says at length why
+  (`packages/domain/src/engine.ts:205-226`). What is left is a published field
+  whose name promises one question and whose value answers two, with no caller
+  relying on either reading — which is the state in which a field is cheapest to
+  split and easiest to forget about until something new reads it.
 - **One member vector per scope.** `computeScopePlan`
-  (`packages/domain/src/scope.ts:421-423`) holds a single ordered list of members
-  with one share weight each, and `scopeMembers` (`apps/api/src/plan.ts:476`)
+  (`packages/domain/src/scope.ts:185`, weighted at `:499`) holds a single ordered
+  list of members with one share weight each, and `scopeMembers`
+  (`apps/api/src/plan.ts:518`)
   unions the rosters of every household the scope closed over. Two households
   joined into one connected component by a single authored movement between
   their accounts therefore get **both** rosters, and a `scope: "shared"` payment
@@ -45,16 +58,8 @@ whole plan.
   reaches it today. The fix is per-payment share weights inside the pass rather
   than one vector for the whole scope; it pairs with the two-households entry
   below.
-- **Cosmetic, and pre-existing: a household's transfer table can name an account
-  it cannot see.** `householdPlanFromScope`
-  (`packages/domain/src/household.ts:269-276`) keeps a transfer with _either_ end
-  inside the household but publishes only the household's own accounts, so a
-  transfer whose far end sits outside renders as "Ben → account £303.20" in
-  `TransferChecklist` and in `needsYou`. Either carry the far end's name — it is
-  another household's business, so probably not — or say plainly that the money
-  leaves.
 - **An account in two households is planned by whichever assigned it first.**
-  `householdPlanningAccount` (`apps/api/src/plan.ts:253`) looks from the account
+  `householdPlanningAccount` (`apps/api/src/plan.ts:285`) looks from the account
   outwards — the households its owner belongs to, then the households it is
   shared into — and takes the first that has actually assigned it a role. That
   is deterministic but arbitrary: an account genuinely assigned in two
@@ -134,9 +139,9 @@ whole plan.
 - **Email verification enforcement.** Tokens are issued on register and
   `POST /auth/verify-email` works, but login doesn't block unverified users
   (`apps/auth/src/server.ts` checks the password hash and nothing else).
-- **Multi-currency FX.** Accounts are single-currency; overview groups per
-  currency without conversion, and the net-worth chart draws one line per
-  currency rather than a total. There is no rate anywhere in the system, so
+- **Multi-currency FX.** Accounts are single-currency and the overview groups
+  per currency without conversion, so a person with two currencies reads two
+  figures and never a total. There is no rate anywhere in the system, so
   everything that would need one is now refused rather than guessed: a movement
   between two accounts in different currencies is a 422 naming the pair (and the
   source picker never offers one), and a flow diagram spanning currencies is a
@@ -144,7 +149,34 @@ whole plan.
   and those three refusals become the places it plugs in.
 - **Audit history UI.** No surface for "who changed this share / role / amount".
 - **Project breakdown on the Overview page.** Projects render on `/projects`
-  only; the Overview never aggregates them.
+  only; the Overview never aggregates them. Unaffected by a project now being
+  personal or shared ([`MINE-AND-OURS.md`](./MINE-AND-OURS.md) decision 22) —
+  that decided what a project _is_, not where it is totalled.
+
+## Decided against, not deferred
+
+Things that were built, shipped, and then deliberately removed. They are here so
+nobody reads their absence as an oversight and rebuilds them.
+
+- **Net worth is deleted, not fixed** (Ben, 2026-08-05,
+  [`MINE-AND-OURS.md`](./MINE-AND-OURS.md) decision 21). The Overview carried a
+  net-worth section and a per-currency chart built from balance check-ins. It
+  summed over every account the caller could **see**, which on a household of
+  two included a co-member's account shared into the household — so the headline
+  figure on your own dashboard was partly somebody else's money. The fix and the
+  deletion were costed against each other and the deletion won: a total across
+  accounts you do not own answers no question a person actually has, and one
+  built only over the accounts you own is the left over the page already prints.
+  The section, the chart, `netWorthTotals`, `netWorthSentence`,
+  `buildNetWorthSeries`, `seriesCurrencies`, `NetWorthChart`, the history fetch
+  and every test naming a net-worth figure went with it.
+
+  What deliberately **stayed**: `reservedMinor` on the wire, read by
+  `apps/web/src/components/RealityStrip.tsx:27`, which is a legitimate
+  per-account figure; `GET /api/accounts/:id/balances`; and balance check-ins
+  themselves. A balance is a fact about a place. Only the roll-up over it was
+  ever the problem, and rebuilding the roll-up is the thing this entry exists to
+  stop.
 
 ## Platform / ops
 
@@ -218,38 +250,28 @@ whole plan.
   version of this entry worth doing first.
 
 - **`TransferChecklist` is household-shaped in three independent ways.**
-  `apps/web/src/components/TransferChecklist.tsx:43` renders a **who** column
+  `apps/web/src/components/TransferChecklist.tsx:117` renders a **who** column
   keyed on household members, detects orphan confirmations with a
   `fromAccountId|toAccountId|memberUserId` key, and ends in a `PaydayPlan`
   section that has no standalone analogue at all — a movement carries no date,
-  decided deliberately at `apps/api/src/notify.ts:47`. Two packages
+  decided deliberately at `apps/api/src/notify.ts:74-78`. Two packages
   independently judged generalising it _not contained_ and routed around it
   instead, so the Overview derives its standalone movement rows separately.
   Booking it means answering two design questions rather than doing a
   refactor: what the "who" column says for a movement between two accounts one
   person owns, and what replaces the payday breakdown when there is no payday to
   anchor to.
-- **`listAccountConfirmations` has no consumers.** `apps/web/src/lib/api.ts:437`
+- **`listAccountConfirmations` has no consumers.** `apps/web/src/lib/api.ts:436`
   wraps `GET /api/accounts/:id/transfers/confirmations` — the read that answers
   "what moved into or out of this account", household or not, and which the API
   tests exercise — and nothing in the app calls it.
-  `apps/web/src/pages/HouseholdPlanPage.tsx:34` still reads confirmations with
+  `apps/web/src/pages/HouseholdPlanPage.tsx:36` still reads confirmations with
   `listTransferConfirmations(householdId, month)`, which can only ever describe
   movement inside one household. Either wire the account-scoped read up or
   delete the method; a typed, unused client method is a claim the app does not
   make.
-- **Two DTOs make the web layer re-derive figures the pass already holds.**
-  `HouseholdAccountPlan` (`packages/domain/src/household.ts:85`) carries no
-  `movementInMinor`, and `AccountPlan` (`packages/domain/src/types.ts:224`) no
-  `transferOutMinor`, though `ScopeAccountPlan` computes both. So `arrivingMinor`
-  (`apps/web/src/lib/flow.ts:123`) and `derivedTransferOutMinor`
-  (`apps/web/src/components/AccountMovements.tsx:436`) rearrange each plan's
-  published identity to recover them. Both are correct, both say in a comment
-  that carrying the field directly would be better, and both are a place where a
-  future change to the identity breaks a caller silently rather than at the type
-  level.
 - **`NewMonthClose` cannot require what a close actually needs.**
-  `packages/data/src/store.ts:100` makes `userId` and `currency` optional
+  `packages/data/src/store.ts:107` makes `userId` and `currency` optional
   (`Omit<…> & Partial<Pick<…>>`) because the Store still admits three scopes,
   and `packages/data/src/store-contract.ts` writes the two legacy ones at seven
   of its thirteen `createMonthClose` sites. Nothing else writes them:
@@ -275,16 +297,6 @@ whole plan.
   is what happens to the two legacy scopes, and it pairs with the question
   above — deleting the household scope would retire one of the two columns
   rather than give it a key.
-- **`MemoryStore.deleteAccount` leaves contributions Postgres would cascade.**
-  `packages/data/src/memory-store.ts:486-488` drops every transfer confirmation
-  touching the account, but only deletes contributions whose own `accountId` is
-  the account — so a contribution sitting on a _third_ account and carrying the
-  `transferConfirmationId` of a deleted confirmation survives, pointing at
-  nothing. `PgStore` gets it for free from
-  `core.contributions.transfer_confirmation_id … ON DELETE CASCADE`
-  (`db/migrations/0004_reality_loop.sql:37`). Pre-existing; the contract test
-  does not reach it because nothing in it books a contribution against a third
-  account.
 - **Inline edit affordance for amounts.** Today changing an income/payment
   amount opens the full drawer; a click-to-edit on the row would be slicker.
   Same for moving a payment to a project or another account — both work in the
@@ -295,3 +307,56 @@ whole plan.
 - **Frontend permission flags.** UI hides edit actions based on
   `account.permission` / `household.yourRole`. Duplicates the server-side
   policy. A single shared client+server CASL ability would fix the drift risk.
+
+### Left from the mine-and-ours work: "your money" said of somebody else's
+
+Four packages in a row each found the next instance of the same sentence —
+_the product says money is yours when it is not_ — and a fifth swept the product
+once more to end the chain deliberately rather than by exhaustion
+([`MINE-AND-OURS.md`](./MINE-AND-OURS.md), WP-AF / WP-AJ / WP-AK / WP-AL /
+WP-AM). Everything below was **found, verified and left unfixed on purpose**,
+because none of it reaches a reader today and each would have widened a package
+that had a boundary to hold. Severity is stated per item, because they are not
+the same kind of thing.
+
+- **Dead code, and wrong the moment anyone renders it.**
+  `apps/web/src/components/MemberTagBars.tsx:62` (a segment's `title`) and `:85`
+  (the legend row) both read `elsewhere in your plan · £X` on **every** member's
+  bar, and the component takes no `userId` — so a co-member's bar claims their
+  money is yours. Its own `aria-label` (`:43`) correctly says `Bob: …`, so the
+  accessible name and the tooltip disagree about whose figure it is. Imported by
+  nothing but its own test, which is the **only** reason it was not fixed.
+  Anyone who wires this component to a screen ships the defect with it.
+- **Live, imprecise, and true.** `apps/web/src/components/AccountMovements.tsx:424`
+  says "nothing you authored." It renders only when there are zero authored rows
+  from **anybody**, so it is literally true for every reader who can reach it —
+  imprecise rather than false, which is why it was left. It becomes wrong the
+  day that branch renders with a co-member's authored row present.
+- **A strict improvement with nothing asserting it.**
+  `apps/web/src/pages/AccountPage.tsx:228-241` resolves a payment's project chip
+  against `listProjects()`, which now carries co-members' shared projects — so a
+  payment on your account filed by a co-member into their shared project names
+  and links it, where before it silently rendered nothing. Safe by construction
+  (`proj ? … : null`), and untested. Wants a test that a payment filed into a
+  co-member's shared project renders its chip, before someone "tidies" the
+  lookup back to owned projects and nobody notices.
+- **Stale internal comments — fifteen of them, one belief.** Each says the
+  predicate is _"another account you own"_ where the code's real predicate is
+  `requireAccess(…, "edit")`, which a co-member's shared account satisfies. This
+  is precisely the belief that kept being re-implemented one function away for
+  four packages running, which is why clearing the comments is worth doing
+  rather than cosmetic: `packages/contracts/src/index.ts:179-180`;
+  `apps/web/src/lib/types.ts:276, :347, :1084`;
+  `apps/web/src/lib/needsYou.ts:207, :647, :1011`;
+  `apps/web/src/components/Fold.tsx:177`; `apps/web/src/lib/api.ts:404`;
+  `packages/domain/src/types.ts:351`; `packages/domain/src/flow.ts:44`;
+  `apps/api/src/portability.ts:43`; `packages/data/src/entities.ts:284`;
+  `apps/api/src/server.ts:985, :1962`.
+- **Do not "clean up" these four.** They look identical to the fifteen above and
+  they are **correct as written**: each narrates a defect this work fixed, in the
+  words of the wrong belief, which is what makes them read like instances of it.
+  `apps/web/src/components/MovementDrawer.tsx:40` and `:97`;
+  `apps/web/src/lib/needsYou.ts:612`; `apps/api/src/notify.ts:83`. A sweep that
+  greps for the phrase will delete the explanations along with the errors —
+  which is the whole reason this warning is booked beside the list rather than
+  left to be rediscovered.

@@ -1,8 +1,8 @@
 # Running a plan with parallel agents
 
-How the `INFLOWS` / `ONE-ENGINE` / `MONTH-CLOSE` work was executed, written down so the
-next orchestrator does not rediscover it. Everything here was learnt by getting it
-wrong first.
+How the `INFLOWS` / `ONE-ENGINE` / `MONTH-CLOSE` / `MINE-AND-OURS` work was executed,
+written down so the next orchestrator does not rediscover it. Everything here was
+learnt by getting it wrong first.
 
 The shape: a plan document defines work packages with owned file lists, acceptance
 criteria and a wave table. One agent per package. Packages in a wave run concurrently
@@ -26,6 +26,30 @@ Plus `pnpm coverage` when `packages/domain` is touched (floor: **99.87% statemen
 `pnpm --filter @finance-planner/data test:int` when a migration is added.
 
 `prettier --check` is repo-wide and fatal. A stray untracked file breaks it.
+
+**`pnpm test` can print `FULL TURBO` and tell you nothing.** Turbo caches on content,
+so when an agent has just run the suite and reports green, the orchestrator's re-run
+over the same tree replays that agent's own result out of the cache in a second or
+two. Nothing is re-executed. That is Turbo working correctly and it is **not
+independent verification** — it is the agent's claim, read back in the agent's own
+handwriting. When the point of the run is to check the agent rather than the code,
+force it — but force it at the right layer:
+
+```
+pnpm exec turbo run test --force     # correct: turbo re-executes everything
+pnpm test -- --force                 # WRONG: forwards --force to vitest, which fails
+```
+
+`pnpm test` is `turbo run test`, and `--` hands the flag past turbo to each package's
+own test command. Vitest does not take `--force`, so that form exits 1 with
+`0 successful, 10 total` and looks exactly like the suite having broken. Both were
+tried; only the first does what it says. Watch for `Cached: 0 cached, 10 total` in the summary — that line, not
+the word "successful", is the evidence the run happened.
+
+This belongs in the same paragraph as the missing gate above for the same reason: both
+are ways of being told green by something that never looked. Use the cache freely when
+you are moving between packages and want speed; force it at the wave boundary, before
+a push, and any time you would quote the result back to Ben.
 
 ## Reading CI, correctly
 
@@ -55,12 +79,28 @@ Agents are killed after **600 seconds without output**. More than ten died this 
 every one running something long and silent at the _end_ of a package — repeated test
 suites, a browser harness, a step-by-step gate.
 
+**There is a second way to hit it, and it does not involve running anything.** One
+agent died having written nothing at all: it was reading large source files in
+silence, orienting itself before its first edit, and never emitted a line. Reading is
+not free — a handful of thousand-line files, taken carefully, is ten minutes. The
+first kill is expensive and the second is worse, because an agent that dies before its
+first commit resumes with nothing to resume from.
+
+The wording that fixed it, after which nothing stalled again for the rest of that
+plan: **emit a line before every file read, not merely between steps**, and **work in
+staged commits so a kill costs one step rather than a package**. The second half is
+what makes the first half survivable — it turns the watchdog from a thing that
+destroys work into a thing that interrupts it.
+
 Put in every brief:
 
-- emit a line of output between every step;
+- emit a line of output **before every file read** and after every edit — between
+  steps is not often enough;
+- **work in staged commits**; a killed agent should lose one step, never a package;
 - never run the full suite more than twice in a row;
 - **commit before any long final verification**;
-- if a browser pass is needed, **do it first, not last**.
+- if a browser pass is needed, **do it first, not last**;
+- name the long files up front, so an agent knows which reads to narrate.
 
 A killed agent loses nothing. Resume it with `SendMessage` — it picks up from its
 transcript with context intact. Trim its scope to "commit what you have and report";
@@ -93,6 +133,19 @@ Use **non-default ports** (not 5173 / 4000 / 8080). Build `dist` and serve it
 statically — Vite's proxy is hardcoded. **Forward every response header including
 `getSetCookie()`**: a harness that dropped `set-cookie` silently 401'd every navigation
 and cost an agent its whole browser pass.
+
+**There is no `tsx` binary**, in `node_modules/.bin` or on the path, so a harness
+written as `tsx harness.ts` fails before it does anything and reads like a missing
+dependency. The package is installed; only the shim is absent. Run the loader
+directly:
+
+```
+node --import node_modules/.pnpm/tsx@4.22.3/node_modules/tsx/dist/loader.mjs harness.ts
+```
+
+Ports already spent, so the next run picks elsewhere: **4310–4312, 4410–4412 and
+4510–4512** across three harnesses in the mine-and-ours work. Three ports per harness,
+because auth, api and the static server each need one.
 
 ## The scratchpad
 
@@ -137,11 +190,23 @@ needs asking.
 
 ## What agents are good at, and where they need pushing
 
-They are reliable and they will tell you when a brief is wrong. **More than twenty
-corrected a brief across this work and every one was right**, including catches that
-prevented a migration wedging every future deploy and a field that would have changed
-nothing on its own. Write briefs that invite it: _"if a premise here is wrong, say so
-and serve its intent, not its letter."_
+They are reliable and they will tell you when a brief is wrong. **The count is now
+well past thirty across four plans, and every one of them was right.** The
+mine-and-ours work alone contributed nine — including two corrections to the
+orchestrator's own description of a field it had written the brief about, and one that
+stopped `PATCH` and `DELETE` on a shared project being granted to every co-member of
+the household it was shared into. Not one was a false alarm. Write briefs that invite
+it: _"if a premise here is wrong, say so and serve its intent, not its letter."_
+
+The corollary, learnt the same way: **a brief's `file:line` references are hints to
+verify, not facts.** Three had drifted by the time the packages holding them ran, in a
+plan whose own line numbers were re-checked when it was written — a file the previous
+wave touched moves every reference below the edit, and the plan does not move with it.
+Tell agents to grep for the symbol and confirm the line says what the brief claims
+before acting on it, and to report the drift rather than quietly working around it.
+The same applies to `BACKLOG.md`: an entry is dated evidence about the tree on the day
+it was written, and several have been found describing gaps that later work had
+already closed.
 
 Ask every package to **hunt for the assumption rather than assuming its absence**, and
 name the assumption. Every plan's live defect was found this way, or by Ben on a real
