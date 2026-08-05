@@ -324,7 +324,13 @@ const PLANNED_STATE = [
   }),
 ];
 
-function renderPlanned(routes: Routes = {}): ReturnType<typeof render> {
+/**
+ * `meLast` makes `GET /api/auth/me` answer a macrotask behind everything else,
+ * which is the order a loaded machine hands out and the one the CI failure
+ * below was caught in: the page learns its accounts and its overview first, and
+ * only then which household to read a plan for.
+ */
+function renderPlanned(routes: Routes = {}, meLast = false): ReturnType<typeof render> {
   stub = stubApiFetch({
     "GET /api/auth/me": { body: PLANNED_ME },
     "GET /api/accounts": { body: PLANNED_ACCOUNTS },
@@ -353,6 +359,15 @@ function renderPlanned(routes: Routes = {}): ReturnType<typeof render> {
     "GET /api/accounts/side/balances": { body: [] },
     ...routes,
   });
+
+  if (meLast) {
+    const stubbed = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+      const response = await stubbed(url, init);
+      if (String(url).includes("/api/auth/me")) await new Promise((r) => setTimeout(r, 0));
+      return response;
+    });
+  }
 
   return render(
     <MemoryRouter>
@@ -454,6 +469,43 @@ describe("OverviewPage — fold + doorways", () => {
 
   it("builds the check-in row off the overview alone, and it still actions", async () => {
     renderPlanned({ "PUT /api/accounts/ada/balance": { body: {} } });
+
+    fireEvent.click(await screen.findByRole("button", { name: "check in" }));
+    // This went red once in CI under the load of the whole workspace, with the
+    // row's box gone and "reading your plans…" in its place — the fold torn
+    // down between the click and the next line.
+    //
+    // The cause was `useAsync` blanking on a deps change in its *effect*, a beat
+    // after the render that changed them. The household plans are read for
+    // `me().households`, so the run before `me` answered was a run for no
+    // households, and for one committed render the hook offered that empty
+    // answer as settled. The page built this checklist off it — the check-in row
+    // is derived from the overview alone, which is why the button was there to
+    // click — and then the real read started, blanked the fold, and took the
+    // opened row with it. A person catching the Overview mid-load lost what they
+    // had typed the same way. Fixed in the hook, which now blanks during render.
+    //
+    // Do NOT settle this by waiting for the row again — the row is the thing
+    // under test, and a wait would pass whether or not it survived the click.
+    fireEvent.change(screen.getByLabelText("check in Ada current balance"), {
+      target: { value: "1234.50" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "save" }));
+
+    await waitFor(() => expect(stub.calls("PUT /api/accounts/ada/balance")).toBe(1));
+    expect(stub.bodyOf("PUT /api/accounts/ada/balance")).toEqual({ balanceMinor: 123_450 });
+  });
+
+  /**
+   * The same row, in the order that broke it. The household plans are read for
+   * `me().households`, so until `me` answers there is a read in hand for *no*
+   * households — and it used to be offered as a settled answer for the one
+   * render between `me` arriving and the real read starting. The fold was built
+   * off it, the check-in row with it, and the read landing a beat later blanked
+   * the lot: the box you had just opened, and anything typed into it.
+   */
+  it("keeps the check-in row you opened while the household read starts behind it", async () => {
+    renderPlanned({ "PUT /api/accounts/ada/balance": { body: {} } }, true);
 
     fireEvent.click(await screen.findByRole("button", { name: "check in" }));
     fireEvent.change(screen.getByLabelText("check in Ada current balance"), {
