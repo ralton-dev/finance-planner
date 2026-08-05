@@ -828,9 +828,13 @@ function standaloneAccounts(input: NeedsYouInput): readonly NeedsYouAccountInput
  *
  * "Money that has not moved" has three producers and one kind: a household
  * member asked to transfer their share, a transfer the plan derived for an
- * account no household in this input speaks for, and a movement between two of
- * your own accounts that somebody authored. Exactly one row per outstanding
- * thing is the whole contract here, so none of them may draw another's — the
+ * account no household in this input speaks for, and a movement somebody
+ * authored between two accounts — **not** necessarily two of your own, which is
+ * what this said until decision 25: authoring one takes edit access to the
+ * sender, and the row is drawn for a co-member's pot shared to you because it
+ * is still a thing you can confirm. {@link movementEnds} words whose the two
+ * ends are; the row's existence is not an ownership claim. Exactly one row per
+ * outstanding thing is the whole contract here, so none may draw another's — the
  * first two are split by {@link standaloneAccounts} and the third is keyed by
  * the authored inflow, which the other two do not have.
  */
@@ -856,8 +860,10 @@ export function deriveNeedsYou(input: NeedsYouInput): NeedsYouItem[] {
 
   for (const account of accounts) {
     // Every account, not just the standalone ones: an account inside a household
-    // can also be fed by another account you own, and that movement is nobody
-    // else's story — the household's member rows do not know about it.
+    // can also be fed by another account directly, and that movement is nobody
+    // else's story — the household's member rows do not know about it. Every
+    // account in the other sense too: ownership does not gate the row, only its
+    // wording, so `userId` goes to `movementEnds` and not to a filter here.
     items.push(...movementItems(account, month, input.userId));
     items.push(...recordItems(account, month));
     const checkin = checkinItem(account, input.asOfDate, staleAfterDays, upcoming);
