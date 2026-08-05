@@ -5,7 +5,7 @@ import type {
   PaymentScope,
   Recurrence,
 } from "@finance-planner/contracts";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm";
 import type { Database } from "./db.js";
 import type {
   Account,
@@ -175,6 +175,10 @@ export class PgStore implements Store {
       .from(s.households)
       .where(eq(s.households.createdBy, userId));
     for (const h of founded) await this.deleteHousehold(h.id);
+
+    // Their own scorecards. The FK cascades on the user delete below; explicit
+    // for parity with MemoryStore, as with the notification log.
+    await this.db.delete(s.monthCloses).where(eq(s.monthCloses.userId, userId));
 
     await this.db.delete(s.memberships).where(eq(s.memberships.userId, userId));
     await this.db.delete(s.sessions).where(eq(s.sessions.userId, userId));
@@ -1123,11 +1127,16 @@ export class PgStore implements Store {
   }
 
   async createMonthClose(input: NewMonthClose): Promise<MonthClose> {
+    // Both refusals — a duplicate partition, a user close naming no currency —
+    // come back from the database itself, off the unique index and the CHECK
+    // that 0013 adds. MemoryStore states them in code to say the same thing.
     const [row] = await this.db
       .insert(s.monthCloses)
       .values({
         householdId: input.householdId,
         accountId: input.accountId,
+        userId: input.userId ?? null,
+        currency: input.currency ?? null,
         month: input.month,
         incomeMinor: input.incomeMinor,
         plannedMinor: input.plannedMinor,
@@ -1144,27 +1153,24 @@ export class PgStore implements Store {
   }
 
   async getMonthClose(scope: MonthCloseScope, month: string): Promise<MonthClose | null> {
-    const scopeCond =
-      "householdId" in scope
-        ? eq(s.monthCloses.householdId, scope.householdId)
-        : eq(s.monthCloses.accountId, scope.accountId);
+    // Ordered and limited, not merely "the first row back": a user's month can
+    // hold one row per currency, and asking without one must still answer the
+    // same way twice.
     const [row] = await this.db
       .select()
       .from(s.monthCloses)
-      .where(and(scopeCond, eq(s.monthCloses.month, month)));
+      .where(and(monthCloseScopeCond(scope), eq(s.monthCloses.month, month)))
+      .orderBy(asc(s.monthCloses.currency))
+      .limit(1);
     return row ? mapMonthClose(row) : null;
   }
 
   async listMonthCloses(scope: MonthCloseScope): Promise<MonthClose[]> {
-    const scopeCond =
-      "householdId" in scope
-        ? eq(s.monthCloses.householdId, scope.householdId)
-        : eq(s.monthCloses.accountId, scope.accountId);
     const rows = await this.db
       .select()
       .from(s.monthCloses)
-      .where(scopeCond)
-      .orderBy(desc(s.monthCloses.month));
+      .where(monthCloseScopeCond(scope))
+      .orderBy(desc(s.monthCloses.month), asc(s.monthCloses.currency));
     return rows.map(mapMonthClose);
   }
 
@@ -1333,11 +1339,24 @@ function mapTransferConfirmation(
   };
 }
 
+/** The one scope column a close is filed under, plus the currency when the
+ *  caller named one — see `MonthCloseScope`. */
+function monthCloseScopeCond(scope: MonthCloseScope): SQL | undefined {
+  if ("householdId" in scope) return eq(s.monthCloses.householdId, scope.householdId);
+  if ("accountId" in scope) return eq(s.monthCloses.accountId, scope.accountId);
+  return and(
+    eq(s.monthCloses.userId, scope.userId),
+    scope.currency === undefined ? undefined : eq(s.monthCloses.currency, scope.currency),
+  );
+}
+
 function mapMonthClose(r: typeof s.monthCloses.$inferSelect): MonthClose {
   return {
     id: r.id,
     householdId: r.householdId,
     accountId: r.accountId,
+    userId: r.userId,
+    currency: r.currency,
     month: r.month,
     incomeMinor: r.incomeMinor,
     plannedMinor: r.plannedMinor,

@@ -90,7 +90,15 @@ export type NewAccountAssignment = Omit<
 export type NewContribution = Omit<Contribution, "id" | "createdAt">;
 export type NewBalanceSnapshot = Omit<BalanceSnapshot, "id" | "createdAt">;
 export type NewTransferConfirmation = Omit<TransferConfirmation, "id" | "createdAt">;
-export type NewMonthClose = Omit<MonthClose, "id" | "closedAt">;
+/**
+ * `userId` and `currency` are optional here and required nowhere else: a
+ * household or account close names neither, so writing one should not have to
+ * say so twice. A user close names both — and the Store refuses one that names
+ * a user without a currency, which is the rule `month_close_user_currency`
+ * (0013) states in the database.
+ */
+export type NewMonthClose = Omit<MonthClose, "id" | "closedAt" | "userId" | "currency"> &
+  Partial<Pick<MonthClose, "userId" | "currency">>;
 
 /**
  * An external inflow seen through the income API's eyes — the same row, minus
@@ -118,8 +126,19 @@ export interface ContributionTotal {
   totalMinor: number;
 }
 
-/** Identifies whose scorecard a month close belongs to. */
-export type MonthCloseScope = { householdId: string } | { accountId: string };
+/**
+ * Identifies whose scorecard a month close belongs to.
+ *
+ * A user's closes are keyed by currency as well, because closing a month closes
+ * every partition they hold at once. Naming the currency asks about one
+ * partition; leaving it off asks the scope-level question — "is this month
+ * closed for me at all" — and answers with the lowest currency code's row, so
+ * two callers asking the same thing get the same row.
+ */
+export type MonthCloseScope =
+  | { householdId: string }
+  | { accountId: string }
+  | { userId: string; currency?: string };
 
 /** Effective access a user has to an account. */
 export interface AccountAccess {
@@ -450,10 +469,15 @@ export interface Store {
   deleteTransferConfirmation(id: string): Promise<void>;
 
   // ---- month closes (frozen scorecards) ----
+  /**
+   * Rejects a second close of the same scope and month — of the same
+   * *currency* too, for a user scope, since one month there is one row per
+   * partition. Rejects a user close that names no currency.
+   */
   createMonthClose(input: NewMonthClose): Promise<MonthClose>;
   getMonthCloseById(id: string): Promise<MonthClose | null>;
   getMonthClose(scope: MonthCloseScope, month: string): Promise<MonthClose | null>;
-  /** Closes for a scope, newest month first. */
+  /** Closes for a scope, newest month first, currency ascending within a month. */
   listMonthCloses(scope: MonthCloseScope): Promise<MonthClose[]>;
   deleteMonthClose(id: string): Promise<void>;
 

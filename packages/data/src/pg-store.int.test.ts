@@ -294,6 +294,121 @@ describe("PgStore (Postgres via Testcontainers)", () => {
     });
   });
 
+  /**
+   * 0013's swap, watched from the database that predates it: 0001–0012, a close
+   * of each scope 0004's XOR allowed, then everything applied twice on top.
+   *
+   * The exception decision 18 grants is a DROP, and a DROP is the one thing
+   * that can leave a cluster worse than it found it. Two things have to hold
+   * afterwards. The rows written under the old rule are still there — additive
+   * means additive even when a constraint is replaced. And the swap is a no-op
+   * the second time and every time after: it is recognised as done by the
+   * predicate mentioning `user_id`, so `month_close_scope` is dropped once, held
+   * under its own name forever, and never found twice on the table.
+   */
+  it("re-scopes a month close to a user, over a database that only knew two scopes", async () => {
+    await withClient(uri, (c) => c.query("CREATE DATABASE close_scope_probe"));
+    const probe = new URL(uri);
+    probe.pathname = "/close_scope_probe";
+    const probeUri = probe.toString();
+
+    await applyMigrations(probeUri, "0012_zzz");
+
+    const household = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    const legacy = await withClient(probeUri, async (c) => {
+      const { rows: users } = await c.query<{ id: string }>(
+        `INSERT INTO auth.users (email, display_name) VALUES ('closer@example.com', 'Closer')
+         RETURNING id`,
+      );
+      const { rows: accounts } = await c.query<{ id: string }>(
+        `INSERT INTO core.accounts (owner_user_id, name) VALUES ($1, 'Current') RETURNING id`,
+        [users[0]!.id],
+      );
+      // Both shapes 0004 admitted, written before this migration exists.
+      await c.query(
+        `INSERT INTO core.month_closes
+           (household_id, account_id, month, income_minor, planned_minor, contributed_minor)
+         VALUES ($1, NULL, '2026-06-01', 1, 1, 1), (NULL, $2, '2026-06-01', 2, 2, 2)`,
+        [household, accounts[0]!.id],
+      );
+      return { user: users[0]!.id, account: accounts[0]!.id };
+    });
+
+    await applyMigrations(probeUri);
+    await applyMigrations(probeUri);
+
+    await withClient(probeUri, async (c) => {
+      // Nothing was migrated, rewritten or swept up.
+      const kept = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM core.month_closes WHERE user_id IS NULL`,
+      );
+      expect(kept.rows[0]).toEqual({ n: 2 });
+      // Exactly one scope constraint, under the name it always had, stating the
+      // new rule. Two would mean a rename had left the old one behind.
+      const scope = await c.query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+         WHERE conname = 'month_close_scope' AND conrelid = 'core.month_closes'::regclass`,
+      );
+      expect(scope.rows).toHaveLength(1);
+      expect(scope.rows[0]!.def).toContain("user_id");
+
+      const close = (
+        userId: string | null,
+        currency: string | null,
+        month = "2026-07-01",
+        householdId: string | null = null,
+      ) =>
+        c.query(
+          `INSERT INTO core.month_closes
+             (household_id, account_id, user_id, currency, month,
+              income_minor, planned_minor, contributed_minor)
+           VALUES ($4, NULL, $1, $2, $3, 1, 1, 1)`,
+          [userId, currency, month, householdId],
+        );
+
+      // The row this whole file exists for.
+      await expect(close(legacy.user, "GBP")).resolves.toBeTruthy();
+      // One action closes every partition, so a second currency in the same
+      // month is not a duplicate…
+      await expect(close(legacy.user, "EUR")).resolves.toBeTruthy();
+      // …and the same partition twice is.
+      await expect(close(legacy.user, "GBP")).rejects.toThrow(
+        /month_closes_user_month_currency_unique/,
+      );
+      // A close scoped to a person has to name the partition it scored.
+      await expect(close(legacy.user, null)).rejects.toThrow(/month_close_user_currency/);
+      // Exactly one of the three, still: not two, and not none.
+      await expect(close(legacy.user, "GBP", "2026-08-01", household)).rejects.toThrow(
+        /month_close_scope/,
+      );
+      await expect(close(null, null, "2026-08-01")).rejects.toThrow(/month_close_scope/);
+      // The legacy scopes are untouched — same rows, same keys, same refusals.
+      await expect(
+        c.query(
+          `INSERT INTO core.month_closes
+             (household_id, account_id, month, income_minor, planned_minor, contributed_minor)
+           VALUES ($1, NULL, '2026-06-01', 9, 9, 9)`,
+          [household],
+        ),
+      ).rejects.toThrow(/month_closes_household_month_unique/);
+      await expect(
+        c.query(
+          `INSERT INTO core.month_closes
+             (household_id, account_id, month, income_minor, planned_minor, contributed_minor)
+           VALUES (NULL, $1, '2026-06-01', 9, 9, 9)`,
+          [legacy.account],
+        ),
+      ).rejects.toThrow(/month_closes_account_month_unique/);
+
+      // A frozen scorecard is nobody's once the person it scores is erased.
+      await c.query(`DELETE FROM auth.users WHERE id = $1`, [legacy.user]);
+      const orphans = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM core.month_closes WHERE user_id IS NOT NULL`,
+      );
+      expect(orphans.rows[0]).toEqual({ n: 0 });
+    });
+  });
+
   it("backfills incomes exactly once, and never resurrects a deleted inflow", async () => {
     // A separate database, so the backfill can be watched from before it runs:
     // 0001–0007 first, a legacy income row, then 0008 for the first time.

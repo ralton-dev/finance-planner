@@ -55,6 +55,15 @@ const byCreatedAt = (a: { createdAt: string }, b: { createdAt: string }): number
  *  within a rank. Mirrors PgStore's ORDER BY so both agree row for row. */
 const byPriority = (a: Inflow, b: Inflow): number => a.priority - b.priority || byCreatedAt(a, b);
 
+/** Month close order: newest month first, and — since a user's month holds one
+ *  row per currency — currency ascending inside it. Mirrors PgStore's ORDER BY. */
+const byMonthDesc = (a: MonthClose, b: MonthClose): number =>
+  a.month === b.month
+    ? (a.currency ?? "").localeCompare(b.currency ?? "")
+    : a.month > b.month
+      ? -1
+      : 1;
+
 /** In-memory Store for tests and DB-less local dev. Not for production. */
 export class MemoryStore implements Store {
   private users = new Map<string, User>();
@@ -134,6 +143,9 @@ export class MemoryStore implements Store {
       // household is just dropped.
       if (h.createdBy === userId) await this.deleteHousehold(h.id);
     }
+    // Their own scorecards. Account-scoped ones went with the accounts above;
+    // a close scoped to the person hangs off nothing else.
+    for (const [k, c] of this.monthCloses) if (c.userId === userId) this.monthCloses.delete(k);
     for (const [k, m] of this.memberships) if (m.userId === userId) this.memberships.delete(k);
     for (const [k, s] of this.sessions) if (s.userId === userId) this.sessions.delete(k);
     for (const [k, t] of this.verifyTokens) if (t.userId === userId) this.verifyTokens.delete(k);
@@ -825,13 +837,24 @@ export class MemoryStore implements Store {
   }
 
   async createMonthClose(input: NewMonthClose): Promise<MonthClose> {
-    const scope: MonthCloseScope = input.householdId
-      ? { householdId: input.householdId }
-      : { accountId: input.accountId! };
+    const userId = input.userId ?? null;
+    const currency = input.currency ?? null;
+    // What `month_close_user_currency` (0013) says at the database: a close
+    // scoped to a person has to name the partition it scored.
+    if (userId && !currency) {
+      throw new Error("a user close must name its currency");
+    }
+    // A user's month holds one row per currency, so the duplicate to refuse is
+    // the same partition twice — the key the partial unique index carries.
+    const scope: MonthCloseScope = userId
+      ? { userId, currency: currency! }
+      : input.householdId
+        ? { householdId: input.householdId }
+        : { accountId: input.accountId! };
     if (await this.getMonthClose(scope, input.month)) {
       throw new Error("month already closed");
     }
-    const c: MonthClose = { ...input, id: randomUUID(), closedAt: now() };
+    const c: MonthClose = { ...input, userId, currency, id: randomUUID(), closedAt: now() };
     this.monthCloses.set(c.id, c);
     return c;
   }
@@ -841,22 +864,23 @@ export class MemoryStore implements Store {
   }
 
   async getMonthClose(scope: MonthCloseScope, month: string): Promise<MonthClose | null> {
-    for (const c of this.monthCloses.values()) {
-      if (c.month !== month) continue;
-      if ("householdId" in scope ? c.householdId === scope.householdId : false) return c;
-      if ("accountId" in scope ? c.accountId === scope.accountId : false) return c;
-    }
-    return null;
+    // Through the sorted list, so a user scope asked without a currency gets
+    // the same row every time rather than whichever was written first.
+    const [first] = (await this.listMonthCloses(scope)).filter((c) => c.month === month);
+    return first ?? null;
   }
 
   async listMonthCloses(scope: MonthCloseScope): Promise<MonthClose[]> {
     return [...this.monthCloses.values()]
-      .filter((c) =>
-        "householdId" in scope
-          ? c.householdId === scope.householdId
-          : c.accountId === scope.accountId,
-      )
-      .sort((a, b) => (a.month > b.month ? -1 : 1));
+      .filter((c) => {
+        if ("householdId" in scope) return c.householdId === scope.householdId;
+        if ("accountId" in scope) return c.accountId === scope.accountId;
+        return (
+          c.userId === scope.userId &&
+          (scope.currency === undefined || c.currency === scope.currency)
+        );
+      })
+      .sort(byMonthDesc);
   }
 
   async deleteMonthClose(id: string): Promise<void> {

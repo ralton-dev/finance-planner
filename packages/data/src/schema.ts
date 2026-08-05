@@ -224,6 +224,9 @@ export const monthCloses = coreSchema.table("month_closes", {
   id: uuid("id").defaultRandom().primaryKey(),
   householdId: uuid("household_id"),
   accountId: uuid("account_id"),
+  userId: uuid("user_id"),
+  /** Set on a user close, null on the two location scopes — see 0013. */
+  currency: text("currency"),
   month: date("month").notNull(),
   incomeMinor: bigint("income_minor", { mode: "number" }).notNull(),
   plannedMinor: bigint("planned_minor", { mode: "number" }).notNull(),

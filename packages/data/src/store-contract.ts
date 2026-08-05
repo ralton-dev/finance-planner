@@ -825,6 +825,104 @@ export async function exerciseStore(store: Store): Promise<void> {
   await store.deleteMonthClose(accountClose.id);
   expect(await store.getMonthCloseById(accountClose.id)).toBeNull();
 
+  // --- a close the person owns, one row per currency ---
+  // Closing a month closes every currency partition the user holds at once, so
+  // two rows for one month is the ordinary state and only a repeated partition
+  // is a duplicate.
+  const julyGbp = await store.createMonthClose({
+    householdId: null,
+    accountId: null,
+    userId: user.id,
+    currency: "GBP",
+    month: "2026-07-01",
+    incomeMinor: 400_000,
+    plannedMinor: 90_000,
+    contributedMinor: 85_000,
+    closedBy: user.id,
+  });
+  const julyEur = await store.createMonthClose({
+    householdId: null,
+    accountId: null,
+    userId: user.id,
+    currency: "EUR",
+    month: "2026-07-01",
+    incomeMinor: 20_000,
+    plannedMinor: 5_000,
+    contributedMinor: 5_000,
+    closedBy: user.id,
+  });
+  expect((await store.getMonthCloseById(julyGbp.id))?.currency).toBe("GBP");
+  // Named, it answers about that partition…
+  expect((await store.getMonthClose({ userId: user.id, currency: "GBP" }, "2026-07-01"))?.id).toBe(
+    julyGbp.id,
+  );
+  // …unnamed, it answers "is this month closed for me at all", the same way
+  // every time: the lowest currency code's row.
+  expect((await store.getMonthClose({ userId: user.id }, "2026-07-01"))?.id).toBe(julyEur.id);
+  expect(await store.getMonthClose({ userId: user.id }, "2026-06-01")).toBeNull();
+  await store.createMonthClose({
+    householdId: null,
+    accountId: null,
+    userId: user.id,
+    currency: "GBP",
+    month: "2026-08-01",
+    incomeMinor: 400_000,
+    plannedMinor: 95_000,
+    contributedMinor: 95_000,
+    closedBy: user.id,
+  });
+  // Newest month first, currency ascending inside a month.
+  expect(
+    (await store.listMonthCloses({ userId: user.id })).map((c) => [c.month, c.currency]),
+  ).toEqual([
+    ["2026-08-01", "GBP"],
+    ["2026-07-01", "EUR"],
+    ["2026-07-01", "GBP"],
+  ]);
+  expect(
+    (await store.listMonthCloses({ userId: user.id, currency: "EUR" })).map((c) => c.id),
+  ).toEqual([julyEur.id]);
+  // The same partition twice is the duplicate to refuse — and the only one.
+  await expect(
+    store.createMonthClose({
+      householdId: null,
+      accountId: null,
+      userId: user.id,
+      currency: "GBP",
+      month: "2026-07-01",
+      incomeMinor: 1,
+      plannedMinor: 1,
+      contributedMinor: 1,
+      closedBy: user.id,
+    }),
+  ).rejects.toThrow();
+  // A close scoped to a person has to name the partition it scored.
+  await expect(
+    store.createMonthClose({
+      householdId: null,
+      accountId: null,
+      userId: user.id,
+      currency: null,
+      month: "2026-09-01",
+      incomeMinor: 1,
+      plannedMinor: 1,
+      contributedMinor: 1,
+      closedBy: user.id,
+    }),
+  ).rejects.toThrow();
+  // The three scopes are filed apart: neither location list has grown, and the
+  // person's list holds nothing of theirs.
+  expect((await store.listMonthCloses({ householdId: household.id })).map((c) => c.month)).toEqual([
+    "2026-08-01",
+    "2026-07-01",
+  ]);
+  expect(await store.listMonthCloses({ accountId: account.id })).toEqual([]);
+  expect(
+    (await store.listMonthCloses({ userId: user.id })).every((c) => c.userId === user.id),
+  ).toBe(true);
+  await store.deleteMonthClose(julyEur.id);
+  expect(await store.getMonthCloseById(julyEur.id)).toBeNull();
+
   // --- deleting an account clears everything hanging off it ---
   const doomedAccount = await store.createAccount({
     ownerUserId: user.id,
@@ -1022,6 +1120,19 @@ export async function exerciseStore(store: Store): Promise<void> {
     contributedMinor: 3_000,
     closedBy: leaver.id,
   });
+  // Scoped to the person rather than to any account of theirs, so nothing else
+  // being erased below can carry it away.
+  const leaverOwnClose = await store.createMonthClose({
+    householdId: null,
+    accountId: null,
+    userId: leaver.id,
+    currency: "GBP",
+    month: "2026-07-01",
+    incomeMinor: 0,
+    plannedMinor: 3_000,
+    contributedMinor: 3_000,
+    closedBy: leaver.id,
+  });
   // Somebody else's household, which they merely joined — `user`'s, the one
   // `account` is already shared into. It used to be a household they founded
   // *and* one they joined; a user belongs to exactly one now, so the founded
@@ -1059,6 +1170,7 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(await store.getContribution(leaverContribution.id)).toBeNull();
   expect(await store.getProject(leaverProject.id)).toBeNull();
   expect(await store.getMonthCloseById(leaverClose.id)).toBeNull();
+  expect(await store.getMonthCloseById(leaverOwnClose.id)).toBeNull();
   expect(await store.getMembership(joinedHousehold.id, leaver.id)).toBeNull();
   expect(await store.getSessionByTokenHash(leaverSession.refreshTokenHash)).toBeNull();
   expect(await store.consumeEmailVerificationToken("leaver-verify")).toBeNull();

@@ -308,12 +308,20 @@ export interface NotificationLogEntry {
   createdAt: string;
 }
 
-/** A frozen month scorecard for a household or a standalone account. */
+/** A frozen month scorecard for a user, a household, or a standalone account. */
 export interface MonthClose {
   id: string;
-  /** Exactly one of householdId / accountId is set. */
+  /** Exactly one of householdId / accountId / userId is set. */
   householdId: string | null;
   accountId: string | null;
+  /** Whose month this scores — the scope a close is written with today. */
+  userId: string | null;
+  /**
+   * Which currency partition it scores. Required of a user close (planning
+   * partitions by currency, so a scorecard has to say which one it read); null
+   * on the two location scopes, which never partitioned.
+   */
+  currency: string | null;
   /** ISO date of the first day of the closed month. */
   month: string;
   incomeMinor: number;
