@@ -51,6 +51,12 @@ const now = (): string => new Date().toISOString();
 const byCreatedAt = (a: { createdAt: string }, b: { createdAt: string }): number =>
   a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? -1 : 1;
 
+/** Oldest first, with an id tie-break for callers whose first row is semantic. */
+const byCreatedAtThenId = (
+  a: { createdAt: string; id: string },
+  b: { createdAt: string; id: string },
+): number => byCreatedAt(a, b) || a.id.localeCompare(b.id);
+
 /** Inflow order: the priority the sending account serves them in, oldest first
  *  within a rank. Mirrors PgStore's ORDER BY so both agree row for row. */
 const byPriority = (a: Inflow, b: Inflow): number => a.priority - b.priority || byCreatedAt(a, b);
@@ -296,10 +302,11 @@ export class MemoryStore implements Store {
   }
 
   async listHouseholdsForUser(userId: string): Promise<Household[]> {
-    const ids = new Set(
-      [...this.memberships.values()].filter((m) => m.userId === userId).map((m) => m.householdId),
-    );
-    return [...this.households.values()].filter((h) => ids.has(h.id));
+    return [...this.memberships.values()]
+      .filter((m) => m.userId === userId)
+      .sort(byCreatedAtThenId)
+      .map((m) => this.households.get(m.householdId))
+      .filter((h): h is Household => h !== undefined);
   }
 
   async addMembership(

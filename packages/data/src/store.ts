@@ -263,7 +263,8 @@ export interface Store {
    * `0011_one_household_per_user.sql` forward, not retroactively — no migration
    * may delete the rows of an instance that predates it — so data written
    * before then can still hold a second membership, and every reader takes the
-   * first in a stable order rather than pretending the second cannot exist.
+   * earliest membership in a stable order rather than pretending the second
+   * cannot exist.
    */
   listHouseholdsForUser(userId: string): Promise<Household[]>;
   /**

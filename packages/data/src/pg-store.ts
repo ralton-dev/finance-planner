@@ -422,7 +422,8 @@ export class PgStore implements Store {
       .select({ h: s.households })
       .from(s.memberships)
       .innerJoin(s.households, eq(s.households.id, s.memberships.householdId))
-      .where(eq(s.memberships.userId, userId));
+      .where(eq(s.memberships.userId, userId))
+      .orderBy(asc(s.memberships.createdAt), asc(s.memberships.id));
     return rows.map(({ h }) => ({
       id: h.id,
       name: h.name,

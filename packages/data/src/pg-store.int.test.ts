@@ -256,17 +256,20 @@ describe("PgStore (Postgres via Testcontainers)", () => {
     const probeUri = probe.toString();
     await applyMigrations(probeUri, "0010_zzz");
     await withClient(probeUri, async (c) => {
-      const { rows } = await c.query<{ id: string }>(
-        `INSERT INTO auth.households (name, created_by) VALUES ('Legacy home', $1),
-                                                              ('Legacy flat', $1) RETURNING id`,
-        [user],
+      const legacyHome = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+      const legacyFlat = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+      await c.query(
+        `INSERT INTO auth.households (id, name, created_by, created_at)
+         VALUES ($2, 'Legacy flat', $1, '2026-02-01T00:00:00Z'),
+                ($3, 'Legacy home', $1, '2026-01-01T00:00:00Z')`,
+        [user, legacyFlat, legacyHome],
       );
-      for (const r of rows) {
-        await c.query(
-          `INSERT INTO auth.household_memberships (household_id, user_id) VALUES ($1, $2)`,
-          [r.id, user],
-        );
-      }
+      await c.query(
+        `INSERT INTO auth.household_memberships (id, household_id, user_id, created_at)
+         VALUES ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', $1, $3, '2026-02-01T00:00:00Z'),
+                ('dddddddd-dddd-dddd-dddd-dddddddddddd', $2, $3, '2026-01-01T00:00:00Z')`,
+        [legacyFlat, legacyHome, user],
+      );
     });
 
     await applyMigrations(probeUri);
@@ -280,6 +283,17 @@ describe("PgStore (Postgres via Testcontainers)", () => {
         [user],
       );
       expect(legacy.rows[0]).toEqual({ n: 2 });
+      const probeHandle = createDb(probeUri);
+      try {
+        await expect(
+          new PgStore(probeHandle.db).listHouseholdsForUser(user),
+        ).resolves.toMatchObject([
+          { id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", name: "Legacy home" },
+          { id: "cccccccc-cccc-cccc-cccc-cccccccccccc", name: "Legacy flat" },
+        ]);
+      } finally {
+        await probeHandle.close();
+      }
       // …and the rule is in force from here on, for that same user.
       const { rows } = await c.query<{ id: string }>(
         `INSERT INTO auth.households (name, created_by) VALUES ('A third', $1) RETURNING id`,
