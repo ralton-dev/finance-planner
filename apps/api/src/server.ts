@@ -530,9 +530,38 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
   };
 
-  /** Build the caller's per-request ability from their effective access. */
-  const abilityFor = async (userId: string): Promise<AppAbility> => {
-    const accountAccess = await store.listAccessibleAccounts(userId);
+  /**
+   * Everybody who shares a household with this user, themselves excluded.
+   *
+   * Empty when they have no household — which is what makes a shared project
+   * with no household shared with nobody, and what makes a leaver's shared
+   * project stop reaching the household the moment they leave rather than
+   * whenever something remembers to clean up.
+   */
+  const coMembersOf = async (userId: string): Promise<string[]> => {
+    const households = await store.listHouseholdsForUser(userId);
+    const ids = new Set<string>();
+    for (const household of households) {
+      for (const m of await store.listMembersForHousehold(household.id)) {
+        if (m.userId !== userId) ids.add(m.userId);
+      }
+    }
+    return [...ids];
+  };
+
+  /**
+   * Build the caller's per-request ability from their effective access.
+   *
+   * `withCoMembers` is off by default and on for the two project gates alone.
+   * A shared project's audience is the household roster, which costs two more
+   * queries to read; every other route in this service asks about accounts,
+   * and `listAccessibleAccounts` has already answered that.
+   */
+  const abilityFor = async (userId: string, withCoMembers = false): Promise<AppAbility> => {
+    const [accountAccess, householdMemberIds] = await Promise.all([
+      store.listAccessibleAccounts(userId),
+      withCoMembers ? coMembersOf(userId) : Promise.resolve<string[]>([]),
+    ]);
     return buildAbility({
       userId,
       accountAccess: accountAccess.map((a) => ({
@@ -543,6 +572,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       // The api gateway doesn't authorize household actions; those endpoints
       // proxy to the auth service which builds its own ability.
       households: [],
+      householdMemberIds,
     });
   };
 
@@ -590,16 +620,67 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * echoing that back would hand over exactly what the gate protects.
    *
    * Returns the project so a caller that needs more of it than its existence
-   * does not fetch it twice. Nothing needs that yet; decision 23's shared-side
-   * constraint (WP-AH) will.
+   * does not fetch it twice — which `requireAccountSharedForProject` below is.
+   *
+   * The action asked for is `file_payment` rather than `edit`, and the
+   * difference is the whole of decision 22 on this route: a co-member of the
+   * owner's household may put a payment into a **shared** project and may not
+   * touch the project itself. Asking for `edit` here would have made the two
+   * one question.
    */
   const requireProjectForPayment = async (userId: string, projectId: string): Promise<Project> => {
     const project = await store.getProject(projectId);
-    const ability = await abilityFor(userId);
-    if (!project || ability.cannot("edit", subject("Project", project))) {
+    const ability = await abilityFor(userId, true);
+    if (!project || ability.cannot("file_payment", subject("Project", project))) {
       throw new HttpError(422, "unknown_project", `No project ${projectId}`);
     }
     return project;
+  };
+
+  /** The households this user belongs to, by id. At most one since `0011`. */
+  const householdIdsOf = async (userId: string): Promise<Set<string>> =>
+    new Set((await store.listHouseholdsForUser(userId)).map((h) => h.id));
+
+  /** Is this account shared into any of these households (`auth.account_shares`)? */
+  const isSharedInto = async (accountId: string, householdIds: Set<string>): Promise<boolean> => {
+    if (householdIds.size === 0) return false;
+    const shares = await store.listSharesForAccount(accountId);
+    return shares.some((s) => householdIds.has(s.householdId));
+  };
+
+  /**
+   * Decision 23's shared side, and only the shared side.
+   *
+   * A **shared** project may hold payments only on accounts shared into the
+   * household, and that is precisely what makes printing every payment with its
+   * account name leak nothing: every viewer already has access to every account
+   * named. A **personal** project has no such rule — there is nothing to leak to
+   * in a project only its owner can read, and the symmetric rule would have
+   * barred your own current account from your own private project the moment you
+   * shared the account.
+   *
+   * The household is the **owner's**, never the caller's: "shared" resolves
+   * through the owner's membership (decision 22), and a co-member filing a
+   * payment is in that household by definition anyway.
+   *
+   * Naming the account leaks nothing: every caller through here has just been
+   * granted `edit` on it by `requireAccess`.
+   */
+  const requireAccountSharedForProject = async (
+    project: Project,
+    accountId: string,
+  ): Promise<void> => {
+    if (project.visibility !== "shared") return;
+    const [households, account] = await Promise.all([
+      householdIdsOf(project.ownerUserId),
+      store.getAccount(accountId),
+    ]);
+    if (await isSharedInto(accountId, households)) return;
+    throw new HttpError(
+      422,
+      "account_not_shared",
+      `${account?.name ?? accountId} is not shared into the household, so its payments cannot go in a shared project`,
+    );
   };
 
   const accountIdOf = async (kind: "income" | "payment", id: string): Promise<string> => {
@@ -792,16 +873,34 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.get("/api/meta", async () => ({ demoSeedEnabled: env.enableDemoSeed }));
 
   // ---- accounts ----
+  /**
+   * Every account the caller can see, with their permission on it — and whether
+   * it is shared into a household of theirs.
+   *
+   * `sharedIntoHousehold` is decision 23's constraint, told to the browser
+   * before it can be broken: a **shared** project may only hold payments on
+   * accounts shared into the household, and without this field the new-payment
+   * drawer would have to offer the combination, post it, and read the 422 back.
+   * It is one query for the whole list rather than one per account, and it says
+   * nothing a caller could not already work out from the shares they can see.
+   */
   app.get("/api/accounts", async (req) => {
     const userId = await authenticate(req);
     const access = await store.listAccessibleAccounts(userId);
     const accounts = await Promise.all(access.map((a) => store.getAccount(a.accountId)));
+    const shared = new Set<string>();
+    for (const householdId of await householdIdsOf(userId)) {
+      for (const share of await store.listSharesForHousehold(householdId)) {
+        shared.add(share.accountId);
+      }
+    }
     return accounts
       .filter((a): a is Account => a !== null)
       .map((a) => ({
         ...a,
         permission: access.find((x) => x.accountId === a.id)?.permission,
         owner: access.find((x) => x.accountId === a.id)?.owner,
+        sharedIntoHousehold: shared.has(a.id),
       }));
   });
 
@@ -1333,7 +1432,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { id } = req.params as { id: string };
     await requireAccess(userId, id, "edit");
     const body = createPaymentBody.parse(req.body);
-    if (body.projectId) await requireProjectForPayment(userId, body.projectId);
+    if (body.projectId) {
+      const project = await requireProjectForPayment(userId, body.projectId);
+      await requireAccountSharedForProject(project, id);
+    }
     const payment = await store.createPayment({
       accountId: id,
       name: body.name,
@@ -1359,19 +1461,32 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.patch("/api/payments/:paymentId", async (req) => {
     const userId = await authenticate(req);
     const { paymentId } = req.params as { paymentId: string };
-    const sourceAccountId = await accountIdOf("payment", paymentId);
+    const existing = await store.getPayment(paymentId);
+    if (!existing) throw new HttpError(404, "not_found", "payment not found");
+    const sourceAccountId = existing.accountId;
     await requireAccess(userId, sourceAccountId, "edit");
     const body = updatePaymentBody.parse(req.body);
     // Moving to another account requires edit access to the destination too.
-    if (body.accountId && body.accountId !== sourceAccountId) {
-      await requireAccess(userId, body.accountId, "edit");
-    }
-    // Filing it into a project requires that project to be yours, the same as
+    const movingTo = body.accountId && body.accountId !== sourceAccountId ? body.accountId : null;
+    if (movingTo) await requireAccess(userId, movingTo, "edit");
+    // Filing it into a project requires that project to admit it, the same as
     // on create — a gate on the create route alone is a gate one PATCH wide.
     // `null` is unfiling, which needs no permission on the project it leaves:
     // the payment is the caller's either way, and letting go of a link cannot
     // reach anything.
-    if (body.projectId) await requireProjectForPayment(userId, body.projectId);
+    if (body.projectId) {
+      const project = await requireProjectForPayment(userId, body.projectId);
+      await requireAccountSharedForProject(project, movingTo ?? sourceAccountId);
+    } else if (movingTo && existing.projectId) {
+      // **The join's third mutation.** The payment's project is not changing,
+      // so neither gate above looks at it — but the account under it is, and a
+      // shared project's rule is about the account. Without this, moving a
+      // payment already sitting in a shared project onto an unshared account
+      // smuggles that account into the project around both of the other doors,
+      // and every co-member starts reading a name they have no access to.
+      const project = await store.getProject(existing.projectId);
+      if (project) await requireAccountSharedForProject(project, movingTo);
+    }
     return store.updatePayment(paymentId, defined(body));
   });
 
@@ -2107,14 +2222,15 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * product that reads accounts the caller was never checked against, and why
    * both of its access rules are now stated rather than assumed.
    *
-   * Owner == manager == reader, and the ownership test lives in
-   * `packages/policies` (`subject("Project", …)`) rather than being spelled out
-   * at each of the four places that need it. That is where a second arm goes if
-   * a project ever becomes shareable.
+   * A project is personal or shared into its owner's household (decision 22),
+   * and both arms of that live in `packages/policies` (`subject("Project", …)`)
+   * rather than being spelled out at each of the four places that need it: the
+   * owner may do everything, a co-member of the owner's household may read a
+   * **shared** one and file payments into it, and everybody else meets a 404.
    */
   const requireProject = async (userId: string, id: string, action: Action): Promise<Project> => {
     const project = await store.getProject(id);
-    const ability = await abilityFor(userId);
+    const ability = await abilityFor(userId, true);
     // 404 rather than 403, by the policy package's leak rule that
     // `requireAccess` applies to accounts: a project you have no access to at
     // all reads exactly like one that does not exist.
@@ -2134,20 +2250,64 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return project;
   };
 
+  /**
+   * Who owns each of these projects, by display name.
+   *
+   * Only ever called with projects the caller may already see, and the only way
+   * to see one you do not own is to be a co-member of the owner's household —
+   * so the name is a fact about somebody you already share a roster with. A
+   * project whose owner has since gone reads as an absence rather than a
+   * placeholder, the same as every other gated name on the wire.
+   */
+  const ownerNamesFor = async (projects: Project[]): Promise<Map<string, string>> => {
+    const names = new Map<string, string>();
+    for (const ownerUserId of new Set(projects.map((p) => p.ownerUserId))) {
+      const user = await store.getUserById(ownerUserId);
+      if (user) names.set(ownerUserId, user.displayName);
+    }
+    return names;
+  };
+
+  /**
+   * Every project the caller may see: their own, plus the **shared** ones owned
+   * by a co-member of their household.
+   *
+   * `listProjectsForUser` rather than `listProjectsForOwner`, which still exists
+   * and still answers the other question — "what do I own" — for the export
+   * (`portability.ts`). A list of what you can see and a list of what is yours
+   * are two questions, and this route asks the first one.
+   */
   app.get("/api/projects", async (req) => {
     const userId = await authenticate(req);
-    return store.listProjectsForOwner(userId);
+    const projects = await store.listProjectsForUser(userId);
+    const names = await ownerNamesFor(projects);
+    return projects.map((p) => {
+      const ownerName = names.get(p.ownerUserId);
+      return { ...p, ...(ownerName != null ? { ownerName } : {}) };
+    });
   });
 
   app.post("/api/projects", async (req, reply) => {
     const userId = await authenticate(req);
     const body = createProjectBody.parse(req.body);
+    // A shared project with no household is shared with nobody, and saying so
+    // is kinder than storing a word that means nothing. Decision 22: there is
+    // exactly one possible target, so there is nothing to pick and nothing to
+    // fall back to.
+    if (body.visibility === "shared" && (await householdIdsOf(userId)).size === 0) {
+      throw new HttpError(
+        422,
+        "no_household",
+        "You are not in a household, so there is nobody to share a project with",
+      );
+    }
     const project = await store.createProject({
       ownerUserId: userId,
       name: body.name,
       description: body.description ?? null,
       color: body.color ?? null,
       targetDate: body.targetDate ?? null,
+      visibility: body.visibility,
     });
     return reply.code(201).send(project);
   });
@@ -2188,6 +2348,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { id } = req.params as { id: string };
     const project = await requireProject(userId, id, "view");
     const payments = await store.listPaymentsForProject(id);
+    const ownerNames = await ownerNamesFor([project]);
     const accountIds = [...new Set(payments.map((p) => p.accountId))];
     /** id → { currency, and the name only if this caller may be told it }. */
     const seen = new Map<string, { name: string | null; currency: string }>();
@@ -2199,8 +2360,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       if (!account) continue;
       seen.set(aid, { name: access ? account.name : null, currency: account.currency });
     }
+    const ownerName = ownerNames.get(project.ownerUserId);
     return {
       ...project,
+      ...(ownerName != null ? { ownerName } : {}),
       payments: payments.map((p) => {
         const account = seen.get(p.accountId);
         return {
@@ -2218,11 +2381,48 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     };
   });
 
+  /**
+   * PATCH /api/projects/:id — owner only, including the visibility flip.
+   *
+   * Going **personal → shared** is the one direction with a gate, and it
+   * refuses rather than repairs: a project whose contents do not all qualify is
+   * 422'd with **every** payment that does not, so the owner can decide what to
+   * do about each one. The alternative — sharing it and silently unlinking the
+   * payments that cannot come — would take a project apart to satisfy a
+   * checkbox, and the owner would find out by noticing something missing.
+   *
+   * shared → personal is always allowed: narrowing an audience can leak nothing,
+   * and it is the direction a leaver's projects are dragged in anyway
+   * (decision 23).
+   */
   app.patch("/api/projects/:id", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
     await requireProject(userId, id, "edit");
     const body = updateProjectBody.parse(req.body);
+    if (body.visibility === "shared") {
+      const households = await householdIdsOf(userId);
+      if (households.size === 0) {
+        throw new HttpError(
+          422,
+          "no_household",
+          "You are not in a household, so there is nobody to share a project with",
+        );
+      }
+      const payments = await store.listPaymentsForProject(id);
+      const stranded: string[] = [];
+      for (const p of payments) {
+        if (await isSharedInto(p.accountId, households)) continue;
+        stranded.push(p.name);
+      }
+      if (stranded.length > 0) {
+        throw new HttpError(
+          422,
+          "payments_not_shared",
+          `These payments are on accounts that are not shared into the household: ${stranded.join(", ")}`,
+        );
+      }
+    }
     return store.updateProject(id, defined(body));
   });
 

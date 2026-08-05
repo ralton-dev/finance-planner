@@ -382,14 +382,37 @@ export const closeMonthBody = z.object({
 });
 export type CloseMonthBody = z.infer<typeof closeMonthBody>;
 
+/**
+ * Personal, or shared into your household — the whole of a project's audience
+ * (MINE-AND-OURS decision 22).
+ *
+ * There is no household id beside it and no permission: a user belongs to
+ * exactly one household (`0011`), so "shared" has exactly one possible target
+ * and never needs a picker, and it resolves through the owner's membership on
+ * the day it is read rather than being stored.
+ */
+export const projectVisibility = z.enum(["personal", "shared"]);
+export type ProjectVisibility = z.infer<typeof projectVisibility>;
+
 export const createProjectBody = z.object({
   name: z.string().min(1),
   description: z.string().nullish(),
   color: z.string().nullish(),
   targetDate: isoDate.nullish(),
+  /** Defaulted, so a client that has never heard of sharing keeps creating
+   *  personal projects and every existing caller reads unchanged. */
+  visibility: projectVisibility.default("personal"),
 });
 export type CreateProjectBody = z.infer<typeof createProjectBody>;
-export const updateProjectBody = createProjectBody.partial();
+/**
+ * `visibility` is re-declared as a bare optional rather than inherited from
+ * `.partial()`: a `ZodDefault` that survives into a PATCH body would make every
+ * update that says nothing about visibility silently set `personal`, quietly
+ * un-sharing a project on a rename.
+ */
+export const updateProjectBody = createProjectBody.partial().extend({
+  visibility: projectVisibility.optional(),
+});
 
 // ---------------------------------------------------------------------------
 // Account settings

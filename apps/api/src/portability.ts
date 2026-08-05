@@ -208,6 +208,20 @@ export async function buildExport(
     });
   }
 
+  // `listProjectsForOwner`, deliberately, and not `listProjectsForUser`: a
+  // backup is of *your* things, and a co-member's project shared into your
+  // household is theirs. It is the one caller left of that method, which is why
+  // it survives (MINE-AND-OURS, WP-AH).
+  //
+  // Four fields, and `visibility` is deliberately not among them (Ben,
+  // 2026-08-05, at review). "Shared" resolves through the owner's membership on
+  // the day it is read rather than being stored against a household, so
+  // carrying the word across an export would auto-share a restored project into
+  // whatever household the importer belongs to by then — a surprise rather than
+  // a restoration. An imported project therefore reads back `personal`, and a
+  // re-share passes the personal→shared gate like any other. Same reasoning as
+  // `projectId` below: an id (or an audience) that resolves against rows this
+  // document does not carry cannot survive the trip as anything but a fiction.
   const projects = (await store.listProjectsForOwner(userId)).map((p) => ({
     name: p.name,
     description: p.description,
