@@ -312,6 +312,20 @@ Leave it off outside demo installs.
   _other_ people survive. Rate limited to 3/min. The current password is
   required unless the user has none (SSO-only), where the access token is the
   proof. Refresh cookie is cleared; responds 204.
+- **Deleting a household founder changes other people's projects, and this is the
+  one place the blast radius reaches past the caller.** Deleting a founded
+  household runs the departure cascade for **every** member, not just the leaver
+  (`Store.deleteHousehold` calls `dissolveMembershipBenefits` per member —
+  decision 23, `MINE-AND-OURS.md`). So each surviving member's **shared** projects
+  flip back to `personal` and drop their payments on accounts they do not own,
+  and every account share into that household goes with its shared-project links.
+  Nothing of theirs is deleted — a project they own stays theirs, and their
+  payments on their own accounts survive inside it — but a project changes shape
+  and loses links because somebody _else_ closed their account. That is the
+  intended rule ("you do not keep the household's benefits once the household is
+  gone"), and it is irreversible: re-founding a household does not re-share the
+  projects or restore the dropped links. Warn the member before running this for
+  a founder, and expect support questions from people who did nothing.
 
 ### Logs
 
