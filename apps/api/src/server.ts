@@ -2018,13 +2018,24 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * at each of the four places that need it. That is where a second arm goes if
    * a project ever becomes shareable.
    */
-  const requireProject = async (userId: string, id: string): Promise<Project> => {
+  const requireProject = async (userId: string, id: string, action: Action): Promise<Project> => {
     const project = await store.getProject(id);
     const ability = await abilityFor(userId);
-    // 404 rather than 403, by the policy package's leak rule: a project you
-    // have no access to reads exactly like one that does not exist.
+    // 404 rather than 403, by the policy package's leak rule that
+    // `requireAccess` applies to accounts: a project you have no access to at
+    // all reads exactly like one that does not exist.
     if (!project || !ability.hasAnyAccess(subject("Project", project))) {
       throw new HttpError(404, "not_found", "Project not found");
+    }
+    // Each route names the action it needs rather than all three sharing one
+    // opaque owner test, so reading a project and renaming it are different
+    // questions on the page even while the only role a project has answers yes
+    // to both. The insufficient-access branch is therefore unreachable today
+    // and deliberately present: it is what a co-member of a shared project
+    // (decision 23) meets on PATCH, and a 403 is honest to them — they can
+    // already see it exists.
+    if (!ability.can(action, subject("Project", project))) {
+      throw new HttpError(403, "forbidden", `${action} access required`);
     }
     return project;
   };
@@ -2081,7 +2092,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.get("/api/projects/:id", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    const project = await requireProject(userId, id);
+    const project = await requireProject(userId, id, "view");
     const payments = await store.listPaymentsForProject(id);
     const accountIds = [...new Set(payments.map((p) => p.accountId))];
     /** id → { currency, and the name only if this caller may be told it }. */
@@ -2116,7 +2127,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.patch("/api/projects/:id", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    await requireProject(userId, id);
+    await requireProject(userId, id, "edit");
     const body = updateProjectBody.parse(req.body);
     return store.updateProject(id, defined(body));
   });
@@ -2124,7 +2135,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.delete("/api/projects/:id", async (req, reply) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
-    await requireProject(userId, id);
+    await requireProject(userId, id, "delete");
     await store.deleteProject(id);
     return reply.code(204).send();
   });
