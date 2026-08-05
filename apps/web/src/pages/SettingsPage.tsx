@@ -1,4 +1,4 @@
-import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
+import { type ChangeEvent, type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
 import { api, ApiError } from "../lib/api.js";
@@ -66,7 +66,22 @@ function NotificationsSection({ notifyEmail }: { notifyEmail: boolean }) {
 
   // The prop is the server's answer: a refetch elsewhere on the page wins over
   // whatever this switch is showing.
-  useEffect(() => setOn(notifyEmail), [notifyEmail]);
+  //
+  // Adjusted **during render**, not in an effect. `useEffect(() => setOn(prop),
+  // [prop])` re-asserts the prop a beat after the render that mounted it, and a
+  // click landing in that gap is silently reverted: React cannot bail the
+  // no-op `setOn(prop)` out once an update is already queued on the same hook,
+  // so the effect's stale value is applied *after* the flip and the switch
+  // snaps back with the request already in the air. That is what made this
+  // section's optimism intermittently untrue, and it is a real interaction on a
+  // slow first paint, not only a test artefact. Comparing against the last prop
+  // we saw means nothing runs at all unless the server's answer actually
+  // changed, and when it does it changes during the render that brought it.
+  const [lastNotifyEmail, setLastNotifyEmail] = useState(notifyEmail);
+  if (notifyEmail !== lastNotifyEmail) {
+    setLastNotifyEmail(notifyEmail);
+    setOn(notifyEmail);
+  }
 
   async function toggle(): Promise<void> {
     const next = !on;

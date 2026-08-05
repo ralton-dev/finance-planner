@@ -112,6 +112,20 @@ describe("SettingsPage — notifications", () => {
     fireEvent.click(toggle);
 
     // Optimistic: on before the request has been answered.
+    //
+    // This assertion was intermittently red — roughly one full-suite run in
+    // eight, only under the load of every file running at once, and the
+    // received element was unchecked *and still disabled*, i.e. mid-request.
+    // The cause was the section's own `useEffect(() => setOn(notifyEmail),
+    // [notifyEmail])`: on a slow first paint that effect flushes after the
+    // click, React cannot bail the no-op `setOn(false)` out once the click has
+    // queued an update on the same hook, and the stale value wins. The switch
+    // really did snap back with the PATCH in the air. Fixed in the component,
+    // which syncs the prop during render instead.
+    //
+    // Do NOT settle this with a `waitFor` — the whole point of the assertion is
+    // that the switch is on *before* the request is answered, and a waitFor
+    // would pass either way.
     expect(toggle).toBeChecked();
     await waitFor(() => expect(stub.calls("PATCH /api/auth/me")).toBe(1));
     expect(stub.bodyOf("PATCH /api/auth/me")).toEqual({ notifyEmail: true });
