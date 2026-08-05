@@ -82,7 +82,14 @@ export function assertInflowShape(row: {
   }
 }
 export type NewPayment = Omit<Payment, "id" | "createdAt" | "updatedAt">;
-export type NewProject = Omit<Project, "id" | "createdAt" | "updatedAt">;
+/**
+ * `visibility` is optional here and required nowhere else: a project is personal
+ * unless it says otherwise, which is both the database's default
+ * (`0014_shared_projects.sql`) and the only thing a caller who has never heard
+ * of sharing can mean. Omitting it writes `"personal"`.
+ */
+export type NewProject = Omit<Project, "id" | "createdAt" | "updatedAt" | "visibility"> &
+  Partial<Pick<Project, "visibility">>;
 export type NewAccountAssignment = Omit<
   HouseholdAccountAssignment,
   "id" | "createdAt" | "updatedAt"
@@ -282,7 +289,23 @@ export interface Store {
    * order — each step still true of a member, so a failure part-way leaves the
    * household smaller but never leaves a non-member's money attached to it:
    *
-   *  1. **Movements across the boundary are deactivated.** An account-sourced
+   *  1. **Their shared projects come back personal.** Every project the leaver
+   *     owns that is `shared` drops the payments on accounts they do not own,
+   *     and flips to `personal`. Steps 3 and 4 dissolve what the household held
+   *     of the leaver; this dissolves what the leaver held of the household —
+   *     without it an ex-member keeps a live window, payment names and amounts,
+   *     into a household they are no longer in (Ben, 2026-08-05, MINE-AND-OURS
+   *     decision 23). Flipping to `personal` also stops a household they later
+   *     join from inheriting a still-"shared" project full of stale links,
+   *     since "shared" resolves through the owner's membership on the day it is
+   *     read; a re-share must pass the personal→shared gate like any other.
+   *
+   *     **First, and that ordering is load-bearing.** Step 4 clears each
+   *     unshared account's payments out of every *shared* project, so a project
+   *     still shared at that moment would lose the leaver's own payments on
+   *     their own accounts too. Personal by then, it keeps them — which is what
+   *     "you keep your projects" has to mean to mean anything.
+   *  2. **Movements across the boundary are deactivated.** An account-sourced
    *     inflow with one end owned by the leaver and the other owned by another
    *     member existed only because the household's share grant made both ends
    *     editable by one person. Deactivated rather than deleted: an inactive
@@ -290,12 +313,15 @@ export interface Store {
    *     claim dissolves, while the row and every confirmation and contribution
    *     hanging off it survive — deleting it would cascade those away and make
    *     the ledger lie about money that really did move.
-   *  2. **Plan roles go.** The household's assignments for the leaver's
+   *  3. **Plan roles go.** The household's assignments for the leaver's
    *     accounts, and any assignment naming them as its personal member.
-   *  3. **Access grants go.** Shares of the leaver's accounts into the
-   *     household. Accounts shared the *other* way need nothing: the leaver's
-   *     access to them was only ever their membership.
-   *  4. **The membership row goes.** The commit point.
+   *  4. **Access grants go, and take their project links with them.** Shares of
+   *     the leaver's accounts into the household, each followed by
+   *     `clearProjectLinksForAccount` — an account that is no longer shared into
+   *     the household has no business in anybody's shared project (decision 23).
+   *     Accounts shared the *other* way need nothing: the leaver's access to
+   *     them was only ever their membership.
+   *  5. **The membership row goes.** The commit point.
    *
    * Retained throughout: transfer confirmations, contributions and month
    * closes. Those record what happened, and what happened does not stop having
@@ -332,6 +358,17 @@ export interface Store {
   ): Promise<AccountShare>;
   listSharesForAccount(accountId: string): Promise<AccountShare[]>;
   listSharesForHousehold(householdId: string): Promise<AccountShare[]>;
+  /**
+   * Withdraw an account from a household — and, with it, that account's
+   * payments from every **shared** project (`clearProjectLinksForAccount`).
+   *
+   * A shared project may only hold payments on accounts shared into the
+   * household, which is what makes showing every payment with its account name
+   * leak nothing: every viewer already has access. Take the access away and the
+   * payment has to go with it, or the leak reopens silently (Ben, 2026-08-05,
+   * MINE-AND-OURS decision 23). Personal projects are untouched — there is no
+   * leak to prevent in a project only its owner can read.
+   */
   deleteAccountShare(id: string): Promise<void>;
 
   /** Owned + shared accounts, with the user's effective permission. */
@@ -396,10 +433,40 @@ export interface Store {
   // ---- projects ----
   createProject(input: NewProject): Promise<Project>;
   getProject(id: string): Promise<Project | null>;
+  /**
+   * What this user **owns** — every project of theirs, shared or not.
+   *
+   * Deliberately kept beside `listProjectsForUser` rather than superseded by
+   * it: they answer two different questions, and the export needs this one. A
+   * backup is of your own things, so it must not carry a co-member's shared
+   * project (`apps/api/src/portability.ts:211`).
+   */
   listProjectsForOwner(ownerUserId: string): Promise<Project[]>;
+  /**
+   * What this user can **see**: every project they own, plus the `shared`
+   * projects owned by a co-member of their household.
+   *
+   * Membership is read here and now — a shared project's audience is not stored
+   * anywhere (see `ProjectVisibility`), so an owner with no household shares
+   * with nobody, and the answer changes the moment somebody joins or leaves.
+   * Ordered oldest first, so two implementations agree row for row.
+   */
+  listProjectsForUser(userId: string): Promise<Project[]>;
   updateProject(id: string, patch: Partial<NewProject>): Promise<Project | null>;
   deleteProject(id: string): Promise<void>;
   listPaymentsForProject(projectId: string): Promise<Payment[]>;
+  /**
+   * Take this account's payments out of every **shared** project, leaving the
+   * payments themselves intact — the same unlinking `deleteProject` does, over a
+   * different set.
+   *
+   * Called wherever an account stops being visible to a household: a share
+   * deleted, a member removed, a household deleted. **Shared** projects only,
+   * and that scoping is what lets a leaver keep their own payments in their own
+   * project: by the time this runs on their behalf, the departure cascade has
+   * already flipped their projects to `personal` (see `removeMember`, step 1).
+   */
+  clearProjectLinksForAccount(accountId: string): Promise<void>;
 
   // ---- contributions (dated money-set-aside ledger) ----
   createContribution(input: NewContribution): Promise<Contribution>;

@@ -180,6 +180,7 @@ export const projects = coreSchema.table("projects", {
   description: text("description"),
   color: text("color"),
   targetDate: date("target_date"),
+  visibility: text("visibility").notNull().default("personal"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

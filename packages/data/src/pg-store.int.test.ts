@@ -462,4 +462,73 @@ describe("PgStore (Postgres via Testcontainers)", () => {
       expect(incomes.rows[0]).toEqual({ n: 1 });
     });
   });
+
+  it("makes every project that predates sharing personal, twice in a row", async () => {
+    // 0001–0013 first, projects written by a build that had never heard of
+    // visibility, then 0014 twice — the shape the cluster actually applies.
+    await withClient(uri, (c) => c.query("CREATE DATABASE visibility_probe"));
+    const probe = new URL(uri);
+    probe.pathname = "/visibility_probe";
+    const probeUri = probe.toString();
+
+    await applyMigrations(probeUri, "0013_zzz");
+
+    const legacy = await withClient(probeUri, async (c) => {
+      // The column cannot exist yet — that is what "predates sharing" means.
+      const before = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM information_schema.columns
+         WHERE table_schema = 'core' AND table_name = 'projects' AND column_name = 'visibility'`,
+      );
+      expect(before.rows[0]).toEqual({ n: 0 });
+      const { rows } = await c.query<{ id: string }>(
+        `INSERT INTO core.projects (owner_user_id, name) VALUES
+           ('44444444-4444-4444-4444-444444444444', 'House move'),
+           ('55555555-5555-5555-5555-555555555555', 'Wedding')
+         RETURNING id`,
+      );
+      return rows.map((r) => r.id);
+    });
+
+    await applyMigrations(probeUri);
+    await applyMigrations(probeUri);
+
+    await withClient(probeUri, async (c) => {
+      // Every row that already existed was one person's and nobody else's, and
+      // reads back saying exactly that. Nothing was rewritten or swept up.
+      const rows = await c.query<{ id: string; visibility: string }>(
+        `SELECT id, visibility FROM core.projects ORDER BY name`,
+      );
+      expect(rows.rows).toEqual([
+        { id: legacy[0]!, visibility: "personal" },
+        { id: legacy[1]!, visibility: "personal" },
+      ]);
+
+      // Exactly one visibility constraint, and it admits exactly two values.
+      // Two would mean a re-run had added a second copy under another name.
+      const check = await c.query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+         WHERE conname = 'project_visibility' AND conrelid = 'core.projects'::regclass`,
+      );
+      expect(check.rows).toHaveLength(1);
+
+      const write = (visibility: string | null) =>
+        c.query(
+          `INSERT INTO core.projects (owner_user_id, name, visibility)
+           VALUES ('44444444-4444-4444-4444-444444444444', 'Probe', $1)`,
+          [visibility],
+        );
+      await expect(write("shared")).resolves.toBeTruthy();
+      await expect(write("household")).rejects.toThrow(/project_visibility/);
+      await expect(write(null)).rejects.toThrow(/not-null|null value/i);
+
+      // A writer that has never heard of the column still works, and still
+      // produces a personal project.
+      const { rows: defaulted } = await c.query<{ visibility: string }>(
+        `INSERT INTO core.projects (owner_user_id, name)
+         VALUES ('44444444-4444-4444-4444-444444444444', 'Unaware')
+         RETURNING visibility`,
+      );
+      expect(defaulted[0]).toEqual({ visibility: "personal" });
+    });
+  });
 });

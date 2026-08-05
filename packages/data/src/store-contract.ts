@@ -473,6 +473,9 @@ export async function exerciseStore(store: Store): Promise<void> {
     targetDate: "2026-09-01",
   });
   expect((await store.listProjectsForOwner(user.id)).length).toBe(1);
+  // Personal unless it says otherwise: what every project written before
+  // 0014 existed reads back as, and what a caller who says nothing gets.
+  expect(project.visibility).toBe("personal");
   // Assign p1 to the project, then list payments for it.
   await store.updatePayment(p1.id, { projectId: project.id });
   const projectMembers = await store.listPaymentsForProject(project.id);
@@ -1201,4 +1204,252 @@ export async function exerciseStore(store: Store): Promise<void> {
   // The guest survives their household's founder, and is free to join another.
   expect(await store.getUserById(guest.id)).not.toBeNull();
   expect(await store.listHouseholdsForUser(guest.id)).toEqual([]);
+
+  await exerciseSharedProjects(store);
+}
+
+/**
+ * A project is personal or shared, and the two rules that follow from it
+ * (MINE-AND-OURS decision 23) — the asymmetric one, and the one that runs the
+ * other way.
+ *
+ * Every cast below is a **household of two**, never a lone user: the shape that
+ * once let five field-by-field audits miss a live defect, and the only shape in
+ * which either rule says anything at all.
+ */
+async function exerciseSharedProjects(store: Store): Promise<void> {
+  let seq = 0;
+  const person = (name: string) =>
+    store.createUser({
+      email: `${name}-${(seq += 1)}@shared-projects.example.com`,
+      passwordHash: "hash",
+      displayName: name,
+    });
+  const payment = (accountId: string, name: string, projectId: string | null) =>
+    store.createPayment({
+      accountId,
+      name,
+      category: "monthly_recurring",
+      amountMinor: 1_000,
+      dueDate: null,
+      recurrence: null,
+      targetDate: null,
+      priority: 100,
+      alreadySavedMinor: 0,
+      autoRenew: true,
+      active: true,
+      notes: null,
+      projectId,
+      scope: "shared",
+      bearerUserId: null,
+      fixedMonthlyMinor: null,
+      tag: null,
+    });
+  const projectOf = async (paymentId: string) => (await store.getPayment(paymentId))?.projectId;
+  const visibilityOf = async (projectId: string) => (await store.getProject(projectId))?.visibility;
+
+  // ---- who can see a shared project ----
+  // Two in a household, one outside it. `outsider` is in no household at all,
+  // which is also the case that proves membership is read rather than stored:
+  // there is nothing to match against.
+  const alice = await person("alice");
+  const bob = await person("bob");
+  const outsider = await person("outsider");
+  const h1 = await store.createHousehold("Flat 1", alice.id);
+  await store.addMembership(h1.id, bob.id, "member");
+
+  const aliceAcc = await store.createAccount({
+    ownerUserId: alice.id,
+    name: "Alice Current",
+    currency: "GBP",
+  });
+  const bobAcc = await store.createAccount({
+    ownerUserId: bob.id,
+    name: "Bob Current",
+    currency: "GBP",
+  });
+  await store.createAccountShare(aliceAcc.id, h1.id, "edit");
+  const bobShare = await store.createAccountShare(bobAcc.id, h1.id, "edit");
+
+  const joint = await store.createProject({
+    ownerUserId: alice.id,
+    name: "Kitchen",
+    description: null,
+    color: null,
+    targetDate: null,
+    visibility: "shared",
+  });
+  const solo = await store.createProject({
+    ownerUserId: alice.id,
+    name: "Alice's surprise",
+    description: null,
+    color: null,
+    targetDate: null,
+  });
+  const bobSolo = await store.createProject({
+    ownerUserId: bob.id,
+    name: "Bob's surprise",
+    description: null,
+    color: null,
+    targetDate: null,
+  });
+  expect(solo.visibility).toBe("personal");
+
+  const aliceInJoint = await payment(aliceAcc.id, "Worktop", joint.id);
+  const bobInJoint = await payment(bobAcc.id, "Sink", joint.id);
+  const bobInSolo = await payment(bobAcc.id, "Present", bobSolo.id);
+
+  const seen = async (userId: string) =>
+    (await store.listProjectsForUser(userId)).map((p) => p.id).sort();
+  // A co-member sees the shared one and neither personal one; a stranger sees
+  // nothing of either of theirs.
+  expect(await seen(bob.id)).toEqual([bobSolo.id, joint.id].sort());
+  expect(await seen(alice.id)).toEqual([joint.id, solo.id].sort());
+  expect(await seen(outsider.id)).toEqual([]);
+  // `listProjectsForOwner` still answers its own, different question: what do I
+  // own. It is what a backup asks (`apps/api/src/portability.ts:211`), and a
+  // backup must not carry a co-member's shared project.
+  expect((await store.listProjectsForOwner(bob.id)).map((p) => p.id)).toEqual([bobSolo.id]);
+
+  // Flipping visibility is an ordinary patch, in both directions.
+  expect((await store.updateProject(solo.id, { visibility: "shared" }))?.visibility).toBe("shared");
+  expect(await seen(bob.id)).toEqual([bobSolo.id, joint.id, solo.id].sort());
+  await store.updateProject(solo.id, { visibility: "personal" });
+  expect(await seen(bob.id)).toEqual([bobSolo.id, joint.id].sort());
+
+  // ---- the share that goes away ----
+  // Bob's account leaves the household, so its payments leave every shared
+  // project. His own personal project keeps its payment on the same account:
+  // there is no leak to prevent in a project only he can read.
+  await store.deleteAccountShare(bobShare.id);
+  expect(await projectOf(bobInJoint.id)).toBeNull();
+  expect(await projectOf(bobInSolo.id)).toBe(bobSolo.id);
+  expect(await projectOf(aliceInJoint.id)).toBe(joint.id);
+  // The payment itself is untouched — only its link went.
+  expect((await store.getPayment(bobInJoint.id))?.name).toBe("Sink");
+
+  // ---- the leaver keeps their projects, never the household's contents ----
+  const carol = await person("carol");
+  const dave = await person("dave");
+  const h2 = await store.createHousehold("Flat 2", carol.id);
+  await store.addMembership(h2.id, dave.id, "member");
+  const carolAcc = await store.createAccount({
+    ownerUserId: carol.id,
+    name: "Carol Current",
+    currency: "GBP",
+  });
+  const daveAcc = await store.createAccount({
+    ownerUserId: dave.id,
+    name: "Dave Current",
+    currency: "GBP",
+  });
+  await store.createAccountShare(carolAcc.id, h2.id, "edit");
+  await store.createAccountShare(daveAcc.id, h2.id, "edit");
+  const carolShared = await store.createProject({
+    ownerUserId: carol.id,
+    name: "Bathroom",
+    description: null,
+    color: null,
+    targetDate: null,
+    visibility: "shared",
+  });
+  const carolsOwn = await payment(carolAcc.id, "Tiles", carolShared.id);
+  const davesInHers = await payment(daveAcc.id, "Taps", carolShared.id);
+
+  await store.removeMember(h2.id, carol.id);
+
+  // The project is hers and stays hers — flipped personal, because "shared"
+  // resolves through a membership she no longer has, and a household she later
+  // joins must not inherit it still claiming to be shared.
+  expect(await visibilityOf(carolShared.id)).toBe("personal");
+  // Dave's payment is gone from it: an ex-member keeps no window into the
+  // household's money, names or amounts.
+  expect(await projectOf(davesInHers.id)).toBeNull();
+  // And her own payment on her own account survives in it — which is what
+  // "you keep your projects" has to mean to mean anything, and what the
+  // ordering inside the cascade exists to protect.
+  expect(await projectOf(carolsOwn.id)).toBe(carolShared.id);
+  // It is nobody else's to see any more.
+  expect(await seen(dave.id)).toEqual([]);
+  expect((await store.listSharesForAccount(carolAcc.id)).length).toBe(0);
+
+  // ---- and the same, per member, when the household itself goes ----
+  const erin = await person("erin");
+  const frank = await person("frank");
+  const h3 = await store.createHousehold("Flat 3", erin.id);
+  await store.addMembership(h3.id, frank.id, "member");
+  const erinAcc = await store.createAccount({
+    ownerUserId: erin.id,
+    name: "Erin Current",
+    currency: "GBP",
+  });
+  const frankAcc = await store.createAccount({
+    ownerUserId: frank.id,
+    name: "Frank Current",
+    currency: "GBP",
+  });
+  await store.createAccountShare(erinAcc.id, h3.id, "edit");
+  await store.createAccountShare(frankAcc.id, h3.id, "edit");
+  const erinShared = await store.createProject({
+    ownerUserId: erin.id,
+    name: "Garden",
+    description: null,
+    color: null,
+    targetDate: null,
+    visibility: "shared",
+  });
+  const frankSolo = await store.createProject({
+    ownerUserId: frank.id,
+    name: "Frank's shed",
+    description: null,
+    color: null,
+    targetDate: null,
+  });
+  const erinsOwn = await payment(erinAcc.id, "Turf", erinShared.id);
+  const franksInHers = await payment(frankAcc.id, "Fence", erinShared.id);
+  const franksOwn = await payment(frankAcc.id, "Shelving", frankSolo.id);
+
+  await store.deleteHousehold(h3.id);
+
+  expect(await visibilityOf(erinShared.id)).toBe("personal");
+  expect(await projectOf(franksInHers.id)).toBeNull();
+  expect(await projectOf(erinsOwn.id)).toBe(erinShared.id);
+  // A personal project is nobody's business but its owner's, whatever becomes
+  // of the household.
+  expect(await visibilityOf(frankSolo.id)).toBe("personal");
+  expect(await projectOf(franksOwn.id)).toBe(frankSolo.id);
+
+  // ---- the method the three sites call, on its own ----
+  // Directly, so its rule is pinned where it is stated rather than only where
+  // it is used: shared projects only, this account only.
+  const gina = await person("gina");
+  const ginaAcc = await store.createAccount({
+    ownerUserId: gina.id,
+    name: "Gina Current",
+    currency: "GBP",
+  });
+  const ginaShared = await store.createProject({
+    ownerUserId: gina.id,
+    name: "Loft",
+    description: null,
+    color: null,
+    targetDate: null,
+    visibility: "shared",
+  });
+  const ginaPersonal = await store.createProject({
+    ownerUserId: gina.id,
+    name: "Loft ladder",
+    description: null,
+    color: null,
+    targetDate: null,
+  });
+  const inShared = await payment(ginaAcc.id, "Insulation", ginaShared.id);
+  const inPersonal = await payment(ginaAcc.id, "Ladder", ginaPersonal.id);
+
+  await store.clearProjectLinksForAccount(ginaAcc.id);
+  expect(await projectOf(inShared.id)).toBeNull();
+  expect(await projectOf(inPersonal.id)).toBe(ginaPersonal.id);
+  // Idempotent — the three sites may each reach the same account.
+  await store.clearProjectLinksForAccount(ginaAcc.id);
+  expect(await projectOf(inPersonal.id)).toBe(ginaPersonal.id);
 }

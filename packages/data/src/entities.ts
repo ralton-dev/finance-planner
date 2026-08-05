@@ -204,6 +204,19 @@ export interface Payment {
   updatedAt: string;
 }
 
+/**
+ * Whose a project is: one person's, or their household's.
+ *
+ * "shared" carries no household id, deliberately. A user belongs to exactly one
+ * household (`0011_one_household_per_user.sql`), so the audience resolves
+ * through the owner's membership **at read time** — a stored id would be a
+ * second copy of a fact that changes underneath it when the owner leaves, is
+ * removed, or joins another. A shared project whose owner has no household is
+ * shared with nobody, which is what reading through the membership says on the
+ * day it is read.
+ */
+export type ProjectVisibility = "personal" | "shared";
+
 export interface Project {
   id: string;
   ownerUserId: string;
@@ -211,6 +224,9 @@ export interface Project {
   description: string | null;
   color: string | null;
   targetDate: string | null;
+  /** Personal, or shared into the owner's household. See `ProjectVisibility`
+   *  for why there is no household id beside it. */
+  visibility: ProjectVisibility;
   createdAt: string;
   updatedAt: string;
 }

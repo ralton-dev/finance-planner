@@ -278,7 +278,14 @@ export class MemoryStore implements Store {
     for (const m of await this.listMembersForHousehold(id)) {
       await this.dissolveMembershipBenefits(id, m.userId);
     }
-    for (const [k, s] of this.shares) if (s.householdId === id) this.shares.delete(k);
+    // Whatever shares are left are of accounts whose owner is no longer a
+    // member, so the loop above did not reach them. They go the same way, and
+    // take their shared-project links with them.
+    for (const [k, s] of this.shares) {
+      if (s.householdId !== id) continue;
+      this.shares.delete(k);
+      await this.clearProjectLinksForAccount(s.accountId);
+    }
     for (const [k, m] of this.memberships) if (m.householdId === id) this.memberships.delete(k);
     for (const [k, a] of this.assignments) if (a.householdId === id) this.assignments.delete(k);
     for (const [k, t] of this.transferConfirmations) {
@@ -332,7 +339,7 @@ export class MemoryStore implements Store {
   }
 
   /**
-   * Steps 1–3 of the departure cascade (see `Store.removeMember`). Called
+   * Steps 1–4 of the departure cascade (see `Store.removeMember`). Called
    * while the membership still stands, so the ordering guarantee holds: at no
    * point is a non-member's account still attached to the household.
    *
@@ -349,7 +356,19 @@ export class MemoryStore implements Store {
         .filter((id) => id !== userId),
     );
 
-    // 1. Movements across the boundary: deactivated, never deleted. The row's
+    // 1. Their shared projects come back personal, stripped of everything on an
+    //    account they do not own. Before step 4, and that ordering is
+    //    load-bearing — see `Store.removeMember`.
+    for (const [k, p] of this.projects) {
+      if (p.ownerUserId !== userId || p.visibility !== "shared") continue;
+      for (const [pk, payment] of this.payments) {
+        if (payment.projectId !== p.id || mine.has(payment.accountId)) continue;
+        this.payments.set(pk, { ...payment, projectId: null, updatedAt: now() });
+      }
+      this.projects.set(k, { ...p, visibility: "personal", updatedAt: now() });
+    }
+
+    // 2. Movements across the boundary: deactivated, never deleted. The row's
     //    confirmations — and the contributions they booked — are the record of
     //    money that really moved, and `deleteInflow` would cascade them away.
     for (const [k, i] of this.inflows) {
@@ -364,17 +383,20 @@ export class MemoryStore implements Store {
         this.inflows.set(k, { ...i, active: false, updatedAt: now() });
     }
 
-    // 2. Plan roles: their accounts' roles here, and any role naming them.
+    // 3. Plan roles: their accounts' roles here, and any role naming them.
     for (const [k, a] of this.assignments) {
       if (a.householdId !== householdId) continue;
       if (mine.has(a.accountId) || a.memberUserId === userId) this.assignments.delete(k);
     }
 
-    // 3. Access grants of their accounts into this household. What the
+    // 4. Access grants of their accounts into this household, each taking that
+    //    account's payments out of every shared project with it. What the
     //    household shared with *them* needs nothing: that access was their
     //    membership, and the membership is about to go.
     for (const [k, s] of this.shares) {
-      if (s.householdId === householdId && mine.has(s.accountId)) this.shares.delete(k);
+      if (s.householdId !== householdId || !mine.has(s.accountId)) continue;
+      this.shares.delete(k);
+      await this.clearProjectLinksForAccount(s.accountId);
     }
   }
 
@@ -479,7 +501,11 @@ export class MemoryStore implements Store {
   }
 
   async deleteAccountShare(id: string): Promise<void> {
+    const share = this.shares.get(id);
     this.shares.delete(id);
+    // An account nobody in the household can see has no business in a shared
+    // project (see `Store.deleteAccountShare`).
+    if (share) await this.clearProjectLinksForAccount(share.accountId);
   }
 
   async listAccessibleAccounts(userId: string): Promise<AccountAccess[]> {
@@ -891,6 +917,9 @@ export class MemoryStore implements Store {
     const ts = now();
     const project: Project = {
       ...input,
+      // Personal unless it says otherwise — the column's default in 0014, and
+      // the only thing a caller who has never heard of sharing can mean.
+      visibility: input.visibility ?? "personal",
       id: randomUUID(),
       createdAt: ts,
       updatedAt: ts,
@@ -905,6 +934,35 @@ export class MemoryStore implements Store {
 
   async listProjectsForOwner(ownerUserId: string): Promise<Project[]> {
     return [...this.projects.values()].filter((p) => p.ownerUserId === ownerUserId);
+  }
+
+  async listProjectsForUser(userId: string): Promise<Project[]> {
+    const mates = await this.coMembersOf(userId);
+    return [...this.projects.values()]
+      .filter(
+        (p) => p.ownerUserId === userId || (p.visibility === "shared" && mates.has(p.ownerUserId)),
+      )
+      .sort(byCreatedAt);
+  }
+
+  /** Everyone sharing a household with this user, themselves excluded. Empty
+   *  when they have no household — which is what makes a shared project with no
+   *  household shared with nobody. */
+  private async coMembersOf(userId: string): Promise<Set<string>> {
+    const householdIds = new Set((await this.listHouseholdsForUser(userId)).map((h) => h.id));
+    const mates = new Set<string>();
+    for (const m of this.memberships.values()) {
+      if (householdIds.has(m.householdId) && m.userId !== userId) mates.add(m.userId);
+    }
+    return mates;
+  }
+
+  async clearProjectLinksForAccount(accountId: string): Promise<void> {
+    for (const [k, p] of this.payments) {
+      if (p.accountId !== accountId || !p.projectId) continue;
+      if (this.projects.get(p.projectId)?.visibility !== "shared") continue;
+      this.payments.set(k, { ...p, projectId: null, updatedAt: now() });
+    }
   }
 
   async updateProject(id: string, patch: Partial<NewProject>): Promise<Project | null> {

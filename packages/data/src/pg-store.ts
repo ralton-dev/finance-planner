@@ -5,7 +5,20 @@ import type {
   PaymentScope,
   Recurrence,
 } from "@finance-planner/contracts";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notInArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { Database } from "./db.js";
 import type {
   Account,
@@ -25,6 +38,7 @@ import type {
   Payment,
   PlanSnapshot,
   Project,
+  ProjectVisibility,
   RecoveryCode,
   Session,
   SharePermission,
@@ -381,7 +395,14 @@ export class PgStore implements Store {
     }
     // account_shares + assignments live in other schemas with no FK back to
     // households, so wipe them first; memberships cascade via ON DELETE CASCADE.
-    await this.db.delete(s.accountShares).where(eq(s.accountShares.householdId, id));
+    // Whatever shares are left are of accounts whose owner is no longer a
+    // member, so the loop above did not reach them. They take their
+    // shared-project links with them the same way.
+    const orphanShares = await this.db
+      .delete(s.accountShares)
+      .where(eq(s.accountShares.householdId, id))
+      .returning({ accountId: s.accountShares.accountId });
+    for (const o of orphanShares) await this.clearProjectLinksForAccount(o.accountId);
     await this.db
       .delete(s.householdAccountAssignments)
       .where(eq(s.householdAccountAssignments.householdId, id));
@@ -448,7 +469,7 @@ export class PgStore implements Store {
   }
 
   /**
-   * Steps 1–3 of the departure cascade (see `Store.removeMember`). Called
+   * Steps 1–4 of the departure cascade (see `Store.removeMember`). Called
    * while the membership still stands, so the ordering guarantee holds: at no
    * point is a non-member's account still attached to the household.
    *
@@ -469,7 +490,30 @@ export class PgStore implements Store {
       await Promise.all(otherOwners.map((id) => this.listAccountsForOwner(id)))
     ).flatMap((accounts) => accounts.map((a) => a.id));
 
-    // 1. Movements across the boundary: deactivated, never deleted. The row's
+    // 1. Their shared projects come back personal, stripped of everything on an
+    //    account they do not own. Before step 4, and that ordering is
+    //    load-bearing — see `Store.removeMember`.
+    const sharedOfTheirs = await this.db
+      .select({ id: s.projects.id })
+      .from(s.projects)
+      .where(and(eq(s.projects.ownerUserId, userId), eq(s.projects.visibility, "shared")));
+    if (sharedOfTheirs.length > 0) {
+      const projectIds = sharedOfTheirs.map((p) => p.id);
+      await this.db
+        .update(s.payments)
+        .set({ projectId: null, updatedAt: new Date() })
+        .where(
+          mine.length > 0
+            ? and(inArray(s.payments.projectId, projectIds), notInArray(s.payments.accountId, mine))
+            : inArray(s.payments.projectId, projectIds),
+        );
+      await this.db
+        .update(s.projects)
+        .set({ visibility: "personal", updatedAt: new Date() })
+        .where(inArray(s.projects.id, projectIds));
+    }
+
+    // 2. Movements across the boundary: deactivated, never deleted. The row's
     //    confirmations — and the contributions they booked — are the record of
     //    money that really moved, and deleting the inflow would cascade them
     //    away (0009). An inactive inflow is not a funding edge and funds
@@ -490,7 +534,7 @@ export class PgStore implements Store {
         );
     }
 
-    // 2. Plan roles: their accounts' roles here, and any role naming them as
+    // 3. Plan roles: their accounts' roles here, and any role naming them as
     //    the member a personal account belongs to.
     if (mine.length > 0) {
       await this.db
@@ -511,18 +555,21 @@ export class PgStore implements Store {
         ),
       );
 
-    // 3. Access grants of their accounts into this household. What the
+    // 4. Access grants of their accounts into this household, each taking that
+    //    account's payments out of every shared project with it. What the
     //    household shared with *them* needs nothing: that access was their
     //    membership, and the membership is about to go.
     if (mine.length > 0) {
-      await this.db
+      const gone = await this.db
         .delete(s.accountShares)
         .where(
           and(
             eq(s.accountShares.householdId, householdId),
             inArray(s.accountShares.accountId, mine),
           ),
-        );
+        )
+        .returning({ accountId: s.accountShares.accountId });
+      for (const g of gone) await this.clearProjectLinksForAccount(g.accountId);
     }
   }
 
@@ -656,7 +703,14 @@ export class PgStore implements Store {
   }
 
   async deleteAccountShare(id: string): Promise<void> {
+    const [share] = await this.db
+      .select({ accountId: s.accountShares.accountId })
+      .from(s.accountShares)
+      .where(eq(s.accountShares.id, id));
     await this.db.delete(s.accountShares).where(eq(s.accountShares.id, id));
+    // An account nobody in the household can see has no business in a shared
+    // project (see `Store.deleteAccountShare`).
+    if (share) await this.clearProjectLinksForAccount(share.accountId);
   }
 
   async listAccessibleAccounts(userId: string): Promise<AccountAccess[]> {
@@ -1243,6 +1297,7 @@ export class PgStore implements Store {
       description: r.description,
       color: r.color,
       targetDate: r.targetDate,
+      visibility: r.visibility as ProjectVisibility,
       createdAt: r.createdAt.toISOString(),
       updatedAt: r.updatedAt.toISOString(),
     };
@@ -1257,6 +1312,9 @@ export class PgStore implements Store {
         description: input.description,
         color: input.color,
         targetDate: input.targetDate,
+        // Personal unless it says otherwise — 0014's column default, restated
+        // here so both stores answer the same without asking the database.
+        visibility: input.visibility ?? "personal",
       })
       .returning();
     return this.mapProject(row!);
@@ -1273,6 +1331,67 @@ export class PgStore implements Store {
       .from(s.projects)
       .where(eq(s.projects.ownerUserId, ownerUserId));
     return rows.map((r) => this.mapProject(r));
+  }
+
+  async listProjectsForUser(userId: string): Promise<Project[]> {
+    // Membership read here and now: a shared project's audience is not stored
+    // (see `ProjectVisibility`), so an owner with no household shares with
+    // nobody. A household is a handful of people, so this reads the roster into
+    // memory rather than joining — the trade `dissolveMembershipBenefits`
+    // already makes.
+    const mates = await this.coMembersOf(userId);
+    const rows = await this.db
+      .select()
+      .from(s.projects)
+      .where(
+        mates.length === 0
+          ? eq(s.projects.ownerUserId, userId)
+          : or(
+              eq(s.projects.ownerUserId, userId),
+              and(eq(s.projects.visibility, "shared"), inArray(s.projects.ownerUserId, mates)),
+            ),
+      )
+      .orderBy(asc(s.projects.createdAt));
+    return rows.map((r) => this.mapProject(r));
+  }
+
+  /** Everyone sharing a household with this user, themselves excluded. */
+  private async coMembersOf(userId: string): Promise<string[]> {
+    const householdIds = (await this.listHouseholdsForUser(userId)).map((h) => h.id);
+    if (householdIds.length === 0) return [];
+    const rows = await this.db
+      .select({ userId: s.memberships.userId })
+      .from(s.memberships)
+      .where(inArray(s.memberships.householdId, householdIds));
+    return [...new Set(rows.map((r) => r.userId))].filter((id) => id !== userId);
+  }
+
+  async clearProjectLinksForAccount(accountId: string): Promise<void> {
+    // Scoped through the account's own payments, so the shared-project set read
+    // here is bounded by one account rather than by the whole table.
+    const linked = await this.db
+      .select({ projectId: s.payments.projectId })
+      .from(s.payments)
+      .where(and(eq(s.payments.accountId, accountId), isNotNull(s.payments.projectId)));
+    const projectIds = [...new Set(linked.map((r) => r.projectId!))];
+    if (projectIds.length === 0) return;
+    const shared = await this.db
+      .select({ id: s.projects.id })
+      .from(s.projects)
+      .where(and(inArray(s.projects.id, projectIds), eq(s.projects.visibility, "shared")));
+    if (shared.length === 0) return;
+    await this.db
+      .update(s.payments)
+      .set({ projectId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(s.payments.accountId, accountId),
+          inArray(
+            s.payments.projectId,
+            shared.map((p) => p.id),
+          ),
+        ),
+      );
   }
 
   async updateProject(id: string, patch: Partial<NewProject>): Promise<Project | null> {
