@@ -5,6 +5,7 @@ import { usePrivacy } from "../contexts/PrivacyContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { type Theme, THEME_ORDER, useTheme } from "../contexts/ThemeContext.js";
 import { useChordShortcuts } from "../lib/useChordShortcuts.js";
+import { ProductLogo } from "./ProductLogo.js";
 
 export function Layout() {
   const { user, logout } = useAuth();
@@ -47,10 +48,7 @@ export function Layout() {
   return (
     <div className="app">
       <div className="mobile-bar">
-        <span className="mobile-brand">
-          <span className="brand-dot" />
-          finance-planner
-        </span>
+        <span className="mobile-spacer" aria-hidden="true" />
         <ThemeToggle theme={theme} onCycle={cycleTheme} className="nav-toggle" />
         <PrivacyToggle hidden={hidden} onToggle={togglePrivacy} className="nav-toggle" />
         <button
@@ -66,10 +64,9 @@ export function Layout() {
       </div>
 
       <aside id="app-sidebar" className={navOpen ? "sidebar open" : "sidebar"}>
-        <div className="brand">
-          <span className="brand-dot" />
-          finance-planner
-          <span className="brand-version">v1</span>
+        <div className="brand-lockup sidebar-brand">
+          <ProductLogo className="brand-lockup-mark" decorative />
+          <span className="brand-lockup-text">finance planner</span>
         </div>
 
         <div className="nav-section">workspace</div>

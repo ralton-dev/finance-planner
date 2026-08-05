@@ -345,30 +345,56 @@ textarea:focus-visible {
   overflow-y: auto;
 }
 
-.brand {
+.product-logo {
+  display: grid;
+}
+.product-logo-image {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.product-logo-image-dark {
+  display: none;
+}
+:root[data-theme="dark"] .product-logo-image-light {
+  display: none;
+}
+:root[data-theme="dark"] .product-logo-image-dark {
+  display: block;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .product-logo-image-light {
+    display: none;
+  }
+  :root:not([data-theme]) .product-logo-image-dark {
+    display: block;
+  }
+}
+.brand-lockup {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  font-weight: 700;
-  font-size: 13.5px;
-  letter-spacing: -0.02em;
+  gap: 0.7rem;
   color: var(--ink);
-  margin-bottom: 1.5rem;
-  padding: 0 0.35rem;
 }
-.brand-dot {
-  width: 9px;
-  height: 9px;
-  background: var(--funded);
-  border-radius: 1px;
-  box-shadow: 0 0 8px var(--funded);
+.brand-lockup-mark {
+  width: 3rem;
+  height: 3rem;
   flex-shrink: 0;
 }
-.brand-version {
-  color: var(--ink-3);
-  font-weight: 400;
-  font-size: 11px;
-  margin-left: auto;
+.brand-lockup-text {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+}
+.sidebar-brand {
+  margin: 0.05rem 0.35rem 1.4rem;
+  min-width: 0;
+}
+.sidebar-brand .brand-lockup-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav-section {
@@ -488,6 +514,9 @@ textarea:focus-visible {
   font-size: 13.5px;
   letter-spacing: -0.02em;
   color: var(--ink);
+}
+.mobile-spacer {
+  margin-right: auto;
 }
 .nav-toggle {
   background: transparent;
@@ -1207,6 +1236,18 @@ button.tiny {
   max-width: 360px;
   margin: 6rem auto;
 }
+.auth-page-brand {
+  position: fixed;
+  top: 2rem;
+  left: 2rem;
+}
+.auth-page-brand .brand-lockup-mark {
+  width: 4rem;
+  height: 4rem;
+}
+.auth-page-brand .brand-lockup-text {
+  font-size: 16px;
+}
 .auth-card h1 {
   font-size: 18px;
   font-weight: 600;
@@ -1431,10 +1472,6 @@ button.tiny {
   }
   .sidebar.open {
     display: flex;
-  }
-  /* The brand already shows in the mobile bar — don't repeat it in the panel. */
-  .sidebar .brand {
-    display: none;
   }
   .main {
     padding: 1rem;
@@ -2993,9 +3030,4 @@ summary > h3 {
  * already obvious from everything around it. */
 .theme-mark {
   color: var(--ink-3);
-}
-/* On mobile the eye joins the burger on the right rather than floating in the
- * middle of the bar. */
-.mobile-bar .mobile-brand {
-  margin-right: auto;
 }

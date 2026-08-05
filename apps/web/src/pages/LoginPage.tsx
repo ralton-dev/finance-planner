@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
+import { ProductLogo } from "../components/ProductLogo.js";
 import { api, ApiError } from "../lib/api.js";
 
 /** Second-factor input mode. Recovery codes are alphanumeric, TOTP codes aren't. */
@@ -139,55 +140,61 @@ export function LoginPage() {
   }
 
   return (
-    <div className="auth-card">
-      <h1>log in</h1>
-      <form onSubmit={onSubmit}>
-        <label>
-          email
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        </label>
-        <label>
-          password
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </label>
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        <button type="submit" disabled={busy}>
-          {busy ? "logging in…" : "log in"}
-        </button>
-      </form>
-      {sso && (
-        <>
-          <div className="auth-divider">
-            <span>or</span>
-          </div>
-          <button
-            type="button"
-            className="ghost auth-sso"
-            onClick={() => {
-              window.location.href = "/api/auth/oidc/login";
-            }}
-          >
-            sign in with sso
+    <>
+      <div className="brand-lockup auth-page-brand">
+        <ProductLogo className="brand-lockup-mark" decorative />
+        <span className="brand-lockup-text">finance planner</span>
+      </div>
+      <div className="auth-card">
+        <h1>log in</h1>
+        <form onSubmit={onSubmit}>
+          <label>
+            email
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </label>
+          <label>
+            password
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
+          <button type="submit" disabled={busy}>
+            {busy ? "logging in…" : "log in"}
           </button>
-          {sso.issuer && <p className="auth-hint auth-issuer">via {sso.issuer}</p>}
-        </>
-      )}
-      <p className="muted">
-        <Link to="/forgot">forgot password?</Link>
-      </p>
-      <p className="muted">
-        no account? <Link to="/register">register →</Link>
-      </p>
-    </div>
+        </form>
+        {sso && (
+          <>
+            <div className="auth-divider">
+              <span>or</span>
+            </div>
+            <button
+              type="button"
+              className="ghost auth-sso"
+              onClick={() => {
+                window.location.href = "/api/auth/oidc/login";
+              }}
+            >
+              sign in with sso
+            </button>
+            {sso.issuer && <p className="auth-hint auth-issuer">via {sso.issuer}</p>}
+          </>
+        )}
+        <p className="muted">
+          <Link to="/forgot">forgot password?</Link>
+        </p>
+        <p className="muted">
+          no account? <Link to="/register">register →</Link>
+        </p>
+      </div>
+    </>
   );
 }
 
