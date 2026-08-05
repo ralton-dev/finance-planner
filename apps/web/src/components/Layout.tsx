@@ -85,8 +85,11 @@ export function Layout() {
           <span className="label">projects</span>
           <span className="kbd-ish">g p</span>
         </NavLink>
+        {/* Singular: the tab goes straight into your one household. `end` is
+            deliberately absent, so the link stays lit on /households/:id — the
+            address the redirect actually lands on. */}
         <NavLink to="/households" className={navClass}>
-          <span className="label">households</span>
+          <span className="label">household</span>
           <span className="kbd-ish">g s</span>
         </NavLink>
         <NavLink to="/flow" className={navClass}>
@@ -290,8 +293,9 @@ function scopeFromPath(pathname: string): string {
   if (pathname === "/flow") return "account-set";
   if (pathname === "/projects") return "projects";
   if (pathname.startsWith("/projects/")) return "project";
-  if (pathname === "/households") return "households";
-  if (pathname.startsWith("/households/")) return "household";
+  // Both spellings of the same place: /households resolves to yours, and there
+  // is only ever one of them.
+  if (pathname.startsWith("/households")) return "household";
   return pathname.slice(1);
 }
 

@@ -102,7 +102,7 @@ export function CommandPalette() {
       },
       {
         id: "nav-households",
-        label: "go to households",
+        label: "go to your household",
         hint: "/households",
         group: "navigate",
         action: () => {

@@ -153,10 +153,9 @@ export function HouseholdDetailPage() {
           <h1>
             household <span className="scope">/ {data.name}</span>
           </h1>
+          {/* No "← back": /households is this page's own address now, and a
+              back link that lands you where you already are is furniture. */}
           <div className="subhead">
-            <Link to="/households" className="action" style={{ marginRight: "0.75rem" }}>
-              ← back
-            </Link>
             your role: <b>{data.yourRole}</b>
             <Link
               to={`/households/${id}/plan`}
@@ -214,7 +213,9 @@ export function HouseholdDetailPage() {
                     isSelf={m.isSelf}
                     isOwner={m.role === "owner"}
                     canAdmin={isAdmin}
-                    onRemoved={() => household.refetch()}
+                    // Leaving takes the page away from you: refetching it would
+                    // 404, because you can no longer see the household.
+                    onRemoved={() => (m.isSelf ? navigate("/households") : household.refetch())}
                   />
                 </td>
               </tr>
@@ -862,7 +863,12 @@ function InviteMemberForm({ householdId, onAdded }: { householdId: string; onAdd
           ? "no user with that email — they need to register first."
           : e instanceof ApiError && e.status === 409
             ? "that user is already a member."
-            : "could not add member.",
+            : // A user belongs to exactly one household, so the Store refuses
+              // this as unprocessable and says why. Its message is written for
+              // a person; pass it through rather than paraphrase it.
+              e instanceof ApiError && e.status === 422
+              ? e.message
+              : "could not add member.",
       );
     } finally {
       setBusy(false);
@@ -915,8 +921,21 @@ function RemoveMemberButton({
   if (!isSelf && !canAdmin) return <span className="muted">—</span>;
 
   async function remove(): Promise<void> {
+    // Spelled out, because leaving is not just a row disappearing: the grants
+    // and the movements that only existed inside the household go with it.
+    const who = isSelf ? "you" : displayName;
     const verb = isSelf ? "leave this household" : `remove ${displayName}`;
-    if (!confirm(`are you sure you want to ${verb}?`)) return;
+    if (
+      !confirm(
+        `${verb}?\n\nthe accounts ${who} shared with the household stop being shared, ` +
+          `their roles in its plan are removed, and any money the plan was moving between ` +
+          `${who} and the other members stops.\n\n` +
+          `what has already been recorded — transfers marked done, contributions, closed months ` +
+          `— is kept.`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     try {
       await api.removeMember(householdId, userId);
@@ -1169,9 +1188,10 @@ function DeleteHouseholdZone({
         <h3>danger zone</h3>
       </summary>
       <p className="hint">
-        deleting removes the household, every membership, and every shared-account grant attached to
-        it. owned accounts themselves are not touched. there is no undo. type <b>{householdName}</b>{" "}
-        to confirm.
+        deleting removes the household, every membership, every shared-account grant attached to it,
+        and it stops any money the plan was moving between its members. owned accounts themselves
+        are not touched, and what has already been recorded is kept. everyone is then free to join
+        or found another household. there is no undo. type <b>{householdName}</b> to confirm.
       </p>
       <input
         placeholder={householdName}

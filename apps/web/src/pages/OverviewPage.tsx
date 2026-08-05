@@ -211,12 +211,12 @@ export function OverviewPage() {
       <h1>
         overview <span className="scope">/ all-accounts</span>
       </h1>
+      {/* The household is named rather than counted: there is at most one
+          (WP-W), and "1 household" was a count of a thing that has a name. */}
       <div className="subhead">
         <b>{totalAccounts}</b> accounts ·{" "}
-        {households.length > 0 ? (
-          <>
-            <b>{households.length}</b> {households.length === 1 ? "household" : "households"}
-          </>
+        {households[0] ? (
+          <b>{households[0].name}</b>
         ) : (
           <>
             <b>{buckets.length}</b> {buckets.length === 1 ? "currency" : "currencies"}
@@ -321,19 +321,20 @@ function HouseholdCards({
   if (loading && entries.length === 0) {
     return (
       <p className="muted" style={{ fontSize: "12px" }}>
-        loading household plans…
+        loading your household plan…
       </p>
     );
   }
   if (entries.length === 0) return null;
 
+  // Still a list, still mapped: a user has one household (WP-W), and the row
+  // that renders one renders it the same way. The heading stops claiming
+  // otherwise.
   return (
     <>
       <div className="section-head">
-        <h2>households</h2>
-        <span className="meta">
-          [{entries.length} {entries.length === 1 ? "plan" : "plans"}]
-        </span>
+        <h2>household</h2>
+        <span className="meta">[the plan you share]</span>
       </div>
       <div className="household-cards">
         {entries.map((entry) => (

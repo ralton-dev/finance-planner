@@ -499,6 +499,79 @@ describe("HouseholdDetailPage — the shares block", () => {
   });
 });
 
+/**
+ * Leaving is the only way into a different household, so it has to work and it
+ * has to be honest about what it costs (WP-W). The dissolution itself is the
+ * Store's — shares, plan roles and the movements that only existed inside the
+ * household — so what is pinned here is that the page says so before it asks,
+ * and that it takes you somewhere that still exists afterwards.
+ */
+describe("HouseholdDetailPage — leaving", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** Ben as a plain member rather than the founder: only then is there a way
+   *  out that is not "delete the whole household". */
+  function asMember(): HouseholdDetailDto {
+    const base = household();
+    return {
+      ...base,
+      yourRole: "member",
+      members: base.members.map((m) => ({
+        ...m,
+        role: m.isSelf ? ("member" as const) : ("owner" as const),
+      })),
+    };
+  }
+
+  function renderAsMember(extra?: Routes) {
+    const stub = stubApiFetch({
+      "GET /api/auth/households/h1": { body: asMember() },
+      "GET /api/accounts": { body: ACCOUNTS },
+      "GET /api/households/h1/accounts": { body: ROSTER },
+      "GET /api/households/h1/plan": { body: plan(120000) },
+      "GET /api/overview": { body: { asOfDate: AS_OF, perCurrency: [] } },
+      "DELETE /api/auth/households/h1/members/u1": { status: 204 },
+      ...extra,
+    });
+    render(
+      <MemoryRouter initialEntries={["/households/h1"]}>
+        <RouterRoutes>
+          <Route path="/households/:id" element={<HouseholdDetailPage />} />
+          <Route path="/households" element={<p>no household</p>} />
+        </RouterRoutes>
+      </MemoryRouter>,
+    );
+    return stub;
+  }
+
+  it("names what leaving dissolves, and what it keeps, before asking", async () => {
+    const confirmed = vi.fn<(message?: string) => boolean>(() => false);
+    vi.stubGlobal("confirm", confirmed);
+    const stub = renderAsMember();
+
+    await userEvent.click(await screen.findByRole("button", { name: "leave" }));
+
+    const asked = String(confirmed.mock.calls[0]?.[0] ?? "");
+    expect(asked).toMatch(/stop being shared/);
+    expect(asked).toMatch(/roles in its plan are removed/);
+    expect(asked).toMatch(/stops/);
+    expect(asked).toMatch(/already been recorded — transfers marked done, contributions/);
+    // Refused at the prompt: nothing was sent.
+    expect(stub.calls("DELETE /api/auth/households/h1/members/u1")).toBe(0);
+  });
+
+  it("takes you out of a household you can no longer see", async () => {
+    vi.stubGlobal("confirm", () => true);
+    const stub = renderAsMember();
+
+    await userEvent.click(await screen.findByRole("button", { name: "leave" }));
+
+    expect(stub.calls("DELETE /api/auth/households/h1/members/u1")).toBe(1);
+    // Not a refetch — that would 404, because the household is no longer yours.
+    expect(await screen.findByText("no household")).toBeTruthy();
+  });
+});
+
 describe("HouseholdDetailPage — the danger zone", () => {
   it("sits collapsed at the very bottom", async () => {
     const { container } = renderPage();

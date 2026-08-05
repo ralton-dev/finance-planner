@@ -13,7 +13,7 @@ import { AccountPage } from "./pages/AccountPage.js";
 import { AccountsPage } from "./pages/AccountsPage.js";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage.js";
 import { HouseholdDetailPage } from "./pages/HouseholdDetailPage.js";
-import { HouseholdsPage } from "./pages/HouseholdsPage.js";
+import { HouseholdHomePage } from "./pages/HouseholdHomePage.js";
 import { LoginPage } from "./pages/LoginPage.js";
 import { OverviewPage } from "./pages/OverviewPage.js";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage.js";
@@ -57,7 +57,10 @@ export function App() {
                   <Route path="/accounts/:id" element={<AccountPage />} />
                   <Route path="/projects" element={<ProjectsPage />} />
                   <Route path="/projects/:id" element={<ProjectDetailPage />} />
-                  <Route path="/households" element={<HouseholdsPage />} />
+                  {/* A user has one household, so this is not a list: it
+                      resolves to yours and redirects into it, or offers the
+                      two ways in when you have none. */}
+                  <Route path="/households" element={<HouseholdHomePage />} />
                   <Route path="/households/:id" element={<HouseholdDetailPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   {/* The diagram, over any set of accounts. Not nested under a
