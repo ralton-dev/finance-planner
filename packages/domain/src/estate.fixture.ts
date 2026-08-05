@@ -1,0 +1,451 @@
+import type { ScopeAccountInput, ScopeInput } from "./scope.js";
+
+/**
+ * **An estate shaped like somebody's actual money**, for every test that needs
+ * one.
+ *
+ * Every fixture in this repository was a user with **no household assignments**.
+ * That is why `ONE-ENGINE.md`'s purpose-built parity test and five field-by-field
+ * audits all passed while a live defect sat in production, and why the repo
+ * owner found it in thirty seconds on his own accounts page: a bills pot he kept
+ * *out* of his household could never reach the salary that was supposed to feed
+ * it, because that salary account **was** in the household, and the two closure
+ * rules were alternatives (`f3acef8`). No fixture had that relationship, so no
+ * test could have.
+ *
+ * So this one has it, and the rest of the shapes nothing had either:
+ *
+ * | Feature                                     | Where                                   |
+ * | ------------------------------------------- | --------------------------------------- |
+ * | a household of two, hand-set shares         | `hh-estate`, 66 / 34                    |
+ * | personal assigned accounts with salaries    | `acc-alice-current`, `acc-bob-current`  |
+ * | a shared pot with **its own** income        | `acc-house-pot` — £500 lodger rent      |
+ * | an unassigned pot fed by a derived transfer | `acc-alice-bills` — the `f3acef8` shape |
+ * | authored movements to several destinations  | three, out of `acc-alice-current`       |
+ * | mixed confirmed states                      | full / partial / none, both kinds       |
+ * | a second currency                           | `acc-alice-eur`                         |
+ *
+ * ## Two projections, one description
+ *
+ * What the pass is handed **is** a description of an estate, so this exports one
+ * rather than inventing a second vocabulary: `estate.scope` is a `ScopeInput`,
+ * ready for `computeScopePlan`. Everything a *store* seeder needs and the pass is
+ * deliberately never told sits beside it — who owns each account, and which
+ * accounts the household actually assigned — because neither is recoverable from
+ * the input. An unassigned account and a household-assigned personal one are the
+ * same shape by the time they reach the pass (`apps/api/src/plan.ts` gives an
+ * unassigned account `role: "personal"` and its owner as `memberUserId`), which
+ * is exactly the ambiguity `assignedAccountIds` resolves.
+ *
+ * There is no store seeder in here, and there cannot be: `@finance-planner/domain`
+ * does not depend on `@finance-planner/data` and this is not the package to make
+ * it. An API-level seeder is a short walk over `estate` — see
+ * `apps/api/src/close.divergence.test.ts`, whose `seedEstate` is meant to be
+ * lifted rather than rewritten when that file is deleted.
+ *
+ * ## Nothing here depends on what day it is
+ *
+ * Every income is monthly and every payment is a monthly recurring bill, so the
+ * pass answers the same on any as-of date and a test may close "this month"
+ * against the figures written down below. `ESTATE_ASOF` is supplied for callers
+ * that need to name a date; it is not a date any figure was tuned to.
+ *
+ * ## What it plans to, today (`21ec4e1`)
+ *
+ * GBP partition — alice earns £3,000, bob £2,000, the pot £500 of its own:
+ *
+ *  - the pot's £1,400 of shared bills, less the £500 the pot's own income
+ *    already covers (`0c35284`'s netting), split 66 / 34: alice moves
+ *    **£594.00**, bob **£306.00** — the gross would have been £924 and £476,
+ *    and the £500 would have sat in the pot funding nothing;
+ *  - alice's out-of-household bills pot needs **£75.00**, derived, out of her
+ *    current account — the relationship no fixture had;
+ *  - her three authored movements (£200 / £150 / £100) all fund, out of what is
+ *    left after those two derived transfers.
+ *
+ * EUR partition — alice earns €800 and owes €120 on the account it lands in, so
+ * it self-funds and derives no transfer at all. Two partitions is the point: a
+ * user is multi-currency by construction, and `MONTH-CLOSE.md` decision 14 makes
+ * a close per user **per currency** for exactly that reason.
+ *
+ * **Decision 15 will move some of these figures and must not move the others.**
+ * The pot's £500 belongs to nobody today; WP-C gives it to the account's owner
+ * (alice), which changes her income and her budget — and no other account here
+ * is shared, so every other figure above is a regression guard rather than an
+ * expectation to update.
+ */
+
+/** A date to plan as of. Nothing below was tuned to it — see the module note. */
+export const ESTATE_ASOF = "2026-08-04";
+
+/**
+ * The estate, and the two facts about it a `ScopeInput` cannot carry.
+ *
+ * Ids are readable rather than uuid-shaped: a store generates its own, so a
+ * seeder keeps a fixture-id → real-id map and these are what that map is keyed
+ * by. Nothing in the pass reads an id for anything but identity and tie-breaks.
+ */
+export interface EstateFixture {
+  /** See `ESTATE_ASOF`. */
+  asOfDate: string;
+  householdId: string;
+  /**
+   * `core.accounts.owner_user_id` per account — `NOT NULL` in the schema, so
+   * every account has exactly one owner and a "joint" account is one person's
+   * account shared into a household.
+   *
+   * The pass is not told this yet, which is the gap `MONTH-CLOSE.md` decision 15
+   * closes: `acc-house-pot` is alice's, and its £500 of lodger rent belongs to
+   * nobody until `ScopeAccountInput.ownerUserId` exists (WP-C).
+   */
+  ownerOf: Readonly<Record<string, string>>;
+  /**
+   * The accounts the household has actually assigned, in assignment order.
+   *
+   * Not derivable from `scope.accounts`: an unassigned account reaches the pass
+   * as `role: "personal"` with its owner as `memberUserId`, identically to an
+   * assigned personal one. The order matters to one caller today —
+   * `scopeForHousehold` denominates a household in its first assigned account's
+   * currency — so the GBP accounts come first, as they did on the real estate.
+   */
+  assignedAccountIds: readonly string[];
+  /** The pass's input, as `apps/api/src/plan.ts`'s loader would build it. */
+  scope: ScopeInput;
+}
+
+export const estate: EstateFixture = {
+  asOfDate: ESTATE_ASOF,
+  householdId: "hh-estate",
+  ownerOf: {
+    "acc-alice-current": "u-alice",
+    "acc-bob-current": "u-bob",
+    // A shared pot is still somebody's account. This is the entry that makes
+    // decision 15 mean anything.
+    "acc-house-pot": "u-alice",
+    "acc-alice-bills": "u-alice",
+    "acc-alice-savings": "u-alice",
+    "acc-alice-holiday": "u-alice",
+    "acc-alice-car": "u-alice",
+    "acc-alice-eur": "u-alice",
+  },
+  assignedAccountIds: [
+    "acc-alice-current",
+    "acc-bob-current",
+    "acc-house-pot",
+    // Assigned, and in a currency the household's own plan cannot see: a
+    // household is denominated in its first assigned account's currency, so this
+    // one is silently absent from every household figure. Decision 14 is the fix.
+    "acc-alice-eur",
+  ],
+  scope: {
+    // One household applies, so the loader names the scope after it.
+    scopeId: "hh-estate",
+    householdId: "hh-estate",
+    // Hand-set shares, not the even default: a split that has to round is the
+    // only one that can catch a rounding bug.
+    members: [
+      { userId: "u-alice", displayName: "Alice", shareBp: 6600 },
+      { userId: "u-bob", displayName: "Bob", shareBp: 3400 },
+    ],
+    accounts: [
+      {
+        accountId: "acc-alice-current",
+        name: "Alice current",
+        role: "personal",
+        memberUserId: "u-alice",
+        currency: "GBP",
+        monthlyBufferMinor: 0,
+        incomes: [
+          {
+            id: "inc-alice-salary",
+            amountMinor: 300_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-25",
+          },
+        ],
+        payments: [],
+        inflows: [],
+        // Three destinations, so a surface standing here has three rows to tell
+        // apart. One authored movement to one pot could never have caught the
+        // row that lumped three of them into a far end that was a *set*.
+        outboundInflows: [
+          {
+            id: "mov-savings",
+            toAccountId: "acc-alice-savings",
+            amountMinor: 20_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-28",
+            priority: 10,
+          },
+          {
+            id: "mov-holiday",
+            toAccountId: "acc-alice-holiday",
+            amountMinor: 15_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-28",
+            priority: 20,
+          },
+          {
+            id: "mov-car",
+            toAccountId: "acc-alice-car",
+            amountMinor: 10_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-28",
+            priority: 30,
+          },
+        ],
+        confirmedArrivals: [],
+      },
+      {
+        accountId: "acc-bob-current",
+        name: "Bob current",
+        role: "personal",
+        memberUserId: "u-bob",
+        currency: "GBP",
+        monthlyBufferMinor: 0,
+        incomes: [
+          {
+            id: "inc-bob-salary",
+            amountMinor: 200_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-25",
+          },
+        ],
+        payments: [],
+        inflows: [],
+        outboundInflows: [],
+        confirmedArrivals: [],
+      },
+      {
+        accountId: "acc-house-pot",
+        name: "House pot",
+        role: "shared",
+        // Shared, so nobody's — which is what makes its income unattributable
+        // today. `estate.ownerOf` says whose it really is.
+        memberUserId: null,
+        currency: "GBP",
+        monthlyBufferMinor: 0,
+        // A shared pot that earns. The lodger pays the house, not a member, and
+        // `0c35284`'s netting means the members transport the £1,400 of bills
+        // **less** this £500 — never the gross.
+        incomes: [
+          {
+            id: "inc-pot-lodger",
+            amountMinor: 50_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-01",
+          },
+        ],
+        payments: [
+          {
+            id: "pay-rent",
+            name: "Rent",
+            category: "monthly_recurring",
+            amountMinor: 120_000,
+            scope: "shared",
+            priority: 10,
+          },
+          {
+            id: "pay-council",
+            name: "Council tax",
+            category: "monthly_recurring",
+            amountMinor: 20_000,
+            scope: "shared",
+            priority: 20,
+          },
+        ],
+        inflows: [],
+        outboundInflows: [],
+        confirmedArrivals: [],
+      },
+      {
+        // **The pot kept out of the household.** Obligations, no income, no
+        // assignment — and its owner's salary sits in an account the household
+        // *has* assigned. Before `f3acef8` the two closure rules were
+        // alternatives and this pot could reach that salary from neither end; it
+        // read `unfunded · £303.20` on a live screen while the household's own
+        // pots were fed beside it.
+        accountId: "acc-alice-bills",
+        name: "Alice bills",
+        role: "personal",
+        memberUserId: "u-alice",
+        currency: "GBP",
+        monthlyBufferMinor: 0,
+        incomes: [],
+        // Personal, borne by alice: an account no household plans bears its own
+        // payments whatever the column says, and the loader rewrites them so.
+        payments: [
+          {
+            id: "pay-phone",
+            name: "Phone",
+            category: "monthly_recurring",
+            amountMinor: 4_500,
+            scope: "personal",
+            bearerUserId: "u-alice",
+            priority: 10,
+          },
+          {
+            id: "pay-gym",
+            name: "Gym",
+            category: "monthly_recurring",
+            amountMinor: 3_000,
+            scope: "personal",
+            bearerUserId: "u-alice",
+            priority: 20,
+          },
+        ],
+        inflows: [],
+        outboundInflows: [],
+        confirmedArrivals: [],
+      },
+      {
+        accountId: "acc-alice-savings",
+        name: "Alice savings",
+        role: "personal",
+        memberUserId: "u-alice",
+        currency: "GBP",
+        monthlyBufferMinor: 0,
+        incomes: [],
+        payments: [],
+        inflows: [
+          {
+            id: "mov-savings",
+            amountMinor: 20_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-28",
+            source: "account",
+            sourceAccountId: "acc-alice-current",
+            priority: 10,
+          },
+        ],
+        outboundInflows: [],
+        // Confirmed in full.
+        confirmedArrivals: [{ inflowId: "mov-savings", confirmedMinor: 20_000 }],
+      },
+      {
+        accountId: "acc-alice-holiday",
+        name: "Alice holiday",
+        role: "personal",
+        memberUserId: "u-alice",
+        currency: "GBP",
+        monthlyBufferMinor: 0,
+        incomes: [],
+        payments: [],
+        inflows: [
+          {
+            id: "mov-holiday",
+            amountMinor: 15_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-28",
+            source: "account",
+            sourceAccountId: "acc-alice-current",
+            priority: 20,
+          },
+        ],
+        outboundInflows: [],
+        // Confirmed in part — £50 of the £150 moved. No API surface writes this
+        // one: both confirm handlers book the whole planned amount. A store
+        // does, and a plan that has been half-lived is a state the product
+        // reaches whether or not a handler can create it.
+        confirmedArrivals: [{ inflowId: "mov-holiday", confirmedMinor: 5_000 }],
+      },
+      {
+        accountId: "acc-alice-car",
+        name: "Alice car fund",
+        role: "personal",
+        memberUserId: "u-alice",
+        currency: "GBP",
+        monthlyBufferMinor: 0,
+        incomes: [],
+        payments: [],
+        inflows: [
+          {
+            id: "mov-car",
+            amountMinor: 10_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-28",
+            source: "account",
+            sourceAccountId: "acc-alice-current",
+            priority: 30,
+          },
+        ],
+        outboundInflows: [],
+        // Nobody has said this one moved.
+        confirmedArrivals: [],
+      },
+      {
+        // The second currency. A user is multi-currency by construction — the
+        // pass partitions per currency and nothing derived crosses one
+        // (decision 10) — so a fixture with one currency cannot exercise the
+        // partition boundary at all.
+        accountId: "acc-alice-eur",
+        name: "Alice euro",
+        role: "personal",
+        memberUserId: "u-alice",
+        currency: "EUR",
+        monthlyBufferMinor: 0,
+        incomes: [
+          {
+            id: "inc-alice-eur",
+            amountMinor: 80_000,
+            frequency: "monthly",
+            anchorDate: "2026-01-15",
+          },
+        ],
+        // On the account the euros land in, so it self-funds and derives no
+        // transfer: the partition is deliberately simple, because what it is
+        // here to test is that it exists at all.
+        payments: [
+          {
+            id: "pay-hosting",
+            name: "Hosting",
+            category: "monthly_recurring",
+            amountMinor: 12_000,
+            scope: "personal",
+            bearerUserId: "u-alice",
+            priority: 10,
+          },
+        ],
+        inflows: [],
+        outboundInflows: [],
+        confirmedArrivals: [],
+      },
+    ],
+    // Somebody has said these derived transfers happened — one in full, one in
+    // part, and bob's £306 into the pot deliberately not at all: an estate where
+    // everything has been confirmed is one where the difference between
+    // "planned" and "moved" cannot be seen. Hand-set against the figures in the
+    // module note, and clamped by the pass anyway, so a number here can never
+    // credit money this month's plan did not send.
+    confirmedTransfers: [
+      {
+        fromAccountId: "acc-alice-current",
+        toAccountId: "acc-house-pot",
+        memberUserId: "u-alice",
+        confirmedMinor: 59_400,
+      },
+      {
+        fromAccountId: "acc-alice-current",
+        toAccountId: "acc-alice-bills",
+        memberUserId: "u-alice",
+        confirmedMinor: 3_000,
+      },
+    ],
+  },
+};
+
+/**
+ * The same estate with the shared pot earning nothing.
+ *
+ * Decision 15's regression guard, in the form WP-C's acceptance names it: with
+ * no shared-account income anywhere, attributing income by **ownership** rather
+ * than by household **role** can change nothing, so the whole `ScopePlan` must be
+ * byte-identical either side of that change. Any figure that moves here is a
+ * defect rather than a consequence.
+ */
+export const estateWithoutSharedIncome: ScopeInput = {
+  ...estate.scope,
+  accounts: estate.scope.accounts.map(
+    (a): ScopeAccountInput => (a.role === "shared" ? { ...a, incomes: [] } : a),
+  ),
+};
