@@ -863,6 +863,19 @@ export async function exerciseStore(store: Store): Promise<void> {
     memberUserId: user.id,
     amountMinor: 3_000,
   });
+  // What the confirmation booked, and it does *not* sit on the doomed account:
+  // a transfer's contributions land against the payments it funded, which are
+  // on the receiving one. Deleting the account must take them with it, or a
+  // payment reads as part-saved by a transfer that can no longer be made.
+  const doomedLinkedContribution = await store.createContribution({
+    paymentId: p2.id,
+    accountId: account.id,
+    userId: user.id,
+    month: "2026-08-01",
+    amountMinor: 3_000,
+    note: null,
+    transferConfirmationId: doomedConfirmation.id,
+  });
   const doomedClose = await store.createMonthClose({
     householdId: null,
     accountId: doomedAccount.id,
@@ -891,6 +904,9 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(await store.getContribution(doomedContribution.id)).toBeNull();
   expect((await store.listBalanceSnapshots(doomedAccount.id)).length).toBe(0);
   expect(await store.getTransferConfirmation(doomedConfirmation.id)).toBeNull();
+  // And the contribution that confirmation booked on the *other* account, which
+  // no sweep over `accountId` would have reached.
+  expect(await store.getContribution(doomedLinkedContribution.id)).toBeNull();
   expect(await store.getMonthCloseById(doomedClose.id)).toBeNull();
   expect(await store.getInflow(doomedOutbound.id)).toBeNull();
   expect((await store.listInflows(pot.id)).map((i) => i.id)).toEqual([topUp.id]);

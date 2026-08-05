@@ -347,7 +347,8 @@ export class MemoryStore implements Store {
         const owner = this.accounts.get(id)?.ownerUserId;
         return owner !== undefined && owner !== userId && otherMembers.has(owner);
       });
-      if (acrossBoundary && i.active) this.inflows.set(k, { ...i, active: false, updatedAt: now() });
+      if (acrossBoundary && i.active)
+        this.inflows.set(k, { ...i, active: false, updatedAt: now() });
     }
 
     // 2. Plan roles: their accounts' roles here, and any role naming them.
@@ -553,8 +554,17 @@ export class MemoryStore implements Store {
     for (const [k, v] of this.balanceSnapshots) {
       if (v.accountId === id) this.balanceSnapshots.delete(k);
     }
+    // Through deleteTransferConfirmation, not a bare delete: a confirmation
+    // books contributions against the payments it funded, and those sit on the
+    // *receiving* account — another account entirely, which the accountId sweep
+    // above never touches. Postgres gets this for free from `contributions
+    // .transfer_confirmation_id ON DELETE CASCADE` (0004_reality_loop.sql:37),
+    // so dropping the row here alone left the two stores disagreeing about
+    // whether money was still set aside for a transfer nobody can make.
     for (const [k, v] of this.transferConfirmations) {
-      if (v.fromAccountId === id || v.toAccountId === id) this.transferConfirmations.delete(k);
+      if (v.fromAccountId === id || v.toAccountId === id) {
+        await this.deleteTransferConfirmation(k);
+      }
     }
     for (const [k, v] of this.monthCloses) if (v.accountId === id) this.monthCloses.delete(k);
   }
