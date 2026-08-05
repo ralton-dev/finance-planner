@@ -35,8 +35,16 @@ const REFUSALS: readonly (readonly [RegExp, string])[] = [
     "which two accounts a movement runs between cannot be changed — remove this movement and author a new one.",
   ],
   [
+    // The API's rule is `inflow.source !== "account"` (`server.ts:1282`) — a
+    // fact about where the money comes *from*, not about who owns the two ends.
+    // This used to say "between your own accounts", which was wrong about
+    // behaviour and not merely about words: a movement out of a co-member's
+    // account you hold `edit` on is account-sourced like any other, its priority
+    // ranks it among everything else leaving that account, and the hint below
+    // the field says so correctly. Telling somebody the number is inert there
+    // would have them leave a real ordering to chance.
     /priority is meaningful only/i,
-    "priority only means something for money moving between your own accounts.",
+    "priority only means something for money sourced from an account — an inflow from outside has no sending account to rank it against.",
   ],
 ];
 
@@ -84,7 +92,12 @@ interface MovementDrawerProps {
 }
 
 /**
- * Author, change or describe a movement between two accounts you own.
+ * Author, change or describe a movement between two accounts you can edit.
+ *
+ * Not "two accounts you own": the picker below offers anything you hold `edit`
+ * on, so a co-member's account shared into your household with edit is a
+ * legitimate end of a movement, and the cross-owner fixture is built on exactly
+ * that. Ownership is not the gate here and never was — access is.
  *
  * The one screen for the capability WP-F through WP-J built and nothing could
  * reach: "move £400 a month from my current account into bills". It is one

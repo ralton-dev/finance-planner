@@ -407,7 +407,28 @@ describe("movementError", () => {
     );
     expect(
       movementError(err(422, "priority is meaningful only for an account-sourced inflow")),
-    ).toBe("priority only means something for money moving between your own accounts.");
+    ).toBe(
+      "priority only means something for money sourced from an account — an inflow from outside has no sending account to rank it against.",
+    );
+  });
+
+  /**
+   * **The sentence was wrong about behaviour, not only about words.**
+   *
+   * It read "priority only means something for money moving between your own
+   * accounts". The API's rule is `inflow.source !== "account"` — where the money
+   * comes from, never who owns the two ends. A movement out of a co-member's
+   * account you hold `edit` on is account-sourced like any other and its
+   * priority genuinely ranks it among everything else leaving that account, so
+   * the old copy told a person a real ordering was inert. Ownership must not
+   * come back into it.
+   */
+  it("does not tell you priority is inert for a movement crossing an owner", () => {
+    const said = movementError(
+      err(422, "priority is meaningful only for an account-sourced inflow"),
+    );
+    expect(said).not.toMatch(/your own|yours|own accounts/i);
+    expect(said).toMatch(/sourced from an account/i);
   });
 
   it("answers a missing account and an unseeable one identically", () => {

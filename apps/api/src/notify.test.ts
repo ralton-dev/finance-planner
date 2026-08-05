@@ -317,6 +317,126 @@ describe("buildDailyDigest", () => {
   });
 
   /**
+   * **The other end of WP-AF's fix: a heading that lied about the destination.**
+   *
+   * The sender predicate above made every line's *from* an account the reader
+   * owns. Nothing ever looked at the *to*, and the section heading was pushed
+   * unconditionally — so a movement out of your current account into a
+   * co-member's pot, an honest instruction genuinely yours to make, was printed
+   * under "Money to move between your own accounts". `needsYou.ts`'s
+   * `movementEnds` calls that reading `leaving for somebody else's account`;
+   * this is the same falsehood on the one surface a reader cannot correct
+   * afterwards.
+   *
+   * Three destinations, because this surface can reach exactly two readings and
+   * the third case has to be shown collapsing into one of them:
+   *
+   * - **Alice pot**, hers — stays where it was;
+   * - **Bob pot (shared)**, his, visible to her because he shared it into the
+   *   household — the case the old heading lied about;
+   * - **Bob vault**, his and *not* shared, so it is in the scope (a scope closes
+   *   over funding relationships) but not in her account list. It is safely
+   *   "not yours" rather than "cannot say": every account you own is in
+   *   `listAccessibleAccounts` by construction, so absence proves non-ownership.
+   *   It keeps its honest "another account" name and belongs with Bob's pot.
+   *
+   * No figure moves. The same three amounts appear, under headings each true of
+   * every line beneath it.
+   */
+  it("does not put money bound for a co-member's account under your own accounts", async () => {
+    const alice = await seedUser(store, "alice-dest@example.com");
+    const bob = await seedUser(store, "bob-dest@example.com");
+    const household = await store.createHousehold("Ours", alice.id);
+    await store.addMembership(household.id, bob.id, "member");
+
+    const current = await store.createAccount({
+      ownerUserId: alice.id,
+      name: "Alice current",
+      currency: "GBP",
+    });
+    await store.createIncome({
+      accountId: current.id,
+      name: "Salary",
+      amountMinor: 300_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+
+    const sweepInto = async (accountId: string, name: string, amountMinor: number) =>
+      store.createInflow({
+        accountId,
+        name,
+        source: "account",
+        sourceAccountId: current.id,
+        amountMinor,
+        frequency: "monthly",
+        recurrence: null,
+        anchorDate: "2026-01-01",
+        priority: 50,
+        active: true,
+      });
+
+    const alicePot = await store.createAccount({
+      ownerUserId: alice.id,
+      name: "Alice pot",
+      currency: "GBP",
+    });
+    const bobPot = await store.createAccount({
+      ownerUserId: bob.id,
+      name: "Bob pot",
+      currency: "GBP",
+    });
+    const bobVault = await store.createAccount({
+      ownerUserId: bob.id,
+      name: "Bob vault",
+      currency: "GBP",
+    });
+    // Shared, so Alice can see it and read its name. Ownership is unchanged by
+    // that (decision 20) — it is still Bob's account.
+    await store.createAccountShare(bobPot.id, household.id, "view");
+
+    await sweepInto(alicePot.id, "Alice sweep", 10_000);
+    await sweepInto(bobPot.id, "To Bob's pot", 40_000);
+    await sweepInto(bobVault.id, "To Bob's vault", 25_000);
+
+    const digest = await buildDailyDigest(store, alice.id, AS_OF);
+    expect(digest).not.toBeNull();
+
+    // The heading is a claim about every line beneath it, so read the sections
+    // rather than the whole body: `toContain` on the two together would pass
+    // however they were grouped, which is the entire defect.
+    const sectionOf = (heading: string): string[] => {
+      const section = digest!.split("\n\n").find((s) => s.startsWith(`${heading}\n`));
+      return section ? section.split("\n").slice(1) : [];
+    };
+
+    expect(sectionOf("Money to move between your own accounts")).toEqual([
+      "- 100.00 GBP from Alice current to Alice pot",
+    ]);
+    expect(sectionOf("Money to move into somebody else's account")).toEqual([
+      "- 250.00 GBP from Alice current to another account",
+      "- 400.00 GBP from Alice current to Bob pot",
+    ]);
+
+    // Every one of the three is still asked for, at the same figure: this is a
+    // labelling change and moves no money.
+    for (const line of ["100.00 GBP", "400.00 GBP", "250.00 GBP"]) {
+      expect(digest).toContain(line);
+    }
+
+    // And they really are in the pass Alice's digest reads — the unshared vault
+    // is in her scope because a scope closes over funding relationships, which
+    // is what makes the "cannot see it" case reachable at all.
+    const scopes = await scopesFor(store, await accessibleAccounts(store, alice.id), AS_OF);
+    expect(scopes.flatMap((s) => s.plan.movements).map((m) => m.toAccountId)).toEqual(
+      expect.arrayContaining([alicePot.id, bobPot.id, bobVault.id]),
+    );
+    expect((await accessibleAccounts(store, alice.id)).map((a) => a.id)).not.toContain(bobVault.id);
+  });
+
+  /**
    * The other half of the same blindness, and the one WP-S closes: a solo user's
    * derived feed into a bills pot is a transfer with a member, a source account
    * and a payday, exactly like a household member's share of the rent — but the

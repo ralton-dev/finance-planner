@@ -49,6 +49,19 @@ function groupByCurrency(transfers: readonly DerivedTransfer[]): Map<string, Der
 }
 
 /**
+ * A month's outstanding movements, split by whose account each one lands in.
+ *
+ * Two lists rather than one because the heading over a list is a claim about
+ * every line under it, and one heading cannot be true of both.
+ */
+interface MovementSections {
+  /** Out of an account the reader owns, into another account they own. */
+  own: string[];
+  /** Out of an account the reader owns, into one they do not. */
+  outward: string[];
+}
+
+/**
  * The savings movements this month's plan funds out of the user's own accounts
  * and nobody has said they made yet — decision 13's committed bucket, as a list
  * of things to do.
@@ -62,6 +75,15 @@ function groupByCurrency(transfers: readonly DerivedTransfer[]): Map<string, Der
  * payday and the schedule below says when; an authored movement says only that
  * it happens each month, and inventing a day for it would be a fact the plan
  * does not hold. They are a month's outstanding list, not a diary.
+ *
+ * **Split by the receiving end's owner**, which is the half WP-AF left undone.
+ * The sender predicate below made every line's *from* an account the reader
+ * owns; nothing ever looked at the *to*, so a movement out of your current
+ * account into a co-member's pot — an honest instruction, genuinely yours to
+ * make — was listed under "between your own accounts", which is a falsehood
+ * about somebody else's money in the one place a reader cannot correct it.
+ * `needsYou.ts`'s `movementEnds` says the same thing on the checklist; these
+ * two lists are the two of its readings this surface can reach.
  */
 async function movementLines(
   store: Store,
@@ -69,11 +91,11 @@ async function movementLines(
   accounts: readonly Account[],
   scopes: readonly PlannedScope[],
   asOfDate: string,
-): Promise<string[]> {
+): Promise<MovementSections> {
   const visible = new Map(accounts.map((a) => [a.id, a]));
   const month = monthStart(asOfDate);
 
-  const lines: string[] = [];
+  const sections: MovementSections = { own: [], outward: [] };
   for (const movement of scopes.flatMap((s) => s.plan.movements)) {
     const from = visible.get(movement.fromAccountId);
     // Only movements out of an account this user **owns**: it is their list of
@@ -91,13 +113,21 @@ async function movementLines(
     // The destination is only ever *named* here, so access is the right gate
     // for it: an owner reads "to Pot" and everyone else reads the honest
     // fallback below.
+    //
+    // And an *unseeable* destination is safely "not yours": every account you
+    // own is in `listAccessibleAccounts` by construction, in both stores, so
+    // absence from `visible` proves non-ownership. That is what keeps this to
+    // two buckets instead of three — there is no "cannot say" case here, unlike
+    // the checklist, which reads an owner id off the wire and can be missing it.
+    // A scope closes over funding relationships, so the destination really can
+    // be an account outside the reader's own list.
     const to = visible.get(movement.toAccountId);
-    lines.push(
+    const line =
       `- ${formatMoney(movement.fundedMinor, from.currency)} from ${from.name} to ` +
-        `${to?.name ?? "another account"}`,
-    );
+      `${to?.name ?? "another account"}`;
+    (to?.ownerUserId === userId ? sections.own : sections.outward).push(line);
   }
-  return lines;
+  return sections;
 }
 
 /**
@@ -109,9 +139,10 @@ async function movementLines(
  *   (b) what to move over the next seven days — this user's slice of each of
  *       their households' payday schedules, from the same household plan GET
  *       /api/households/:id/plan returns;
- *   (c) what to move between their own accounts this month — see
+ *   (c) what to move out of their own accounts this month — see
  *       `movementLines`, which is (b)'s answer for an estate with no household
- *       anywhere in it.
+ *       anywhere in it, and which is two sections rather than one because the
+ *       far end is not always theirs.
  *
  * Pure with respect to mail: it reads the store and returns text. Deciding
  * whether to send (and to whom) belongs to the runner below.
@@ -171,7 +202,8 @@ export async function buildDailyDigest(
 
   // Nothing due and nothing to move is not news. Send no mail at all rather
   // than a daily "all clear" nobody asked for.
-  if (due.length === 0 && transferLines.length === 0 && movements.length === 0) return null;
+  const movementCount = movements.own.length + movements.outward.length;
+  if (due.length === 0 && transferLines.length === 0 && movementCount === 0) return null;
 
   const sections: string[] = [`Your Finance Planner digest for ${asOfDate}.`];
 
@@ -195,10 +227,23 @@ export async function buildDailyDigest(
     );
   }
 
-  if (movements.length > 0) {
-    // Sorted for the same reason the transfers are: the same estate must read
-    // the same way two days running.
-    sections.push(["Money to move between your own accounts", ...movements.sort()].join("\n"));
+  // Two headings, each true of every line beneath it. A plain-text to-do list
+  // is read down its left edge, so the ownership fact belongs once above a
+  // group rather than repeated as a suffix on every line — and the two are
+  // different kinds of task anyway: housekeeping between your own pots, versus
+  // sending money to somebody else. An estate with no cross-owner movement gets
+  // exactly the mail it got before.
+  //
+  // Sorted for the same reason the transfers are: the same estate must read the
+  // same way two days running.
+  if (movements.own.length > 0) {
+    sections.push(["Money to move between your own accounts", ...movements.own.sort()].join("\n"));
+  }
+
+  if (movements.outward.length > 0) {
+    sections.push(
+      ["Money to move into somebody else's account", ...movements.outward.sort()].join("\n"),
+    );
   }
 
   sections.push("You are getting this because email notifications are on for your account.");
