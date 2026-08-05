@@ -334,10 +334,7 @@ export class PgStore implements Store {
       .from(s.memberships)
       .where(
         exceptHouseholdId
-          ? and(
-              eq(s.memberships.userId, userId),
-              ne(s.memberships.householdId, exceptHouseholdId),
-            )
+          ? and(eq(s.memberships.userId, userId), ne(s.memberships.householdId, exceptHouseholdId))
           : eq(s.memberships.userId, userId),
       )
       .limit(1);
@@ -516,7 +513,10 @@ export class PgStore implements Store {
       await this.db
         .delete(s.accountShares)
         .where(
-          and(eq(s.accountShares.householdId, householdId), inArray(s.accountShares.accountId, mine)),
+          and(
+            eq(s.accountShares.householdId, householdId),
+            inArray(s.accountShares.accountId, mine),
+          ),
         );
     }
   }
