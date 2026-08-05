@@ -183,8 +183,18 @@ describe("requiredMonthlyForPayment", () => {
  * (WP-AH). Nothing arrives at this account and nothing is derived out of it, so
  * all three are empty or zero and no figure here moves; the pin is otherwise
  * untouched.
+ *
+ * Two more were added **alongside** rather than into it, and the type names them
+ * rather than leaving a reader to notice: `residualMinor`, what is really in the
+ * account at the end of the month (a different question from `leftoverMinor` —
+ * see below), and `ownerUserId`, whose account it is, which is the boundary
+ * every personal figure is now counted on (`MINE-AND-OURS.md`, decision 20).
+ * The photograph predates both, so it is typed as the plan without them and the
+ * comparison strips them off the view — which is the pin's claim exactly: every
+ * field the account engine produced, byte for byte, and nothing quietly moved
+ * underneath the ones that were added since.
  */
-const ACCOUNT_ENGINE_AT_40F65D8: AccountPlan = {
+const ACCOUNT_ENGINE_AT_40F65D8: Omit<AccountPlan, "ownerUserId" | "residualMinor"> = {
   accountId: "current",
   asOfDate: "2026-01-01",
   currency: "GBP",
@@ -366,7 +376,12 @@ describe("accountPlanFromScope — a solo user with one account does not move", 
     // existed to feed. The comparison the pin used to make is preserved exactly
     // — the same fixture, the same date, the same bytes — and it now survives
     // the deletion of the engine it was pinning against, which a call could not.
-    const same = { ...view };
+    // Typed `Partial` so both additive fields can be deleted: they are required
+    // on the plan now, and `delete` wants an optional operand. Deleting leaves
+    // the insertion order of everything else alone, which is what the second
+    // assertion checks.
+    const same: Partial<AccountPlan> = { ...view };
+    delete same.ownerUserId;
     delete same.residualMinor;
     expect(same).toEqual(ACCOUNT_ENGINE_AT_40F65D8);
     // Deep-equal is not the claim; the serialised plan is, field order included.
@@ -381,6 +396,10 @@ describe("accountPlanFromScope — a solo user with one account does not move", 
     expect(view.leftoverMinor).toBe(0);
     expect(view.residualMinor).toBe(20_000);
     expect("residualMinor" in ACCOUNT_ENGINE_AT_40F65D8).toBe(false);
+    // And whose account it is, off the pass rather than looked up beside it:
+    // the boundary a personal figure is counted on (decision 20).
+    expect(view.ownerUserId).toBe("owner");
+    expect("ownerUserId" in ACCOUNT_ENGINE_AT_40F65D8).toBe(false);
   });
 
   it("runs out of money in the same place, on the same bill", () => {

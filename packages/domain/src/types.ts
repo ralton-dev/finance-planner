@@ -251,6 +251,19 @@ export interface OutboundInflowPlan {
 /** Full computed plan for an account, as of a reference date. */
 export interface AccountPlan {
   accountId: string;
+  /**
+   * Whose account it is — `ScopeAccountPlan.ownerUserId` passed straight
+   * through, and the boundary every personal figure is counted on (decision 20:
+   * ownership, never access).
+   *
+   * Here rather than looked up beside the plan because a rollup over these is
+   * the one place the boundary is drawn — `overviewFromPlans` groups by it — and
+   * a second lookup is a second answer waiting to disagree with the pass's. It
+   * is no wider on the wire than what is already there: `GET /api/accounts`
+   * returns the whole `Account` row, `owner_user_id` included, for every account
+   * the caller may see.
+   */
+  ownerUserId: string;
   asOfDate: string;
   currency: string;
   /** The account's **own** income only — never the allocated inflow. Folding
@@ -323,8 +336,15 @@ export interface AccountPlan {
    * account than reaches it, which happens exactly when they hold income in a
    * personal account other than the one their transfers leave (decision 11) and
    * have to consolidate first. Flooring it would hide the thing to do.
+   *
+   * Required. The pass always knows it, and it was optional only so that the old
+   * account engine's frozen plan — which predates it — could still be typed as
+   * an `AccountPlan`. That snapshot now names the fields it predates
+   * (`engine.test.ts`), and `MonthProjection.residualMinor` reads this one
+   * straight through rather than falling back to a figure that means something
+   * else.
    */
-  residualMinor?: number;
+  residualMinor: number;
   /** Gap the month's money — own income plus allocated inflow — cannot cover
    *  (>= 0). Inflow that covers the gap takes this to 0. */
   shortfallMinor: number;

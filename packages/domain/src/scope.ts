@@ -1119,6 +1119,88 @@ export function closeForUser(
   return closes;
 }
 
+// ---------------------------------------------------------------------------
+// A person's money, as a view of the pass
+// ---------------------------------------------------------------------------
+
+/** What one person has left, in one currency, over the accounts they own. */
+export interface UserLeftover {
+  currency: string;
+  /**
+   * `Σ ScopeAccountPlan.leftoverMinor` over the accounts this person **owns** —
+   * the residual, signed, exactly as the account altitude reports it.
+   */
+  leftoverMinor: number;
+  /** `Σ ScopeAccountPlan.shortfallMinor` over the same accounts (>= 0). */
+  shortfallMinor: number;
+  /** How many of the pass's plan lines fall on those accounts. */
+  paymentCount: number;
+}
+
+/**
+ * **What is left over for this person** (decision 19), and it is a *view*.
+ *
+ * `closeForUser`'s shape, deliberately, and for the same reason: no arithmetic
+ * the pass has not already done. An account's left over is its residual —
+ * `income + arriving − spending − leaving`, which is
+ * `ScopeAccountPlan.leftoverMinor`. A **person's** is that, summed over the
+ * accounts they own. A **household's** is its members', added up
+ * (`HouseholdPlan.membersLeftoverMinor`). Each altitude is a plain sum of the
+ * one below it, so the rows on a screen add up to the total above them; nothing
+ * is netted and nothing is reconstructed by algebra.
+ *
+ * **Ownership, never access** (decision 20). An account a co-member shared into
+ * the household is theirs and appears in their figure, not in yours; a shared
+ * pot you own is yours, which is decision 15 restated one altitude up. Every
+ * roll-up in this product that counted "the accounts I can see" was answering a
+ * question about somebody else's money.
+ *
+ * `shortfallMinor` and `paymentCount` ride along because a headline that put a
+ * left over that is yours beside a shortfall that is the household's would state
+ * two bases in one sentence, which is the disease this work exists to cure
+ * (decision 24). They are the same sum over the same set.
+ *
+ * One row per currency partition the user appears in, in the pass's partition
+ * order — alphabetical by currency — because a second currency is a second
+ * answer and never a term in the first (decision 10). A member with nothing in a
+ * partition reads zero there rather than being missing from it, exactly as
+ * `closeForUser` gives them a row; a user who is in no partition at all —
+ * somebody outside the scope who happens to own an account the pass had to plan
+ * — gets nothing, because the pass was never told what they earn.
+ *
+ * **The case this cannot net, and does not try to.** A co-member's *authored*
+ * movement into an account you own is not spent where it lands (authored
+ * movements are funded after every expense — decision 8), so the remainder sits
+ * in your residual and therefore in your figure: genuinely in your account,
+ * genuinely not your money. Reporting the place is the whole of decision 19 —
+ * the alternative is a fourth derivation, chasing provenance the pass cannot
+ * interpret, to answer a question the household total does not ask. The total is
+ * unaffected either way: the pound is added to your figure and subtracted from
+ * theirs. `crossowner.fixture.ts` is that case, and `mine.test.ts` pins it.
+ */
+export function leftoverForUser(plan: ScopePlan, userId: string): UserLeftover[] {
+  const leftovers: UserLeftover[] = [];
+  for (const partition of plan.partitions) {
+    if (!partition.members.some((m) => m.userId === userId)) continue;
+    const owned = new Set<string>();
+    let leftoverMinor = 0;
+    let shortfallMinor = 0;
+    for (const account of partition.accounts) {
+      if (account.ownerUserId !== userId) continue;
+      owned.add(account.accountId);
+      leftoverMinor += account.leftoverMinor;
+      shortfallMinor += account.shortfallMinor;
+    }
+    leftovers.push({
+      currency: partition.currency,
+      leftoverMinor,
+      shortfallMinor,
+      paymentCount: partition.lines.filter((l) => owned.has(l.accountId)).length,
+    });
+  }
+  return leftovers;
+}
+
 /** A per-account running total, with an entry for every account in the
  *  partition from the start — so nothing downstream has to guess what a missing
  *  one was supposed to mean. */

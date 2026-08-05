@@ -1,4 +1,11 @@
 import { describe, expect, it } from "vitest";
+import {
+  CROSS_OWNER_ASOF,
+  CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
+  CROSS_OWNER_HOUSEHOLD_ID,
+  crossOwnerScope,
+} from "./crossowner.fixture.js";
+import { estate, ESTATE_ASOF } from "./estate.fixture.js";
 import { householdPlanFromScope } from "./household.js";
 import {
   computeScopePlan,
@@ -104,6 +111,10 @@ describe("householdPlanFromScope", () => {
     expect(plan.shortfallMinor).toBe(0);
     expect(plan.leftoverMinor).toBe(395_000);
     expect(plan.householdLeftoverMinor).toBe(395_000);
+    // Three figures with "leftover" in the name, all £3,950 here because this
+    // household holds every account its members own and nobody moves anything
+    // between them. The fixtures below are where they come apart.
+    expect(plan.membersLeftoverMinor).toBe(395_000);
     expect(plan.committedMinor).toBe(0);
   });
 
@@ -720,5 +731,68 @@ describe("householdPlanFromScope — the edges", () => {
     expect(
       householdPlanFromScope(computeScopePlan(household(), ASOF), "hh", HOUSEHOLD_ACCOUNTS, "USD"),
     ).toMatchObject({ currency: "USD", accounts: [], members: [], monthlyIncomeMinor: 0 });
+  });
+});
+
+/**
+ * **A household's left over is its members', added up** (decision 19).
+ *
+ * The third figure, and the only one a household headline should print. Its two
+ * neighbours are wrong in opposite directions and the estate fixture shows only
+ * one of them, which is why the cross-owner fixture exists: `householdLeftoverMinor`
+ * misses a member's money in a pot the roster does not hold, and counts a
+ * co-member's money twice when they move it into one the roster does.
+ */
+describe("householdPlanFromScope — a household's left over is its members'", () => {
+  it("is the member rows, added up, on the screen", () => {
+    const plan = view(household());
+    expect(plan.membersLeftoverMinor).toBe(
+      plan.members.reduce((s, m) => s + m.personalLeftoverMinor, 0),
+    );
+  });
+
+  it("counts a member's money in a pot the roster does not hold", () => {
+    const plan = householdPlanFromScope(
+      computeScopePlan(estate.scope, ESTATE_ASOF),
+      estate.householdId,
+      estate.assignedAccountIds,
+      "GBP",
+    );
+    expect(plan.members.map((m) => [m.userId, m.personalLeftoverMinor])).toEqual([
+      ["u-alice", 250_100],
+      ["u-bob", 152_400],
+    ]);
+    expect(plan.membersLeftoverMinor).toBe(402_500);
+    // £450 of Alice's figure is in three pots the household never assigned, and
+    // it is the difference between what the page printed and what its members
+    // have. The roster figure happens to agree here — see the next test for the
+    // direction it does not.
+    expect(plan.householdLeftoverMinor).toBe(402_500);
+    expect(plan.householdLeftoverMinor - plan.committedMinor).toBe(357_500);
+  });
+
+  it("does not count a co-member's parked money twice", () => {
+    const plan = householdPlanFromScope(
+      computeScopePlan(crossOwnerScope, CROSS_OWNER_ASOF),
+      CROSS_OWNER_HOUSEHOLD_ID,
+      CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
+      "GBP",
+    );
+    expect(plan.members.map((m) => [m.userId, m.personalLeftoverMinor])).toEqual([
+      ["u-alice", 210_000],
+      ["u-bob", 80_000],
+    ]);
+    // Every pound of external income (£3,500) less every pound spent (£600).
+    expect(plan.membersLeftoverMinor).toBe(290_000);
+    // The roster basis adds Bob's £400 back into his row and counts it again in
+    // the pot's, and is £400 over for it.
+    expect(plan.householdLeftoverMinor).toBe(330_000);
+  });
+
+  it("gives a household with nobody in it no members to add up", () => {
+    expect(
+      householdPlanFromScope(computeScopePlan(household(), ASOF), "hh", HOUSEHOLD_ACCOUNTS, "USD")
+        .membersLeftoverMinor,
+    ).toBe(0);
   });
 });

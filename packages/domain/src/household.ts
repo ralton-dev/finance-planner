@@ -1,6 +1,6 @@
 import { splitByShares, type AccountRole, type PaymentCategory } from "@finance-planner/contracts";
 import type { PaymentScope } from "@finance-planner/contracts";
-import type { ScopeCurrencyPlan, ScopePlan } from "./scope.js";
+import { leftoverForUser, type ScopeCurrencyPlan, type ScopePlan } from "./scope.js";
 
 /**
  * The household plan, as a **view** of the one pass.
@@ -156,6 +156,26 @@ export interface HouseholdMemberPlan {
   elsewhereCommittedMinor: number;
   /** Obligation the member's income can't cover (>= 0). */
   shortfallMinor: number;
+  /**
+   * **What this person has left** (decision 19): the residuals of the accounts
+   * they **own**, in this household's currency, added up.
+   *
+   * `leftoverForUser` verbatim, not a second sum — the same figure the dashboard
+   * headline reads, so the household page and the dashboard cannot disagree
+   * about one person's money.
+   *
+   * Not restricted to this household's roster, and that is deliberate rather
+   * than an oversight: a member's savings pot the household never assigned still
+   * holds their money, and the £450 sitting in three such pots is exactly the
+   * difference between what the household page printed and what its members
+   * actually have. Every other figure on this interface is scoped to the
+   * household because it is about the household's obligations; this one is about
+   * a person.
+   *
+   * Ownership, never the roster's `memberUserId` and never access (decision 20)
+   * — a shared pot is still somebody's account.
+   */
+  personalLeftoverMinor: number;
 }
 
 export interface HouseholdAccountPlan {
@@ -258,6 +278,29 @@ export interface HouseholdPlan {
    * has to be able to say.
    */
   householdLeftoverMinor: number;
+  /**
+   * **A household's left over is its members', added up** (decision 19). That is
+   * all it is: `Σ members[].personalLeftoverMinor`, so the rows on the screen add
+   * up to the total above them.
+   *
+   * The third figure on this interface with "leftover" in its name, and the only
+   * one a household headline should print. The other two answer questions this
+   * one is not: `leftoverMinor` is the members' *discretionary surplus*
+   * scope-wide, and `householdLeftoverMinor` is what is in the accounts on the
+   * **roster** — which counts a co-member's money twice when they move it into a
+   * pot the roster also holds (`crossowner.fixture.ts`), and misses a member's
+   * own money entirely when it sits in a pot the roster does not
+   * (`estate.fixture.ts`, £450 of it). Both keep their meanings on the wire to
+   * the penny; this is added alongside (decision 13's surviving half).
+   *
+   * Deliberately **never** netted against `committedMinor`. A residual has
+   * already counted a movement at both ends — the sender is down by it and the
+   * receiver up by it — so subtracting the committed total from a roll-up of
+   * residuals loses that money outright. `householdLeftoverMinor − committedMinor`
+   * is what the page printed, and on the estate it read £3,575 against members
+   * who between them have £4,025.
+   */
+  membersLeftoverMinor: number;
   /** Of that leftover, what the household's funded savings movements have
    *  spoken for (decision 13). */
   committedMinor: number;
@@ -422,6 +465,14 @@ export function householdPlanFromScope(
       // caller hands this a plan and a roster that disagree about the roster.
       elsewhereCommittedMinor: Math.max(0, m.committedMinor - householdCommittedMinor),
       shortfallMinor: m.shortfallMinor,
+      // The pass's own answer for this person, not a second sum over the rows
+      // above: one derivation, read at three altitudes. `!` because we are
+      // walking `partition.members`, so the partition exists and
+      // `leftoverForUser` returns a row for its every member — the empty
+      // fallback `partition` above carries no members, so this map never runs
+      // for a currency the plan does not have.
+      personalLeftoverMinor: leftoverForUser(plan, m.userId).find((l) => l.currency === currency)!
+        .leftoverMinor,
     };
   });
 
@@ -466,6 +517,9 @@ export function householdPlanFromScope(
     // what is in the household's accounts. See the field's comment for why the
     // two are different questions rather than a whole and a part.
     householdLeftoverMinor: accounts.reduce((s, a) => s + a.leftoverMinor, 0),
+    // Off the member rows, because that is the whole of the definition: a
+    // household's left over is its members', added up.
+    membersLeftoverMinor: members.reduce((s, m) => s + m.personalLeftoverMinor, 0),
     committedMinor: committedByAccount,
     shortfallMinor: Math.max(0, totalRequired - totalFunded),
     members,

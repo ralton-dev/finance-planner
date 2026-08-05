@@ -4,6 +4,7 @@ import { householdPlanFromScope } from "./household.js";
 import {
   closeForUser,
   computeScopePlan,
+  leftoverForUser,
   type CloseContribution,
   type ScopeAccountInput,
   type ScopeCurrencyPlan,
@@ -332,6 +333,124 @@ describe("closeForUser", () => {
 
   it("closes nothing for somebody the scope does not plan", () => {
     expect(closeForUser(plan, ledger, "u-carol")).toEqual([]);
+  });
+});
+
+// =============================================================================
+// leftoverForUser — what is left over for a person
+// =============================================================================
+
+/**
+ * `closeForUser`'s sibling one question over: not what they set aside this
+ * month, but what they have left (decision 19). Same shape, same discipline —
+ * no arithmetic the pass has not already done — and the same boundary decision
+ * 15 drew for income, one altitude up: **ownership, never access, never the
+ * roster's `memberUserId`** (decision 20).
+ */
+describe("leftoverForUser", () => {
+  const plan = computeScopePlan(estate.scope, ESTATE_ASOF);
+
+  it("returns one row per currency partition, in the pass's order", () => {
+    // Alice's GBP figure is her current account's residual (£1,551) plus the
+    // three pots her movements fill (£450) plus the pot and bills account, which
+    // spend everything that reaches them. Her EUR is a second answer, never a
+    // term in the first (decision 10).
+    expect(leftoverForUser(plan, "u-alice")).toEqual([
+      { currency: "EUR", leftoverMinor: 68_000, shortfallMinor: 0, paymentCount: 1 },
+      { currency: "GBP", leftoverMinor: 250_100, shortfallMinor: 0, paymentCount: 4 },
+    ]);
+    expect(leftoverForUser(plan, "u-bob")).toEqual([
+      // A member with nothing in a partition reads zero there rather than being
+      // missing from it — `closeForUser`'s choice, kept.
+      { currency: "EUR", leftoverMinor: 0, shortfallMinor: 0, paymentCount: 0 },
+      { currency: "GBP", leftoverMinor: 152_400, shortfallMinor: 0, paymentCount: 0 },
+    ]);
+  });
+
+  it("counts the accounts you own, not the ones the household holds", () => {
+    // Four of Alice's six GBP accounts are off the household's roster, and £450
+    // of her figure is in three of them. The roster is not the boundary.
+    const gbp = partitionOf(plan, "GBP");
+    const hers = gbp.accounts.filter((a) => a.ownerUserId === "u-alice");
+    expect(hers.map((a) => a.accountId)).toEqual([
+      "acc-alice-current",
+      "acc-house-pot",
+      "acc-alice-bills",
+      "acc-alice-savings",
+      "acc-alice-holiday",
+      "acc-alice-car",
+    ]);
+    // Including the shared pot, which is her account (decision 15) and which the
+    // roster attributes to no member at all.
+    expect(hers.find((a) => a.accountId === "acc-house-pot")?.memberUserId).toBeNull();
+    expect(hers.reduce((s, a) => s + a.leftoverMinor, 0)).toBe(250_100);
+  });
+
+  it("reads its figures off the pass and nowhere else", () => {
+    // Not "the same number": the same field, summed. The whole point of the
+    // three altitudes is that each is a plain sum of the one below it.
+    for (const partition of plan.partitions) {
+      for (const member of partition.members) {
+        const mine = leftoverForUser(plan, member.userId).find(
+          (l) => l.currency === partition.currency,
+        )!;
+        const owned = partition.accounts.filter((a) => a.ownerUserId === member.userId);
+        expect(mine.leftoverMinor).toBe(owned.reduce((s, a) => s + a.leftoverMinor, 0));
+        expect(mine.shortfallMinor).toBe(owned.reduce((s, a) => s + a.shortfallMinor, 0));
+        const ids = new Set(owned.map((a) => a.accountId));
+        expect(mine.paymentCount).toBe(partition.lines.filter((l) => ids.has(l.accountId)).length);
+      }
+    }
+  });
+
+  it("holds the three-altitude identity, per currency", () => {
+    // Σ over the partition's members === the partition's accounts, whole. It
+    // holds because every account has an owner and every owner here is a member
+    // — decision 15, cashed a second time.
+    for (const partition of plan.partitions) {
+      const summed = partition.members
+        .map((m) => leftoverForUser(plan, m.userId).find((l) => l.currency === partition.currency)!)
+        .reduce((s, l) => s + l.leftoverMinor, 0);
+      expect(summed).toBe(partition.accounts.reduce((s, a) => s + a.leftoverMinor, 0));
+    }
+  });
+
+  it("reports nothing for somebody the scope does not plan", () => {
+    expect(leftoverForUser(plan, "u-carol")).toEqual([]);
+  });
+
+  it("carries the shortfall and the payment count on the same basis", () => {
+    // Decision 24: a left over that is yours beside a shortfall that is the
+    // household's would state two bases in one sentence. Alice's £30 gym becomes
+    // a £3,500 one here, and her £3,000 salary — the pot's own £500 relieves her
+    // share of the pot's bills rather than joining what she can spend — cannot
+    // reach it past the £469 it owes first. She is £969 short, on a pot of her
+    // own that the household does not hold, and Bob's figure does not move a
+    // penny.
+    const starved: ScopeInput = {
+      ...estate.scope,
+      accounts: estate.scope.accounts.map((a) =>
+        a.accountId === "acc-alice-bills"
+          ? {
+              ...a,
+              payments: a.payments.map((p) =>
+                p.id === "pay-gym" ? { ...p, amountMinor: 350_000 } : p,
+              ),
+            }
+          : a,
+      ),
+    };
+    const short = computeScopePlan(starved, ESTATE_ASOF);
+    const alice = leftoverForUser(short, "u-alice").find((l) => l.currency === "GBP")!;
+    const bob = leftoverForUser(short, "u-bob").find((l) => l.currency === "GBP")!;
+    expect(alice.shortfallMinor).toBe(96_900);
+    expect(alice.paymentCount).toBe(4);
+    expect(bob.shortfallMinor).toBe(0);
+    expect(bob.paymentCount).toBe(0);
+    // And it is the pass's own per-account figure, summed — not a second
+    // subtraction of required from funded.
+    const hers = partitionOf(short, "GBP").accounts.filter((a) => a.ownerUserId === "u-alice");
+    expect(hers.reduce((s, a) => s + a.shortfallMinor, 0)).toBe(96_900);
   });
 });
 

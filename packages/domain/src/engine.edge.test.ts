@@ -444,4 +444,38 @@ describe("overviewFromPlans", () => {
     const usdBucket = overview.perCurrency.find((c) => c.currency === "USD");
     expect(usdBucket?.accounts[0]?.atRiskCount).toBe(1);
   });
+
+  /**
+   * The two fields a rollup needs to be about a **person** rather than about a
+   * set of accounts somebody can see (`MINE-AND-OURS.md`, decisions 19 and 20).
+   *
+   * Both are passthroughs of the plan, which is the point: an account's left
+   * over is decided once, by the pass, and a summary that recomputed either
+   * would be a fourth derivation of a figure this work exists to make singular.
+   */
+  it("says whose each account is, and what is actually in it", () => {
+    const gbp = soloPlan(
+      {
+        accountId: "gbp",
+        currency: "GBP",
+        monthlyBufferMinor: 30_000,
+        incomes: [
+          { id: "i", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" },
+        ],
+        payments: [{ id: "p", name: "Phone", category: "monthly_recurring", amountMinor: 40_000 }],
+      },
+      "2026-01-01",
+    );
+    const summary = overviewFromPlans([gbp], "2026-01-01").perCurrency[0]!.accounts[0]!;
+    expect(summary.ownerUserId).toBe("owner");
+    expect(summary.ownerUserId).toBe(gbp.ownerUserId);
+    // `leftoverMinor` is the account's own income after its own bills — £300 of
+    // buffer excluded, because a buffer is not spent. `residualMinor` is what is
+    // really in the account when the month has happened, buffer included. Two
+    // questions, two answers, and two lists printed the first under a label that
+    // meant the second.
+    expect(summary.leftoverMinor).toBe(30_000);
+    expect(summary.residualMinor).toBe(60_000);
+    expect(summary.residualMinor).toBe(gbp.residualMinor);
+  });
 });

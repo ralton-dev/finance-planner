@@ -345,6 +345,8 @@ export function accountPlanFromScope(
 
   return {
     accountId,
+    // Whose account it is, off the pass — see `AccountPlan.ownerUserId`.
+    ownerUserId: account.ownerUserId,
     asOfDate: plan.asOfDate,
     currency: account.currency,
     monthlyIncomeMinor: account.monthlyIncomeMinor,
@@ -376,7 +378,29 @@ export function accountPlanFromScope(
 
 export interface AccountSummary {
   accountId: string;
+  /**
+   * Whose account it is (decision 20) — `AccountPlan.ownerUserId` passed
+   * through.
+   *
+   * A rollup is a set of accounts, and until this was here the only boundary the
+   * set had was **access**: every account the caller can see, a co-member's
+   * shared into the household included. That is the right set for a list of
+   * accounts and the wrong one for a figure about a person's money, and the two
+   * were the same field.
+   */
+  ownerUserId: string;
   leftoverMinor: number;
+  /**
+   * What is actually in the account when the month has happened —
+   * `AccountPlan.residualMinor` passed through, signed.
+   *
+   * `leftoverMinor` beside it is the account's **own** income after its own
+   * obligations, which is the right answer for a sum over an estate and the
+   * wrong one for a row labelled "left over" on a screen (decision 19). Two
+   * lists printed the rollup figure under a per-account label for want of this
+   * one being on the wire at all.
+   */
+  residualMinor: number;
   shortfallMinor: number;
   atRiskCount: number;
 }
@@ -391,6 +415,21 @@ export interface CurrencyOverview {
    * Surplus across the rollup: the per-account `leftoverMinor`s, summed.
    *
    * A plain sum, with nothing netted out of it — see `overviewFromPlans`.
+   *
+   * **Kept, and its deletion deferred to WP-AF with its callers.**
+   * `MINE-AND-OURS.md` sanctions removing this one on the finding that nothing
+   * reads it. Nothing on the **web** does — `OverviewPage.tsx` reads
+   * `bucket.currency` and `bucket.accounts` and none of the six totals here —
+   * but two things still do, and both are outside a domain package's reach to
+   * fix: `apps/api/src/server.test.ts:4048`, in a file this package does not
+   * own, and the ONE-ENGINE rollup identity itself
+   * (`inflows.invariant.test.ts:271`, `engine.edge.test.ts:443`), which is
+   * *stated* in terms of this field —
+   * `totalFundedMinor + leftoverMinor === monthlyIncomeMinor − bufferMinor` —
+   * and is on this plan's "kept verbatim" list. A red build from a deletion is a
+   * result only when the deleter owns the callers; WP-AF owns them, replaces the
+   * caller's basis, and can re-state the identity over `accounts[].leftoverMinor`
+   * in the same breath.
    */
   leftoverMinor: number;
   shortfallMinor: number;
@@ -474,7 +513,9 @@ export function overviewFromPlans(plans: AccountPlan[], asOfDate: string): Overv
     bucket.shortfallMinor += plan.shortfallMinor;
     bucket.accounts.push({
       accountId: plan.accountId,
+      ownerUserId: plan.ownerUserId,
       leftoverMinor: plan.leftoverMinor,
+      residualMinor: plan.residualMinor,
       shortfallMinor: plan.shortfallMinor,
       atRiskCount: plan.lines.filter((l) => !l.onTrack).length,
     });
