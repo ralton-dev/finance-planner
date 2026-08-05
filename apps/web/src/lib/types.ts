@@ -612,6 +612,12 @@ export interface HouseholdMemberPlanDto {
   /** Of that leftover, what funded savings movements out of this member's own
    *  household accounts have spoken for. */
   committedMinor?: number;
+  /** The rest of it: what they commit out of accounts the household does not
+   *  hold. `leftoverMinor` is scope-wide and `committedMinor` is not, so
+   *  free-after-committed for a *person* has to subtract both — netting the
+   *  narrow one against the wide one over-stated their free money by exactly
+   *  this. Sums with the above to their scope-wide committed total. */
+  elsewhereCommittedMinor?: number;
   shortfallMinor: number;
 }
 

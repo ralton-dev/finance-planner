@@ -97,8 +97,27 @@ export interface HouseholdMemberPlan {
    *  meaning exactly (decision 13): **not** reduced by `committedMinor`. */
   leftoverMinor: number;
   /** Of that leftover, what funded savings movements out of this member's own
-   *  accounts have spoken for (decision 13). Added alongside, never netted. */
+   *  **household** accounts have spoken for (decision 13). Added alongside,
+   *  never netted, and narrowed to this household deliberately: a member's
+   *  private ISA draining a private current account is not its business. */
   committedMinor: number;
+  /**
+   * The rest of what they have committed, named — `elsewhereObligationMinor`'s
+   * sibling in the one direction the committed bucket has.
+   *
+   * `committedMinor` is household-only and `leftoverMinor` is scope-wide, so
+   * netting one against the other spanned two different sets of accounts: a
+   * member sweeping £100 into a pot out of a personal account the household
+   * does not hold had that £100 in neither term, and their free money was
+   * over-stated by exactly it. Measured in a browser: a member reading £2,154
+   * free with £1,150 of it already promised to two movements leaving her own
+   * current account.
+   *
+   * `committedMinor + elsewhereCommittedMinor === ScopeMemberPlan.committedMinor`,
+   * which is what lets a row about a person subtract a person's whole
+   * commitment from a person's whole surplus.
+   */
+  elsewhereCommittedMinor: number;
   /** Obligation the member's income can't cover (>= 0). */
   shortfallMinor: number;
 }
@@ -314,6 +333,9 @@ export function householdPlanFromScope(
       householdObligationMinor += allocation.requiredMinor;
       householdFundedMinor += allocation.fundedMinor;
     }
+    const householdCommittedMinor = accounts
+      .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
+      .reduce((s, a) => s + a.committedMinor, 0);
     return {
       userId: m.userId,
       displayName: m.displayName,
@@ -331,9 +353,11 @@ export function householdPlanFromScope(
       leftoverMinor: m.leftoverMinor,
       // Restricted to the household's own accounts, so a member's private ISA
       // draining a private current account is not the household's business.
-      committedMinor: accounts
-        .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
-        .reduce((s, a) => s + a.committedMinor, 0),
+      committedMinor: householdCommittedMinor,
+      // Floored for the same reason `elsewhereObligationMinor` is: the two
+      // halves come off one pass, so the difference can only go negative if a
+      // caller hands this a plan and a roster that disagree about the roster.
+      elsewhereCommittedMinor: Math.max(0, m.committedMinor - householdCommittedMinor),
       shortfallMinor: m.shortfallMinor,
     };
   });

@@ -381,3 +381,111 @@ describe("HouseholdPlanView · costs the household's lines do not carry", () => 
     expect(rows[1]!.querySelector(".cell-note")).toBeNull();
   });
 });
+
+/**
+ * The same shape one column along, and the money it was paying people twice.
+ *
+ * Every cell on a per-person row is scope-wide — their income, their costs,
+ * their leftover, their shortfall — and COMMITTED was this household's accounts
+ * only. So LEFT OVER netted a narrow figure against a wide one and handed the
+ * member back whatever they commit out of an account the household does not
+ * hold. Measured in a browser: Alice read £2,154 free while £1,150 of it was
+ * already promised to two savings movements leaving her own current account.
+ */
+describe("HouseholdPlanView · what a member commits elsewhere", () => {
+  /** Alex commits £400 out of a household account and £250 out of a private
+   *  one; Bo commits £120, all of it outside. */
+  const elsewhere: HouseholdPlanDto = {
+    ...PLAN,
+    committedMinor: 40_000,
+    members: [
+      { ...PLAN.members[0]!, committedMinor: 40_000, elsewhereCommittedMinor: 25_000 },
+      { ...PLAN.members[1]!, committedMinor: 0, elsewhereCommittedMinor: 12_000 },
+    ],
+    accounts: PLAN.accounts.map((a) =>
+      a.accountId === "alex-current"
+        ? { ...a, committedMinor: 40_000 }
+        : { ...a, committedMinor: 0 },
+    ),
+  };
+
+  function personRows(container: HTMLElement): Element[] {
+    return [...tables(container)[1]!.querySelectorAll("tbody tr")];
+  }
+
+  it("prints everything a member has committed, and names the part that is not here", () => {
+    const { container } = render(<HouseholdPlanView plan={elsewhere} />);
+    const [alex, bo] = personRows(container);
+    expect(alex).toHaveTextContent("£650.00");
+    expect(alex!.querySelector(".cell-note")).toHaveTextContent("incl. £250.00 elsewhere");
+    // All of Bo's is elsewhere, which is a whole and not a part — the cell says
+    // the total, and the note says where it is.
+    expect(bo).toHaveTextContent("£120.00");
+    expect(bo!.querySelector(".cell-note")).toHaveTextContent("incl. £120.00 elsewhere");
+  });
+
+  it("takes both off the member's left over", () => {
+    const { container } = render(<HouseholdPlanView plan={elsewhere} />);
+    const [alex, bo] = personRows(container);
+    // £1,286 − £400 − £250, and £1,124 − £120.
+    expect(alex!.lastElementChild!.previousElementSibling).toHaveTextContent("£636.00");
+    expect(bo!.lastElementChild!.previousElementSibling).toHaveTextContent("£1,004.00");
+  });
+
+  it("leaves the household's own figures untouched by it", () => {
+    // Decision 4/13: added alongside. The KPI row and the account table are
+    // this household's accounts and know nothing of a member's private ISA.
+    const { container } = render(<HouseholdPlanView plan={elsewhere} />);
+    const kpis = [...container.querySelectorAll(".kpi")].map((k) => k.textContent ?? "");
+    expect(kpis).toContainEqual(expect.stringContaining("committed£400.00"));
+    expect(kpis).toContainEqual(expect.stringContaining("left over£886.00"));
+    // What the headline would read if a member's private commitments leaked
+    // into a figure about this household's accounts.
+    expect(kpis.join(" ")).not.toContain("£516.00");
+  });
+
+  /**
+   * The column the household's own total would have hidden. Nothing leaves a
+   * household account here, so `plan.committedMinor` is nought — and both
+   * members' LEFT OVER is reduced all the same. A page that showed the
+   * subtraction and not the reason is the one reading a figure must never get.
+   */
+  it("shows the column for commitments that are all outside the household", () => {
+    const outside: HouseholdPlanDto = {
+      ...elsewhere,
+      committedMinor: 0,
+      members: elsewhere.members.map((m) => ({ ...m, committedMinor: 0 })),
+      accounts: PLAN.accounts.map((a) => ({ ...a, committedMinor: 0 })),
+    };
+    const { container } = render(<HouseholdPlanView plan={outside} />);
+    const [perAccount, perPerson] = tables(container);
+    expect(headers(perPerson!).all).toContain("committed");
+    // The account table is the household's accounts and still has nothing to
+    // say, so it keeps its column count.
+    expect(headers(perAccount!).all).not.toContain("committed");
+    expect(personRows(container)[0]).toHaveTextContent("£250.00");
+    expect(personRows(container)[0]!.lastElementChild!.previousElementSibling).toHaveTextContent(
+      "£1,036.00",
+    );
+  });
+
+  /**
+   * The mirror: a household whose only movement leaves the shared pot. Nobody's
+   * row has anything to say, and a column of em dashes on a table about people
+   * is a concept asking to be understood for no reason.
+   */
+  it("leaves the column out when the movements are all the household's own", () => {
+    const potOnly: HouseholdPlanDto = {
+      ...PLAN,
+      committedMinor: 5_000,
+      members: PLAN.members.map((m) => ({ ...m, committedMinor: 0, elsewhereCommittedMinor: 0 })),
+      accounts: PLAN.accounts.map((a) =>
+        a.accountId === "bills" ? { ...a, committedMinor: 5_000 } : { ...a, committedMinor: 0 },
+      ),
+    };
+    const { container } = render(<HouseholdPlanView plan={potOnly} />);
+    const [perAccount, perPerson] = tables(container);
+    expect(headers(perAccount!).all).toContain("committed");
+    expect(headers(perPerson!).all).not.toContain("committed");
+  });
+});

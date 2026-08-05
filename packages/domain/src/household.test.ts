@@ -232,6 +232,8 @@ describe("householdPlanFromScope — the money leaving one of its accounts", () 
     expect(plan.committedMinor).toBe(70_000);
     expect(plan.members.find((m) => m.userId === "alice")?.committedMinor).toBe(70_000);
     expect(plan.members.find((m) => m.userId === "bob")?.committedMinor).toBe(0);
+    // The account it leaves is the household's, so there is no elsewhere half.
+    expect(plan.members.every((m) => m.elsewhereCommittedMinor === 0)).toBe(true);
   });
 
   it("leaves the member's own leftover unreduced by it", () => {
@@ -279,6 +281,45 @@ describe("householdPlanFromScope — the scope is wider than the household", () 
     const bills = plan.accounts.find((a) => a.accountId === "bills")!;
     expect(bills.leftoverMinor).toBe(10_000);
     expect(plan.committedMinor).toBe(0);
+  });
+
+  /**
+   * WP-AA. The fifth instance of one assumption, and the one where the two
+   * halves were already published side by side without a name for the second.
+   *
+   * `committedMinor` here is the household's own accounts — correctly, a
+   * member's private ISA draining a private current account is not its business
+   * — and `leftoverMinor` on the same object is scope-wide. Netting the one
+   * against the other spans two different sets of accounts, so the page printed
+   * Alice £2,850 free when £2,750 was true: the £100 `alice-private` sweeps into
+   * the pot was in neither term.
+   */
+  it("names what a member commits out of an account the household does not hold", () => {
+    const alice = plan.members.find((m) => m.userId === "alice")!;
+    expect(alice.committedMinor).toBe(0);
+    expect(alice.elsewhereCommittedMinor).toBe(10_000);
+    // Scope-wide surplus less scope-wide commitment: a figure about a person,
+    // measured over the accounts that person actually has.
+    expect(alice.leftoverMinor - alice.committedMinor - alice.elsewhereCommittedMinor).toBe(
+      275_000,
+    );
+  });
+
+  it("reconciles: the two halves are the pass's whole, for every member", () => {
+    const scope = computeScopePlan(wider, ASOF).partitions.find((p) => p.currency === "GBP")!;
+    for (const m of plan.members) {
+      const inScope = scope.members.find((s) => s.userId === m.userId)!;
+      expect(m.committedMinor + m.elsewhereCommittedMinor).toBe(inScope.committedMinor);
+    }
+    expect(plan.members.find((m) => m.userId === "bob")!.elsewhereCommittedMinor).toBe(0);
+  });
+
+  it("keeps the household's own committed total to the household's own accounts", () => {
+    // The narrowing is the point, and it survives: what a member commits
+    // elsewhere is named on their row and counted in neither the household's
+    // total nor any account row on it.
+    expect(plan.committedMinor).toBe(0);
+    expect(plan.accounts.every((a) => a.committedMinor === 0)).toBe(true);
   });
 });
 

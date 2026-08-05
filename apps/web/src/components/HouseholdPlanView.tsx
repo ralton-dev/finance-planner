@@ -1,6 +1,6 @@
 import { lazy, Suspense, useRef } from "react";
 import { formatMinor } from "../lib/money.js";
-import type { HouseholdPlanDto } from "../lib/types.js";
+import type { HouseholdMemberPlanDto, HouseholdPlanDto } from "../lib/types.js";
 import { Amount } from "./Amount.js";
 import { ChartFrame } from "./ChartFrame.js";
 import { DownloadButton } from "./DownloadButton.js";
@@ -24,10 +24,26 @@ const pct = (bp: number): string => `${(bp / 100).toFixed(bp % 100 === 0 ? 0 : 1
  * difference is the number the account page and the flow diagram print for the
  * same account. Printing `leftoverMinor` raw is how the household page came to
  * read £2,793 against the diagram's £2,093 (ONE-ENGINE.md).
+ *
+ * **Everything** committed comes off, which for a member is two fields. Their
+ * `leftoverMinor` is scope-wide and their `committedMinor` is this household's
+ * accounts only, so subtracting just the one netted two different sets of
+ * accounts against each other and over-stated their free money by whatever they
+ * commit out of a personal account the household does not hold. An account row
+ * has no `elsewhere` — an account is one account — and reads exactly as before.
  */
-export function freeMinor(of: { leftoverMinor: number; committedMinor?: number }): number {
-  return of.leftoverMinor - (of.committedMinor ?? 0);
+export function freeMinor(of: {
+  leftoverMinor: number;
+  committedMinor?: number;
+  elsewhereCommittedMinor?: number;
+}): number {
+  return of.leftoverMinor - (of.committedMinor ?? 0) - (of.elsewhereCommittedMinor ?? 0);
 }
+
+/** Everything one member has committed, wherever the account sits — the whole
+ *  the COMMITTED cell prints, and what its note breaks down. */
+const memberCommitted = (m: HouseholdMemberPlanDto): number =>
+  (m.committedMinor ?? 0) + (m.elsewhereCommittedMinor ?? 0);
 
 /**
  * The headline's free-after-committed, which is **not** `freeMinor(plan)`.
@@ -82,6 +98,14 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
   // its own, because the money the bills are paid with arrives by transfer.
   // Named here rather than left for the reader to find in the table below.
   const arriving = plan.accounts.reduce((s, a) => s + a.transferInMinor, 0);
+  // The per-person table's own gate, and not `committed`. The two answer
+  // different questions — that one is this household's accounts, this one is
+  // these people, wherever they bank — and either can be nought while the other
+  // is not. A household whose only movement leaves the shared pot had a column
+  // of em dashes on a table about people; a member who commits only out of an
+  // account the household does not hold had a reduced LEFT OVER with no column
+  // on the page saying why, which is the reading the figure must never get.
+  const committedByMembers = plan.members.reduce((s, m) => s + memberCommitted(m), 0);
 
   return (
     <>
@@ -244,7 +268,7 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
               <th className="num wide-only">share</th>
               <th className="num">income</th>
               <th className="num">their costs</th>
-              {committed > 0 && <th className="num">committed</th>}
+              {committedByMembers > 0 && <th className="num">committed</th>}
               <th className="num">left over</th>
               <th className="num">shortfall</th>
             </tr>
@@ -274,9 +298,21 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
                     </span>
                   )}
                 </td>
-                {committed > 0 && (
+                {/* Everything this person has committed, and the same word
+                    THEIR COSTS uses for the part these accounts do not carry.
+                    Every other cell in this row is scope-wide — their income,
+                    their costs, their leftover, their shortfall — and this one
+                    was the household's accounts only, so LEFT OVER netted a
+                    narrow figure against a wide one and paid them money they
+                    had already promised a savings pot. */}
+                {committedByMembers > 0 && (
                   <td className="num">
-                    {(m.committedMinor ?? 0) > 0 ? formatMinor(m.committedMinor ?? 0, c) : "—"}
+                    {memberCommitted(m) > 0 ? formatMinor(memberCommitted(m), c) : "—"}
+                    {(m.elsewhereCommittedMinor ?? 0) > 0 && (
+                      <span className="cell-note">
+                        incl. {formatMinor(m.elsewhereCommittedMinor ?? 0, c)} elsewhere
+                      </span>
+                    )}
                   </td>
                 )}
                 <td className={leftOverClass(freeMinor(m))}>{formatMinor(freeMinor(m), c)}</td>
