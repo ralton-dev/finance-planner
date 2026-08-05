@@ -8,6 +8,7 @@ import type {
   HouseholdPlanLineDto,
   InflowArrivalDto,
   LatestBalanceDto,
+  OverviewYouDto,
   PlanInflowSourceDto,
   PlanLineDto,
   TransferConfirmationDto,
@@ -82,6 +83,12 @@ export interface NeedsYouLineSummary {
 export interface NeedsYouAccountPlan {
   accountId: string;
   currency: string;
+  /** Whose account it is (decision 20). Ownership, never access: the headline
+   *  names only a shortfall on an account the caller owns, while the checklist
+   *  keeps drawing a row for one merely shared to them — that is a legitimate
+   *  thing to be asked to act on. Absent on a caller that has no owner to
+   *  report, which reads as "not attributable to me". */
+  ownerUserId?: string;
   leftoverMinor: number;
   shortfallMinor: number;
   /** Last manual balance check-in, or null when never reconciled. */
@@ -142,6 +149,33 @@ export interface NeedsYouAccountInput {
 export interface NeedsYouInput {
   /** ISO date every day-count is measured against. */
   asOfDate: string;
+  /**
+   * Who is looking. The checklist does not need it — every row on it is a thing
+   * somebody can act on, whoever owns the money — but the headline does, because
+   * the headline is a sentence about *you*: it filters the transfers it calls
+   * settled to the ones that were yours to make, and names only a shortfall of
+   * yours. Absent while `GET /api/users/me` is still in flight, which reads as
+   * "nothing attributable to me yet" rather than as "everything is mine".
+   */
+  userId?: string;
+  /**
+   * **The caller's own figures for {@link headlineCurrency}**, off
+   * `GET /api/overview`'s `perCurrency[].you` (decisions 19, 20 and 24).
+   *
+   * Required, and computed by the pass rather than assembled here. The browser
+   * used to add up whatever it happened to hold — a household's roster total
+   * plus every account it could see — which on a household of two was the
+   * co-member's money as much as the reader's, and which is why the three
+   * figures travel together: a left over that is yours beside a shortfall that
+   * is the household's states two bases in one sentence.
+   *
+   * Only {@link deriveHeadline} reads it — the checklist is a list of things
+   * somebody can act on and is deliberately not filtered by ownership — so it
+   * is optional here and every page that renders a headline sets it. The field
+   * that must never be absent is the wire one, `CurrencyOverviewDto.you`, and
+   * that one is required.
+   */
+  you?: OverviewYouDto;
   households?: readonly NeedsYouHouseholdInput[];
   /** Household members' accounts and standalone ones alike. */
   accounts?: readonly NeedsYouAccountInput[];
@@ -245,7 +279,12 @@ export interface NeedsYouHeadline {
  * where the input spans every household and every standalone account — this is
  * also the filter that decides which of them the headline is allowed to add up.
  */
-export function headlineCurrency(input: NeedsYouInput): string {
+export function headlineCurrency(
+  // Deliberately narrower than `NeedsYouInput`: the page has to know which
+  // currency the headline is in *before* it can pick the `you` bucket to put on
+  // the input, and asking for the whole thing would be a cycle.
+  input: Pick<NeedsYouInput, "households" | "accounts">,
+): string {
   return input.households?.[0]?.plan.currency ?? input.accounts?.[0]?.plan.currency ?? "GBP";
 }
 
@@ -273,6 +312,11 @@ interface ShortfallFact {
   /** "Alex's share of housing", or the account's name. */
   subject: string;
   amountMinor: number;
+  /** Whose gap this is, when the producer knows. The checklist shows every
+   *  row whoever it belongs to; the headline sentence names only the caller's
+   *  (decision 24). Undefined on an account row, where ownership is the
+   *  account's and the caller filters on that instead. */
+  userId?: string;
 }
 
 /**
@@ -377,6 +421,7 @@ function householdShortfalls(entry: NeedsYouHouseholdInput): ShortfallFact[] {
 
     facts.push({
       amountMinor: member.shortfallMinor,
+      userId: member.userId,
       subject: group ? `${who}'s share of ${group}` : `${who}'s share`,
       item: {
         key: `shortfall:member:${plan.householdId}:${member.userId}`,
@@ -782,6 +827,15 @@ function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** Nothing of the caller's in this currency. Also what an input with no `you`
+ *  reads as: three noughts and "nothing planned yet", never a figure borrowed
+ *  from money that is not theirs. */
+const NOTHING_OF_YOURS: OverviewYouDto = {
+  leftoverMinor: 0,
+  shortfallMinor: 0,
+  paymentCount: 0,
+};
+
 /** ", both transfers settled" and its neighbours, or nothing to say. */
 function transfersClause(count: number): string {
   if (count === 0) return "";
@@ -808,64 +862,53 @@ export function deriveHeadline(
   items: readonly NeedsYouItem[],
 ): NeedsYouHeadline {
   const currency = headlineCurrency(input);
-  // De-duplication first (an account inside a household is that household's
-  // story), then the currency filter — an account is standalone or not
-  // regardless of what the headline happens to be counted in.
-  const households = (input.households ?? []).filter((h) => h.plan.currency === currency);
-  const standalone = standaloneAccounts(input).filter((a) => a.plan.currency === currency);
-
-  const shortfallMinor =
-    households.reduce((n, h) => n + h.plan.shortfallMinor, 0) +
-    standalone.reduce((n, a) => n + a.plan.shortfallMinor, 0);
-  // A sum of accounts, and every account is counted once.
+  // **Read, not assembled.** All three figures come off the pass, summed over
+  // the accounts the caller owns.
   //
-  // **The netting term is gone with the engine that needed it.** Two
-  // derivations of the same money each counted a transferred pound — once in
-  // the sender's surplus, again in the receiver's funded total — so a chain
-  // inflated the estate at every hop and the total had to subtract the
-  // difference. One pass settles it in the accounts instead: `leftoverMinor` is
-  // an account's own income after its own bills *and* after the transfers its
-  // owner must make, so every pound is counted once before this sees it, and
-  // `computeOverview`, which computed the term, no longer exists
-  // (ONE-ENGINE.md).
+  // What stood here was a household-vs-standalone partition that existed for
+  // one reason: to stop a member's personal account being counted twice, once
+  // on its own row and again inside a household's scope-wide surplus. A
+  // per-owner figure has nothing to de-duplicate, so the partition went, and
+  // decision 24 took the shortfall and the payment count with it — both were
+  // computed by the same partition, and a left over that is yours beside a
+  // shortfall that is the household's would put two bases in one sentence.
   //
-  // A household contributes `householdLeftoverMinor` — its own accounts —
-  // rather than `leftoverMinor`, which is its members' surplus across the whole
-  // scope (WP-Z). The old field double-counted here as well as misreporting the
-  // household page: a member's personal account that nobody assigned to the
-  // household is standalone by {@link standaloneAccounts} and is summed on its
-  // own row, while the household's scope-wide figure already contained that
-  // member's whole surplus. Two disjoint sets of accounts is the only way this
-  // total means anything.
-  //
-  // What is subtracted is decision 13's, and only for a household, which is the
-  // one input here that reports it: `leftoverMinor` is surplus *before* the
-  // month's savings movements everywhere, and this figure sits directly above
-  // the household page's LEFT OVER, which shows free-after-committed. A
-  // standalone account's summary carries no committed figure at all, so its
-  // surplus is counted as the account page prints it — before its savings, with
-  // the movements section saying so. Floored, because a movement can be funded
-  // out of money that arrived rather than out of the surplus.
-  const committedMinor = households.reduce((n, h) => n + (h.plan.committedMinor ?? 0), 0);
-  const leftoverMinor = Math.max(
-    0,
-    households.reduce((n, h) => n + (h.plan.householdLeftoverMinor ?? h.plan.leftoverMinor), 0) +
-      standalone.reduce((n, a) => n + a.plan.leftoverMinor, 0) -
-      committedMinor,
-  );
-  const paymentCount =
-    households.reduce((n, h) => n + h.plan.lines.length, 0) +
-    standalone.reduce((n, a) => n + accountLines(a).lineCount, 0);
+  // **The `Math.max(0, …)` floor went with it, deliberately.** A residual is
+  // signed on purpose: negative means more leaves the accounts you own than
+  // reaches them, which is decision 11's consolidation and the single most
+  // actionable thing a left-over figure can say. The old total was floored
+  // because it subtracted a committed figure that a movement could be funded
+  // out of arriving money rather than out of surplus, so the arithmetic could
+  // go negative without anything being wrong. Nothing is subtracted now — a
+  // residual has already netted a movement at both ends — so a negative here
+  // is a fact about the money and not an artefact of the sum, and the account
+  // page's KPI and the household page's LEFT OVER column already print theirs
+  // signed and amber. Flooring would have been the one screen that hid it.
+  const { leftoverMinor, shortfallMinor, paymentCount } = input.you ?? NOTHING_OF_YOURS;
 
   if (shortfallMinor > 0) {
+    // The sentence names the biggest cause **that is the caller's**. A
+    // co-member being short is still a checklist row directly beneath this,
+    // where it says whose money is missing and links to the household — it
+    // moves rather than being lost. What it may not do is explain a figure it
+    // is not part of.
+    const households = (input.households ?? []).filter((h) => h.plan.currency === currency);
+    const mine = (a: NeedsYouAccountInput): boolean =>
+      input.userId === undefined || a.plan.ownerUserId === undefined
+        ? false
+        : a.plan.ownerUserId === input.userId;
     const facts = [
-      ...households.flatMap(householdShortfalls),
-      ...standalone.map(accountShortfall).filter((f): f is ShortfallFact => f !== null),
+      ...households.flatMap((h) => householdShortfalls(h).filter((f) => f.userId === input.userId)),
+      ...(input.accounts ?? [])
+        .filter((a) => a.plan.currency === currency && mine(a))
+        .map(accountShortfall)
+        .filter((f): f is ShortfallFact => f !== null),
     ].sort((a, b) => b.amountMinor - a.amountMinor || a.item.key.localeCompare(b.item.key));
     const amount = money(shortfallMinor, currency);
     // The number is always the total; the sentence names the biggest cause it
-    // can find. A household total can exceed what its members individually
-    // explain (a buffer nobody's income reached), hence the third form.
+    // can find. The total can exceed what any one row explains (a buffer no
+    // income reached, or a co-member's gap now excluded from the naming while
+    // still being in nothing this figure counts), hence the third form.
     const subject = facts[0]?.subject;
     const lead: PhrasePart[] =
       subject === undefined
@@ -895,12 +938,26 @@ export function deriveHeadline(
     };
   }
 
-  // Everything that had to move for the month to be clear: the households' asks
-  // of their members, and the movements between your own accounts. Counted in
-  // the headline's currency and across every account, household or not, because
-  // the rows they settled were drawn the same way.
+  // Everything that had to move **for you** for the month to be clear: the
+  // household's asks of you, and the movements into your own accounts. Counted
+  // in the headline's currency.
+  //
+  // `plan.transfers` is the whole household's, so this told Alice "all 5
+  // transfers settled" when three of them were Bob's — decision 24's third
+  // sibling, on the same sentence as the shortfall and the payment count.
+  // `TransferDto.memberUserId` is "the member whose money this is" and has been
+  // on the wire all along, so the fix is a filter and no API change. With no
+  // caller yet, none of them are attributable and the clause is simply left
+  // off — better silence than a claim about somebody else's money.
   const settledTransfers =
-    households.reduce((n, h) => n + h.plan.transfers.length, 0) +
+    (input.userId === undefined
+      ? 0
+      : (input.households ?? [])
+          .filter((h) => h.plan.currency === currency)
+          .reduce(
+            (n, h) => n + h.plan.transfers.filter((t) => t.memberUserId === input.userId).length,
+            0,
+          )) +
     (input.accounts ?? [])
       .filter((a) => a.plan.currency === currency)
       .reduce(

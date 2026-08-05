@@ -22,7 +22,21 @@ export interface ProjectionLineLike {
 export interface ProjectionMonthLike {
   month: string;
   totalRequiredMinor: number;
+  /**
+   * Kept for the shapes that carry nothing better, and read last.
+   *
+   * On an account it is own-income-after-own-bills, so a savings pot printed
+   * £0.00 in the strip under a KPI reading £200.00; on a household it is that
+   * summed over the **roster**, £4,705 on the estate against the members'
+   * £4,025. Both are real figures and neither is the one the page leads with.
+   */
   leftoverMinor: number;
+  /** Account projections only: what is in the account when the month has
+   *  happened. The KPI above the strip prints the same derivation for month 1. */
+  residualMinor?: number;
+  /** Household projections only: `Σ residual` over the accounts this
+   *  household's members own — the strip's analogue of the page's headline. */
+  membersLeftoverMinor?: number;
   shortfallMinor: number;
   reservedEndMinor: number;
   /** Account projections only; null when there is no balance check-in to start from. */
@@ -50,6 +64,24 @@ export interface ProjectionMonthLike {
  */
 function movedMinor(month: ProjectionMonthLike): number | null {
   return month.transfersTotalMinor ?? month.outboundInflowMinor ?? null;
+}
+
+/**
+ * What the strip's LEFT OVER row prints, whatever the scope.
+ *
+ * One derivation read at two altitudes, exactly as the pages above it read it:
+ * an account's residual, or a household's members' residuals added up. The two
+ * shapes carry one field each — `movedMinor` directly above is the precedent —
+ * so the first one present is the answer, and `leftoverMinor` is the fallback a
+ * payload from an older API lands on rather than rendering nothing.
+ *
+ * Never a reconstruction. The reframing this file serves forbids a surface
+ * deriving a fourth answer by algebra, and the strip is the surface that was
+ * printing the fourth one: it read £2,501 a few hundred pixels under a KPI
+ * saying £2,051, and £0.00 under one saying £200.00 (MINE-AND-OURS.md).
+ */
+export function monthLeftOverMinor(month: ProjectionMonthLike): number {
+  return month.residualMinor ?? month.membersLeftoverMinor ?? month.leftoverMinor;
 }
 
 /** One x-position of the chart. Nulls are gaps, never zeroes. */

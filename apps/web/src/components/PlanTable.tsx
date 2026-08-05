@@ -361,6 +361,18 @@ export function inflowNote(plan: AccountPlanDto): Phrase | null {
 }
 
 /**
+ * The one shape an account's LEFT OVER can be read off, whichever surface is
+ * asking. `AccountPlanDto` and the overview's `OverviewAccountDto` both satisfy
+ * it structurally, which is the whole point: there is one rule and three
+ * callers, not three rules.
+ */
+export interface LeftOverLike {
+  residualMinor?: number;
+  leftoverMinor: number;
+  monthlyIncomeMinor: number;
+}
+
+/**
  * What LEFT OVER shows, and why it is not `leftoverMinor`.
  *
  * Measured in a browser at 1280px: this KPI read **£2,625.80** for an account
@@ -370,19 +382,39 @@ export function inflowNote(plan: AccountPlanDto): Phrase | null {
  * that prints the plan's own field rather than what is left in the account.
  *
  * `residualMinor` is `income + arriving − spending − leaving`, signed, and it is
- * the one figure the pass publishes for all three surfaces (decision 13's
- * free-after-committed, at account scale). `leftoverMinor` keeps its meaning on
- * the wire and is the right answer for a *rollup*; it is the wrong one for a
- * person looking at one account.
+ * the one figure the pass publishes for all three surfaces (decision 19).
+ * `leftoverMinor` keeps its meaning on the wire and is the right answer for a
+ * *rollup*; it is the wrong one for a person looking at one account, which is
+ * how the accounts index and the dashboard came to print £2,501.00 and £0.00
+ * for accounts whose own pages read £2,051.00 and £200.00 (MINE-AND-OURS.md).
+ *
+ * **Every surface that prints an account's left over calls this**, so a fourth
+ * one cannot be added wrong — the account page's KPI, the accounts index and
+ * the dashboard's account table, the last two through {@link LeftOverCell}.
  *
  * Null when there is nothing to report: an account with no income of its own and
  * nothing left in it never had a surplus, and "£0.00 left over" claims there was
  * one and it is gone.
  */
-export function leftOverMinor(plan: AccountPlanDto): number | null {
+export function leftOverMinor(plan: LeftOverLike): number | null {
   const residual = plan.residualMinor ?? plan.leftoverMinor;
   if (residual === 0 && plan.monthlyIncomeMinor === 0) return null;
   return residual;
+}
+
+/**
+ * The LEFT OVER / MO cell the accounts index and the dashboard's account table
+ * both render.
+ *
+ * One component rather than two call sites of {@link leftOverMinor}, because
+ * the em dash is half the rule and a caller that remembered the field but not
+ * the absence would print "£0.00" for a pot that never had a surplus. A row
+ * with no overview state yet stays blank for the same reason.
+ */
+export function LeftOverCell({ state, currency }: { state?: LeftOverLike; currency: string }) {
+  const left = state ? leftOverMinor(state) : null;
+  if (left === null) return <span className="muted">—</span>;
+  return <Amount minor={left} currency={currency} />;
 }
 
 /** How much of what is arriving has actually moved — the amber KPI's sub-line. */

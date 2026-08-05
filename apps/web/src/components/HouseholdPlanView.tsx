@@ -46,23 +46,44 @@ const memberCommitted = (m: HouseholdMemberPlanDto): number =>
   (m.committedMinor ?? 0) + (m.elsewhereCommittedMinor ?? 0);
 
 /**
- * The headline's free-after-committed, which is **not** `freeMinor(plan)`.
+ * **The household's left over** (decision 19): its members' left overs, added
+ * up. That is all it is.
  *
- * `HouseholdPlanDto.leftoverMinor` is the members' surplus scope-wide; every
- * other figure in the KPI row beside it — the income, the requirement, the
- * committed total, the shortfall — is this household's own accounts. A
- * household holding nothing but the bills pot read "income £0 · required
- * £1,410 · left over £2,000", the last of those being money the first does not
- * contain and the account table below does not hold (WP-Z).
+ * `membersLeftoverMinor` is `Σ members[].personalLeftoverMinor`, so this figure
+ * is the sum of the LEFT OVER column in the per-person table below it and the
+ * rows add to the total on screen.
  *
- * `householdLeftoverMinor` is the same accounts' LEFT OVER column, added up, so
- * this figure is the sum of the ones printed beneath it and cannot drift from
- * them again. A payload from an older API has no such field and falls back —
- * for a household that holds every account its members own, which is the case
- * those payloads came from, the two are equal anyway.
+ * What stood here was `householdLeftoverMinor − committedMinor`, which is
+ * algebraically a residual sum already — the pass adds each account's committed
+ * back and this subtracted the same total, so the two cancelled — but summed
+ * over the **roster** rather than over the members. The difference is whatever
+ * sits in accounts a member owns and the household does not hold: on the estate
+ * fixture, £3,575 against the £4,025 the members actually have. Nothing is
+ * subtracted here now, because a residual has already counted a movement at
+ * both ends and taking committed off one end loses the money entirely.
+ *
+ * A payload from an older API has no such field and falls back to the old
+ * derivation rather than rendering nothing.
  */
-export function householdFreeMinor(plan: HouseholdPlanDto): number {
-  return (plan.householdLeftoverMinor ?? plan.leftoverMinor) - (plan.committedMinor ?? 0);
+export function householdLeftOverMinor(plan: HouseholdPlanDto): number {
+  return (
+    plan.membersLeftoverMinor ??
+    (plan.householdLeftoverMinor ?? plan.leftoverMinor) - (plan.committedMinor ?? 0)
+  );
+}
+
+/**
+ * **One member's left over** (decision 19): the residuals of the accounts they
+ * own, added up. The LEFT OVER cell in the per-person table.
+ *
+ * Not `freeMinor(m)`. That netted their scope-wide surplus against everything
+ * they had committed, which is a different question and summed to nothing on
+ * the page: on the cross-owner fixture the two member rows read £1,600 and £800
+ * beneath a household total of £2,800. The residual basis reads £2,100 and
+ * £800, and those do add to the £2,900 above them.
+ */
+export function memberLeftOverMinor(m: HouseholdMemberPlanDto): number {
+  return m.personalLeftoverMinor ?? freeMinor(m);
 }
 
 /**
@@ -92,7 +113,7 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
   const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName ?? "member"]));
   const sankeyRef = useRef<HTMLDivElement>(null);
   const committed = plan.committedMinor ?? 0;
-  const free = householdFreeMinor(plan);
+  const left = householdLeftOverMinor(plan);
   // Every KPI here is about the household's own accounts, and for a household
   // that holds only a shared pot the income one is £0 — true, and unreadable on
   // its own, because the money the bills are paid with arrives by transfer.
@@ -131,17 +152,16 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
             <div className="kpi-delta">to savings movements out</div>
           </div>
         )}
-        <div className={free < 0 ? "kpi warn" : "kpi ok"}>
+        <div className={left < 0 ? "kpi warn" : "kpi ok"}>
           <div className="kpi-label">left over</div>
-          <div className="kpi-value">{formatMinor(free, c)}</div>
-          {/* Which accounts, always — this is the household's, and a member's
-              own surplus is the per-person table's business two sections down.
-              The two differ the moment a member holds money the household does
-              not (decision 9), and the figure that says nothing about which it
-              means is the one that was wrong. */}
-          <div className="kpi-delta">
-            {committed > 0 ? "in these accounts, after what is committed" : "in these accounts"}
-          </div>
+          <div className="kpi-value">{formatMinor(left, c)}</div>
+          {/* Whose money, always. It is these people's, wherever they bank —
+              which is a different set from the accounts in the table above,
+              the moment a member holds money the household does not hold
+              (decision 9). The figure that said nothing about which it meant is
+              the one that was wrong, and this one is the per-person table's
+              LEFT OVER column added up. */}
+          <div className="kpi-delta">these members', added up</div>
         </div>
         <div className={plan.shortfallMinor > 0 ? "kpi warn" : "kpi"}>
           <div className="kpi-label">shortfall</div>
@@ -332,7 +352,11 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
                     )}
                   </td>
                 )}
-                <td className={leftOverClass(freeMinor(m))}>{formatMinor(freeMinor(m), c)}</td>
+                {/* Their own accounts' residuals, added up — so this column
+                    sums to the KPI above rather than to nothing on the page. */}
+                <td className={leftOverClass(memberLeftOverMinor(m))}>
+                  {formatMinor(memberLeftOverMinor(m), c)}
+                </td>
                 <td className={`num${m.shortfallMinor > 0 ? " warn" : " dim"}`}>
                   {m.shortfallMinor > 0 ? formatMinor(m.shortfallMinor, c) : "—"}
                 </td>

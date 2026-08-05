@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickAddProvider } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import { currentMonth } from "../lib/months.js";
-import { phraseText } from "../lib/money.js";
 import type {
   AccountDto,
   HouseholdPlanDto,
@@ -15,7 +14,7 @@ import type {
   TransferConfirmationDto,
 } from "../lib/types.js";
 import { stubApiFetch, type FetchStub, type Routes } from "../test/apiMock.js";
-import { householdChips, netWorthSentence, netWorthTotals, OverviewPage } from "./OverviewPage.js";
+import { householdChips, OverviewPage } from "./OverviewPage.js";
 
 const ME = { id: "u1", email: "ada@example.com", displayName: "Ada", households: [] };
 
@@ -53,6 +52,7 @@ function renderOverview(routes: Routes = {}): ReturnType<typeof render> {
                 totalFundedMinor: 0,
                 leftoverMinor: 250000,
                 shortfallMinor: 0,
+                you: { leftoverMinor: 250000, shortfallMinor: 0, paymentCount: 0 },
                 accounts: accounts.map((a) =>
                   state({ accountId: a.id, name: a.name, leftoverMinor: 250000 }),
                 ),
@@ -354,6 +354,9 @@ function renderPlanned(routes: Routes = {}, meLast = false): ReturnType<typeof r
             totalFundedMinor: 215_000,
             leftoverMinor: 411_000,
             shortfallMinor: 4_000,
+            // Ada is the caller and is short of nothing. Alex is £40 short and
+            // that is a row on the checklist, never a figure in her headline.
+            you: { leftoverMinor: 268_600, shortfallMinor: 0, paymentCount: 2 },
             accounts: PLANNED_STATE,
           },
         ],
@@ -423,18 +426,6 @@ describe("OverviewPage — fold + doorways", () => {
     // WP-4's cells, verbatim: the balance and how long ago anyone said so.
     expect(table).toHaveTextContent("£900.00");
     expect(table).toHaveTextContent("checked in today");
-  });
-
-  it("says what you hold and how much of it the plan has already claimed", async () => {
-    const { container } = renderPlanned();
-
-    await waitFor(() =>
-      expect(container.querySelector(".networth-sentence")).toHaveTextContent(
-        "£300.00 of it is already set aside by the plan, leaving £600.00 genuinely free.",
-      ),
-    );
-    // The trend is a disclosure now, not the section's headline.
-    expect(screen.getByText("net worth over time").tagName).toBe("SUMMARY");
   });
 
   it("does not render the household plan a second time", async () => {
@@ -569,6 +560,7 @@ const ESTATE_OVERVIEW: OverviewDto = {
       // (ONE-ENGINE.md).
       leftoverMinor: 100_000,
       shortfallMinor: 0,
+      you: { leftoverMinor: 100_000, shortfallMinor: 0, paymentCount: 1 },
       accounts: [
         state({
           accountId: "current",
@@ -802,6 +794,7 @@ describe("OverviewPage — request cost", () => {
               totalFundedMinor: 0,
               leftoverMinor: 0,
               shortfallMinor: 0,
+              you: { leftoverMinor: 0, shortfallMinor: 0, paymentCount: 0 },
               accounts: list.map((a) =>
                 state({
                   accountId: a.id,
@@ -1044,56 +1037,3 @@ describe("householdChips", () => {
   });
 });
 
-describe("net worth", () => {
-  it("sums the check-ins, and what the plan has set aside against them", () => {
-    expect(
-      netWorthTotals([
-        state({ accountId: "a", latestBalanceMinor: 250_000, reservedMinor: 90_000 }),
-        state({ accountId: "b", latestBalanceMinor: 50_000, reservedMinor: 10_000 }),
-      ]),
-    ).toEqual({ cashMinor: 300_000, reservedMinor: 100_000, freeMinor: 200_000, checkedIn: 2 });
-  });
-
-  it("leaves an unchecked account out of the cash, not out of the reserve", () => {
-    expect(
-      netWorthTotals([
-        state({ accountId: "a", latestBalanceMinor: 250_000, reservedMinor: 90_000 }),
-        state({ accountId: "b", latestBalanceMinor: null, reservedMinor: 10_000 }),
-      ]),
-    ).toEqual({ cashMinor: 250_000, reservedMinor: 100_000, freeMinor: 150_000, checkedIn: 1 });
-  });
-
-  it("words the gap between cash and reserved", () => {
-    const phrase = netWorthSentence(
-      { cashMinor: 300_000, reservedMinor: 100_000, freeMinor: 200_000, checkedIn: 2 },
-      "GBP",
-    );
-    expect(phraseText(phrase)).toBe(
-      "£1,000.00 of it is already set aside by the plan, leaving £2,000.00 genuinely free.",
-    );
-    // Both figures come out as parts, so privacy mode has something to blur.
-    expect(phrase.filter((part) => typeof part !== "string")).toEqual([
-      { minor: 100_000, currency: "GBP" },
-      { minor: 200_000, currency: "GBP" },
-    ]);
-  });
-
-  it("says which way round it is when the plan claims more than you hold", () => {
-    expect(
-      phraseText(
-        netWorthSentence(
-          { cashMinor: 100_000, reservedMinor: 140_000, freeMinor: -40_000, checkedIn: 1 },
-          "GBP",
-        ),
-      ),
-    ).toBe("The plan has £1,400.00 set aside — £400.00 more than these accounts hold.");
-  });
-
-  it("refuses to pretend when nothing has been checked in", () => {
-    expect(
-      phraseText(
-        netWorthSentence({ cashMinor: 0, reservedMinor: 0, freeMinor: 0, checkedIn: 0 }, "GBP"),
-      ),
-    ).toBe("No balances checked in yet — record one and this becomes real.");
-  });
-});

@@ -525,7 +525,25 @@ export interface OverviewAccountDto {
    * solo user has, so the confirmation endpoint had no reachable client at all.
    */
   inflowSources?: PlanInflowSourceDto[];
+  /**
+   * Whose account this is (decision 20) — the pass's `ownerUserId`, passed
+   * through. Ownership, never access: a co-member's account shared into your
+   * household is on this list and is theirs.
+   */
+  ownerUserId?: string;
   leftoverMinor: number;
+  /**
+   * What is actually in the account when the month has happened:
+   * `income + arriving − spending − leaving`, signed.
+   *
+   * The figure every surface prints under a LEFT OVER label, through
+   * {@link leftOverMinor} in `components/PlanTable.tsx`. `leftoverMinor` above
+   * keeps its meaning on the wire to the penny and is the right answer for a
+   * *rollup* — it is deliberately before savings movements leave and excludes
+   * money that arrived, which is why a savings pot read £0.00 on two lists and
+   * £200.00 on its own page (MINE-AND-OURS.md).
+   */
+  residualMinor?: number;
   shortfallMinor: number;
   atRiskCount: number;
   /** The last balance check-in, from the same read the account page's reality
@@ -547,6 +565,26 @@ export interface OverviewAccountDto {
   planSummary?: PlanLineSummaryDto;
 }
 
+/**
+ * **The caller's own money**, in one currency (decisions 19, 20 and 24).
+ *
+ * Every other figure on {@link CurrencyOverviewDto} is summed over the accounts
+ * the caller can **see**, which is the right set for a list of accounts and the
+ * wrong one for a figure about a person: on a household of two, the dashboard's
+ * headline was a co-member's money as much as the reader's. These three are
+ * summed over the accounts they **own**, by the pass.
+ *
+ * The shortfall and the payment count travel with the left over rather than
+ * being re-derived in the browser, because a headline pairing a left over that
+ * is yours with a shortfall that is the household's states two bases in one
+ * sentence — the disease this work exists to cure.
+ */
+export interface OverviewYouDto {
+  leftoverMinor: number;
+  shortfallMinor: number;
+  paymentCount: number;
+}
+
 export interface CurrencyOverviewDto {
   currency: string;
   monthlyIncomeMinor: number;
@@ -566,6 +604,15 @@ export interface CurrencyOverviewDto {
    */
   leftoverMinor: number;
   shortfallMinor: number;
+  /**
+   * Required, and deliberately so. These web types are hand-written rather than
+   * derived from the wire, so an optional field that the API stopped sending —
+   * or that a page forgot to read — simply evaluates to `undefined` at runtime
+   * and prints a confident zero. That trap has been sprung four times in this
+   * repo; this is the field the dashboard's headline is, so it does not get to
+   * be optional.
+   */
+  you: OverviewYouDto;
   accounts: OverviewAccountDto[];
 }
 
@@ -654,6 +701,18 @@ export interface HouseholdMemberPlanDto {
    *  narrow one against the wide one over-stated their free money by exactly
    *  this. Sums with the above to their scope-wide committed total. */
   elsewhereCommittedMinor?: number;
+  /**
+   * **This member's left over** (decision 19): the residuals of the accounts
+   * they **own**, added up. What the LEFT OVER column prints, so the rows add to
+   * {@link HouseholdPlanDto.membersLeftoverMinor} on screen.
+   *
+   * Not `leftoverMinor − committed`. That netted a member's own income after
+   * their own bills against what they had committed, which is a different
+   * question and does not sum to anything the page shows; and a residual has
+   * already counted a movement at both ends, so subtracting committed from one
+   * loses the money entirely (decision 19).
+   */
+  personalLeftoverMinor?: number;
   shortfallMinor: number;
 }
 
@@ -748,6 +807,18 @@ export interface HouseholdPlanDto {
   /** Of that leftover, what the household's funded savings movements have
    *  spoken for (decision 13). */
   committedMinor?: number;
+  /**
+   * **The household's left over** (decision 19), and the figure the page's KPI
+   * prints: `Σ members[].personalLeftoverMinor`. A household's left over is its
+   * members' left overs added up, and that is all it is — so the per-person
+   * table's rows add to the number above them.
+   *
+   * `householdLeftoverMinor − committedMinor` was the same arithmetic summed
+   * over the **roster** rather than over the members, which is money in the
+   * wrong set: the difference is whatever sits in accounts a member owns and
+   * the household does not hold.
+   */
+  membersLeftoverMinor?: number;
   shortfallMinor: number;
   members: HouseholdMemberPlanDto[];
   accounts: HouseholdAccountPlanDto[];
@@ -839,6 +910,16 @@ export interface MonthProjectionDto {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /**
+   * What is in the account at the end of this projected month — the month's own
+   * `residualMinor`, passed through by the pass.
+   *
+   * The strip's LEFT OVER row prints this, and the KPI a few hundred pixels
+   * above it prints the same derivation for month 1, so the account page stops
+   * disagreeing with itself: it read £2,501 under a KPI saying £2,051, and a
+   * savings pot read £0.00 under a KPI saying £200.00.
+   */
+  residualMinor?: number;
   /** Money leaving for other accounts this month. Not subtracted from
    *  `leftoverMinor`, so a month that sends its surplus on cannot look like a
    *  month that kept it. */
@@ -866,7 +947,22 @@ export interface HouseholdMonthProjectionDto {
   monthlyIncomeMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
+  /**
+   * A **third** derivation, and not the household page's figure. It sums each
+   * month's `MonthProjection.leftoverMinor` — own income after own bills — over
+   * the household's **roster**, and reads £4,705 on the estate fixture against
+   * the members' £4,025. Kept with its meaning; simply not what the strip
+   * prints.
+   */
   leftoverMinor: number;
+  /**
+   * **The household's left over, month by month** — `Σ residual` over the
+   * accounts this household's members own, the projection analogue of
+   * {@link HouseholdPlanDto.membersLeftoverMinor} and named to match it, so
+   * "the household page prints `membersLeftoverMinor`" covers the strip and the
+   * headline above it with one rule.
+   */
+  membersLeftoverMinor?: number;
   shortfallMinor: number;
   /** Money members must move between accounts this month. */
   transfersTotalMinor: number;

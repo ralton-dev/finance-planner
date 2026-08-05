@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Fold } from "../components/Fold.js";
-import { HouseholdPlanView } from "../components/HouseholdPlanView.js";
+import { HouseholdPlanView, memberLeftOverMinor } from "../components/HouseholdPlanView.js";
 import { MemberTagBars } from "../components/MemberTagBars.js";
 import { ProjectionView } from "../components/ProjectionView.js";
 import { TagBreakdown } from "../components/TagBreakdown.js";
@@ -17,6 +17,7 @@ import type {
   HouseholdPlanDto,
   TransferConfirmationDto,
   UpcomingDto,
+  UserDto,
 } from "../lib/types.js";
 
 /** Look-ahead for the fold's "and this lands next" context — one pay cycle. */
@@ -28,6 +29,9 @@ export function HouseholdPlanPage() {
   const month = currentMonth();
   const plan = useAsync<HouseholdPlanDto>(() => api.householdPlan(id), [id]);
   const household = useAsync<HouseholdDetailDto>(() => api.getHousehold(id), [id]);
+  // Who is looking. The fold's headline is the caller's own left over even
+  // here, and there is no other way for this page to know whose row that is.
+  const me = useAsync<UserDto>(() => api.me(), []);
   const confirmations = useAsync<TransferConfirmationDto[]>(
     () => api.listTransferConfirmations(id, month),
     [id, month],
@@ -66,8 +70,26 @@ export function HouseholdPlanPage() {
   const accountName = new Map(p.accounts.map((a) => [a.accountId, a.name ?? "account"]));
 
   // Everything the checklist is derived from, dated by the plan's own as-of.
+  //
+  // The fold's headline is a figure about *you* even on a screen about the
+  // household (decisions 19, 20, 24), and the household's own total is the KPI
+  // directly beneath it. Both come off the same publication: this reads the
+  // caller's row out of `members`, the KPI adds those rows up. The shortfall is
+  // that member's, and the payment count is the lines this household's plan
+  // charges them a share of — a member with no row yet has nothing of their own
+  // here, which is the honest answer rather than the household's figures
+  // wearing a personal label.
+  const mine = p.members.find((m) => m.userId === me.data?.id);
   const needsYou: NeedsYouInput = {
     asOfDate: p.asOfDate,
+    userId: me.data?.id,
+    you: {
+      leftoverMinor: mine ? memberLeftOverMinor(mine) : 0,
+      shortfallMinor: mine?.shortfallMinor ?? 0,
+      paymentCount: mine
+        ? p.lines.filter((l) => l.allocations.some((a) => a.userId === mine.userId)).length
+        : 0,
+    },
     households: [{ plan: p, confirmations: confirmations.data ?? [] }],
     accounts: realities.data ?? [],
     upcoming: upcoming.data?.items ?? [],

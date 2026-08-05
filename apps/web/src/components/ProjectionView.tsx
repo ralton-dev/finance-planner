@@ -7,6 +7,7 @@ import {
   hasBalanceSeries,
   hasShortfallSeries,
   hasTransfers,
+  monthLeftOverMinor,
   type ProjectionMonthLike,
 } from "../lib/projection.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -198,19 +199,24 @@ function MonthsGrid({
               </th>
               {months.map((m) => {
                 const short = m.shortfallMinor > 0;
+                // The same derivation the KPI above prints for month 1 — the
+                // account's residual, or the household's members' sum — never
+                // `leftoverMinor`, which is what made this row contradict the
+                // figure directly above it.
+                const left = monthLeftOverMinor(m);
                 return (
                   <td
                     key={m.month}
-                    className={`num${short ? " warn" : " ok"}`}
+                    className={`num${short ? " warn" : left < 0 ? " warn" : " ok"}`}
                     title={
                       short
                         ? `shortfall: ${formatMinor(m.shortfallMinor, currency)}`
-                        : formatMinor(m.leftoverMinor, currency)
+                        : formatMinor(left, currency)
                     }
                   >
                     {short
                       ? `-${formatCompactMinor(m.shortfallMinor, currency)}`
-                      : formatCompactMinor(m.leftoverMinor, currency)}
+                      : formatCompactMinor(left, currency)}
                   </td>
                 );
               })}

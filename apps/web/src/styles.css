@@ -2083,34 +2083,6 @@ td.row-actions-cell .row-edit:hover {
   margin-top: 0.55rem;
 }
 
-/* Overview: what you actually hold, and how much of it is spoken for. One
- * figure per currency — a total across currencies would mean nothing. */
-.networth-line + .networth-line {
-  margin-top: 0.9rem;
-}
-.networth-figure {
-  font-size: clamp(20px, 3.5vw, 24px);
-  font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-}
-.networth-figure .amount {
-  font-variant-numeric: tabular-nums;
-}
-.networth-figure .dim {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--ink-3);
-}
-.networth-sentence {
-  margin: 0.3rem 0 0;
-  max-width: 62ch;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--ink-2);
-}
-
 /* Overview: the month scorecard, one card per currency.
  *
  * Planning partitions by currency and so does closing, so these figures cannot

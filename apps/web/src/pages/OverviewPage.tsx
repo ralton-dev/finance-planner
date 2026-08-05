@@ -1,22 +1,23 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Amount, Sentence } from "../components/Amount.js";
-import { ChartFrame } from "../components/ChartFrame.js";
-import { DownloadButton } from "../components/DownloadButton.js";
+import { Amount } from "../components/Amount.js";
 import { Fold } from "../components/Fold.js";
+import { LeftOverCell } from "../components/PlanTable.js";
 import { MonthScorecard } from "../components/MonthScorecard.js";
 import { UpcomingDigest } from "../components/UpcomingDigest.js";
 import { api, ApiError } from "../lib/api.js";
 import { currentMonth } from "../lib/months.js";
-import { money, type Phrase } from "../lib/money.js";
-import { deriveNeedsYou, type NeedsYouAccountInput, type NeedsYouInput } from "../lib/needsYou.js";
-import { buildNetWorthSeries, type AccountBalanceHistory } from "../lib/networth.js";
+import {
+  deriveNeedsYou,
+  headlineCurrency,
+  type NeedsYouAccountInput,
+  type NeedsYouInput,
+} from "../lib/needsYou.js";
 import { useAsync } from "../lib/useAsync.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { AccountCell, AttentionCell, BalanceCell } from "./AccountsPage.js";
 import type {
   AccountDto,
-  BalanceSnapshotDto,
   CurrencyOverviewDto,
   HouseholdDto,
   HouseholdPlanDto,
@@ -24,6 +25,7 @@ import type {
   MonthCloseDto,
   OverviewAccountDto,
   OverviewDto,
+  OverviewYouDto,
   TransferConfirmationDto,
   UpcomingDto,
   UserDto,
@@ -47,9 +49,20 @@ import type {
  * them to aggregate it, so it sends down the handful of line facts the
  * checklist acts on (`planSummary`) and the arrivals it must name to confirm a
  * movement (`inflowArrivals`), and the page costs a fixed number of requests
- * however many accounts you have. One per-account read is left and it is bought
- * deliberately: the balance history behind the net-worth disclosure, which
- * waits until the disclosure is opened.
+ * however many accounts you have. There is no per-account read left at all:
+ * the last one was the balance history behind the net-worth trend, and net
+ * worth is gone (decision 21).
+ *
+ * **Every figure on this page is the caller's own money.** The headline reads
+ * the bucket's `you`, which the pass sums over the accounts the caller *owns*;
+ * the account rows read each account's residual through the accounts index's
+ * own cell. Net worth could not be made to say that — it summed balances over
+ * every account the caller could **see**, including a co-member's shared into
+ * the household, and a balance is a fact about a place rather than about a
+ * person, so there was no ownership filter that would have made the total mean
+ * anything. It was deleted rather than fixed. `reservedMinor` stays on the wire
+ * and the account page's reality strip still prints it, and balance check-ins
+ * are untouched: only the roll-up over them was ever the problem.
  *
  * `UpcomingDigest` stays a section of its own, directly beneath the fold,
  * rather than folding into the checklist. A bill that falls due next Tuesday is
@@ -62,10 +75,13 @@ import type {
 /** Look-ahead for the "coming up" digest — a fortnight is one pay cycle. */
 const UPCOMING_DAYS = 14;
 
-// Keeps recharts out of the eagerly-loaded Overview chunk, as the Sankey does.
-const NetWorthChart = lazy(() =>
-  import("../components/NetWorthChart.js").then((m) => ({ default: m.NetWorthChart })),
-);
+/** No accounts in the headline's currency: three noughts rather than a figure
+ *  borrowed from a bucket the sentence is not about. */
+const NOTHING_OF_YOURS: OverviewYouDto = {
+  leftoverMinor: 0,
+  shortfallMinor: 0,
+  paymentCount: 0,
+};
 
 /** A household, its plan and this month's confirmations: everything the fold
  *  derives from, and everything its link card says. */
@@ -119,35 +135,12 @@ export function OverviewPage() {
     [householdKey],
   );
 
-  // The trend chart is the only thing left that needs a balance *history*, and
-  // it sits behind a closed disclosure. Reading one per account at mount would
-  // be a request per row for a chart most visits never open, so the batch waits
-  // for the disclosure and is kept once read. A failing account degrades to "no
-  // data" rather than blanking the chart.
-  const accountList = accounts.data ?? [];
-  const accountKey = accountList.map((a) => a.id).join(",");
-  const [trendOpen, setTrendOpen] = useState(false);
-  const histories = useAsync<AccountBalanceHistory[] | null>(
-    () =>
-      trendOpen
-        ? Promise.all(
-            accountList.map(async (account) => ({
-              account,
-              snapshots: await api.listBalances(account.id).catch((): BalanceSnapshotDto[] => []),
-            })),
-          )
-        : Promise.resolve(null),
-    [trendOpen, accountKey],
-  );
-
   /** Everything on the page, re-read: for anything that can create data behind
    *  the Overview's back (a quick-add drawer, the demo seed, the fold). */
   function refetchAll(): void {
     overview.refetch();
     accounts.refetch();
     plans.refetch();
-    // A no-op while the trend is closed — the read is deps-gated on `trendOpen`.
-    histories.refetch();
     upcoming.refetch();
   }
 
@@ -181,8 +174,12 @@ export function OverviewPage() {
   // left-over it aggregates anyway, the balance the index prints, the line
   // summary the API derives from the plan it computed, and now the movements
   // itemised out of the inflow total. No plan is fetched at all.
-  const needsYou: NeedsYouInput = {
-    asOfDate,
+  //
+  // The headline's three figures ride down as `you`, computed by the pass over
+  // the accounts the caller **owns**. The browser assembles none of them: it
+  // used to add up whatever it held, which on a household of two was the
+  // co-member's money as much as the reader's.
+  const derivedFrom = {
     households: householdPlans.map(({ plan, confirmations }) => ({ plan, confirmations })),
     accounts: buckets.flatMap((bucket) =>
       bucket.accounts.map((s): NeedsYouAccountInput => {
@@ -193,6 +190,7 @@ export function OverviewPage() {
             currency: bucket.currency,
             leftoverMinor: s.leftoverMinor,
             shortfallMinor: s.shortfallMinor,
+            ...(s.ownerUserId ? { ownerUserId: s.ownerUserId } : {}),
             latestBalance: latestBalanceOf(s),
             ...(s.allocatedInflowMinor === undefined
               ? {}
@@ -211,6 +209,19 @@ export function OverviewPage() {
       }),
     ),
     upcoming: upcoming.data?.items ?? [],
+  };
+
+  // The headline is counted in one currency, so it reads that bucket's `you`
+  // and no other — money in a second currency is left to its own bucket rather
+  // than added to a total that would mean nothing. `headlineCurrency` picks the
+  // same one the sentence is worded in, off the same input, so the figure and
+  // the words can never be about different money.
+  const currency = headlineCurrency(derivedFrom);
+  const needsYou: NeedsYouInput = {
+    asOfDate,
+    userId: me.data?.id,
+    ...derivedFrom,
+    you: buckets.find((b) => b.currency === currency)?.you ?? NOTHING_OF_YOURS,
   };
 
   return (
@@ -262,12 +273,6 @@ export function OverviewPage() {
               named={households.length > 0}
             />
           ))}
-
-          <NetWorth
-            buckets={buckets}
-            histories={histories.data ?? null}
-            onOpenTrend={() => setTrendOpen(true)}
-          />
 
           {/* Last, because it is the only backward-looking thing here: every
               section above is what to do now, and this is what already
@@ -469,8 +474,11 @@ function StandaloneAccounts({
                 <td className="num">
                   <BalanceCell state={s} currency={bucket.currency} asOfDate={asOfDate} />
                 </td>
+                {/* The accounts index's cell, imported rather than copied —
+                    this table is the same four columns and used to print a
+                    different field in this one. */}
                 <td className="num">
-                  <Amount minor={s.leftoverMinor} currency={bucket.currency} />
+                  <LeftOverCell state={s} currency={bucket.currency} />
                 </td>
                 <td>
                   <AttentionCell state={s} currency={bucket.currency} asOfDate={asOfDate} />
@@ -481,147 +489,6 @@ function StandaloneAccounts({
         </tbody>
       </table>
     </>
-  );
-}
-
-// --- net worth ---------------------------------------------------------------
-
-/** What the accounts hold, and how much of it the plan has already claimed. */
-export interface NetWorthTotals {
-  cashMinor: number;
-  reservedMinor: number;
-  /** Cash the plan has no claim on. Negative when the plan is over-committed. */
-  freeMinor: number;
-  /** How many accounts have ever been checked in — nothing above is real
-   *  without at least one. */
-  checkedIn: number;
-}
-
-/**
- * Net worth from the same read the accounts index uses: the latest balance
- * check-in per account, and what that account's plan has set aside. Summed
- * inside one currency only — the caller passes one overview bucket.
- */
-export function netWorthTotals(accounts: readonly OverviewAccountDto[]): NetWorthTotals {
-  let cashMinor = 0;
-  let reservedMinor = 0;
-  let checkedIn = 0;
-
-  for (const account of accounts) {
-    if (account.latestBalanceMinor !== null && account.latestBalanceMinor !== undefined) {
-      cashMinor += account.latestBalanceMinor;
-      checkedIn += 1;
-    }
-    reservedMinor += account.reservedMinor ?? 0;
-  }
-
-  return { cashMinor, reservedMinor, freeMinor: cashMinor - reservedMinor, checkedIn };
-}
-
-/**
- * The sentence under the figure. A balance is not spendable money: the plan has
- * already promised most of it to something, and the difference is the only
- * number worth acting on.
- */
-export function netWorthSentence(totals: NetWorthTotals, currency: string): Phrase {
-  if (totals.checkedIn === 0) {
-    return ["No balances checked in yet — record one and this becomes real."];
-  }
-  const reserved = money(totals.reservedMinor, currency);
-  if (totals.freeMinor < 0) {
-    return [
-      "The plan has ",
-      reserved,
-      " set aside — ",
-      money(-totals.freeMinor, currency),
-      " more than these accounts hold.",
-    ];
-  }
-  return [
-    reserved,
-    " of it is already set aside by the plan, leaving ",
-    money(totals.freeMinor, currency),
-    " genuinely free.",
-  ];
-}
-
-/**
- * What you hold, said in a sentence; the trend is a disclosure behind it.
- *
- * The figure is read off the overview itself. The trend needs a balance history
- * per account, which nothing else on the page wants, so `histories` is null
- * until the disclosure asks for it and the chart says it is loading meanwhile.
- */
-function NetWorth({
-  buckets,
-  histories,
-  onOpenTrend,
-}: {
-  buckets: CurrencyOverviewDto[];
-  histories: AccountBalanceHistory[] | null;
-  onOpenTrend: () => void;
-}) {
-  const points = histories === null ? null : buildNetWorthSeries(histories);
-  const chartRef = useRef<HTMLDivElement>(null);
-  const multi = buckets.length > 1;
-
-  return (
-    <div className="scope-block">
-      <div className="section-head">
-        <h2>net worth</h2>
-        <span className="meta">[from balance check-ins · carried forward]</span>
-      </div>
-
-      {buckets.map((bucket) => {
-        const totals = netWorthTotals(bucket.accounts);
-        return (
-          <div key={bucket.currency} className="networth-line">
-            <div className="networth-figure">
-              {multi && <span className="dim">{bucket.currency} </span>}
-              <Amount minor={totals.cashMinor} currency={bucket.currency} />
-            </div>
-            <p className="networth-sentence">
-              <Sentence phrase={netWorthSentence(totals, bucket.currency)} />
-            </p>
-          </div>
-        );
-      })}
-
-      <details
-        className="disclosure"
-        onToggle={(e) => {
-          if (e.currentTarget.open) onOpenTrend();
-        }}
-      >
-        <summary>net worth over time</summary>
-        {points === null ? (
-          <p className="muted" style={{ fontSize: "12px" }}>
-            loading balances…
-          </p>
-        ) : points.length === 0 ? (
-          <p className="muted" style={{ fontSize: "12px" }}>
-            record balances on your accounts to see net worth over time
-          </p>
-        ) : (
-          <>
-            <div className="disclosure-actions">
-              <DownloadButton targetRef={chartRef} name="net-worth" />
-            </div>
-            <ChartFrame ref={chartRef}>
-              <Suspense
-                fallback={
-                  <p className="muted" style={{ fontSize: "12px" }}>
-                    loading chart…
-                  </p>
-                }
-              >
-                <NetWorthChart points={points} />
-              </Suspense>
-            </ChartFrame>
-          </>
-        )}
-      </details>
-    </div>
   );
 }
 

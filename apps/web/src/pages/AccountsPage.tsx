@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { Amount } from "../components/Amount.js";
+import { LeftOverCell } from "../components/PlanTable.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import { DEFAULT_STALE_AFTER_DAYS } from "../lib/needsYou.js";
@@ -322,12 +323,11 @@ export function AccountsPage() {
                     <td className="num">
                       <BalanceCell state={s} currency={a.currency} asOfDate={asOfDate} />
                     </td>
+                    {/* Through the account page's own helper, so this cell and
+                        that page's KPI cannot print two different figures for
+                        one account. */}
                     <td className="num">
-                      {s ? (
-                        <Amount minor={s.leftoverMinor} currency={a.currency} />
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
+                      <LeftOverCell state={s} currency={a.currency} />
                     </td>
                     <td>
                       <AttentionCell state={s} currency={a.currency} asOfDate={asOfDate} />
