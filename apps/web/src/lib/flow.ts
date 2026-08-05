@@ -49,6 +49,23 @@ import type {
  * than drawing a direct ribbon it has no row for; both halves are true and the
  * node balances, which is the property that matters.
  *
+ * ## …and the transfers with one end off the picture
+ *
+ * `transferInMinor` and `transferOutMinor` are the account's **whole** derived
+ * transport, and `HouseholdPlan.transfers` is deliberately narrower than both:
+ * it lists what arrives at the household's own accounts, so a transfer out to a
+ * member's private pot has no row (it is their business, not the household's)
+ * and a transfer in from a member's private current account has a row whose
+ * sending end is not a node here. Drawn from the rows alone, either case leaves
+ * a node whose ribbons do not meet — a drawing that lies — so whatever the rows
+ * do not account for joins the same two `elsewhere` buckets. `leaving` and
+ * `arriving` below are therefore each *the identity's* term, not a sum of rows,
+ * and every account node balances by construction:
+ *
+ *     income + transferIn + arriving = spending + stays put + transferOut + leaving
+ *
+ * A ribbon is drawn between two nodes only when the plan holds both ends.
+ *
  * `arrivingMinor` is the household plan's own published identity rearranged,
  * not a second derivation:
  *
@@ -60,7 +77,21 @@ import type {
  */
 export function householdFlow(plan: HouseholdPlanDto): FlowDto {
   const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName]));
-  const edges: FlowEdgeDto[] = plan.transfers.map((t) => ({
+  const drawn = new Set(plan.accounts.map((a) => a.accountId));
+  // Only a transfer the plan holds *both* ends of can be a ribbon between two
+  // nodes. The rest is money crossing the edge of the picture, and is counted
+  // into the `elsewhere` buckets below rather than dropped.
+  const between = plan.transfers.filter(
+    (t) => drawn.has(t.fromAccountId) && drawn.has(t.toAccountId),
+  );
+  const rowsOut = new Map<string, number>();
+  const rowsIn = new Map<string, number>();
+  for (const t of between) {
+    rowsOut.set(t.fromAccountId, (rowsOut.get(t.fromAccountId) ?? 0) + t.amountMinor);
+    rowsIn.set(t.toAccountId, (rowsIn.get(t.toAccountId) ?? 0) + t.amountMinor);
+  }
+
+  const edges: FlowEdgeDto[] = between.map((t) => ({
     fromAccountId: t.fromAccountId,
     toAccountId: t.toAccountId,
     amountMinor: t.amountMinor,
@@ -75,17 +106,26 @@ export function householdFlow(plan: HouseholdPlanDto): FlowDto {
   }));
 
   for (const a of plan.accounts) {
-    const committed = a.committedMinor ?? 0;
-    if (committed > 0) {
+    // Everything leaving for somewhere this picture has no node for: the
+    // savings bucket, plus the derived transport out that no row above carries.
+    // Floored defensively — the rows are a subset of the account's own total, so
+    // the difference cannot go negative unless a caller builds the two halves
+    // from different plans.
+    const leaving =
+      (a.committedMinor ?? 0) + Math.max(0, a.transferOutMinor - (rowsOut.get(a.accountId) ?? 0));
+    if (leaving > 0) {
       edges.push({
         fromAccountId: a.accountId,
         toAccountId: null,
-        amountMinor: committed,
-        requestedMinor: committed,
+        amountMinor: leaving,
+        requestedMinor: leaving,
         status: "funded",
       });
     }
-    const arriving = arrivingMinor(a);
+    // The mirror: what authored movements delivered, plus the derived transport
+    // in whose sender is off the picture.
+    const arriving =
+      arrivingMinor(a) + Math.max(0, a.transferInMinor - (rowsIn.get(a.accountId) ?? 0));
     if (arriving > 0) {
       edges.push({
         fromAccountId: null,

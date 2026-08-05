@@ -140,6 +140,11 @@ describe("householdFlow", () => {
         shortfallMinor: 0,
       },
     ],
+    // Both ends of the transfer below, because a household plan holds both:
+    // `transfers` lists what arrives at the household's *own* accounts (WP-X),
+    // so a row whose destination is missing from `accounts` is a plan that
+    // cannot exist — and it was the fixture's way of hiding that a ribbon with
+    // one end off the picture is not drawn at all.
     accounts: [
       {
         accountId: "cur",
@@ -153,6 +158,20 @@ describe("householdFlow", () => {
         transferInMinor: 0,
         transferOutMinor: 100_000,
         leftoverMinor: 200_000,
+        shortfallMinor: 0,
+      },
+      {
+        accountId: "bills",
+        name: "bills",
+        role: "shared",
+        memberUserId: null,
+        currency: "GBP",
+        monthlyIncomeMinor: 0,
+        requiredOutflowMinor: 100_000,
+        fundedOutflowMinor: 100_000,
+        transferInMinor: 100_000,
+        transferOutMinor: 0,
+        leftoverMinor: 0,
         shortfallMinor: 0,
       },
     ],
@@ -171,6 +190,14 @@ describe("householdFlow", () => {
         incomeMinor: 300_000,
         spendingMinor: 0,
         leftoverMinor: 200_000,
+        shortfallMinor: 0,
+      },
+      {
+        accountId: "bills",
+        name: "bills",
+        incomeMinor: 0,
+        spendingMinor: 100_000,
+        leftoverMinor: 0,
         shortfallMinor: 0,
       },
     ]);
@@ -195,7 +222,7 @@ describe("householdFlow", () => {
     const saving = householdFlow({
       ...plan,
       committedMinor: 50_000,
-      accounts: [{ ...plan.accounts[0]!, committedMinor: 50_000 }],
+      accounts: [{ ...plan.accounts[0]!, committedMinor: 50_000 }, plan.accounts[1]!],
     });
 
     expect(saving.accounts[0]!.leftoverMinor).toBe(150_000);
@@ -247,6 +274,66 @@ describe("householdFlow", () => {
     // The ordinary case, and the one every existing figure has to survive: no
     // committed bucket, nothing arriving, and the picture as it always was.
     expect(householdFlow(plan).edges).toHaveLength(1);
+  });
+
+  /**
+   * WP-X. `HouseholdPlan.transfers` lists what arrives at the household's own
+   * accounts, so both of these are transport with one end off the picture: the
+   * £300 Alice sends on to a pot of her own has **no row at all**, and the £250
+   * arriving from a private account of hers has a row whose sender is not a node
+   * here. `transferOutMinor` and `transferInMinor` count both, because the money
+   * really does move — so drawn from the rows alone each node would be short by
+   * exactly that, which is a picture that lies about an account's balance.
+   */
+  it("sends the transport it has no row for to elsewhere, at either end", () => {
+    const wider = householdFlow({
+      ...plan,
+      accounts: [
+        // Alice sends £1,000 to the bills pot and £300 on to a pot of her own.
+        { ...plan.accounts[0]!, transferOutMinor: 130_000, leftoverMinor: 170_000 },
+        // …and £250 of the pot's feed comes from an account nobody assigned here.
+        { ...plan.accounts[1]!, transferInMinor: 125_000, leftoverMinor: 25_000 },
+      ],
+      transfers: [
+        ...plan.transfers,
+        {
+          fromAccountId: "alice-private",
+          toAccountId: "bills",
+          memberUserId: "alice",
+          amountMinor: 25_000,
+        },
+      ],
+    });
+
+    expect(wider.edges).toContainEqual({
+      fromAccountId: "cur",
+      toAccountId: null,
+      amountMinor: 30_000,
+      requestedMinor: 30_000,
+      status: "funded",
+    });
+    expect(wider.edges).toContainEqual({
+      fromAccountId: null,
+      toAccountId: "bills",
+      amountMinor: 25_000,
+      requestedMinor: 25_000,
+      status: "funded",
+    });
+    // The row whose sender is off the picture is not drawn as a ribbon — there
+    // is no node to draw it from — and is not counted twice either.
+    expect(wider.edges.filter((e) => e.memberUserId !== undefined)).toHaveLength(1);
+
+    // The property the whole thing exists for: every account node balances.
+    for (const a of wider.accounts) {
+      const inMinor =
+        a.incomeMinor +
+        wider.edges.reduce((s, e) => s + (e.toAccountId === a.accountId ? e.amountMinor : 0), 0);
+      const outMinor =
+        a.spendingMinor +
+        Math.max(0, a.leftoverMinor) +
+        wider.edges.reduce((s, e) => s + (e.fromAccountId === a.accountId ? e.amountMinor : 0), 0);
+      expect([a.accountId, inMinor]).toEqual([a.accountId, outMinor]);
+    }
   });
 });
 
