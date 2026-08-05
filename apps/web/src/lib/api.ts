@@ -26,6 +26,7 @@ import type {
   PlanPreviewDto,
   ProjectDetailDto,
   ProjectDto,
+  ProjectVisibility,
   TotpDisableDto,
   TotpEnableDto,
   TotpSetupDto,
@@ -595,11 +596,30 @@ export class ApiClient {
   }
 
   // ---- projects ----
+  /** Every project you can see: yours, plus a co-member's shared ones. */
   listProjects() {
     return this.request<ProjectDto[]>("GET", "/api/projects");
   }
-  createProject(body: { name: string; description?: string | null; targetDate?: string | null }) {
+  createProject(body: {
+    name: string;
+    description?: string | null;
+    targetDate?: string | null;
+    visibility?: ProjectVisibility;
+  }) {
     return this.request<ProjectDto>("POST", "/api/projects", body);
+  }
+  /** Owner only, including the visibility flip. Going shared refuses, naming
+   *  every payment on an account the household cannot see. */
+  updateProject(
+    id: string,
+    body: {
+      name?: string;
+      description?: string | null;
+      targetDate?: string | null;
+      visibility?: ProjectVisibility;
+    },
+  ) {
+    return this.request<ProjectDto>("PATCH", `/api/projects/${id}`, body);
   }
   getProject(id: string) {
     return this.request<ProjectDetailDto>("GET", `/api/projects/${id}`);

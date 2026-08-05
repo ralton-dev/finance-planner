@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext.js";
 import { api, ApiError } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -15,6 +16,7 @@ const CATEGORY_LABEL: Record<string, string> = {
 export function ProjectDetailPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const project = useAsync<ProjectDetailDto>(() => api.getProject(id), [id]);
 
   if (project.error) return <p className="error">project not found.</p>;
@@ -37,6 +39,9 @@ export function ProjectDetailPage() {
     .sort()[0];
 
   const uniqueAccounts = new Set(data.payments.map((p) => p.accountId)).size;
+  const isMine = data.ownerUserId === user?.id;
+  const owner = isMine ? "you" : (data.ownerName ?? "a co-member");
+  const isShared = data.visibility === "shared";
 
   return (
     <section>
@@ -50,10 +55,21 @@ export function ProjectDetailPage() {
             <Link to="/projects" className="action" style={{ marginRight: "0.75rem" }}>
               ← back
             </Link>
+            {/* Whose it is and who else can read it, said in that order: the
+                second only means anything once you know the first. */}
+            <span className={`tag-status ${isShared ? "neutral" : "idle"}`}>
+              {isShared ? "shared" : "personal"}
+            </span>{" "}
+            <span className="muted">{isMine ? "yours" : `owned by ${owner}`}</span> ·{" "}
             {data.payments.length} payment{data.payments.length === 1 ? "" : "s"} · {uniqueAccounts}{" "}
             account{uniqueAccounts === 1 ? "" : "s"}
             {data.targetDate && ` · target ${data.targetDate}`}
             {earliestDue && ` · earliest due ${earliestDue}`}
+          </div>
+          <div className="hint">
+            {isShared
+              ? "everyone in your household can read this project and file their own payments into it. it may only hold payments on accounts shared into the household."
+              : "only you can read this project. it may hold payments on any account you own."}
           </div>
         </div>
       </div>
@@ -115,7 +131,10 @@ export function ProjectDetailPage() {
                     {p.name}
                   </Link>
                 </td>
-                <td className="muted">{p.accountName}</td>
+                {/* The name is absent when this caller may not be told it — a
+                    payment outlives access to the account under it. Say so
+                    honestly rather than rendering an empty cell. */}
+                <td className="muted">{p.accountName ?? "another account"}</td>
                 <td className="muted">{CATEGORY_LABEL[p.category] ?? p.category}</td>
                 <td className="muted">{p.dueDate ?? "—"}</td>
                 <td className="num">{formatMinor(p.amountMinor, p.currency)}</td>
@@ -126,11 +145,15 @@ export function ProjectDetailPage() {
         </table>
       )}
 
-      <DeleteProjectZone
-        projectId={data.id}
-        projectName={data.name}
-        onDeleted={() => navigate("/projects")}
-      />
+      {/* Deleting a shared project is its owner's alone. Offering the control
+          to a co-member would only ever produce a 403. */}
+      {isMine && (
+        <DeleteProjectZone
+          projectId={data.id}
+          projectName={data.name}
+          onDeleted={() => navigate("/projects")}
+        />
+      )}
     </section>
   );
 }

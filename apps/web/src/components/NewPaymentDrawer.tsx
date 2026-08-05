@@ -178,7 +178,21 @@ export function NewPaymentDrawer() {
   const dateVisible = dateRequired || paceDateOptional;
   // Mirrors the server: a fixed_point payment needs a due date OR a monthly cap.
   const goalReady = !isGoal || (goalMode === "date" ? !!dueDate : monthlyMinor > 0);
-  const canSubmit = !!accountId && !!name.trim() && !!amount && goalReady && !busy;
+
+  // Decision 23, refused here rather than after the round trip: a **shared**
+  // project may only hold payments on accounts shared into the household, so
+  // the two fields constrain each other and whichever the user set last is the
+  // one that has to give. The account is the more committed choice — the drawer
+  // often opens on it — so an unshared account greys the shared projects out
+  // instead of the other way round.
+  const chosenAccount = (accounts.data ?? []).find((a) => a.id === accountId);
+  const accountIsShared = chosenAccount?.sharedIntoHousehold ?? false;
+  const projectAllowed = (p: ProjectDto): boolean => p.visibility !== "shared" || accountIsShared;
+  const chosenProject = (projects.data ?? []).find((p) => p.id === projectId);
+  const projectBlocked = !!chosenProject && !projectAllowed(chosenProject);
+
+  const canSubmit =
+    !!accountId && !!name.trim() && !!amount && goalReady && !projectBlocked && !busy;
 
   function buildBody(): Record<string, unknown> {
     const body: Record<string, unknown> = {
@@ -460,12 +474,21 @@ export function NewPaymentDrawer() {
           >
             <option value="">— none —</option>
             {(projects.data ?? []).map((p) => (
-              <option key={p.id} value={p.id}>
+              <option key={p.id} value={p.id} disabled={!projectAllowed(p)}>
                 {p.name}
+                {p.visibility === "shared"
+                  ? ` — shared${p.ownerName ? ` · ${p.ownerName}` : ""}`
+                  : ""}
               </option>
             ))}
           </select>
-          <span className="field-hint">group this payment with others toward a shared goal.</span>
+          <span className="field-hint">
+            {projectBlocked
+              ? `${chosenProject?.name} is shared with your household, so it can only hold payments on accounts shared into it. share ${chosenAccount?.name ?? "this account"} first, or pick a personal project.`
+              : accountIsShared
+                ? "group this payment with others toward a shared goal. shared projects are open to you because this account is shared into your household."
+                : "group this payment with others toward a shared goal. shared projects need an account shared into your household."}
+          </span>
         </label>
 
         <label>

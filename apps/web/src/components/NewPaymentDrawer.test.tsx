@@ -114,7 +114,7 @@ function bodyOf(method: string, suffix: string): Record<string, unknown> | undef
 /** Fill in the fields every payment needs, so a test can get to its own point. */
 async function fillBasics(name = "New telly", amount = "1200"): Promise<void> {
   await waitFor(() =>
-    expect((screen.getByLabelText(/account/i) as HTMLSelectElement).value).toBe("acc-1"),
+    expect((screen.getByLabelText(/^account/i) as HTMLSelectElement).value).toBe("acc-1"),
   );
   fireEvent.change(screen.getByPlaceholderText(/holiday/i), { target: { value: name } });
   fireEvent.change(screen.getByLabelText(/^amount$/i), { target: { value: amount } });
@@ -187,7 +187,7 @@ describe("NewPaymentDrawer", () => {
   it("pre-selects the account passed via openPayment(accountId)", async () => {
     render(<Harness accountId="acc-1" />);
     await waitFor(() =>
-      expect((screen.getByLabelText(/account/i) as HTMLSelectElement).value).toBe("acc-1"),
+      expect((screen.getByLabelText(/^account/i) as HTMLSelectElement).value).toBe("acc-1"),
     );
   });
 
@@ -215,7 +215,7 @@ describe("NewPaymentDrawer", () => {
   it("submits a fixed_point payment POST with the right body", async () => {
     render(<Harness accountId="acc-1" />);
     await waitFor(() =>
-      expect((screen.getByLabelText(/account/i) as HTMLSelectElement).value).toBe("acc-1"),
+      expect((screen.getByLabelText(/^account/i) as HTMLSelectElement).value).toBe("acc-1"),
     );
 
     fireEvent.change(screen.getByPlaceholderText(/holiday/i), { target: { value: "Holiday" } });
@@ -295,7 +295,7 @@ describe("NewPaymentDrawer", () => {
     expect(screen.getByDisplayValue("2026-09-01")).toBeInTheDocument();
 
     // Category stays locked; the account is now movable (edit + recreate is gone).
-    expect(screen.getByLabelText(/account/i)).not.toBeDisabled();
+    expect(screen.getByLabelText(/^account/i)).not.toBeDisabled();
     expect(screen.getByLabelText(/category/i)).toBeDisabled();
 
     // Rename and save

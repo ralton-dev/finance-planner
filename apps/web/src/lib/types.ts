@@ -113,6 +113,10 @@ export interface AccountDto {
   monthlyBufferMinor: number;
   permission?: "view" | "edit";
   owner?: boolean;
+  /** Is this account shared into a household of yours? Decision 23's constraint
+   *  told to the browser before it can be broken: only accounts that are may
+   *  hold payments in a **shared** project. */
+  sharedIntoHousehold?: boolean;
 }
 
 export interface IncomeDto {
@@ -182,6 +186,10 @@ export interface PaymentDto {
   tag?: string | null;
 }
 
+/** Personal, or shared into the owner's household. There is no third answer and
+ *  no household id beside it — you belong to exactly one. */
+export type ProjectVisibility = "personal" | "shared";
+
 export interface ProjectDto {
   id: string;
   ownerUserId: string;
@@ -189,12 +197,24 @@ export interface ProjectDto {
   description: string | null;
   color: string | null;
   targetDate: string | null;
+  visibility: ProjectVisibility;
+  /** Whose it is, by display name. Present whenever the owner still exists —
+   *  you can only see a project you own or a co-member's shared one, so this is
+   *  never a stranger. */
+  ownerName?: string;
 }
 
 export interface ProjectMemberPaymentDto {
   id: string;
   accountId: string;
-  accountName: string;
+  /**
+   * **Absent when the caller may not be told it.** A payment can outlive your
+   * access to the account under it — a share withdrawn leaves the payment in
+   * your project and the account out of your reach — and the wire says so by
+   * omitting the field rather than inventing a name. Render the honest
+   * fallback, "another account"; never `undefined`.
+   */
+  accountName?: string;
   currency: string;
   name: string;
   category: PaymentCategory;
