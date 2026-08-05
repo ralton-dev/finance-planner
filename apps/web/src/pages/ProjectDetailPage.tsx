@@ -112,37 +112,41 @@ export function ProjectDetailPage() {
           </p>
         </div>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>name</th>
-              <th>account</th>
-              <th>type</th>
-              <th>due</th>
-              <th className="num">amount</th>
-              <th className="num">saved</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.payments.map((p) => (
-              <tr key={p.id}>
-                <td>
-                  <Link to={`/accounts/${p.accountId}`} className="name">
-                    {p.name}
-                  </Link>
-                </td>
-                {/* The name is absent when this caller may not be told it — a
-                    payment outlives access to the account under it. Say so
-                    honestly rather than rendering an empty cell. */}
-                <td className="muted">{p.accountName ?? "another account"}</td>
-                <td className="muted">{CATEGORY_LABEL[p.category] ?? p.category}</td>
-                <td className="muted">{p.dueDate ?? "—"}</td>
-                <td className="num">{formatMinor(p.amountMinor, p.currency)}</td>
-                <td className="num">{formatMinor(p.alreadySavedMinor, p.currency)}</td>
+        // Six columns never fitted 390px; the page scrolled sideways instead of
+        // the table. The house wrapper puts the scroll back where it belongs.
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>name</th>
+                <th>account</th>
+                <th>type</th>
+                <th>due</th>
+                <th className="num">amount</th>
+                <th className="num">saved</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.payments.map((p) => (
+                <tr key={p.id}>
+                  <td>
+                    <Link to={`/accounts/${p.accountId}`} className="name">
+                      {p.name}
+                    </Link>
+                  </td>
+                  {/* The name is absent when this caller may not be told it — a
+                      payment outlives access to the account under it. Say so
+                      honestly rather than rendering an empty cell. */}
+                  <td className="muted">{p.accountName ?? "another account"}</td>
+                  <td className="muted">{CATEGORY_LABEL[p.category] ?? p.category}</td>
+                  <td className="muted">{p.dueDate ?? "—"}</td>
+                  <td className="num">{formatMinor(p.amountMinor, p.currency)}</td>
+                  <td className="num">{formatMinor(p.alreadySavedMinor, p.currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {/* Deleting a shared project is its owner's alone. Offering the control

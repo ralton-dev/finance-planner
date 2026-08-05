@@ -116,21 +116,26 @@ export function ProjectsPage() {
           </p>
         </div>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>name</th>
-              <th>visibility</th>
-              <th>target date</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {mine.map((p) => (
-              <OwnedProjectRow key={p.id} project={p} onChanged={() => projects.refetch()} />
-            ))}
-          </tbody>
-        </table>
+        // The visibility column is a fourth, and four does not fit at 390. The
+        // house wrapper, not a narrower table: the row scrolls inside itself and
+        // the page never scrolls sideways.
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>name</th>
+                <th>visibility</th>
+                <th>target date</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {mine.map((p) => (
+                <OwnedProjectRow key={p.id} project={p} onChanged={() => projects.refetch()} />
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {theirs.length > 0 && (
@@ -143,39 +148,41 @@ export function ProjectsPage() {
             projects your household shared. you can open one and file your own payments into it;
             only its owner can rename or un-share it.
           </p>
-          <table>
-            <thead>
-              <tr>
-                <th>name</th>
-                <th>owner</th>
-                <th>target date</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {theirs.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    <span className="member-dot shared" aria-hidden="true" />
-                    <Link to={`/projects/${p.id}`} className="name">
-                      {p.name}
-                    </Link>
-                  </td>
-                  <td className="muted">{p.ownerName ?? "a co-member"}</td>
-                  <td className="muted">{p.targetDate ?? "—"}</td>
-                  <td className="row-actions-cell">
-                    <Link
-                      to={`/projects/${p.id}`}
-                      className="row-edit"
-                      aria-label={`open ${p.name}`}
-                    >
-                      open →
-                    </Link>
-                  </td>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>name</th>
+                  <th>owner</th>
+                  <th>target date</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {theirs.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <span className="member-dot shared" aria-hidden="true" />
+                      <Link to={`/projects/${p.id}`} className="name">
+                        {p.name}
+                      </Link>
+                    </td>
+                    <td className="muted">{p.ownerName ?? "a co-member"}</td>
+                    <td className="muted">{p.targetDate ?? "—"}</td>
+                    <td className="row-actions-cell">
+                      <Link
+                        to={`/projects/${p.id}`}
+                        className="row-edit"
+                        aria-label={`open ${p.name}`}
+                      >
+                        open →
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </section>
