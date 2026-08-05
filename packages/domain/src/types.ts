@@ -124,6 +124,34 @@ export interface InflowArrival {
 }
 
 /**
+ * One derived transfer **leaving** an account, per far end.
+ *
+ * `InflowArrival`'s opposite number, and it exists for the same reason: the
+ * arriving side was itemised and the leaving side was one scalar, so a page
+ * standing on the sending account could only ever say "£2,585.84 leaves here"
+ * over three transfers to three different accounts, and had to invent a label
+ * for a far end that was a *set*. Each of these is one `DerivedTransfer` — one
+ * destination, one member, its own confirmation state — so the same page now
+ * says which account each part of that figure goes to and which parts have
+ * moved.
+ *
+ * The sending account is implied (it is the plan's own account) and so is the
+ * currency: a derived transfer never crosses one (decision 10), and an
+ * account's currency is fixed at creation.
+ */
+export interface TransferDeparture {
+  toAccountId: string;
+  /** The member whose money this is — what a confirmation is scoped by, along
+   *  with the two accounts and the month. */
+  memberUserId: string;
+  amountMinor: number;
+  /** How much of `amountMinor` somebody has said actually moved (<= it).
+   *  Counts confirmations made on either surface: a household pot's transfer
+   *  ticked on the household checklist reads as moved here too. */
+  confirmedMinor: number;
+}
+
+/**
  * Somebody has said this movement happened.
  *
  * Input to the pass, where `InflowArrival` is its output: a confirmation is
@@ -325,6 +353,16 @@ export interface AccountPlan {
    * Additive: no existing field moves (decision 4/13).
    */
   transferOutMinor: number;
+  /**
+   * That same money, itemised by where it goes — one entry per derived transfer
+   * leaving this account, each with its own confirmation state.
+   *
+   * `Σ transferDepartures[].amountMinor === transferOutMinor`, always and
+   * exactly: both are read off the one pass's `transfers`, and the scalar is
+   * kept because other surfaces read it (decision 4/13 — added alongside, never
+   * redefined). Empty exactly when the scalar is zero.
+   */
+  transferDepartures: TransferDeparture[];
   /** Every movement out of this account, funded from what the payments left.
    *  Empty for an account that sends nothing anywhere. */
   outboundInflows: OutboundInflowPlan[];

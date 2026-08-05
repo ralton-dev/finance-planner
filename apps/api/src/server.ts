@@ -38,6 +38,7 @@ import {
   overviewFromPlans,
   toISODate,
   type Transfer,
+  type TransferDeparture,
 } from "@finance-planner/domain";
 import { createMailer, type Mailer } from "@finance-planner/mailer";
 import { type Action, type AppAbility, buildAbility, subject } from "@finance-planner/policies";
@@ -295,6 +296,16 @@ type PlanInflowSource =
     };
 
 /**
+ * One derived transfer leaving an account, with the far end's name wherever the
+ * caller may be told it.
+ *
+ * `PlanInflowSource`'s opposite number, and gated the same way for the same
+ * reason: the id and the amount travel, the name is gated on `getAccess`. See
+ * `withTransferDestinations`.
+ */
+type PlanTransferDeparture = TransferDeparture & { toAccountName?: string };
+
+/**
  * The household plan on the wire: its own shape, plus the source account's name
  * on any transfer arriving from an account the household does not hold.
  *
@@ -522,6 +533,46 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   };
 
   /**
+   * The derived transfers leaving this account, carrying each destination's name
+   * wherever this caller is allowed it.
+   *
+   * The plan publishes them itemised (`AccountPlan.transferDepartures`) because
+   * `transferOutMinor` alone could not say where the money goes: the account page
+   * drew one synthetic row for the lot and had to label a far end that was a set
+   * of accounts. Names are the only thing gated, and by the mechanism WP-J
+   * established and `339afcc` reused for transfer *sources* rather than a third
+   * one: `getAccess` decides, the ids and the amounts travel regardless.
+   *
+   * The destinations are the caller's own accounts or their household's, so in
+   * practice the name is nearly always theirs to see — but "nearly always" is
+   * not a rule. An expense pot shared into the caller's scope by someone who has
+   * since un-shared it, or a household pot the caller can reach through
+   * membership and not through the account, both land here; the client renders
+   * the same honest absence for either, exactly as it does for a sender it
+   * cannot see.
+   */
+  const withTransferDestinations = async (
+    userId: string,
+    departures: readonly TransferDeparture[],
+  ): Promise<PlanTransferDeparture[]> => {
+    /** id → name, or null for "not this caller's to see". Memoised because one
+     *  destination can take a transfer from each member, not one row. */
+    const seen = new Map<string, string | null>();
+    const named: PlanTransferDeparture[] = [];
+    for (const d of departures) {
+      if (!seen.has(d.toAccountId)) {
+        const destination = (await store.getAccess(userId, d.toAccountId))
+          ? await store.getAccount(d.toAccountId)
+          : null;
+        seen.set(d.toAccountId, destination?.name ?? null);
+      }
+      const name = seen.get(d.toAccountId);
+      named.push(name == null ? { ...d } : { ...d, toAccountName: name });
+    }
+    return named;
+  };
+
+  /**
    * The household's transfers, carrying the source account's name wherever this
    * caller is allowed it.
    *
@@ -675,6 +726,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const plan = await computePlanForAccount(store, account, asOfDate, ctx);
     return {
       ...plan,
+      // The one field on the plan that gets enriched rather than passed through:
+      // the same list, with the destinations this caller may be told named. See
+      // `withTransferDestinations`.
+      transferDepartures: await withTransferDestinations(userId, plan.transferDepartures),
       ...(await accountReality(store, plan, asOfDate)),
       inflowSources: await planInflowSources(userId, account, plan, scope),
     };

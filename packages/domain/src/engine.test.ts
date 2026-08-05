@@ -175,12 +175,14 @@ describe("requiredMonthlyForPayment", () => {
  * field dropped is `internalInflowUsedMinor`, which existed solely to feed the
  * rollup netting deleted with it (see `overviewFromPlans`).
  *
- * Two fields have been *added* since. `confirmedTransferMinor` is the derived
+ * Three fields have been *added* since. `confirmedTransferMinor` is the derived
  * half of `confirmedInflowMinor`, which line statuses are now decided against
  * (WP-V); `transferOutMinor` is the derived transport leaving, published rather
  * than left for the account page to recover from `leftoverMinor`'s identity
- * (WP-Y). Nothing arrives at this account and nothing is derived out of it, so
- * both are zero and no figure here moves; the pin is otherwise untouched.
+ * (WP-Y); `transferDepartures` is that same transport itemised by far end
+ * (WP-AH). Nothing arrives at this account and nothing is derived out of it, so
+ * all three are empty or zero and no figure here moves; the pin is otherwise
+ * untouched.
  */
 const ACCOUNT_ENGINE_AT_40F65D8: AccountPlan = {
   accountId: "current",
@@ -198,6 +200,7 @@ const ACCOUNT_ENGINE_AT_40F65D8: AccountPlan = {
   inflowArrivals: [],
   outboundInflowMinor: 0,
   transferOutMinor: 0,
+  transferDepartures: [],
   outboundInflows: [],
   lines: [
     {
@@ -520,6 +523,174 @@ describe("accountPlanFromScope — arriving money and what it funds", () => {
     // holds; the page no longer depends on it.
     expect(plan.transferOutMinor).toBe(80_000);
     expect(plan.leftoverMinor + plan.transferOutMinor).toBe(plan.monthlyIncomeMinor);
+    // …and says *where* it goes (WP-AH). One destination here, so the list is
+    // the scalar with an address on it; the interesting case is below.
+    expect(plan.transferDepartures).toEqual([
+      { toAccountId: "pot", memberUserId: "owner", amountMinor: 80_000, confirmedMinor: 0 },
+    ]);
+  });
+});
+
+/**
+ * The defect the owner found on the deployed build: three transfers, one row.
+ *
+ * `transferOutMinor` is a scalar, so a page standing on the sending account
+ * could only draw a single synthetic line for it and had to name a far end that
+ * was a *set* of accounts — "£2,585.84 → your bills", over a bills pot and two
+ * shared pots. And its settled state was a hardcoded `false`, because a scalar
+ * has no confirmation of its own: a transfer ticked where it lands could never
+ * read as moved from the account it leaves.
+ *
+ * So: three destinations, three different amounts, and confirmations covering
+ * one fully, one partly and one not at all. The identity against the scalar is
+ * asserted here rather than assumed — both are read off the same `transfers`,
+ * and this is what says so.
+ */
+describe("accountPlanFromScope — what leaves, itemised by where it goes", () => {
+  const THREE: ScopeInput = {
+    scopeId: "owner",
+    members: [{ userId: "owner", shareBp: 10_000 }],
+    accounts: [
+      {
+        accountId: "current",
+        role: "personal",
+        memberUserId: "owner",
+        currency: "GBP",
+        incomes: [{ id: "inc", amountMinor: 300_000, frequency: "monthly", anchorDate: AS_OF }],
+        payments: [],
+      },
+      {
+        accountId: "bills",
+        role: "personal",
+        memberUserId: "owner",
+        currency: "GBP",
+        incomes: [],
+        payments: [
+          {
+            id: "rent",
+            name: "rent",
+            category: "monthly_recurring",
+            scope: "personal",
+            amountMinor: 120_000,
+            priority: 1,
+          },
+        ],
+      },
+      {
+        accountId: "car",
+        role: "personal",
+        memberUserId: "owner",
+        currency: "GBP",
+        incomes: [],
+        payments: [
+          {
+            id: "insurance",
+            name: "insurance",
+            category: "monthly_recurring",
+            scope: "personal",
+            amountMinor: 8_000,
+            priority: 2,
+          },
+        ],
+      },
+      {
+        accountId: "holiday",
+        role: "personal",
+        memberUserId: "owner",
+        currency: "GBP",
+        incomes: [],
+        payments: [
+          {
+            id: "flights",
+            name: "flights",
+            category: "monthly_recurring",
+            scope: "personal",
+            amountMinor: 45_000,
+            priority: 3,
+          },
+        ],
+      },
+    ],
+    confirmedTransfers: [
+      // Moved in full.
+      {
+        fromAccountId: "current",
+        toAccountId: "bills",
+        memberUserId: "owner",
+        confirmedMinor: 120_000,
+      },
+      // Part of it moved — enough to be a different state from either of the
+      // others, and not enough to read as done.
+      {
+        fromAccountId: "current",
+        toAccountId: "holiday",
+        memberUserId: "owner",
+        confirmedMinor: 20_000,
+      },
+    ],
+  };
+
+  it("itemises every destination, and sums to the scalar exactly", () => {
+    const plan = accountPlanFromScope(THREE, computeScopePlan(THREE, AS_OF), "current");
+    expect(plan.transferDepartures).toEqual([
+      {
+        toAccountId: "bills",
+        memberUserId: "owner",
+        amountMinor: 120_000,
+        confirmedMinor: 120_000,
+      },
+      {
+        toAccountId: "holiday",
+        memberUserId: "owner",
+        amountMinor: 45_000,
+        confirmedMinor: 20_000,
+      },
+      { toAccountId: "car", memberUserId: "owner", amountMinor: 8_000, confirmedMinor: 0 },
+    ]);
+    // The identity, asserted rather than assumed. Nothing else may be added to
+    // one of these two without moving the other.
+    expect(plan.transferDepartures.reduce((s, d) => s + d.amountMinor, 0)).toBe(
+      plan.transferOutMinor,
+    );
+    expect(plan.transferOutMinor).toBe(173_000);
+  });
+
+  it("gives each destination its own settled state, not one for the lot", () => {
+    const plan = accountPlanFromScope(THREE, computeScopePlan(THREE, AS_OF), "current");
+    expect(plan.transferDepartures.map((d) => d.confirmedMinor >= d.amountMinor)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  it("is empty exactly when nothing is derived out", () => {
+    const plan = accountPlanFromScope(THREE, computeScopePlan(THREE, AS_OF), "bills");
+    expect(plan.transferOutMinor).toBe(0);
+    expect(plan.transferDepartures).toEqual([]);
+  });
+
+  it("orders two equal amounts by the pass's own order, not by luck", () => {
+    // The comparator sorts on amount alone and leans on `Array.prototype.sort`
+    // being stable over an input `computeScopePlan` already sorted by
+    // `(from, to, member)`. Two identical amounts are what tests that: `car`
+    // before `holiday` is the pass's order, and a second `.sort` key would be
+    // spelling it out again.
+    const tied: ScopeInput = {
+      ...THREE,
+      accounts: THREE.accounts.map((a) =>
+        a.accountId === "holiday" || a.accountId === "car"
+          ? { ...a, payments: a.payments.map((p) => ({ ...p, amountMinor: 25_000 })) }
+          : a,
+      ),
+      confirmedTransfers: [],
+    };
+    const plan = accountPlanFromScope(tied, computeScopePlan(tied, AS_OF), "current");
+    expect(plan.transferDepartures.map((d) => [d.toAccountId, d.amountMinor])).toEqual([
+      ["bills", 120_000],
+      ["car", 25_000],
+      ["holiday", 25_000],
+    ]);
   });
 });
 

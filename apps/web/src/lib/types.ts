@@ -299,6 +299,28 @@ export interface InflowArrivalDto {
 }
 
 /**
+ * One derived transfer **leaving** an account, per far end.
+ *
+ * `InflowArrivalDto`'s opposite number. `transferOutMinor` says how much leaves
+ * and could never say where it goes, so the account page drew one row for the
+ * lot and labelled a far end that was a set of accounts; these say which
+ * account each part goes to, and which parts have actually moved.
+ */
+export interface TransferDepartureDto {
+  toAccountId: string;
+  /** The member whose money this is — what a confirmation is scoped by. */
+  memberUserId: string;
+  amountMinor: number;
+  /** How much of `amountMinor` somebody has said actually moved. Counts
+   *  confirmations made on either surface, so a household pot's transfer ticked
+   *  on the household checklist reads as moved here too. */
+  confirmedMinor: number;
+  /** Only when the caller can see the destination account — the same gate the
+   *  API applies to a sender's name. */
+  toAccountName?: string;
+}
+
+/**
  * One sender's share of the money arriving into an account this month.
  *
  * Discriminated rather than merged, because there really are two senders: a
@@ -399,6 +421,12 @@ export interface AccountPlanDto {
    *  it — expense transport, authored by nobody. Unlike the field above this
    *  one *is* already taken out of `leftoverMinor`. */
   transferOutMinor?: number;
+  /**
+   * That same money, itemised by where it goes — `Σ amountMinor` is exactly
+   * `transferOutMinor`, which is kept because other surfaces read it. Empty
+   * exactly when that figure is zero.
+   */
+  transferDepartures?: TransferDepartureDto[];
   /**
    * Where the arriving money is coming from, when the caller may be told.
    * `null` — the API's own answer — means nothing is arriving that this caller

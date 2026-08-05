@@ -31,15 +31,18 @@ const UNNAMED = "another account";
  *  to edit, no priority to reorder and no row to remove. */
 export interface DerivedRow {
   key: string;
-  /** The member the plan asks, or the honest absence when it may not be named. */
+  /** The far end — the member the plan asks on the arriving side, the account
+   *  the money goes to on the leaving one — or the honest absence when it may
+   *  not be named. */
   name: string;
   amountMinor: number;
   /** Whether somebody has said this month's transfer actually moved. */
   settled: boolean;
   /** The member being asked, and the account they send from — what "I moved it"
    *  is scoped by, since nobody authored a row to point at. Absent on the
-   *  aggregate row for what *leaves* here, which is one figure over several
-   *  transfers and is nobody's single thing to tick. */
+   *  leaving side, which reflects the tick and does not offer it: the
+   *  confirmation endpoints are nested under the *receiving* account and take
+   *  `edit` there, and this page holds no answer for the far end. */
   fromAccountId?: string;
   memberUserId?: string;
 }
@@ -185,12 +188,12 @@ export function AccountMovements({
   // hundreds of pounds smaller than the income above it, with nothing saying
   // why. Read off the plan since WP-Y; it used to be recovered by rearranging
   // `residualMinor`'s identity.
-  const leavingDerived = plan?.transferOutMinor ?? 0;
+  const leavingDerived = derivedDepartures(plan);
   const nothing =
     arriving.length === 0 &&
     leaving.length === 0 &&
     arrivingDerived.length === 0 &&
-    leavingDerived === 0;
+    leavingDerived.length === 0;
   if (nothing && !canEdit) return null;
 
   return (
@@ -227,22 +230,7 @@ export function AccountMovements({
           empty="this account sends nothing on."
           addLabel="+ money out"
           rows={leaving}
-          derived={
-            leavingDerived > 0
-              ? [
-                  {
-                    key: "derived-out",
-                    // Short on purpose: the far end is a set of accounts, not
-                    // one, and `.movement-end` ellipsises anything longer than
-                    // a name — measured at 1280px, where "the bills these
-                    // transfers fund" arrived as "the bills these transfe…".
-                    name: "your bills",
-                    amountMinor: leavingDerived,
-                    settled: false,
-                  },
-                ]
-              : []
-          }
+          derived={leavingDerived}
           derivedArrow={(name) => `→ ${name}`}
           derivedNote="already taken out of left over above"
           account={account}
@@ -533,6 +521,45 @@ export function derivedArrivals(plan: AccountPlanDto | undefined): DerivedRow[] 
         memberUserId: source.memberUserId,
       };
     });
+}
+
+/**
+ * The same feed from the other end: what the plan asks this account to send on,
+ * one row per account it goes to.
+ *
+ * This was **one synthetic row** summing every derived transfer out — spotted on
+ * the deployed build reading "£2,585.84 → your bills", which was in fact three
+ * transfers to a bills pot and two shared pots. The far end was a set of
+ * accounts, so it could not be named, and the label was a guess at what the set
+ * had in common. `transferOutMinor` is still the right total and still on the
+ * wire; it simply never said where the money went, and now the plan does.
+ *
+ * The second defect went with it. That row's `settled` was a hardcoded `false`,
+ * because a scalar has no confirmation of its own — so a transfer ticked where
+ * it lands could never read as moved from the account it leaves. Each of these
+ * carries its own `confirmedMinor`, from either surface's tick.
+ *
+ * Reflected, never offered: no `fromAccountId`, so `MovementList` draws no
+ * button. Confirming is `POST /accounts/:id/transfers/confirm` on the
+ * **receiving** account and takes `edit` there — an access this page has no
+ * answer for, since `canEdit` is about the account being shown. A tick here
+ * would be a control whose authorisation the page cannot evaluate, and for a
+ * household pot it would be a roster-blind second route to a fact the household
+ * checklist already governs. The arriving side offers it because there the
+ * receiving account *is* this account.
+ */
+export function derivedDepartures(plan: AccountPlanDto | undefined): DerivedRow[] {
+  return (plan?.transferDepartures ?? [])
+    .filter((d) => d.amountMinor > 0)
+    .map((d) => ({
+      // Both, because one destination can take a transfer from each member.
+      key: `${d.toAccountId}:${d.memberUserId}`,
+      // Access-gated on the wire; an absence is rendered as an absence, the
+      // same way a sender that cannot be named is.
+      name: d.toAccountName ?? UNNAMED,
+      amountMinor: d.amountMinor,
+      settled: d.confirmedMinor >= d.amountMinor,
+    }));
 }
 
 /**

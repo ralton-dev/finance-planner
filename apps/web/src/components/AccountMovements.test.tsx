@@ -592,7 +592,7 @@ describe("AccountMovements — the movements nobody authored", () => {
   it("says the derived transfers leaving a member's own account, which left over already lost", async () => {
     // £1,000 in, £220 of it derived away to the household's bills pot, £780
     // actually staying. Nothing authored anywhere. The £220 is read off
-    // `transferOutMinor`, not inferred from the residual — the other figures
+    // `transferDepartures`, not inferred from the residual — the other figures
     // still balance it, and the row no longer depends on their doing so.
     renderFor(
       CURRENT,
@@ -606,6 +606,15 @@ describe("AccountMovements — the movements nobody authored", () => {
           allocatedInflowMinor: 0,
           outboundInflowMinor: 0,
           transferOutMinor: 22_000,
+          transferDepartures: [
+            {
+              toAccountId: "pot",
+              memberUserId: "me",
+              amountMinor: 22_000,
+              confirmedMinor: 0,
+              toAccountName: "Holiday pot",
+            },
+          ],
           residualMinor: 78_000,
           inflowSources: [],
         }),
@@ -615,8 +624,143 @@ describe("AccountMovements — the movements nobody authored", () => {
     const row = await screen.findByText("derived transfer");
     const item = row.closest("li")!;
     expect(item).toHaveTextContent("£220.00");
-    expect(item).toHaveTextContent("→ your bills");
+    expect(item).toHaveTextContent("→ Holiday pot");
     expect(screen.getByText(/already taken out of left over above/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * The defect the repo owner found on the deployed build.
+ *
+ * "leaving here [1] · derived transfer — £2,585.84 / monthly → your bills" was
+ * three transfers — a bills pot and two shared pots — summed into one row, with
+ * a label invented for a far end that was a *set* of accounts and a settled
+ * state hardcoded to `false`. It passed five audits and every test because no
+ * fixture had more than one destination.
+ *
+ * So this one has three, of three different amounts, in three different states:
+ * moved, part-moved, and untouched.
+ */
+describe("AccountMovements — one row per destination, not one row for the lot", () => {
+  const THREE: AccountPlanDto = {
+    accountId: "current",
+    asOfDate: "2026-08-05",
+    currency: "GBP",
+    monthlyIncomeMinor: 400_000,
+    bufferMinor: 0,
+    totalRequiredMinor: 0,
+    totalFundedMinor: 0,
+    shortfallMinor: 0,
+    lines: [],
+    contributionsMTD: [],
+    latestBalance: null,
+    reservedMinor: 0,
+    allocatedInflowMinor: 0,
+    confirmedInflowMinor: 0,
+    outboundInflowMinor: 0,
+    leftoverMinor: 141_416,
+    residualMinor: 141_416,
+    inflowArrivals: [],
+    inflowSources: [],
+    transferOutMinor: 258_584,
+    transferDepartures: [
+      {
+        toAccountId: "bills",
+        memberUserId: "me",
+        amountMinor: 158_584,
+        confirmedMinor: 158_584,
+        toAccountName: "Joint bills",
+      },
+      {
+        toAccountId: "shared-1",
+        memberUserId: "me",
+        amountMinor: 70_000,
+        confirmedMinor: 20_000,
+        toAccountName: "House fund",
+      },
+      {
+        toAccountId: "shared-2",
+        memberUserId: "me",
+        amountMinor: 30_000,
+        confirmedMinor: 0,
+        toAccountName: "Car pot",
+      },
+    ],
+  };
+
+  const rows = (): HTMLElement[] => {
+    const leaving = screen.getByText("leaving here").closest("div")!.parentElement!;
+    return within(leaving)
+      .getAllByText("derived transfer")
+      .map((n) => n.closest("li")!);
+  };
+
+  it("names each destination and gives it its own amount", async () => {
+    renderFor(CURRENT, {}, { plan: THREE });
+    await screen.findAllByText("derived transfer");
+
+    const items = rows();
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveTextContent("£1,585.84");
+    expect(items[0]).toHaveTextContent("→ Joint bills");
+    expect(items[1]).toHaveTextContent("£700.00");
+    expect(items[1]).toHaveTextContent("→ House fund");
+    expect(items[2]).toHaveTextContent("£300.00");
+    expect(items[2]).toHaveTextContent("→ Car pot");
+    // The count in the heading counts them, so the list and its label agree.
+    const leaving = screen.getByText("leaving here").closest("div")!;
+    expect(within(leaving).getByText("[3]")).toBeInTheDocument();
+  });
+
+  it("reads each one's own settled state, and never a hardcoded one", async () => {
+    renderFor(CURRENT, {}, { plan: THREE });
+    await screen.findAllByText("derived transfer");
+    // Fully confirmed reads moved; part-confirmed and unconfirmed do not. The
+    // old row said "derived" for every destination whatever anyone had ticked,
+    // because a scalar has no confirmation of its own.
+    expect(rows().map((li) => within(li).getByText(/^(moved|derived)$/).textContent)).toEqual([
+      "moved",
+      "derived",
+      "derived",
+    ]);
+  });
+
+  it("reflects the tick and does not offer it", async () => {
+    // Confirming is nested under the *receiving* account and takes edit there.
+    // This page's `canEdit` is about the account being shown, so a button here
+    // would be a control whose authorisation the page cannot evaluate — and for
+    // a household pot, a roster-blind second route to a fact the household
+    // checklist governs.
+    renderFor(
+      CURRENT,
+      { "GET /api/auth/me": { body: { id: "me", email: "b@example.com", displayName: "Ben" } } },
+      { plan: THREE, canEdit: true },
+    );
+    await screen.findAllByText("derived transfer");
+    for (const li of rows()) {
+      expect(within(li).queryByRole("button", { name: "moved" })).toBeNull();
+      expect(within(li).queryByRole("button", { name: "undo" })).toBeNull();
+    }
+  });
+
+  it("calls a destination it cannot see 'another account', and still prints the amount", async () => {
+    // The gate is on names and only on names: the amount is a fact about an
+    // account the caller is already looking at.
+    renderFor(
+      CURRENT,
+      {},
+      {
+        plan: {
+          ...THREE,
+          transferDepartures: [
+            { toAccountId: "hidden", memberUserId: "me", amountMinor: 70_000, confirmedMinor: 0 },
+          ],
+        },
+      },
+    );
+    const item = (await screen.findByText("derived transfer")).closest("li")!;
+    expect(item).toHaveTextContent("→ another account");
+    expect(item).toHaveTextContent("£700.00");
   });
 });
 

@@ -2194,6 +2194,142 @@ describe("api service", () => {
   });
 
   /**
+   * The same rule, from the other end of the same transfer.
+   *
+   * `transferOutMinor` says how much derived transport leaves an account and
+   * never said where it goes, so the account page drew one row for the lot and
+   * had to label a far end that was a *set* of accounts. `transferDepartures`
+   * itemises it, and every destination is an account — so its name is gated
+   * exactly as a sender's name is (`withTransferDestinations`), by `getAccess`
+   * and by nothing else.
+   *
+   * Both answers land in one response. Bob's side account feeds two pots of his
+   * own; he shares the side account and one pot with the household and keeps
+   * the other to himself. Alice reads the same two rows with the same two
+   * amounts summing to the same total, names the pot she can see, and does not
+   * name the one she cannot.
+   */
+  it("names the account a derived transfer goes to, only where the caller may see it", async () => {
+    const h = await seedHousehold(store, app);
+    const make = async (name: string, incomeMinor?: number) => {
+      const account = (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: h.bobAuth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+      if (incomeMinor) {
+        await app.inject({
+          method: "POST",
+          url: `/api/accounts/${account.id}/incomes`,
+          headers: h.bobAuth,
+          payload: {
+            name: "Side work",
+            amountMinor: incomeMinor,
+            frequency: "monthly",
+            anchorDate: "2026-01-01",
+          },
+        });
+      }
+      return account;
+    };
+    const side = await make("bob-side", 400_000);
+    const bike = await make("bob-bike");
+    const boat = await make("bob-boat");
+    for (const [account, name, amountMinor] of [
+      [bike, "Bike", 30_000],
+      [boat, "Boat", 45_000],
+    ] as const) {
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: h.bobAuth,
+        payload: { name, category: "monthly_recurring", amountMinor },
+      });
+    }
+    // The sending account and one of the two pots, shared into the household so
+    // Alice can watch them. The other pot is nobody's business but Bob's.
+    for (const account of [side, bike]) {
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: `/api/accounts/${account.id}/shares`,
+            headers: h.bobAuth,
+            payload: { householdId: h.household.id, permission: "view" },
+          })
+        ).statusCode,
+      ).toBe(201);
+    }
+
+    interface Departure {
+      toAccountId: string;
+      memberUserId: string;
+      amountMinor: number;
+      confirmedMinor: number;
+      toAccountName?: string;
+    }
+    const departuresOf = (body: {
+      transferDepartures: Departure[];
+      transferOutMinor: number;
+    }): Departure[] => {
+      // The identity the field is published under, asserted at the endpoint and
+      // not only in the engine: the list is the scalar, itemised.
+      expect(body.transferDepartures.reduce((n, d) => n + d.amountMinor, 0)).toBe(
+        body.transferOutMinor,
+      );
+      return body.transferDepartures;
+    };
+
+    const his = departuresOf(
+      (
+        await app.inject({
+          method: "GET",
+          url: `/api/accounts/${side.id}/plan`,
+          headers: h.bobAuth,
+        })
+      ).json(),
+    );
+    // Biggest first, each with its own far end — the row-per-destination the
+    // one synthetic "£X → your bills" row could never be.
+    expect(his).toEqual([
+      {
+        toAccountId: boat.id,
+        memberUserId: h.bob.id,
+        amountMinor: 45_000,
+        confirmedMinor: 0,
+        toAccountName: "bob-boat",
+      },
+      {
+        toAccountId: bike.id,
+        memberUserId: h.bob.id,
+        amountMinor: 30_000,
+        confirmedMinor: 0,
+        toAccountName: "bob-bike",
+      },
+    ]);
+
+    const hersResponse = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${side.id}/plan`,
+      headers: h.auth,
+    });
+    expect(hersResponse.statusCode).toBe(200);
+    const hers = departuresOf(hersResponse.json());
+    // Every amount is a fact about an account she can already see, so nothing
+    // is withheld and her copy adds up to the same total.
+    expect(hers.map((d) => [d.toAccountId, d.amountMinor])).toEqual(
+      his.map((d) => [d.toAccountId, d.amountMinor]),
+    );
+    // The pot she cannot see is not named; the one she can still is — the gate
+    // discriminates inside one response rather than switching it off.
+    expect(hers.find((d) => d.toAccountId === boat.id)!.toAccountName).toBeUndefined();
+    expect(hers.find((d) => d.toAccountId === bike.id)!.toAccountName).toBe("bob-bike");
+  });
+
+  /**
    * The rule the paragraph above leans on, asserted rather than assumed: you
    * may only share an account into a household you are in, and you are in one.
    * It is what stops two households ever joining into one scope — a scope

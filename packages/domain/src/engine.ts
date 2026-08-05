@@ -17,6 +17,7 @@ import type {
   PaymentInput,
   PaymentPlanLine,
   PaymentPlanStatus,
+  TransferDeparture,
 } from "./types.js";
 
 /** Normalise a single income to its equivalent monthly amount (minor units). */
@@ -287,6 +288,34 @@ export function accountPlanFromScope(
       };
     });
 
+  // The transfers the pass derived *out* of this account, itemised by far end.
+  //
+  // `ScopeAccountPlan.transferOutMinor` is the sum of exactly these rows —
+  // `computeScopePlan` tallies `transferOut` over the same `transfers` this
+  // filters — so the scalar and the list can never disagree. Published because
+  // the scalar alone could not answer "to which account?": the account page had
+  // to draw one row for the lot and label a far end that was a set of accounts.
+  //
+  // Filtered on `fromAccountId` alone, no currency in the predicate, for the
+  // reason `confirmedTransferMinor` above filters on `toAccountId` alone: an
+  // account's currency is fixed at creation, so it belongs to exactly one
+  // partition and no other partition can hold a transfer out of it.
+  const transferDepartures: TransferDeparture[] = plan.transfers
+    .filter((t) => t.fromAccountId === accountId)
+    .map((t) => ({
+      toAccountId: t.toAccountId,
+      memberUserId: t.memberUserId,
+      amountMinor: t.amountMinor,
+      confirmedMinor: t.confirmedMinor,
+    }))
+    // Biggest first, as `inflowSourcesFor` orders the arriving side. No
+    // tie-break: `computeScopePlan` hands `transfers` over sorted by
+    // `(from, to, member)`, and `Array.prototype.sort` is stable by
+    // specification — so two equal amounts keep that order, which is already a
+    // total one. A comparator that said so again would be spelling out an
+    // ordering the input has and adding two branches nothing can reach.
+    .sort((a, b) => b.amountMinor - a.amountMinor);
+
   // Movements this account really sends. A loop's broken edge is not one of
   // them — it is not happening — and neither is a movement whose *sender* the
   // pass could not see, which can name an account in another currency partition
@@ -337,6 +366,7 @@ export function accountPlanFromScope(
     inflowArrivals: account.inflowArrivals,
     outboundInflowMinor: account.committedMinor,
     transferOutMinor: account.transferOutMinor,
+    transferDepartures,
     outboundInflows,
     fundingCycleAccountIds: account.fundingCycleAccountIds,
     fundingCycleBrokenInflowId: account.fundingCycleBrokenInflowId,
