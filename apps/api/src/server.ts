@@ -1592,6 +1592,11 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       id,
       accountIds,
       currency,
+      // The household's members, so the strip's left over is the members' sum
+      // and not the roster's — the same set `householdPlanFromScope` reads off
+      // the partition for `membersLeftoverMinor`, so the strip and the headline
+      // above it cannot be summed over different accounts.
+      scope.input.members.map((m) => m.userId),
     );
   });
 

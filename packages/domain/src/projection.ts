@@ -116,6 +116,17 @@ export interface MonthProjection {
 
 export interface AccountProjection {
   accountId: string;
+  /**
+   * Whose account it is — `ScopeAccountInput.ownerUserId` passed through, so a
+   * roll-up over a walk can be taken on the ownership basis (decision 20).
+   *
+   * Additive, and here because a projection carried no owner at all: every
+   * total over a set of these was therefore a total over *some other* boundary
+   * — the household roster, in `householdProjectionFromScope`'s case — and a
+   * projection strip cannot agree with the headline above it while the two are
+   * summed over different sets of accounts.
+   */
+  ownerUserId: string;
   currency: string;
   asOfDate: string;
   months: MonthProjection[];
@@ -173,7 +184,24 @@ export interface HouseholdMonthProjection {
   monthlyIncomeMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
+  /** What the household's **own accounts** had spare this month: each one's own
+   *  income after its own bills and the transfers its owner has to make, added
+   *  up. Unchanged, and deliberately not what a household headline prints. */
   leftoverMinor: number;
+  /**
+   * **A household's left over is its members', added up** (decision 19), one
+   * simulated month at a time — `HouseholdPlan.membersLeftoverMinor`'s field on
+   * the projection, and equal to it in month 0 because month 0 of a walk is the
+   * plan for the as-of date.
+   *
+   * `Σ MonthProjection.residualMinor` over the accounts this household's members
+   * **own**, in this household's currency. Ownership, never the roster: the
+   * roster misses a member's own pot the household never assigned, and counts a
+   * co-member's money twice when they move it into a pot the roster does hold.
+   * `leftoverMinor` beside it is a sum over accounts and answers a different
+   * question — the two are not a whole and a part.
+   */
+  membersLeftoverMinor: number;
   shortfallMinor: number;
   /** Money members must move between accounts this month (sum of transfers). */
   transfersTotalMinor: number;
@@ -524,6 +552,7 @@ export function computeScopeProjection(
       const sim = sims.get(account.accountId)!;
       return {
         accountId: sim.accountId,
+        ownerUserId: account.ownerUserId,
         currency: sim.currency,
         asOfDate,
         months: sim.months,
@@ -555,15 +584,33 @@ export function computeScopeProjection(
  * `householdPlanFromScope` publishes as `transfers`, because month 0 of a walk is
  * the plan for the as-of date and two surfaces reporting one figure differently
  * is the defect ONE-ENGINE.md exists to end.
+ *
+ * Which is why `memberUserIds` is here. Every other figure below is a sum over
+ * the **roster**, correctly — they are all about the household's own accounts
+ * and its own obligations. `membersLeftoverMinor` is not about accounts at all;
+ * it is about people (decision 19), so it is summed over the accounts those
+ * people **own**, wherever the scope found them. The roster cannot answer it:
+ * it misses a member's own pot the household never assigned, and it counts a
+ * co-member's money twice when they move it into a pot the roster does hold.
+ * A projection strip that answered it off the roster would contradict the
+ * headline printed directly above it, one month at a time.
  */
 export function householdProjectionFromScope(
   projection: ScopeProjection,
   householdId: string,
   accountIds: readonly string[],
   currency: string,
+  memberUserIds: readonly string[],
 ): HouseholdProjection {
   const inHousehold = new Set(accountIds);
   const accounts = projection.accounts.filter((a) => inHousehold.has(a.accountId));
+  const memberIds = new Set(memberUserIds);
+  // Ownership, never the roster and never access (decision 20) — and narrowed
+  // to this household's currency for the same reason `personalLeftoverMinor`
+  // is: a second currency is a second answer, never a term in the first.
+  const memberOwned = projection.accounts.filter(
+    (a) => a.currency === currency && memberIds.has(a.ownerUserId),
+  );
 
   return {
     householdId,
@@ -581,8 +628,11 @@ export function householdProjectionFromScope(
         // The accounts' own surplus after their own obligations and after the
         // transfers their owners have to make — the same money the plan's
         // `leftoverMinor` describes, summed over accounts rather than members
-        // because a walk records months per account.
+        // because a walk records months per account. Its meaning is unchanged
+        // (decision 13's surviving half); the ownership figure is added beside
+        // it, never in place of it.
         leftoverMinor: sum((m) => m.leftoverMinor),
+        membersLeftoverMinor: memberOwned.reduce((n, a) => n + a.months[index]!.residualMinor, 0),
         shortfallMinor: sum((m) => m.shortfallMinor),
         // Arriving only, and only in this household's currency — the narrowing
         // `householdPlanFromScope` applies, for its reasons: the destination is

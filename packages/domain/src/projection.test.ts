@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
+import {
+  CROSS_OWNER_ASOF,
+  CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
+  CROSS_OWNER_HOUSEHOLD_ID,
+  crossOwnerScope,
+} from "./crossowner.fixture.js";
 import { accountPlanFromScope } from "./engine.js";
+import { ESTATE_ASOF, estate } from "./estate.fixture.js";
 import { householdPlanFromScope } from "./household.js";
 import {
   computeScopeProjection,
@@ -1318,6 +1325,7 @@ function householdWalk(input: ScopeInput, months: number) {
     "hh",
     HOUSEHOLD_ACCOUNTS,
     "GBP",
+    input.members.map((m) => m.userId),
   );
 }
 
@@ -1421,6 +1429,7 @@ describe("householdProjectionFromScope", () => {
         "hh",
         HOUSEHOLD_ACCOUNTS,
         "GBP",
+        household().members.map((m) => m.userId),
       ).months,
     ).toHaveLength(12);
     expect(householdWalk(household(), 99).months).toHaveLength(24);
@@ -1549,6 +1558,7 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       "hh",
       roster,
       "GBP",
+      input.members.map((m) => m.userId),
     );
     const plan = householdPlanFromScope(computeScopePlan(input, AS_OF), "hh", roster, "GBP");
 
@@ -1557,6 +1567,89 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       plan.transfers.reduce((n, t) => n + t.amountMinor, 0),
     );
     expect(walk.months[0]?.transfersTotalMinor).toBe(40_000);
+  });
+
+  /**
+   * The strip's LEFT OVER row and the headline above it are one figure
+   * (decision 19). It was two: the row summed the **roster** — each of its
+   * accounts' own income after its own bills and the transfers its owner has to
+   * make — while the headline is about people, so a member's own pot the
+   * household never assigned was simply missing from the row.
+   */
+  it("reports the members' left over, not the roster's", () => {
+    const input = withOutsidePot();
+    const walk = householdWalk(input, 1);
+    const plan = planFor(input);
+
+    expect(walk.months[0]?.membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
+    // Read off the accounts the members **own**, which here reaches Alice's
+    // off-roster ISA: the roster's own account rows cannot see it.
+    expect(walk.months[0]?.membersLeftoverMinor).toBe(
+      plan.members.reduce((n, m) => n + m.personalLeftoverMinor, 0),
+    );
+  });
+
+  /**
+   * **The two bases, measured apart, on the fixture built to stop this repeating.**
+   *
+   * On `estate.fixture.ts` the strip read £4,705 and the headline WP-AG puts
+   * above it reads £4,025 — £680 of it Alice's own bills pot and her EUR
+   * account, counted by the roster and belonging to nobody the row was about.
+   * "Two surfaces reporting one figure differently is the defect ONE-ENGINE.md
+   * exists to end", says the comment over the function; this is the assertion
+   * that says it is not happening.
+   */
+  it("differs from the roster sum on the estate, and matches the plan", () => {
+    const walk = householdProjectionFromScope(
+      computeScopeProjection(estate.scope, ESTATE_ASOF, { months: 2 }),
+      "hh-estate",
+      estate.assignedAccountIds,
+      "GBP",
+      estate.scope.members.map((m) => m.userId),
+    );
+    const plan = householdPlanFromScope(
+      computeScopePlan(estate.scope, ESTATE_ASOF),
+      "hh-estate",
+      estate.assignedAccountIds,
+      "GBP",
+    );
+
+    expect(walk.months[0]?.membersLeftoverMinor).toBe(402_500);
+    expect(walk.months[0]?.membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
+    // The row as it was, kept on the wire with its meaning intact and no longer
+    // what a household headline reads.
+    expect(walk.months[0]?.leftoverMinor).toBe(470_500);
+  });
+
+  /**
+   * **A co-member's money parked in an account you own**, one altitude up.
+   *
+   * `crossowner.fixture.ts` is the only shape that tells the ownership basis
+   * from the roster basis at the plan altitude — on the estate those two
+   * coincide to the penny. Here the household's account rows add to £3,300 and
+   * its members add to £2,900, because Bob's £400 is added back into his own
+   * account's row and counted again in the pot's. The strip prints the second.
+   */
+  it("tells the ownership basis from the roster basis on the cross-owner fixture", () => {
+    const walk = householdProjectionFromScope(
+      computeScopeProjection(crossOwnerScope, CROSS_OWNER_ASOF, { months: 3 }),
+      CROSS_OWNER_HOUSEHOLD_ID,
+      CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
+      "GBP",
+      crossOwnerScope.members.map((m) => m.userId),
+    );
+    const plan = householdPlanFromScope(
+      computeScopePlan(crossOwnerScope, CROSS_OWNER_ASOF),
+      CROSS_OWNER_HOUSEHOLD_ID,
+      CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
+      "GBP",
+    );
+
+    expect(plan.membersLeftoverMinor).toBe(290_000);
+    expect(plan.householdLeftoverMinor).toBe(330_000);
+    // Nothing here is tuned to a date, so every simulated month reads the same.
+    expect(walk.months.map((m) => m.membersLeftoverMinor)).toEqual([290_000, 290_000, 290_000]);
+    expect(walk.months[0]?.membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
   });
 });
 
