@@ -1524,9 +1524,29 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     // twice, once with the arrival taken back out, and diffed the two, because
     // the only way to ask "what did this movement pay for" of an engine that had
     // already been handed the money was to take it away again.
+    //
+    // The status filter is `engine.ts`'s, for its reasons, and it is what makes
+    // this the *sending* account's row. `plan.movements` is every partition's
+    // flattened in alphabetical currency order, and a movement whose two ends
+    // are in different currencies appears twice: really, in the sender's
+    // partition, and as an `unknown_source` £0 twin in the partition that cannot
+    // see the sender. `PATCH /api/accounts/:id` takes a currency, so an account
+    // can cross partitions after the POST-time cross-currency guard — and an
+    // unfiltered `find` returned the EUR zero for a GBP→EUR movement and wrote
+    // the user's confirmation as £0. A `broken_cycle` edge is the other one: the
+    // pass has decided it is not happening, so there is nothing to confirm.
     const scope = await scopeForAccount(store, account, asOfDate);
-    const movement = scope.plan.movements.find((m) => m.inflowId === inflowId);
-    const amountMinor = movement?.fundedMinor ?? 0;
+    const movement = scope.plan.movements.find(
+      (m) =>
+        m.inflowId === inflowId && m.status !== "broken_cycle" && m.status !== "unknown_source",
+    );
+    // 422, like the derived-transfer handler's `no_planned_transfer`: the request
+    // is well formed and the movement exists, but this month's plan does not move
+    // it, and booking £0 records a fact nobody stated.
+    if (!movement) {
+      throw new HttpError(422, "no_planned_movement", "No matching planned movement");
+    }
+    const amountMinor = movement.fundedMinor;
 
     const confirmation = await store.createTransferConfirmation({
       householdId: null,

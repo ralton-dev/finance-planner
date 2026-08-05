@@ -1865,6 +1865,108 @@ describe("api service", () => {
     expect(bad.statusCode).toBe(422);
   });
 
+  /**
+   * The zero the handler used to write, from the partition that cannot see the
+   * sender.
+   *
+   * `ScopePlan.movements` is every currency partition flattened in alphabetical
+   * order, and a movement whose ends sit in different partitions appears twice:
+   * really, where the sender is, and as an `unknown_source` £0 twin where the
+   * destination is. `find` on `inflowId` alone took EUR's zero for a GBP→EUR
+   * movement and recorded "I moved the money" as £0 — a wrong figure about
+   * money, written on the user's say-so and never shown to them again.
+   *
+   * The POST-time guard refuses authoring one; `PATCH /api/accounts/:id` takes a
+   * currency, so the state is reached afterwards, by moving an end.
+   */
+  it("confirms what the sender's own partition moved, not another currency's zero", async () => {
+    const { auth } = await seedUser(store);
+    const { current, pot, movement } = await seedMovement(auth);
+    const moved = await app.inject({
+      method: "PATCH",
+      url: `/api/accounts/${pot.id}`,
+      headers: auth,
+      payload: { currency: "EUR" },
+    });
+    expect(moved.statusCode).toBe(200);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/inflows/${movement.id}/confirm`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(201);
+    // £200 really leaves the GBP account — `GET /api/accounts/:id/plan` says so
+    // for the sender, off the same partition — so £200 is what was moved.
+    expect(res.json().confirmation.amountMinor).toBe(20000);
+    const sender = (
+      await app.inject({ method: "GET", url: `/api/accounts/${current.id}/plan`, headers: auth })
+    ).json();
+    expect(sender.outboundInflowMinor).toBe(20000);
+  });
+
+  /**
+   * A loop's broken edge is not a movement anybody can have made.
+   *
+   * `engine.ts` keeps `broken_cycle` and `unknown_source` off the sending
+   * account's outbound plan because neither is happening; the confirm handler
+   * read straight past the status and booked the £0 instead of refusing. 422,
+   * the code the derived-transfer handler already answers with when this month's
+   * plan holds no such transfer.
+   */
+  it("refuses to confirm the edge a funding loop is broken at", async () => {
+    const { auth } = await seedUser(store);
+    const make = async (name: string) => {
+      const account = (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/incomes`,
+        headers: auth,
+        payload: {
+          name: "Salary",
+          amountMinor: 300000,
+          frequency: "monthly",
+          anchorDate: "2026-01-01",
+        },
+      });
+      return account;
+    };
+    const a = await make("a");
+    const b = await make("b");
+    const edge = (to: string, from: string) =>
+      store.createInflow({
+        accountId: to,
+        name: "Top-up",
+        source: "account",
+        sourceAccountId: from,
+        amountMinor: 20000,
+        frequency: "monthly",
+        recurrence: null,
+        anchorDate: "2026-01-01",
+        priority: 50,
+        active: true,
+      });
+    const ab = await edge(b.id, a.id);
+    const ba = await edge(a.id, b.id);
+
+    const confirm = (inflowId: string) =>
+      app.inject({ method: "POST", url: `/api/inflows/${inflowId}/confirm`, headers: auth });
+    const codes = [(await confirm(ab.id)).statusCode, (await confirm(ba.id)).statusCode];
+    // One edge is broken and one survives; which is the pass's deterministic
+    // business, and neither is 201-and-zero.
+    expect(codes.filter((c) => c === 201)).toHaveLength(1);
+    expect(codes.filter((c) => c === 422)).toHaveLength(1);
+    const refused = (await confirm(codes[0] === 422 ? ab.id : ba.id)).json();
+    expect(refused.error.code).toBe("no_planned_movement");
+  });
+
   it("hides someone else's movement rather than admitting it exists", async () => {
     const { auth } = await seedUser(store);
     const { movement } = await seedMovement(auth);
