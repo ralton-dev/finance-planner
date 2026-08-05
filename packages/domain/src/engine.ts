@@ -325,6 +325,7 @@ export function accountPlanFromScope(
     shortfallMinor: account.shortfallMinor,
     inflowArrivals: account.inflowArrivals,
     outboundInflowMinor: account.committedMinor,
+    transferOutMinor: account.transferOutMinor,
     outboundInflows,
     fundingCycleAccountIds: account.fundingCycleAccountIds,
     fundingCycleBrokenInflowId: account.fundingCycleBrokenInflowId,

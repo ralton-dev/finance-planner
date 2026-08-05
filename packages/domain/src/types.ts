@@ -307,6 +307,17 @@ export interface AccountPlan {
    * "free after committed" is `leftoverMinor - outboundInflowMinor`.
    */
   outboundInflowMinor: number;
+  /**
+   * The other half of what leaves: the derived transfers this account's owner
+   * has to make out of it — expense transport, authored by nobody.
+   *
+   * `ScopeAccountPlan.transferOutMinor` passed straight through, and the term
+   * `leftoverMinor` and `residualMinor` differ by. The account page needed it
+   * and had to recover it by rearranging that identity — right arithmetic, and
+   * fragile in exactly the way a term changing meaning makes it wrong.
+   * Additive: no existing field moves (decision 4/13).
+   */
+  transferOutMinor: number;
   /** Every movement out of this account, funded from what the payments left.
    *  Empty for an account that sends nothing anywhere. */
   outboundInflows: OutboundInflowPlan[];

@@ -116,6 +116,17 @@ export interface HouseholdAccountPlan {
   transferInMinor: number;
   transferOutMinor: number;
   /**
+   * What authored savings movements delivered into this account.
+   *
+   * `ScopeAccountPlan.movementInMinor` passed straight through. Published
+   * because the flow page needed it and had to rearrange `leftoverMinor`'s
+   * published identity to get it — arithmetic that was right, and that stops
+   * being right the moment any term in the identity changes meaning, which is
+   * the thing this work keeps finding. Additive: no existing field moves
+   * (decision 4/13).
+   */
+  movementInMinor: number;
+  /**
    * What remains in the account after the month's flows (includes any buffer
    * reserve, and the pennies members rounded their shares up by) — **before**
    * the savings movements leaving it.
@@ -216,6 +227,7 @@ export function householdPlanFromScope(
       fundedOutflowMinor: a.fundedOutflowMinor,
       transferInMinor: a.transferInMinor,
       transferOutMinor: a.transferOutMinor,
+      movementInMinor: a.movementInMinor,
       // The pass's residual is already net of the savings leaving; adding the
       // committed total back gives the field its historical meaning, and the two
       // are published side by side rather than one being derived from the other

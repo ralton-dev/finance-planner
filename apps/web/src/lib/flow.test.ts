@@ -235,11 +235,13 @@ describe("householdFlow", () => {
     });
   });
 
-  it("reads an authored arrival back out of the plan's own identity", () => {
-    // A household plan has no row for a movement landing in one of its
-    // accounts — it reports the effect and not the cause — so the pot's
-    // left-over is larger than income, transfers and spending explain, and the
-    // difference is what arrived.
+  it("draws an authored arrival from the figure the plan publishes for it", () => {
+    // A household plan still has no *row* for a movement landing in one of its
+    // accounts — itemising is the flow endpoint's job — but it does report the
+    // total, `movementInMinor`. This used to be recovered here by subtracting
+    // income, transfers and spending from the left-over; the pot's figures
+    // still balance that way, and the picture no longer depends on their doing
+    // so (WP-Y).
     const fed = householdFlow({
       ...plan,
       accounts: [
@@ -255,6 +257,7 @@ describe("householdFlow", () => {
           fundedOutflowMinor: 0,
           transferInMinor: 0,
           transferOutMinor: 0,
+          movementInMinor: 50_000,
           leftoverMinor: 50_000,
           shortfallMinor: 0,
         },

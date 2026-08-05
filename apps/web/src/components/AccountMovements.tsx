@@ -177,7 +177,15 @@ export function AccountMovements({
       },
     };
   };
-  const leavingDerived = derivedTransferOutMinor(plan);
+  // The other half of "every movement touching this account, in and out": the
+  // transfers the plan asks this account's owner to make out of it — a member's
+  // current account sends its share of every household bill and every
+  // standalone pot's rent, all of it derived and none of it authored. LEFT OVER
+  // already has it taken out, so without a word here the page reports a surplus
+  // hundreds of pounds smaller than the income above it, with nothing saying
+  // why. Read off the plan since WP-Y; it used to be recovered by rearranging
+  // `residualMinor`'s identity.
+  const leavingDerived = plan?.transferOutMinor ?? 0;
   const nothing =
     arriving.length === 0 &&
     leaving.length === 0 &&
@@ -499,38 +507,6 @@ export function duplicateFeedNote(
     money(derived, account.currency),
     " a month already arrives here as a transfer the plan derives for these bills. a movement you authored lands on top of it as savings, not instead of it — if it was meant to cover the bills, delete it.",
   ];
-}
-
-/**
- * The transfers the plan asks this account's owner to make out of it.
- *
- * The other half of "every movement touching this account, in and out". A
- * member's current account sends its share of every household bill and every
- * standalone pot's rent, all of it derived and none of it authored — and LEFT
- * OVER already has it taken out, so without a word here the page reports a
- * surplus hundreds of pounds smaller than the income above it with nothing
- * saying why.
- *
- * Recovered from the plan's own published identity, not derived a second time:
- *
- *     residual = income + arriving − spending − (transfersOut + committed)
- *
- * — `ScopeAccountPlan.leftoverMinor`, of which every term but `transfersOut` is
- * on `AccountPlanDto` by name. Carrying it directly would be better and the DTO
- * does not; see the note routed with this package. Zero when the wire is too old
- * to carry `residualMinor`, which is honest: nothing is claimed rather than
- * something guessed.
- */
-export function derivedTransferOutMinor(plan: AccountPlanDto | undefined): number {
-  if (!plan || plan.residualMinor === undefined) return 0;
-  return Math.max(
-    0,
-    plan.monthlyIncomeMinor +
-      (plan.allocatedInflowMinor ?? 0) -
-      plan.totalFundedMinor -
-      (plan.outboundInflowMinor ?? 0) -
-      plan.residualMinor,
-  );
 }
 
 /**

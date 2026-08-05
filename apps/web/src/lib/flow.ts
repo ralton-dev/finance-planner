@@ -1,10 +1,4 @@
-import type {
-  FlowAccountDto,
-  FlowDto,
-  FlowEdgeDto,
-  HouseholdAccountPlanDto,
-  HouseholdPlanDto,
-} from "./types.js";
+import type { FlowAccountDto, FlowDto, FlowEdgeDto, HouseholdPlanDto } from "./types.js";
 
 /**
  * The diagram's model, and the two things a browser does to it: read a
@@ -66,14 +60,10 @@ import type {
  *
  * A ribbon is drawn between two nodes only when the plan holds both ends.
  *
- * `arrivingMinor` is the household plan's own published identity rearranged,
- * not a second derivation:
- *
- *     leftoverMinor = income + transferIn + arriving − spending − transferOut
- *
- * — see `ScopeAccountPlan.leftoverMinor`, of which `HouseholdAccountPlan`'s is
- * that figure plus `committedMinor`. Reporting it directly would be better and
- * the DTO does not; see the note routed with this package.
+ * What arrived is `movementInMinor`, read off the plan. It used to be recovered
+ * here by rearranging `leftoverMinor`'s published identity — correct arithmetic
+ * over terms whose meanings this work has already changed twice, which is one
+ * term away from being silently wrong. The DTO reports it now (WP-Y).
  */
 export function householdFlow(plan: HouseholdPlanDto): FlowDto {
   const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName]));
@@ -125,7 +115,7 @@ export function householdFlow(plan: HouseholdPlanDto): FlowDto {
     // The mirror: what authored movements delivered, plus the derived transport
     // in whose sender is off the picture.
     const arriving =
-      arrivingMinor(a) + Math.max(0, a.transferInMinor - (rowsIn.get(a.accountId) ?? 0));
+      (a.movementInMinor ?? 0) + Math.max(0, a.transferInMinor - (rowsIn.get(a.accountId) ?? 0));
     if (arriving > 0) {
       edges.push({
         fromAccountId: null,
@@ -156,18 +146,6 @@ export function householdFlow(plan: HouseholdPlanDto): FlowDto {
     // authored movement arriving is somebody's surplus, not new money.
     totalInflowMinor: plan.monthlyIncomeMinor,
   };
-}
-
-/** What authored movements delivered into one household account, recovered from
- *  the plan's own identity — see `householdFlow`. */
-export function arrivingMinor(a: HouseholdAccountPlanDto): number {
-  return (
-    a.leftoverMinor +
-    a.fundedOutflowMinor +
-    a.transferOutMinor -
-    a.monthlyIncomeMinor -
-    a.transferInMinor
-  );
 }
 
 /** Money entering from outside — own income, plus everything crossing the edge

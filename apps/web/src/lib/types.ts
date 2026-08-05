@@ -395,6 +395,10 @@ export interface AccountPlanDto {
   /** Total this account sends on to other accounts. Deliberately *not*
    *  subtracted from `leftoverMinor` — see the API's `AccountPlan`. */
   outboundInflowMinor?: number;
+  /** The derived transfers the plan asks this account's owner to make out of
+   *  it — expense transport, authored by nobody. Unlike the field above this
+   *  one *is* already taken out of `leftoverMinor`. */
+  transferOutMinor?: number;
   /**
    * Where the arriving money is coming from, when the caller may be told.
    * `null` — the API's own answer — means nothing is arriving that this caller
@@ -623,6 +627,10 @@ export interface HouseholdAccountPlanDto {
   /** Derived transfers in and out — expense transport, authored by nobody. */
   transferInMinor: number;
   transferOutMinor: number;
+  /** What authored savings movements delivered here. The mirror of
+   *  `committedMinor`, and the figure the flow page used to recover by
+   *  rearranging `leftoverMinor`'s identity. */
+  movementInMinor?: number;
   /** What remains after the month's flows but **before** the savings movements
    *  leaving this account. Free-after-committed — the figure the account page
    *  and the flow diagram print — is this minus `committedMinor`. */

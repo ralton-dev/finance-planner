@@ -135,10 +135,58 @@ describe("householdPlanFromScope", () => {
       fundedOutflowMinor: 100_000,
       transferInMinor: 100_000,
       transferOutMinor: 0,
+      // Everything arriving here is derived transport; nobody authored a
+      // movement into the bills pot.
+      movementInMinor: 0,
       leftoverMinor: 0,
       committedMinor: 0,
       shortfallMinor: 0,
     });
+  });
+
+  /**
+   * The mirror of `committedMinor`, and the reason it is published rather than
+   * left to be inferred: the flow page recovered it by rearranging
+   * `leftoverMinor`'s identity, which is arithmetic over terms this work has
+   * already redefined twice (WP-Y).
+   */
+  it("reports what an authored movement delivered into one of its accounts", () => {
+    const fed = view(
+      household({
+        accounts: household().accounts.map((a) =>
+          a.accountId === "alice-cur"
+            ? {
+                ...a,
+                outboundInflows: [
+                  {
+                    id: "to-bills",
+                    toAccountId: "bills",
+                    amountMinor: 20_000,
+                    frequency: "monthly" as const,
+                    anchorDate: "2026-08-25",
+                    priority: 10,
+                  },
+                ],
+              }
+            : a,
+        ),
+      }),
+    );
+    const bills = fed.accounts.find((a) => a.accountId === "bills")!;
+    expect(bills.movementInMinor).toBe(20_000);
+    // Decision 12: it lands on top of the derived feed as savings, not instead
+    // of it, so the transport is unchanged and the pot simply keeps the £200.
+    expect(bills.transferInMinor).toBe(100_000);
+    expect(bills.leftoverMinor).toBe(20_000);
+    // And the identity the flow page used to invert still holds — it is just
+    // no longer what the picture depends on.
+    expect(
+      bills.leftoverMinor +
+        bills.fundedOutflowMinor +
+        bills.transferOutMinor -
+        bills.monthlyIncomeMinor -
+        bills.transferInMinor,
+    ).toBe(bills.movementInMinor);
   });
 });
 

@@ -129,13 +129,14 @@ describe("the household preset", () => {
           fundedOutflowMinor: 220_000,
           transferInMinor: 220_000,
         }),
-        // Where the £500 lands. The household plan reports the arrival only as
-        // this account's left-over being larger than anything else explains —
-        // it has no row for a movement — which is exactly what `arrivingMinor`
-        // reads back out of it.
+        // Where the £500 lands. The household plan still has no *row* for a
+        // movement — itemising is the flow endpoint's job — but it reports the
+        // total that arrived, and the picture reads that rather than inferring
+        // it from the left-over being larger than anything else explains.
         account({
           accountId: "holiday",
           name: "holiday",
+          movementInMinor: 50_000,
           leftoverMinor: 50_000,
         }),
       ],

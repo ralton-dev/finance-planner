@@ -175,10 +175,12 @@ describe("requiredMonthlyForPayment", () => {
  * field dropped is `internalInflowUsedMinor`, which existed solely to feed the
  * rollup netting deleted with it (see `overviewFromPlans`).
  *
- * `confirmedTransferMinor` is the one field *added* since — the derived half of
- * `confirmedInflowMinor`, which line statuses are now decided against (WP-V).
- * Nothing arrives at this account, so it is zero and no figure here moves; the
- * pin is otherwise untouched.
+ * Two fields have been *added* since. `confirmedTransferMinor` is the derived
+ * half of `confirmedInflowMinor`, which line statuses are now decided against
+ * (WP-V); `transferOutMinor` is the derived transport leaving, published rather
+ * than left for the account page to recover from `leftoverMinor`'s identity
+ * (WP-Y). Nothing arrives at this account and nothing is derived out of it, so
+ * both are zero and no figure here moves; the pin is otherwise untouched.
  */
 const ACCOUNT_ENGINE_AT_40F65D8: AccountPlan = {
   accountId: "current",
@@ -195,6 +197,7 @@ const ACCOUNT_ENGINE_AT_40F65D8: AccountPlan = {
   shortfallMinor: 33462,
   inflowArrivals: [],
   outboundInflowMinor: 0,
+  transferOutMinor: 0,
   outboundInflows: [],
   lines: [
     {
@@ -510,6 +513,13 @@ describe("accountPlanFromScope — arriving money and what it funds", () => {
     expect(plan.leftoverMinor).toBe(20_000);
     expect(plan.totalRequiredMinor).toBe(0);
     expect(plan.lines).toEqual([]);
+    // …and says so by name (WP-Y). The account page needs the £800 to explain
+    // why LEFT OVER is smaller than the income above it, and used to recover it
+    // by rearranging `residualMinor`'s identity — right arithmetic over terms
+    // whose meanings this work has already changed twice. The identity still
+    // holds; the page no longer depends on it.
+    expect(plan.transferOutMinor).toBe(80_000);
+    expect(plan.leftoverMinor + plan.transferOutMinor).toBe(plan.monthlyIncomeMinor);
   });
 });
 

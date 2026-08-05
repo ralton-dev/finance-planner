@@ -528,7 +528,9 @@ describe("AccountMovements — the movements nobody authored", () => {
 
   it("says the derived transfers leaving a member's own account, which left over already lost", async () => {
     // £1,000 in, £220 of it derived away to the household's bills pot, £780
-    // actually staying. Nothing authored anywhere.
+    // actually staying. Nothing authored anywhere. The £220 is read off
+    // `transferOutMinor`, not inferred from the residual — the other figures
+    // still balance it, and the row no longer depends on their doing so.
     renderFor(
       CURRENT,
       {},
@@ -540,6 +542,7 @@ describe("AccountMovements — the movements nobody authored", () => {
           totalFundedMinor: 0,
           allocatedInflowMinor: 0,
           outboundInflowMinor: 0,
+          transferOutMinor: 22_000,
           residualMinor: 78_000,
           inflowSources: [],
         }),
