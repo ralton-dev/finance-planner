@@ -287,7 +287,16 @@ export function FlowPage() {
                     <td className="num">
                       {a.spendingMinor > 0 ? formatMinor(a.spendingMinor, flow!.currency) : "—"}
                     </td>
-                    <td className="num ok">{formatMinor(a.leftoverMinor, flow!.currency)}</td>
+                    {/* Green is a month that works, and a negative residual is
+                        not one — the household table's rule, for its reason.
+                        WP-Q stopped flooring this figure so that a member
+                        holding their income somewhere other than the account
+                        their transfers leave (decision 11) could see they have
+                        to consolidate; printing the minus in green says the
+                        opposite of the thing the sign was kept for. */}
+                    <td className={`num ${a.leftoverMinor < 0 ? "warn" : "ok"}`}>
+                      {formatMinor(a.leftoverMinor, flow!.currency)}
+                    </td>
                     <td className={`num wide-only${a.shortfallMinor > 0 ? " warn" : " dim"}`}>
                       {a.shortfallMinor > 0 ? formatMinor(a.shortfallMinor, flow!.currency) : "—"}
                     </td>

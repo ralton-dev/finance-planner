@@ -293,6 +293,37 @@ describe("FlowPage", () => {
     expect(stub.mock.mock.calls.some(([url]) => String(url).includes("/api/flow"))).toBe(false);
   });
 
+  /**
+   * A negative residual is the one reading this figure must never be green for.
+   *
+   * WP-Q stopped flooring residuals precisely so a negative one would be visible
+   * and actionable: it says a member is holding income in a personal account
+   * other than the one their transfers leave (decision 11) and has to consolidate
+   * before the month works. `FlowSankey` and the household table both read the
+   * sign; this column hardcoded `ok` and rendered the minus in the funded colour,
+   * which reads as surplus and defeats the decision.
+   */
+  it("does not print a negative left over in the funded colour", async () => {
+    stubApiFetch({
+      ...routes(),
+      [`GET /api/flow?accounts=${SCOPE}`]: {
+        body: {
+          ...FLOW,
+          accounts: FLOW.accounts.map((a) =>
+            a.accountId === "current" ? { ...a, leftoverMinor: -24_400 } : a,
+          ),
+        },
+      },
+    });
+    renderAt(`?accounts=${SCOPE}`);
+
+    const short = await screen.findByText("-£244.00");
+    expect(short).toHaveClass("num", "warn");
+    expect(short).not.toHaveClass("ok");
+    // The accounts that are fine keep the colour that says so.
+    expect(screen.getByText("£600.00")).toHaveClass("num", "ok");
+  });
+
   it("says so when a scope cannot be drawn", async () => {
     stubApiFetch({
       ...routes(),
