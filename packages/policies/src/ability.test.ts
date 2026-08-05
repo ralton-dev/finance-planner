@@ -126,8 +126,66 @@ describe("buildAbility — projects", () => {
     const ability = buildAbility({ userId: "u1", accountAccess: [], households: [] });
     expect(ability.hasAnyAccess(subject("Project", theirs))).toBe(false);
     expect(ability.can("view", subject("Project", theirs))).toBe(false);
-    // `edit` is what filing a payment into a project asks for.
-    expect(ability.cannot("edit", subject("Project", theirs))).toBe(true);
+    // `file_payment` is what filing a payment into a project asks for.
+    expect(ability.cannot("file_payment", subject("Project", theirs))).toBe(true);
+  });
+
+  /**
+   * The second arm (MINE-AND-OURS decision 22). A **shared** project belongs to
+   * its owner and is readable by everybody in their household — and the split
+   * between `file_payment` and `edit` is what keeps "put your payment in it"
+   * apart from "rename it, retarget it, un-share it".
+   */
+  it("a co-member may read a shared project and put payments in it, and nothing more", () => {
+    const theirShared = { id: "proj-2", ownerUserId: "u2", visibility: "shared" as const };
+    const ability = buildAbility({
+      userId: "u1",
+      accountAccess: [],
+      households: [],
+      householdMemberIds: ["u2"],
+    });
+    expect(ability.hasAnyAccess(subject("Project", theirShared))).toBe(true);
+    expect(ability.can("view", subject("Project", theirShared))).toBe(true);
+    expect(ability.can("file_payment", subject("Project", theirShared))).toBe(true);
+    // These three are the 403 a co-member meets on PATCH and DELETE.
+    expect(ability.can("edit", subject("Project", theirShared))).toBe(false);
+    expect(ability.can("delete", subject("Project", theirShared))).toBe(false);
+    expect(ability.can("share", subject("Project", theirShared))).toBe(false);
+  });
+
+  it("neither half of the shared arm grants anything on its own", () => {
+    const theirShared = { id: "proj-2", ownerUserId: "u2", visibility: "shared" as const };
+    // Shared, but by somebody you share no household with.
+    expect(
+      buildAbility({
+        userId: "u1",
+        accountAccess: [],
+        households: [],
+        householdMemberIds: ["u3"],
+      }).hasAnyAccess(subject("Project", theirShared)),
+    ).toBe(false);
+    // A co-member's project that is not shared.
+    expect(
+      buildAbility({
+        userId: "u1",
+        accountAccess: [],
+        households: [],
+        householdMemberIds: ["u2"],
+      }).hasAnyAccess(subject("Project", theirs)),
+    ).toBe(false);
+    // And an omitted roster reads as an empty one, which is what a user with no
+    // household has: a shared project reaching nobody but its owner.
+    expect(
+      buildAbility({ userId: "u1", accountAccess: [], households: [] }).hasAnyAccess(
+        subject("Project", theirShared),
+      ),
+    ).toBe(false);
+  });
+
+  it("defaults an unstated visibility to personal rather than to shared", () => {
+    // `subject` fills it in, so a caller that has never heard of sharing cannot
+    // accidentally widen a project by omitting the field.
+    expect(subject("Project", theirs).visibility).toBe("personal");
   });
 
   it("a project id does not borrow an account's access, or the other way round", () => {
