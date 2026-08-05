@@ -128,8 +128,11 @@ export function HouseholdDetailPage() {
   // plan totals, so this page asks for the plan it never used to fetch.
   const plan = useAsync<HouseholdPlanDto>(() => api.householdPlan(id), [id]);
   const overview = useAsync<OverviewDto>(() => api.overview(), []);
-  // Refetching the household blanks it (useAsync drops data while loading), so
-  // the shares confirmation lives up here where the reload cannot erase it.
+  // The shares confirmation lives up here rather than inside the form. It had
+  // to: refetching the household used to blank it, so the page fell back to
+  // "loading…" and unmounted everything under it. A refetch keeps what it has
+  // now (`useAsync`), so this is no longer load-bearing — it is left where it
+  // is because the message outlives the form's own edit cycle either way.
   const [sharesSaved, setSharesSaved] = useState(false);
 
   if (household.error) return <p className="error">household not found.</p>;
