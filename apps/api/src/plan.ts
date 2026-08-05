@@ -413,17 +413,35 @@ async function loadConfirmedArrivals(
  *  - **Household assignment.** An account assigned to a household is planned
  *    with the household's other accounts, because its bills are attributed to
  *    members whose budgets pay for other accounts' bills too.
- *  - **Common ownership, for the accounts no household plans.** A member's
- *    budget is their income across the accounts that are theirs, and their
- *    obligations are the bills on those accounts — so a holiday pot with a bill
- *    and no income of its own is planned beside the current account that will
- *    feed it, and the pass derives the feed (decision 9) without anybody
- *    authoring a movement. Household-assigned accounts are deliberately excluded
- *    from this: a household plans the money you have put into it, and a private
- *    account's income is not that.
+ *  - **Common ownership.** A member's budget is their income across the accounts
+ *    that are theirs, and their obligations are the bills on those accounts — so
+ *    a holiday pot with a bill and no income of its own is planned beside the
+ *    current account that will feed it, and the pass derives the feed (decision
+ *    9) without anybody authoring a movement.
  *  - **Funding edges.** An account's money can be another account's surplus, so
  *    a sender has to be planned; and an account's surplus can be committed to a
  *    movement out, so a *receiver* has to be planned as well.
+ *
+ * The first two run **unconditionally**, on every account visited, and that is
+ * load-bearing. They used to be alternatives — an account a household planned
+ * took the roster, an account it did not took its owner's siblings *minus* any a
+ * household planned — which made them mutually exclusive and left a household
+ * member's private pot unable to reach their salary in either direction. Decision
+ * 9's derived feed was reachable only for users with no household assignments at
+ * all, which is every fixture and not the user who reported it: their bills pot
+ * read `unfunded · £303.20` while the household's own pots were fed beside it.
+ * Dropping the exclusion alone would not do — it would let the pot reach the
+ * salary while the salary still never reached the pot, so the scope would depend
+ * on which end you seeded. Running both closes ownership and assignment into one
+ * equivalence relation, and every account of every member of one household lands
+ * in one scope whatever you seed from.
+ *
+ * The consequence is deliberate and was accepted (Ben, 2026-08-04): a member's
+ * private-account income joins the budget that pays their household share, so
+ * `HouseholdMemberPlan.monthlyIncomeMinor` includes it and co-members can see it.
+ * *"If you don't want them to see it, simply don't include it"* — the account, in
+ * the household. There is no split field and no gate; the arithmetic and the
+ * disclosure both stand.
  *
  * The old `fundingClosure` walked senders only, on the sound reasoning that
  * nothing downstream changes what an account can afford. That is still true of
@@ -460,19 +478,11 @@ async function closeScope(
       const household = await loadHousehold(store, ctx, householdId);
       households.set(householdId, household);
       neighbours.push(...household.accountIds);
-    } else {
-      const siblings = await memo(ctx.ownedAccounts, next.ownerUserId, () =>
-        store.listAccountsForOwner(next.ownerUserId),
-      );
-      for (const sibling of siblings) {
-        // Only the ones no household plans. Reaching a household through a
-        // member's private account would drag its whole roster into a scope
-        // that has nothing to do with it, and quietly hand the household an
-        // income it was never told about.
-        if (await householdPlanningAccount(store, ctx, sibling)) continue;
-        neighbours.push(sibling.id);
-      }
     }
+    const siblings = await memo(ctx.ownedAccounts, next.ownerUserId, () =>
+      store.listAccountsForOwner(next.ownerUserId),
+    );
+    neighbours.push(...siblings.map((s) => s.id));
     for (const id of neighbours) {
       if (loaded.has(id)) continue;
       const neighbour = await getAccount(store, ctx, id);

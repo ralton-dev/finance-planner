@@ -2331,13 +2331,19 @@ describe("api service", () => {
     expect(account.outboundInflowMinor).toBe(70000);
   });
 
-  it("does not change the estate's income when an account starts receiving inflow", async () => {
+  it("does not change the estate's income when a pot's bills change hands", async () => {
     const h = await seedHousehold(store, app);
     const overview = async () =>
       (await app.inject({ method: "GET", url: "/api/overview", headers: h.auth })).json()
         .perCurrency[0];
 
-    // Take the pot back out of the household plan: nothing is allocated to it.
+    // Take the pot back out of the household plan. It is still Alice's, and her
+    // salary is still Alice's, so the pass still derives its feed — assignment
+    // changes *who bears* the bills, never whether they are transported. This
+    // block asserted `allocatedInflowMinor === 0` until WP-AF, which was the
+    // severed closure showing through: an unassigned account could not reach its
+    // owner's household-assigned salary, and the pot read unfunded. Decision 9
+    // says it is fed, household or not.
     await app.inject({
       method: "DELETE",
       url: `/api/households/${h.household.id}/accounts/${h.bills.id}`,
@@ -2347,10 +2353,16 @@ describe("api service", () => {
     const potBefore = before.accounts.find(
       (a: { accountId: string }) => a.accountId === h.bills.id,
     );
-    expect(potBefore.allocatedInflowMinor).toBe(0);
-    expect(potBefore.shortfallMinor).toBeGreaterThan(0);
+    // £1,000 rent + £109.10 of the £1,200 holiday, all borne by Alice alone:
+    // an account no household plans bears its own payments (its owner's), so
+    // Bob's 34% share does not apply and one transfer carries the lot.
+    expect(potBefore.allocatedInflowMinor).toBe(110910);
+    expect(potBefore.shortfallMinor).toBe(0);
+    expect(potBefore.inflowSources.map((s: { memberUserId: string }) => s.memberUserId)).toEqual([
+      h.alice.id,
+    ]);
 
-    // Put it back, and the household starts funding it.
+    // Put it back, and the same obligations split 66/34 across the household.
     await app.inject({
       method: "PUT",
       url: `/api/households/${h.household.id}/accounts/${h.bills.id}`,
@@ -2359,8 +2371,19 @@ describe("api service", () => {
     });
     const after = await overview();
     const potAfter = after.accounts.find((a: { accountId: string }) => a.accountId === h.bills.id);
-    expect(potAfter.allocatedInflowMinor).toBeGreaterThan(0);
     expect(potAfter.shortfallMinor).toBe(0);
+    // A penny more than borne alone: each member's share rounds up
+    // independently, and 73201 + 37710 is what the two of them owe.
+    expect(potAfter.allocatedInflowMinor).toBe(110911);
+    expect(
+      potAfter.inflowSources.map((s: { memberUserId: string; amountMinor: number }) => [
+        s.memberUserId,
+        s.amountMinor,
+      ]),
+    ).toEqual([
+      [h.alice.id, 73201],
+      [h.bob.id, 37710],
+    ]);
 
     // The guard: inflow is never folded into anyone's income, so the money the
     // members earn is counted once across the estate however it is moved

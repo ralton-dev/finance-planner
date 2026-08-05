@@ -226,6 +226,119 @@ describe("the scope loader closes over the graph in both directions", () => {
     ]);
   });
 
+  /**
+   * The shape every fixture missed, and the one a user found on his own screen:
+   * a household member with an assigned salary account, assigned shared pots
+   * **and** a private pot nobody assigned, carrying bills and no income.
+   *
+   * The two closure relations used to be mutually exclusive — an account a
+   * household planned closed over the roster only, and an account it did not
+   * closed over its owner's siblings *except* the ones a household planned. So a
+   * member's private pot could never reach their salary in either direction, and
+   * decision 9's derived feed was only ever reachable for users with no household
+   * assignments at all. The pot read `unfunded · £303.20` in production while the
+   * household's own pots were fed correctly beside it.
+   */
+  it("feeds a member's unassigned pot from the salary their household plans", async () => {
+    const ben = await seedUser("ben@example.com");
+    const household = await store.createHousehold("Home", ben);
+    const salaryAccount = await account(ben, "Salary");
+    const sharedPot = await account(ben, "Shared pot");
+    for (const [acc, role, member] of [
+      [salaryAccount, "personal", ben],
+      [sharedPot, "shared", null],
+    ] as const) {
+      await store.upsertAccountAssignment({
+        householdId: household.id,
+        accountId: acc.id,
+        role,
+        memberUserId: member,
+      });
+    }
+    // Assigned to nothing: the bills pot, with obligations and no income.
+    const billsPot = await account(ben, "Bills pot");
+    await salary(salaryAccount, 400_000);
+    await bill(sharedPot, "Shared bills", 51_200);
+    await bill(billsPot, "Council tax", 30_320);
+
+    const potPlan = await computePlanForAccount(store, billsPot, ASOF);
+    expect(potPlan.monthlyIncomeMinor).toBe(0);
+    expect(potPlan.allocatedInflowMinor).toBe(30_320);
+    expect(potPlan.shortfallMinor).toBe(0);
+
+    // One scope, whichever end you seed from: ownership and assignment close
+    // together, so every account of every member lands in the same set.
+    const fromPot = await scopeForAccount(store, billsPot, ASOF);
+    const fromSalary = await scopeForAccount(store, salaryAccount, ASOF);
+    expect([...fromPot.accountIds].sort()).toEqual(
+      [salaryAccount.id, sharedPot.id, billsPot.id].sort(),
+    );
+    expect(fromSalary.accountIds).toEqual(fromPot.accountIds);
+    // And the way the overview asks: every account at once resolves to the one
+    // scope, not to one per seed.
+    const overview = await scopesFor(store, [salaryAccount, sharedPot, billsPot], ASOF);
+    expect(overview).toHaveLength(1);
+    expect(overview[0]!.accountIds).toEqual(fromPot.accountIds);
+
+    // And the household's own pots are still fed, unchanged, beside it.
+    expect(inflowSourcesFor(fromPot, sharedPot.id, "GBP").map((s) => s.amountMinor)).toEqual([
+      51_200,
+    ]);
+    expect(inflowSourcesFor(fromPot, billsPot.id, "GBP")).toEqual([
+      {
+        memberUserId: ben,
+        displayName: "Owner",
+        fromAccountId: salaryAccount.id,
+        amountMinor: 30_320,
+        confirmedMinor: 0,
+      },
+    ]);
+  });
+
+  /**
+   * The regression ONE-ENGINE.md names, made explicit rather than merely
+   * survived: a bigger scope is a bigger budget *and* more obligations in one
+   * global priority order, so a **different bill** can go short than before.
+   *
+   * Here the private pot's priority-1 council tax now competes with the
+   * household's priority-50 rent out of Ben's one budget, and wins. Before
+   * WP-AF the two never met: the pot was planned alone and went short of the
+   * whole £500 while the household funded its rent in full with £200 spare.
+   * Moving the shortfall onto the lower-priority bill is the feature working —
+   * expenses share one priority space (decision 8) whichever side they sit.
+   */
+  it("orders a private pot's bill against the household's, from one budget", async () => {
+    const ben = await seedUser("ben@example.com");
+    const household = await store.createHousehold("Home", ben);
+    const salaryAccount = await account(ben, "Salary");
+    const sharedPot = await account(ben, "Shared pot");
+    for (const [acc, role, member] of [
+      [salaryAccount, "personal", ben],
+      [sharedPot, "shared", null],
+    ] as const) {
+      await store.upsertAccountAssignment({
+        householdId: household.id,
+        accountId: acc.id,
+        role,
+        memberUserId: member,
+      });
+    }
+    const privatePot = await account(ben, "Private pot");
+    await salary(salaryAccount, 100_000);
+    await bill(sharedPot, "Rent", 80_000, 50);
+    await bill(privatePot, "Council tax", 50_000, 1);
+
+    // £1,000 against £1,300 of bills: the priority-1 council tax is paid whole,
+    // and the rent takes the shortfall.
+    expect((await computePlanForAccount(store, privatePot, ASOF)).shortfallMinor).toBe(0);
+    expect((await computePlanForAccount(store, privatePot, ASOF)).allocatedInflowMinor).toBe(
+      50_000,
+    );
+    const rentPlan = await computePlanForAccount(store, sharedPot, ASOF);
+    expect(rentPlan.allocatedInflowMinor).toBe(50_000);
+    expect(rentPlan.shortfallMinor).toBe(30_000);
+  });
+
   it("keeps two unconnected scopes apart rather than pooling their members", async () => {
     const alice = await seedUser("alice@example.com");
     const bobId = await seedUser("bob@example.com");
