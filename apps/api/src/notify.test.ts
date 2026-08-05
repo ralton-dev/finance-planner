@@ -2,6 +2,7 @@ import { MemoryStore, type Store, type User } from "@finance-planner/data";
 import type { Mailer } from "@finance-planner/mailer";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildDailyDigest, DAILY_DIGEST_KIND, formatMoney, runNotifierOnce } from "./notify.js";
+import { accessibleAccounts, scopesFor } from "./plan.js";
 
 /** Captures what would have been sent. No transport, no timers. */
 class FakeMailer implements Mailer {
@@ -229,6 +230,90 @@ describe("buildDailyDigest", () => {
       amountMinor: 20_000,
     });
     expect(await buildDailyDigest(store, user.id, AS_OF)).toBeNull();
+  });
+
+  /**
+   * **The digest told you to make a co-member's transfers.**
+   *
+   * `movementLines` built its "mine" from every **accessible** account, so a
+   * co-member's current account shared into your household was in it and every
+   * authored movement leaving it landed in your daily email as a thing for you
+   * to do. The comment above the filter already stated the rule — "money
+   * leaving somebody else's account is not on it" — so the code simply did not
+   * do what it said, in a message the reader cannot correct afterwards.
+   *
+   * Ownership, never access (decision 20). The account stays visible to Alice
+   * everywhere a list of accounts is the point; it is the instruction that is
+   * Bob's.
+   */
+  it("does not ask you to move money out of a co-member's account", async () => {
+    const alice = await seedUser(store, "alice@example.com");
+    const bob = await seedUser(store, "bob@example.com");
+    const household = await store.createHousehold("Ours", alice.id);
+    await store.addMembership(household.id, bob.id, "member");
+
+    /** A current account with a salary, a pot beside it, and a monthly sweep. */
+    const estateFor = async (userId: string, label: string, sweepMinor: number) => {
+      const current = await store.createAccount({
+        ownerUserId: userId,
+        name: `${label} current`,
+        currency: "GBP",
+      });
+      const pot = await store.createAccount({
+        ownerUserId: userId,
+        name: `${label} pot`,
+        currency: "GBP",
+      });
+      await store.createIncome({
+        accountId: current.id,
+        name: "Salary",
+        amountMinor: 300_000,
+        frequency: "monthly",
+        recurrence: null,
+        anchorDate: "2026-01-01",
+        active: true,
+      });
+      await store.createInflow({
+        accountId: pot.id,
+        name: `${label} sweep`,
+        source: "account",
+        sourceAccountId: current.id,
+        amountMinor: sweepMinor,
+        frequency: "monthly",
+        recurrence: null,
+        anchorDate: "2026-01-01",
+        priority: 50,
+        active: true,
+      });
+      return current;
+    };
+
+    await estateFor(alice.id, "Alice", 10_000);
+    const bobCurrent = await estateFor(bob.id, "Bob", 20_000);
+    // Bob shares his current account into the household, which is the only
+    // thing that has to happen for the old code to put his sweep in Alice's
+    // inbox.
+    await store.createAccountShare(bobCurrent.id, household.id, "view");
+
+    const digest = await buildDailyDigest(store, alice.id, AS_OF);
+    // Hers, still there — the section is not simply gone.
+    expect(digest).toContain("- 100.00 GBP from Alice current to Alice pot");
+    // His, gone. The account is still one she can see; the instruction is not
+    // hers to act on.
+    expect(digest).not.toContain("from Bob current");
+    expect(digest).not.toContain("200.00 GBP");
+
+    // And it really is in the pass Alice's digest reads — this is a predicate
+    // doing work, not a movement that was never there.
+    const scopes = await scopesFor(store, await accessibleAccounts(store, alice.id), AS_OF);
+    expect(
+      scopes.flatMap((s) => s.plan.movements).map((m) => [m.fromAccountId, m.fundedMinor]),
+    ).toContainEqual([bobCurrent.id, 20_000]);
+
+    // Bob's own digest is where it belongs.
+    expect(await buildDailyDigest(store, bob.id, AS_OF)).toContain(
+      "- 200.00 GBP from Bob current to Bob pot",
+    );
   });
 
   /**

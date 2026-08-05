@@ -65,22 +65,33 @@ function groupByCurrency(transfers: readonly DerivedTransfer[]): Map<string, Der
  */
 async function movementLines(
   store: Store,
+  userId: string,
   accounts: readonly Account[],
   scopes: readonly PlannedScope[],
   asOfDate: string,
 ): Promise<string[]> {
-  const mine = new Map(accounts.map((a) => [a.id, a]));
+  const visible = new Map(accounts.map((a) => [a.id, a]));
   const month = monthStart(asOfDate);
 
   const lines: string[] = [];
   for (const movement of scopes.flatMap((s) => s.plan.movements)) {
-    const from = mine.get(movement.fromAccountId);
-    // Only movements out of an account this user can see: it is their list of
+    const from = visible.get(movement.fromAccountId);
+    // Only movements out of an account this user **owns**: it is their list of
     // things to do, and money leaving somebody else's account is not on it.
-    if (!from || movement.fundedMinor <= 0) continue;
+    //
+    // Ownership, never access (decision 20). This read `accounts` — every
+    // account the caller can *see* — so a co-member's current account shared
+    // into the household put their monthly sweep in your inbox as an
+    // instruction, and an email is the one surface a reader cannot correct
+    // afterwards. The rule was already written above; only the predicate was
+    // missing.
+    if (!from || from.ownerUserId !== userId || movement.fundedMinor <= 0) continue;
     const confirmed = await store.listTransferConfirmationsForAccount(from.id, month);
     if (confirmed.some((c) => c.inflowId === movement.inflowId)) continue;
-    const to = mine.get(movement.toAccountId);
+    // The destination is only ever *named* here, so access is the right gate
+    // for it: an owner reads "to Pot" and everyone else reads the honest
+    // fallback below.
+    const to = visible.get(movement.toAccountId);
     lines.push(
       `- ${formatMoney(movement.fundedMinor, from.currency)} from ${from.name} to ` +
         `${to?.name ?? "another account"}`,
@@ -117,7 +128,7 @@ export async function buildDailyDigest(
   const scopes = await scopesFor(store, accounts, asOfDate, ctx);
 
   const due = await upcomingForUser(store, userId, asOfDate, DIGEST_WINDOW_DAYS, ctx);
-  const movements = await movementLines(store, accounts, scopes, asOfDate);
+  const movements = await movementLines(store, userId, accounts, scopes, asOfDate);
 
   // The transfers the pass derived for *this* user, whether or not a household
   // is involved: `splitTransfersByPayday` serves a solo user's derived feed into
