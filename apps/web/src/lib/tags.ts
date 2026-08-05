@@ -107,9 +107,9 @@ export interface MemberBar {
   /** Obligation their income can't cover — the warn-coloured tail. */
   unfundedMinor: number;
   unfundedPct: number;
-  /** Obligation this household's own lines do not account for, and which is not
-   *  short either: costs the same pass funds on an account outside this
-   *  household. Quiet, never red — see {@link buildMemberBars}. */
+  /** Obligation this household's own lines do not carry, and which is not short
+   *  either: cost the same pass funds elsewhere in the plan. Quiet, never red —
+   *  see {@link buildMemberBars}. */
   elsewhereMinor: number;
   elsewherePct: number;
   segments: MemberBarSegment[];
@@ -130,10 +130,14 @@ export interface MemberBar {
  * obligation these lines cannot explain — and the whole of it was painting red
  * as "unfunded" on a month with no shortfall in it at all.
  *
- * So the tail is split. What the member's income genuinely cannot cover is
- * `shortfallMinor`, straight off the plan, and that is the red. Everything else
- * the lines do not reach is funded — somewhere this page is not showing — and
- * gets a quiet segment saying so.
+ * So the tail is split: `shortfallMinor` is the red, and what is funded
+ * somewhere this page does not show is a quiet segment saying so.
+ *
+ * **Both halves come off the plan.** This used to work the quiet one out by
+ * subtracting the red from the remainder, which is a category invented in the
+ * browser out of a figure the domain had left unnamed — the household view now
+ * publishes `elsewhereFundedMinor` beside `obligationMinor`, and the arithmetic
+ * that guessed at it is gone (ONE-ENGINE.md, WP-V).
  */
 export function buildMemberBars(plan: HouseholdPlanDto): MemberBar[] {
   return plan.members.map((member) => {
@@ -162,12 +166,23 @@ export function buildMemberBars(plan: HouseholdPlanDto): MemberBar[] {
     // Never more than the remainder: a shortfall on a line outside this
     // household would otherwise widen the bar past what it is measuring.
     const unfundedMinor = Math.min(remainder, Math.max(0, member.shortfallMinor));
-    const elsewhereMinor = remainder - unfundedMinor;
+    // Published, not inferred. Clamped to what is left of the bar for the same
+    // reason the red is, and defaulting to nothing on a payload too old to carry
+    // it — which reads as "these lines explain the whole of it", the answer that
+    // was right before decision 9.
+    const elsewhereMinor = Math.min(
+      remainder - unfundedMinor,
+      Math.max(0, member.elsewhereFundedMinor ?? 0),
+    );
     // Derived from the segments rather than computed independently, so the bar
     // always adds up to exactly 100% however the divisions rounded.
     const segmentsPct = segments.reduce((sum, s) => sum + s.widthPct, 0);
     const remainderPct = Math.max(0, 100 - segmentsPct);
     const unfundedPct = remainder > 0 ? (remainderPct * unfundedMinor) / remainder : 0;
+    // Its own share of the tail rather than "whatever the red left", so a payload
+    // that carries no elsewhere figure draws no elsewhere segment instead of
+    // painting the whole tail quiet.
+    const elsewherePct = remainder > 0 ? (remainderPct * elsewhereMinor) / remainder : 0;
     return {
       userId: member.userId,
       displayName: member.displayName ?? "member",
@@ -176,7 +191,7 @@ export function buildMemberBars(plan: HouseholdPlanDto): MemberBar[] {
       unfundedMinor,
       unfundedPct,
       elsewhereMinor,
-      elsewherePct: Math.max(0, remainderPct - unfundedPct),
+      elsewherePct,
       segments,
     };
   });

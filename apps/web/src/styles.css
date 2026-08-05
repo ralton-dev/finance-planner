@@ -892,6 +892,16 @@ td.dim {
   font-size: 11px;
   font-weight: 400;
 }
+/* A word under a figure, at every width — deliberately not `.row-sub`, which is
+ * the phone fold and disappears exactly where a number needs explaining most.
+ * For the figure whose breakdown is somewhere the table is not. */
+.table-scroll .cell-note {
+  display: block;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+}
 /* Phones. A table that needs more columns than 390px can carry honestly folds
  * the ones that describe the row rather than answer the page's question — a
  * payment's type and due date, an account's role, a member's email — into a

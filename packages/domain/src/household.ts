@@ -58,9 +58,41 @@ export interface HouseholdMemberPlan {
   shareBp: number;
   monthlyIncomeMinor: number;
   /** Total monthly cost attributed to this member (their personal + their
-   *  proportional slice of shared costs). */
+   *  proportional slice of shared costs). Scope-wide, and it keeps that meaning
+   *  exactly — the split below is added alongside it (decision 4/13). */
   obligationMinor: number;
   fundedMinor: number;
+  /**
+   * Of `obligationMinor`, the part this household's own `lines` carry — what the
+   * breakdown printed beneath the figure explains — and what the pass funded of
+   * it.
+   *
+   * The figure and its breakdown were computed over two different sets of
+   * accounts: `obligationMinor` comes off the scope-wide partition, `lines` off
+   * the household's own accounts. That was harmless while they were the same
+   * set, and decision 9 ended that — a member's solo bills pot is fed by a
+   * derived transfer, so they genuinely bear expenses on accounts the household
+   * does not hold, and the page read "their costs £1,374.20" over a breakdown
+   * explaining something else.
+   */
+  householdObligationMinor: number;
+  householdFundedMinor: number;
+  /**
+   * The rest of it, named.
+   *
+   * Chiefly cost on accounts this household does not hold — a member's own bills
+   * pot, a personal account nobody assigned here — plus their share of any
+   * reserve on a shared pot, which is a real obligation with no line to carry
+   * it. `committedMinor`'s missing sibling: money **leaving** as savings had a
+   * category and money **spent elsewhere** had none, so it simply inflated the
+   * headline with nothing naming it, and the web invented the category by
+   * subtraction (`apps/web/src/lib/tags.ts`, now deleted).
+   *
+   * `householdObligationMinor + elsewhereObligationMinor === obligationMinor`,
+   * and the same for funded — which is what lets the page reconcile.
+   */
+  elsewhereObligationMinor: number;
+  elsewhereFundedMinor: number;
   /** Discretionary surplus after the buffer + obligations (>= 0). Keeps its
    *  meaning exactly (decision 13): **not** reduced by `committedMinor`. */
   leftoverMinor: number;
@@ -211,21 +243,41 @@ export function householdPlanFromScope(
     }));
 
   const committedByAccount = accounts.reduce((s, a) => s + a.committedMinor, 0);
-  const members: HouseholdMemberPlan[] = partition.members.map((m) => ({
-    userId: m.userId,
-    displayName: m.displayName,
-    shareBp: m.shareBp,
-    monthlyIncomeMinor: m.monthlyIncomeMinor,
-    obligationMinor: m.obligationMinor,
-    fundedMinor: m.fundedMinor,
-    leftoverMinor: m.leftoverMinor,
-    // Restricted to the household's own accounts, so a member's private ISA
-    // draining a private current account is not the household's business.
-    committedMinor: accounts
-      .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
-      .reduce((s, a) => s + a.committedMinor, 0),
-    shortfallMinor: m.shortfallMinor,
-  }));
+  const members: HouseholdMemberPlan[] = partition.members.map((m) => {
+    // What this household's own lines ask of them, and got. Read off the very
+    // rows the page prints beneath the figure, so the two cannot be computed
+    // over different sets of accounts again.
+    let householdObligationMinor = 0;
+    let householdFundedMinor = 0;
+    for (const line of lines) {
+      const allocation = line.allocations.find((a) => a.userId === m.userId);
+      if (!allocation) continue;
+      householdObligationMinor += allocation.requiredMinor;
+      householdFundedMinor += allocation.fundedMinor;
+    }
+    return {
+      userId: m.userId,
+      displayName: m.displayName,
+      shareBp: m.shareBp,
+      monthlyIncomeMinor: m.monthlyIncomeMinor,
+      obligationMinor: m.obligationMinor,
+      fundedMinor: m.fundedMinor,
+      householdObligationMinor,
+      householdFundedMinor,
+      // Floored: the two halves are read off one pass, so the difference cannot
+      // go negative unless a caller hands this a plan and a roster that disagree
+      // about which accounts the household holds.
+      elsewhereObligationMinor: Math.max(0, m.obligationMinor - householdObligationMinor),
+      elsewhereFundedMinor: Math.max(0, m.fundedMinor - householdFundedMinor),
+      leftoverMinor: m.leftoverMinor,
+      // Restricted to the household's own accounts, so a member's private ISA
+      // draining a private current account is not the household's business.
+      committedMinor: accounts
+        .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
+        .reduce((s, a) => s + a.committedMinor, 0),
+      shortfallMinor: m.shortfallMinor,
+    };
+  });
 
   // Counted as the members were *asked* for it — each share rounded up, so a
   // bill is never a penny short — plus anything a line needed that reached no

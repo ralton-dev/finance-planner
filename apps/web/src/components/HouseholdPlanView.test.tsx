@@ -251,3 +251,44 @@ describe("HouseholdPlanView · an account that has to be consolidated into", () 
     expect(cell).not.toHaveClass("ok");
   });
 });
+
+/**
+ * The figure that exceeded its own breakdown.
+ *
+ * THEIR COSTS is what the pass attributes to a person across the whole scope;
+ * the lines and bars beneath this table cover only the household's own accounts.
+ * Decision 9 made those two sets differ — Alex has a rent pot of his own, fed by
+ * a transfer the plan derives — so the cell printed a figure nothing on the page
+ * added up to, and nothing said why. The household view publishes the split now.
+ */
+describe("HouseholdPlanView · costs the household's lines do not carry", () => {
+  const elsewhere: HouseholdPlanDto = {
+    ...PLAN,
+    members: PLAN.members.map((m) =>
+      m.userId === "alex"
+        ? {
+            ...m,
+            householdObligationMinor: 101_080,
+            householdFundedMinor: 101_080,
+            elsewhereObligationMinor: 30_320,
+            elsewhereFundedMinor: 30_320,
+          }
+        : { ...m, elsewhereObligationMinor: 0, elsewhereFundedMinor: 0 },
+    ),
+  };
+
+  it("says how much of a member's costs is somewhere this page is not", () => {
+    const { container } = render(<HouseholdPlanView plan={elsewhere} />);
+    const rows = [...tables(container)[1]!.querySelectorAll("tbody tr")];
+    expect(rows[0]).toHaveTextContent("£1,314.00");
+    expect(rows[0]!.querySelector(".cell-note")).toHaveTextContent("incl. £303.20 elsewhere");
+    // ...and reconciles: what is left is exactly what the lines beneath carry.
+    expect(131_400 - 30_320).toBe(101_080);
+  });
+
+  it("says nothing at all for a member whose costs are all in the household", () => {
+    const { container } = render(<HouseholdPlanView plan={elsewhere} />);
+    const rows = [...tables(container)[1]!.querySelectorAll("tbody tr")];
+    expect(rows[1]!.querySelector(".cell-note")).toBeNull();
+  });
+});

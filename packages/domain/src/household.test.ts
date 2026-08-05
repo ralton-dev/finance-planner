@@ -233,6 +233,69 @@ describe("householdPlanFromScope — the scope is wider than the household", () 
   });
 });
 
+describe("householdPlanFromScope — a member's costs the household's lines do not carry", () => {
+  /**
+   * Decision 9, as the household page reads it. Alice keeps a rent pot of her
+   * own, outside the household, with a £400 bill on it — the pass funds it from
+   * her budget and derives the feed, so nobody authored anything and nothing is
+   * short. Her `obligationMinor` counts it, because it is hers; this view's
+   * `lines` cannot, because the account is not the household's.
+   *
+   * Those two were published side by side with nothing naming the difference, so
+   * the page printed "their costs" over a breakdown that explained less than the
+   * figure, and the web invented the missing category by subtracting the red
+   * from the remainder. The split is published now.
+   */
+  const withOwnPot = household({
+    accounts: [
+      ...household().accounts,
+      acc({
+        accountId: "alice-pot",
+        role: "personal",
+        memberUserId: "alice",
+        payments: [owed("alice-rent", 40_000, { scope: "personal", bearerUserId: "alice" })],
+      }),
+    ],
+  });
+  const plan = view(withOwnPot);
+  const alice = () => plan.members.find((m) => m.userId === "alice")!;
+  const bob = () => plan.members.find((m) => m.userId === "bob")!;
+
+  it("keeps the scope-wide figures exactly as they were", () => {
+    // Decision 4/13: added alongside, never a change of meaning.
+    expect(alice().obligationMinor).toBe(60_000 + 5_000 + 40_000);
+    expect(alice().fundedMinor).toBe(105_000);
+    expect(alice().shortfallMinor).toBe(0);
+  });
+
+  it("names what these lines carry, and names the rest", () => {
+    expect(alice().householdObligationMinor).toBe(65_000);
+    expect(alice().householdFundedMinor).toBe(65_000);
+    expect(alice().elsewhereObligationMinor).toBe(40_000);
+    expect(alice().elsewhereFundedMinor).toBe(40_000);
+  });
+
+  it("reconciles: the two halves are the whole, for every member", () => {
+    for (const m of plan.members) {
+      expect(m.householdObligationMinor + m.elsewhereObligationMinor).toBe(m.obligationMinor);
+      expect(m.householdFundedMinor + m.elsewhereFundedMinor).toBe(m.fundedMinor);
+    }
+    // And what the lines carry is what the lines say, member by member.
+    const fromLines = plan.lines.reduce(
+      (sum, l) => sum + (l.allocations.find((a) => a.userId === "alice")?.requiredMinor ?? 0),
+      0,
+    );
+    expect(fromLines).toBe(alice().householdObligationMinor);
+  });
+
+  it("leaves a member with nothing outside the household untouched", () => {
+    expect(bob().elsewhereObligationMinor).toBe(0);
+    expect(bob().elsewhereFundedMinor).toBe(0);
+    expect(bob().householdObligationMinor).toBe(bob().obligationMinor);
+    expect(bob().householdFundedMinor).toBe(bob().fundedMinor);
+  });
+});
+
 describe("householdPlanFromScope — the edges", () => {
   it("reports the shortfall of a household nobody is a member of", () => {
     // The finding WP-P raised and declined to patch in a live surface: the old

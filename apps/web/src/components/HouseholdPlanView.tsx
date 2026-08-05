@@ -222,7 +222,22 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
                 </td>
                 <td className="num wide-only">{pct(m.shareBp)}</td>
                 <td className="num">{formatMinor(m.monthlyIncomeMinor, c)}</td>
-                <td className="num">{formatMinor(m.obligationMinor, c)}</td>
+                {/* THEIR COSTS is what the pass attributes to this person
+                    across the whole scope; the lines beneath this table are
+                    only the household's own accounts. Decision 9 made those two
+                    sets differ — a member's solo bills pot is fed by a transfer
+                    the plan derives — so the figure exceeded anything the page
+                    could explain, with nothing naming the difference. The
+                    household view publishes it now, and this is the word.
+                    Always visible: the gap is the point, not a phone fold. */}
+                <td className="num">
+                  {formatMinor(m.obligationMinor, c)}
+                  {(m.elsewhereObligationMinor ?? 0) > 0 && (
+                    <span className="cell-note">
+                      incl. {formatMinor(m.elsewhereObligationMinor ?? 0, c)} elsewhere
+                    </span>
+                  )}
+                </td>
                 {committed > 0 && (
                   <td className="num">
                     {(m.committedMinor ?? 0) > 0 ? formatMinor(m.committedMinor ?? 0, c) : "—"}

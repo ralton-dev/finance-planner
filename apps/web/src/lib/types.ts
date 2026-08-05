@@ -587,8 +587,19 @@ export interface HouseholdMemberPlanDto {
   displayName?: string;
   shareBp: number;
   monthlyIncomeMinor: number;
+  /** Scope-wide: everything the pass attributes to them, on the household's
+   *  accounts and anywhere else. Split by the two pairs below. */
   obligationMinor: number;
   fundedMinor: number;
+  /** Of that, what this household's own plan lines carry — the part the
+   *  breakdown beneath the figure explains. */
+  householdObligationMinor?: number;
+  householdFundedMinor?: number;
+  /** The rest: cost this household's lines do not carry — a member's own bills
+   *  pot fed by a derived transfer, chiefly. The category `committedMinor` never
+   *  had a sibling for, and which the member bars used to infer by subtraction. */
+  elsewhereObligationMinor?: number;
+  elsewhereFundedMinor?: number;
   leftoverMinor: number;
   /** Of that leftover, what funded savings movements out of this member's own
    *  household accounts have spoken for. */
