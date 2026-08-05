@@ -41,9 +41,9 @@ import type { ScopeAccountInput, ScopeInput } from "./scope.js";
  *
  * There is no store seeder in here, and there cannot be: `@finance-planner/domain`
  * does not depend on `@finance-planner/data` and this is not the package to make
- * it. An API-level seeder is a short walk over `estate` — see
- * `apps/api/src/close.divergence.test.ts`, whose `seedEstate` is meant to be
- * lifted rather than rewritten when that file is deleted.
+ * it. An API-level seeder is a short walk over `estate` — `seedEstate` in
+ * `apps/api/src/server.test.ts`, lifted there from the red pin when `1409e5f`
+ * deleted it.
  *
  * ## Nothing here depends on what day it is
  *
@@ -80,13 +80,23 @@ import type { ScopeAccountInput, ScopeInput } from "./scope.js";
  * figure above was a regression guard rather than an expectation to update.
  * `estateWithoutSharedIncome` below is that guard, and
  * `packages/domain/src/ownership.test.ts` holds it to the byte.
+ *
+ * ## And what has been said to have moved
+ *
+ * The confirmations are the half of the estate no figure can state on its own: a
+ * confirmed £424 is "the whole of it" only against a plan that derives £424, and
+ * plans move. `ESTATE_CONFIRMATION_SHAPES` writes down which of them is meant to
+ * be whole, which part-moved and which unsaid, and `estate.fixture.test.ts`
+ * holds the numbers to it — because the pass clamps a confirmation into range
+ * and a figure left behind by a domain change goes quiet rather than red.
  */
 
 /** A date to plan as of. Nothing below was tuned to it — see the module note. */
 export const ESTATE_ASOF = "2026-08-04";
 
 /**
- * The estate, and the two facts about it a `ScopeInput` cannot carry.
+ * The estate, and what a store seeder needs beside it: the assignment a
+ * `ScopeInput` cannot carry, and the ownership it now can but wants as a map.
  *
  * Ids are readable rather than uuid-shaped: a store generates its own, so a
  * seeder keeps a fixture-id → real-id map and these are what that map is keyed
@@ -230,8 +240,9 @@ export const estate: EstateFixture = {
         ownerUserId: "u-alice",
         name: "House pot",
         role: "shared",
-        // Shared, so nobody's — which is what makes its income unattributable
-        // today. `estate.ownerOf` says whose it really is.
+        // Shared, so no *member's* by role — which is what made its income
+        // unattributable until decision 15. `ownerUserId` above says whose it
+        // really is, and the pass reads that now.
         memberUserId: null,
         currency: "GBP",
         monthlyBufferMinor: 0,
@@ -427,17 +438,24 @@ export const estate: EstateFixture = {
       },
     ],
     // Somebody has said these derived transfers happened — one in full, one in
-    // part, and bob's £306 into the pot deliberately not at all: an estate where
+    // part, and bob's £476 into the pot deliberately not at all: an estate where
     // everything has been confirmed is one where the difference between
-    // "planned" and "moved" cannot be seen. Hand-set against the figures in the
-    // module note, and clamped by the pass anyway, so a number here can never
-    // credit money this month's plan did not send.
+    // "planned" and "moved" cannot be seen.
+    //
+    // Hand-set against the figures in the module note, and **not** made safe by
+    // the pass clamping them. A whole confirmation left behind by a domain
+    // change is clamped back into range and reads as a part-moved one instead —
+    // which is how `1ea409f` left £594 standing here against a £424 transfer
+    // with every test still green. `ESTATE_CONFIRMATION_SHAPES` says which of
+    // these is meant to be whole; nothing here is a free number.
     confirmedTransfers: [
       {
         fromAccountId: "acc-alice-current",
         toAccountId: "acc-house-pot",
         memberUserId: "u-alice",
-        confirmedMinor: 59_400,
+        // Alice's share of the pot's bills, netted (`0c35284`) against the £500
+        // of lodger rent her budget now counts — the whole of it, moved.
+        confirmedMinor: 42_400,
       },
       {
         fromAccountId: "acc-alice-current",
@@ -449,6 +467,69 @@ export const estate: EstateFixture = {
   },
 };
 
+/** Whether a confirmation covers the whole of what the pass derives, part of it,
+ *  or none of it at all. */
+export type ConfirmationShape = "whole" | "partial" | "none";
+
+/**
+ * What each confirmation in the estate is **meant** to be, against what the pass
+ * derives for it — the one fact the figures cannot state for themselves.
+ *
+ * `1ea409f` gave the pot's £500 to its owner, which re-netted alice's share of
+ * the pot's bills from £594 to £424 and left `59_400` written here as a
+ * confirmation that meant to be **whole**. Nothing failed. The pass clamps a
+ * confirmation to what the transfer came to, so the figure simply became a
+ * part-moved one — and `seedEstate` in `apps/api/src/server.test.ts`, which
+ * branches on exactly that equality to choose between the real
+ * `POST /api/households/:id/transfers/confirm` and a direct store write, stopped
+ * calling the endpoint and stopped booking any contribution at all. The estate
+ * every later package plans, closes and renders had an empty ledger, and five
+ * green suites said so in no way whatsoever.
+ *
+ * So the intent lives somewhere a test can hold the numbers to it.
+ * `estate.fixture.test.ts` checks every shape below against the current pass,
+ * and `seedEstate` checks that the arm it takes per confirmation is the arm
+ * declared here. A domain change that moves a figure fails a test now instead of
+ * quietly downgrading the fixture that was built to catch it.
+ */
+export const ESTATE_CONFIRMATION_SHAPES: {
+  /** Derived transfers, named the three ways the pass keys one. */
+  readonly transfers: readonly {
+    fromAccountId: string;
+    toAccountId: string;
+    memberUserId: string;
+    shape: ConfirmationShape;
+  }[];
+  /** Authored movements, named by the inflow row that authors them. */
+  readonly movements: readonly { inflowId: string; shape: ConfirmationShape }[];
+} = {
+  transfers: [
+    {
+      fromAccountId: "acc-alice-current",
+      toAccountId: "acc-house-pot",
+      memberUserId: "u-alice",
+      shape: "whole",
+    },
+    {
+      fromAccountId: "acc-alice-current",
+      toAccountId: "acc-alice-bills",
+      memberUserId: "u-alice",
+      shape: "partial",
+    },
+    {
+      fromAccountId: "acc-bob-current",
+      toAccountId: "acc-house-pot",
+      memberUserId: "u-bob",
+      shape: "none",
+    },
+  ],
+  movements: [
+    { inflowId: "mov-savings", shape: "whole" },
+    { inflowId: "mov-holiday", shape: "partial" },
+    { inflowId: "mov-car", shape: "none" },
+  ],
+};
+
 /**
  * The same estate with the shared pot earning nothing.
  *
@@ -457,10 +538,32 @@ export const estate: EstateFixture = {
  * than by household **role** can change nothing, so the whole `ScopePlan` must be
  * byte-identical either side of that change. Any figure that moves here is a
  * defect rather than a consequence.
+ *
+ * Its confirmations are written out rather than inherited, and that is the
+ * point: `ownership.test.ts`'s `PLAN_AT_F9604C8` is a photograph of the plan
+ * **this exact input** produced on the old tree, so the input may not drift
+ * either. £594 is alice's gross 66% share of the pot's £900 as it stood before
+ * decision 15 re-netted it; with the pot earning nothing here she owes the full
+ * £924, so it stays the part-moved figure it was. Inheriting `estate.scope`'s
+ * would mean holding the old tree's answer against a question nobody asked it.
  */
 export const estateWithoutSharedIncome: ScopeInput = {
   ...estate.scope,
   accounts: estate.scope.accounts.map(
     (a): ScopeAccountInput => (a.role === "shared" ? { ...a, incomes: [] } : a),
   ),
+  confirmedTransfers: [
+    {
+      fromAccountId: "acc-alice-current",
+      toAccountId: "acc-house-pot",
+      memberUserId: "u-alice",
+      confirmedMinor: 59_400,
+    },
+    {
+      fromAccountId: "acc-alice-current",
+      toAccountId: "acc-alice-bills",
+      memberUserId: "u-alice",
+      confirmedMinor: 3_000,
+    },
+  ],
 };

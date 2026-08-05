@@ -4,7 +4,12 @@ import { signAccessToken } from "@finance-planner/security";
 import { beforeEach, describe, expect, it } from "vitest";
 // Not `@finance-planner/domain`: the package exports its index and nothing else,
 // and a fixture is not part of a package's public surface.
-import { estate, ESTATE_ASOF } from "../../../packages/domain/src/estate.fixture.js";
+import {
+  estate,
+  ESTATE_ASOF,
+  ESTATE_CONFIRMATION_SHAPES,
+  type ConfirmationShape,
+} from "../../../packages/domain/src/estate.fixture.js";
 import type { ApiEnv } from "./env.js";
 import { buildDailyDigest } from "./notify.js";
 import { scopeForAccount } from "./plan.js";
@@ -4035,6 +4040,15 @@ interface SeededEstate {
  * written straight to the store — which is the only way a state the product
  * genuinely reaches gets into a test at all.
  *
+ * **Which arm each confirmation takes is declared, not discovered.** The
+ * equalities below are relationships between a hand-set figure and a plan, and
+ * a plan moves: `1ea409f` re-netted alice's transfer to the pot from £594 to
+ * £424, the fixture kept saying £594, and this walk quietly stopped calling
+ * `POST /api/households/:id/transfers/confirm` — so it booked no contributions
+ * at all and every suite over the estate stayed green with an empty ledger.
+ * `ESTATE_CONFIRMATION_SHAPES` names the intended arm and the assertions here
+ * hold the walk to it, so the next figure that drifts fails loudly instead.
+ *
  * Lifted from `close.divergence.test.ts`, which `MONTH-CLOSE.md` WP-D deleted
  * along with the two location-scoped closes its pin condemned.
  */
@@ -4045,6 +4059,8 @@ async function seedEstate(
 ): Promise<SeededEstate> {
   const userIds = new Map<string, string>();
   const auth = new Map<string, { authorization: string }>();
+  /** Which arm each confirmation actually took, for the assertion at the end. */
+  const paths: string[] = [];
   for (const m of estate.scope.members) {
     const email = `${m.userId}@example.com`;
     const user = await store.createUser({
@@ -4150,6 +4166,7 @@ async function seedEstate(
       const authored = a.inflows!.find((i) => i.id === c.inflowId)!;
       const owner = auth.get(estate.ownerOf[a.accountId]!)!;
       if (c.confirmedMinor === authored.amountMinor) {
+        paths.push(`${c.inflowId}: endpoint`);
         const res = await app.inject({
           method: "POST",
           url: `/api/inflows/${inflowIds.get(c.inflowId)!}/confirm?month=${month.slice(0, 7)}`,
@@ -4158,6 +4175,7 @@ async function seedEstate(
         expect(res.statusCode).toBe(201);
         expect(res.json().confirmation.amountMinor).toBe(c.confirmedMinor);
       } else {
+        paths.push(`${c.inflowId}: direct`);
         await store.createTransferConfirmation({
           householdId: null,
           inflowId: inflowIds.get(c.inflowId)!,
@@ -4186,6 +4204,9 @@ async function seedEstate(
     )!;
     const whole = c.confirmedMinor === derived.amountMinor;
     const assigned = estate.assignedAccountIds.includes(c.toAccountId);
+    paths.push(
+      `${c.toAccountId} ← ${c.memberUserId}: ${whole && assigned ? "endpoint" : "direct"}`,
+    );
     if (whole && assigned) {
       const res = await app.inject({
         method: "POST",
@@ -4214,6 +4235,39 @@ async function seedEstate(
       });
     }
   }
+
+  // **The paths, named.** A fixture figure that falls out of step with the pass
+  // does not change a number, it changes which arm ran — and the direct arm
+  // seeds an estate that looks identical and books nothing. An unsaid
+  // confirmation walks neither arm: there is no row for it to walk from, which
+  // is why the two lists below drop the `none`s rather than mapping them.
+  const arm = (shape: ConfirmationShape, endpointCan: boolean) =>
+    shape === "whole" && endpointCan ? "endpoint" : "direct";
+  expect(paths).toEqual([
+    ...ESTATE_CONFIRMATION_SHAPES.movements
+      .filter((m) => m.shape !== "none")
+      .map((m) => `${m.inflowId}: ${arm(m.shape, true)}`),
+    // Only a transfer into an account the household assigned has an endpoint to
+    // go through at all; alice's out-of-household bills pot is `0010`'s
+    // household-free shape and is written directly whatever its figure says.
+    ...ESTATE_CONFIRMATION_SHAPES.transfers
+      .filter((t) => t.shape !== "none")
+      .map(
+        (t) =>
+          `${t.toAccountId} ← ${t.memberUserId}: ${arm(t.shape, estate.assignedAccountIds.includes(t.toAccountId))}`,
+      ),
+  ]);
+
+  // And what the endpoint arm is *for*, which is the half a direct write drops
+  // in silence: confirming a derived transfer whole books the member's funded
+  // share of every bill in the destination account. £792 of rent and £132 of
+  // council tax — Alice's 66% of the pot's £1,400 — against a £424 transfer,
+  // because her budget already held the £500 of lodger rent sitting there.
+  const booked = await store.listContributionsForAccount(accounts.get("acc-house-pot")!.id, month);
+  expect(booked.map((b) => [b.userId, b.amountMinor])).toEqual([
+    [userIds.get("u-alice"), 79_200],
+    [userIds.get("u-alice"), 13_200],
+  ]);
 
   return { householdId: household.id, userIds, accounts, auth };
 }
@@ -4353,9 +4407,12 @@ describe("a month close is something a person does", () => {
     const seeded = await seedEstate(store, app, `${month}-01`);
     const alice = seeded.auth.get("u-alice")!;
 
-    // Money actually set aside, in both of her currencies, so the ledger half of
-    // the scorecard is a sum over rows that land in different partitions and has
-    // to bucket them by the account's currency to be right.
+    // Money set aside by hand, on top of the £924 confirming her transfer to the
+    // pot already booked — in both of her currencies, so the ledger half of the
+    // scorecard is a sum over rows that land in different partitions and has to
+    // bucket them by the account's currency to be right. Nothing seeds a euro
+    // contribution, so without this one the EUR row could not tell an empty
+    // ledger from a bucket it had put in the wrong partition.
     const record = async (fixtureAccountId: string, name: string, amountMinor: number) => {
       const account = seeded.accounts.get(fixtureAccountId)!;
       const payment = (await store.listPayments(account.id)).find((p) => p.name === name)!;
@@ -4397,10 +4454,16 @@ describe("a month close is something a person does", () => {
     //  - EUR: €800 of income, €120 of hosting, €25 set aside;
     //  - GBP: £3,000 of salary **plus the pot's own £500** (decision 15 — the
     //    pot is Alice's account), £924 of the pot's bills at her 66% share plus
-    //    the £75 her out-of-household pot needs, £100 set aside.
+    //    the £75 her out-of-household pot needs, and £1,024 set aside: the £924
+    //    confirming her transfer booked against the pot's two bills, and the
+    //    £100 recorded by hand above.
+    //
+    // Contributed exceeding planned is not a bug and is worth seeing here: a
+    // member's *obligation* is netted against the pot's own income (`0c35284`),
+    // and what she is booked as having paid towards its bills is not.
     expect(res.json()).toMatchObject([
       { currency: "EUR", incomeMinor: 80_000, plannedMinor: 12_000, contributedMinor: 2_500 },
-      { currency: "GBP", incomeMinor: 350_000, plannedMinor: 99_900, contributedMinor: 10_000 },
+      { currency: "GBP", incomeMinor: 350_000, plannedMinor: 99_900, contributedMinor: 102_400 },
     ]);
 
     // And the same figures the domain derives, over the same estate: the
