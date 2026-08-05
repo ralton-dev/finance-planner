@@ -284,6 +284,67 @@ describe("buildDailyDigest", () => {
     expect(digest).not.toContain("(");
   });
 
+  /**
+   * Every transfer line took its currency from `scope.input.accounts[0]`, and a
+   * scope holds as many currencies as its accounts do — the pass partitions by
+   * currency and plans each on its own (decision 10), which is precisely why
+   * `DerivedTransfer` carries the field the digest was dropping. A EUR feed went
+   * out labelled GBP: the wrong money, in an email nobody can correct after the
+   * fact.
+   */
+  it("labels each transfer with its own currency, not the scope's first account", async () => {
+    const user = await seedUser(store, "two-currencies@example.com");
+    const pay = async (accountId: string, amountMinor: number) =>
+      store.createIncome({
+        accountId,
+        name: "Salary",
+        amountMinor,
+        frequency: "monthly",
+        recurrence: null,
+        anchorDate: "2026-08-06", // a payday inside the digest window
+        active: true,
+      });
+    const bill = async (accountId: string, amountMinor: number) =>
+      store.createPayment({
+        accountId,
+        name: "Council tax",
+        category: "monthly_recurring",
+        amountMinor,
+        dueDate: null,
+        recurrence: null,
+        targetDate: null,
+        priority: 1,
+        alreadySavedMinor: 0,
+        autoRenew: true,
+        active: true,
+        notes: null,
+        projectId: null,
+        scope: "shared",
+        bearerUserId: null,
+        fixedMonthlyMinor: null,
+        tag: null,
+      });
+    const make = (name: string, currency: string) =>
+      store.createAccount({ ownerUserId: user.id, name, currency });
+
+    // One scope, two partitions: the owner's accounts are all one scope, and
+    // "Euro current" sorts before "Current" on nothing — `accounts[0]` was
+    // whichever id sorted first, which is not a fact about anybody's money.
+    const gbpCurrent = await make("Current", "GBP");
+    const gbpBills = await make("Bills", "GBP");
+    const eurCurrent = await make("Euro current", "EUR");
+    const eurBills = await make("Euro bills", "EUR");
+    await pay(gbpCurrent.id, 300_000);
+    await pay(eurCurrent.id, 200_000);
+    await bill(gbpBills.id, 15_000);
+    await bill(eurBills.id, 8_000);
+
+    const digest = await buildDailyDigest(store, user.id, AS_OF);
+    expect(digest).toContain("- 2026-08-06 — 150.00 GBP from Current to Bills");
+    expect(digest).toContain("- 2026-08-06 — 80.00 EUR from Euro current to Euro bills");
+    expect(digest).not.toContain("80.00 GBP");
+  });
+
   it("drops transfers scheduled outside the window", async () => {
     const alice = await seedUser(store, "late@example.com");
     const household = await store.createHousehold("Home", alice.id);

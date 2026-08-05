@@ -1,5 +1,5 @@
 import type { Account, Store } from "@finance-planner/data";
-import { toISODate } from "@finance-planner/domain";
+import { type DerivedTransfer, toISODate } from "@finance-planner/domain";
 import type { Mailer } from "@finance-planner/mailer";
 import {
   accessibleAccounts,
@@ -35,6 +35,18 @@ const dayLabel = (daysUntil: number): string =>
 
 /** The ISO first-of-month a date falls in — how a confirmation is keyed. */
 const monthStart = (asOfDate: string): string => `${asOfDate.slice(0, 7)}-01`;
+
+/** The pass's derived transfers, by the currency each one is denominated in.
+ *  Insertion order, which is the pass's own (partitions are alphabetical). */
+function groupByCurrency(transfers: readonly DerivedTransfer[]): Map<string, DerivedTransfer[]> {
+  const byCurrency = new Map<string, DerivedTransfer[]>();
+  for (const t of transfers) {
+    const list = byCurrency.get(t.currency) ?? [];
+    list.push(t);
+    byCurrency.set(t.currency, list);
+  }
+  return byCurrency;
+}
 
 /**
  * The savings movements this month's plan funds out of the user's own accounts
@@ -120,22 +132,28 @@ export async function buildDailyDigest(
     const accountName = new Map(
       scope.input.accounts.map((a) => [a.accountId, a.name ?? "an account"]),
     );
-    const currency = scope.input.accounts[0]?.currency ?? "GBP";
     const household = scope.input.householdId
       ? householdNames.get(scope.input.householdId)
       : undefined;
-    const mine = paydayScheduleFor(scope, scope.plan.transfers, asOfDate).find(
-      (s) => s.memberUserId === userId,
-    );
-    for (const event of mine?.events ?? []) {
-      if (event.date < asOfDate || event.date > windowEnd) continue;
-      for (const t of event.transfers) {
-        transferLines.push(
-          `- ${event.date} — ${formatMoney(t.amountMinor, currency)} from ` +
-            `${accountName.get(t.fromAccountId) ?? "an account"} to ` +
-            `${accountName.get(t.toAccountId) ?? "an account"}` +
-            `${household ? ` (${household})` : ""}`,
-        );
+    // Split by the pass's own `DerivedTransfer.currency` before the payday
+    // schedule, which keeps only the two accounts and the amount. A scope spans
+    // as many currencies as its accounts do (decision 10 plans each on its own),
+    // so labelling every line with `accounts[0]`'s posted a EUR transfer as
+    // "45.00 GBP" — the wrong money, in an email nobody can correct afterwards.
+    for (const [currency, transfers] of groupByCurrency(scope.plan.transfers)) {
+      const mine = paydayScheduleFor(scope, transfers, asOfDate).find(
+        (s) => s.memberUserId === userId,
+      );
+      for (const event of mine?.events ?? []) {
+        if (event.date < asOfDate || event.date > windowEnd) continue;
+        for (const t of event.transfers) {
+          transferLines.push(
+            `- ${event.date} — ${formatMoney(t.amountMinor, currency)} from ` +
+              `${accountName.get(t.fromAccountId) ?? "an account"} to ` +
+              `${accountName.get(t.toAccountId) ?? "an account"}` +
+              `${household ? ` (${household})` : ""}`,
+          );
+        }
       }
     }
   }
