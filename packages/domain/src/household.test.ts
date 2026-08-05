@@ -44,6 +44,9 @@ const owed = (
 const acc = (over: Partial<ScopeAccountInput> & { accountId: string }): ScopeAccountInput => ({
   name: over.accountId,
   role: "shared",
+  // A shared pot is still somebody's account (decision 15); here it is Alice's,
+  // and a personal account is owned by the member the roster names.
+  ownerUserId: over.memberUserId ?? "alice",
   currency: "GBP",
   incomes: [],
   payments: [],

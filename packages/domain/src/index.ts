@@ -2,6 +2,10 @@ export * from "./types.js";
 export * from "./dates.js";
 export * from "./engine.js";
 export * from "./estate.js";
+// An estate shaped like somebody's actual money, for every package's tests.
+// WP-A could not put this line here — this file was another agent's — so its own
+// test imported the fixture by relative path and no domain test could reach it.
+export * from "./estate.fixture.js";
 export * from "./flow.js";
 export * from "./household.js";
 export * from "./projection.js";

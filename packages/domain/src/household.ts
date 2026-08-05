@@ -60,8 +60,17 @@ export interface HouseholdMemberPlan {
    *  keeps that meaning exactly — the split below is added alongside it
    *  (decision 4/13). */
   monthlyIncomeMinor: number;
-  /** Of that, what lands in the member's own accounts **on this household's
-   *  roster** — the INCOME column of the account table above, for their rows. */
+  /**
+   * Of that, what lands in the accounts they **own** that are on this
+   * household's roster — the INCOME column of the account table above, for
+   * their rows.
+   *
+   * Ownership, not the roster's `memberUserId` (decision 15): a shared pot is
+   * still somebody's account, and a pot on this very table earning £500 of
+   * lodger rent earns it for whoever owns it. While income followed the
+   * household *role*, that £500 belonged to nobody — absent from every member's
+   * figure here, and from the budget that pays the pot's own bills.
+   */
   householdIncomeMinor: number;
   /**
    * The rest of it, named: what they earn into accounts this household does not
@@ -303,6 +312,12 @@ export function householdPlanFromScope(
     };
   const inHousehold = new Set(accountIds);
   const memberIds = new Set(partition.members.map((m) => m.userId));
+  // Whose each account is, off the pass. Income is attributed by ownership
+  // (decision 15) and `HouseholdAccountPlan` deliberately does not republish it:
+  // whose account a shared pot is belongs on the accounts page, not among a
+  // household's figures. Every account below is one of `partition.accounts`, so
+  // every lookup hits.
+  const ownerOf = new Map(partition.accounts.map((a) => [a.accountId, a.ownerUserId] as const));
 
   const accounts: HouseholdAccountPlan[] = partition.accounts
     .filter((a) => inHousehold.has(a.accountId))
@@ -366,9 +381,18 @@ export function householdPlanFromScope(
     let householdIncomeMinor = 0;
     let householdCommittedMinor = 0;
     for (const a of accounts) {
-      if (a.role !== "personal" || a.memberUserId !== m.userId) continue;
-      householdIncomeMinor += a.monthlyIncomeMinor;
-      householdCommittedMinor += a.committedMinor;
+      // Income by **ownership**, whatever the account's role (decision 15): a
+      // shared pot on this roster earning its own lodger rent earns it for
+      // whoever owns the pot, and that income is in their budget, so calling it
+      // "elsewhere" on the very page the pot is listed on would be a lie the
+      // reader could see. Committed stays a role question, matching
+      // `ScopeMemberPlan.committedMinor` exactly — the identity beneath it is
+      // that the two halves sum to the pass's figure, and they cannot if one
+      // half counts a set of accounts the other does not.
+      if (ownerOf.get(a.accountId) === m.userId) householdIncomeMinor += a.monthlyIncomeMinor;
+      if (a.role === "personal" && a.memberUserId === m.userId) {
+        householdCommittedMinor += a.committedMinor;
+      }
     }
     return {
       userId: m.userId,
@@ -421,10 +445,13 @@ export function householdPlanFromScope(
     0,
   );
   const monthlyIncome = accounts.reduce((s, a) => s + a.monthlyIncomeMinor, 0);
-  // Income no member's budget counted — a shared pot's own income, chiefly, and
-  // a personal account assigned to nobody.
+  // Income no member's budget counted — an account on the roster owned by
+  // somebody who is not a member of it. A shared pot's own income is no longer
+  // one of those: since decision 15 it belongs to whoever owns the pot, so if
+  // they are a member it is already inside `leftoverMinor`'s first term, and
+  // adding it here as well would put the same £500 in the headline twice.
   const unattributedIncome = accounts
-    .filter((a) => !(a.role === "personal" && a.memberUserId && memberIds.has(a.memberUserId)))
+    .filter((a) => !memberIds.has(ownerOf.get(a.accountId)!))
     .reduce((s, a) => s + a.monthlyIncomeMinor, 0);
 
   return {

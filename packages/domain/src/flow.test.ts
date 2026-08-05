@@ -92,6 +92,9 @@ const scopeAccount = (
   name: accountId,
   role: "personal",
   memberUserId: "owner",
+  // Whose account it is (decision 15): the member the roster names, or the
+  // scope's sole owner when it names nobody — a shared bills pot included.
+  ownerUserId: over.memberUserId ?? "owner",
   currency: "GBP",
   incomes: [],
   payments: [],

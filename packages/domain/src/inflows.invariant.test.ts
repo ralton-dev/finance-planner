@@ -82,6 +82,9 @@ const owned = (over: Partial<ScopeAccountInput> & { accountId: string }): ScopeA
   currency: "GBP",
   role: "personal",
   memberUserId: "owner",
+  // The name says it: these accounts are owned, and by the one member of a solo
+  // scope unless a case names another (decision 15).
+  ownerUserId: over.memberUserId ?? "owner",
   incomes: [],
   payments: [],
   ...over,

@@ -37,11 +37,12 @@ import type {
  *
  * ## The phases
  *
- * 1. **Attribution.** Every active payment on every in-scope account becomes
- *    obligations attributed to members — `splitByShares` for shared scope, the
- *    bearer (or the owning member) for personal. A personal account's buffer
- *    reduces its member's budget; a shared pot's buffer is an obligation at
- *    `RESERVE_PRIORITY`.
+ * 1. **Attribution.** Every account's external income counts for the member who
+ *    **owns** it, whatever the account's household role (decision 15). Every
+ *    active payment on every in-scope account becomes obligations attributed to
+ *    members — `splitByShares` for shared scope, the bearer (or the owning
+ *    member) for personal. A personal account's buffer reduces its member's
+ *    budget; a shared pot's buffer is an obligation at `RESERVE_PRIORITY`.
  * 2. **Expense funding.** Obligations fund from pooled member budgets in **one
  *    global priority order**: household-shared and personal intertwined, so a
  *    household bill at priority 5 beats a personal bill at 10 and vice versa
@@ -116,9 +117,28 @@ export interface ScopeAccountInput {
   accountId: string;
   name?: string;
   role: AccountRole;
-  /** Set when role === "personal": the member who owns this account. For a solo
-   *  user that is the owner, on every account they have. */
+  /** Set when role === "personal": the member the **household** attributes this
+   *  account to. For a solo user that is the owner, on every account they have.
+   *  Not the same question as `ownerUserId` below — see it. */
   memberUserId?: string | null;
+  /**
+   * **Whose account this is** — `core.accounts.owner_user_id`, which is
+   * `NOT NULL`, so every account has exactly one owner and a "joint" account is
+   * one person's account shared into a household.
+   *
+   * Required, and deliberately not optional (decision 15). External income
+   * counts for the owner whatever the account's role, so a shared pot's own
+   * lodger rent joins its owner's income and budget exactly as a salary does —
+   * and a field a call site could omit would silently resurrect
+   * "shared-pot income belongs to nobody" at that call site alone.
+   *
+   * `memberUserId` answers a different question and both are needed: this one is
+   * a fact about the account, that one is a fact about the household's roster.
+   * A member's *transfers* still leave one of their personal-role accounts
+   * (decision 11), and a personal account's buffer still comes off the budget of
+   * the member the roster names — attribution moved, the roster did not.
+   */
+  ownerUserId: string;
   currency: string;
   monthlyBufferMinor?: number;
   /** The account's **external** inflows — money entering the estate. */
@@ -242,6 +262,11 @@ export interface ScopeMemberPlan {
   currency: string;
   /** Share normalised to sum 10000 across members, for display. */
   shareBp: number;
+  /** Everything this member earns in this currency: the external income of every
+   *  account they **own**, whatever its household role (decision 15). Summed
+   *  across the members of a partition it is the partition's whole income,
+   *  provided every account in it is owned by one of them — which is what lets a
+   *  month close be a per-user view of the pass rather than a second sum. */
   monthlyIncomeMinor: number;
   /** Total monthly cost attributed to this member in this currency. */
   obligationMinor: number;
@@ -266,6 +291,10 @@ export interface ScopeAccountPlan {
   name?: string;
   role: AccountRole;
   memberUserId: string | null;
+  /** Whose account it is — `ScopeAccountInput.ownerUserId` passed through, so a
+   *  view attributing anything by ownership reads the pass's answer rather than
+   *  deriving a second one from the input. */
+  ownerUserId: string;
   currency: string;
   /** The account's **own** external income only. */
   monthlyIncomeMinor: number;
@@ -322,8 +351,10 @@ export interface ScopeCurrencyPlan {
   monthlyIncomeMinor: number;
   totalRequiredMinor: number;
   totalFundedMinor: number;
-  /** Members' discretionary surplus plus income sitting in accounts no member
-   *  owns (a shared pot's own income, chiefly). */
+  /** Members' discretionary surplus plus income sitting in accounts owned by
+   *  nobody in the scope — a sender pulled in from outside it, chiefly. Since
+   *  decision 15 a shared pot's own income is not that: it belongs to whoever
+   *  owns the pot, and is in their surplus already. */
   leftoverMinor: number;
   /** Of that, what funded savings movements have spoken for. */
   committedMinor: number;
@@ -391,12 +422,19 @@ interface Obligation {
  * account's income exactly, so nothing is netted twice and nothing is missed.
  *
  * `owner` is the member whose budget phase 1 already counted this income into —
- * set only for a personal account belonging to a member of the scope. Their
- * obligations here are paid for by money that is already here; a **co-member's**
- * are not, and netting those would tell Bob he owes Alice nothing for the rent
- * that leaves her current account. Income no member's budget counted — a shared
- * pot's, chiefly — has no owner and is available to whoever the queue reaches
- * first.
+ * the account's **owner** (decision 15), when they are a member of the scope.
+ * Their obligations here are paid for by money that is already here; a
+ * **co-member's** are not, and netting those would tell Bob he owes Alice nothing
+ * for the rent that leaves her current account. Income no member's budget counted
+ * — an account owned by somebody outside the scope — has no owner and is
+ * available to whoever the queue reaches first.
+ *
+ * It tracks phase 1 and must keep tracking it. While income was attributed by
+ * role, a shared pot's own income was in nobody's budget and every member could
+ * lean on it; now it is in its owner's, and letting a co-member lean on it too
+ * would spend the same £500 twice — the owner's budget would grow by it while
+ * the co-member's transfer shrank by a share of it, and the co-member would end
+ * the month holding money the owner's `leftoverMinor` claims.
  */
 interface SelfFunding {
   spendable: number;
@@ -482,13 +520,34 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     sourceAccountId: null,
   }));
   for (let i = 0; i < members.length; i++) {
+    const userId = members[i]!.userId;
+
+    // **Income follows ownership, whatever the account's role** (decision 15).
+    // A shared pot is still somebody's account — a "joint" account is one
+    // person's, shared into a household — so the lodger rent paid into it is
+    // that person's income exactly as a salary paid into their current account
+    // is. Attributing by household *role* instead left a shared pot's own income
+    // belonging to nobody: it funded nothing, it was in no member's budget, and
+    // the members transported the gross of the pot's bills as though it had
+    // never arrived.
+    for (const a of accounts) {
+      if (a.ownerUserId !== userId) continue;
+      money[i]!.incomeMinor += accountIncome.get(a.accountId)!;
+    }
+
+    // Buffers and the source account stay a **personal-role** question, and for
+    // two separate reasons. Decision 11 is untouched: a member's transfers leave
+    // the personal account of theirs with the most external income (lowest id
+    // breaking the tie), because a shared pot is not somewhere they pay bills
+    // from. And a shared pot's buffer is already funded into it as a reserve
+    // obligation at `RESERVE_PRIORITY` below — taking it off its owner's budget
+    // here as well would reserve the same money twice.
     const personal = accounts
-      .filter((a) => a.role === "personal" && a.memberUserId === members[i]!.userId)
+      .filter((a) => a.role === "personal" && a.memberUserId === userId)
       .sort((a, b) => (a.accountId < b.accountId ? -1 : 1));
     let bestIncome = -1;
     for (const a of personal) {
       const income = accountIncome.get(a.accountId)!;
-      money[i]!.incomeMinor += income;
       money[i]!.bufferMinor += Math.max(0, a.monthlyBufferMinor ?? 0);
       if (income > bestIncome) {
         bestIncome = income;
@@ -633,8 +692,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     accounts.map((a) => {
       const income = accountIncome.get(a.accountId)!;
       const buffer = Math.max(0, a.monthlyBufferMinor ?? 0);
-      const owner =
-        a.role === "personal" && a.memberUserId != null ? memberIdx.get(a.memberUserId) : undefined;
+      const owner = memberIdx.get(a.ownerUserId);
       return [
         a.accountId,
         {
@@ -867,8 +925,11 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     const obligation = ob.reduce((s, o) => s + o.requiredMinor, 0);
     const funded = ob.reduce((s, o) => s + o.fundedMinor, 0);
     // A member's committed savings are the funded movements leaving the
-    // accounts they own. Movements out of a shared pot belong to no one member
-    // and are counted on the account alone.
+    // personal accounts the roster names as theirs. Movements out of a shared
+    // pot belong to no one member and are counted on the account alone —
+    // deliberately still a role question, and not the ownership one decision 15
+    // moved income onto: a pot the household sweeps into an ISA is spending the
+    // household's money, whoever's name is on it.
     const committed = accounts
       .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
       .reduce((s, a) => s + committedByAccount.get(a.accountId)!, 0);
@@ -904,6 +965,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
       name: acc.name,
       role: acc.role,
       memberUserId: acc.memberUserId ?? null,
+      ownerUserId: acc.ownerUserId,
       currency,
       monthlyIncomeMinor: income,
       bufferMinor: Math.max(0, acc.monthlyBufferMinor ?? 0),
@@ -948,7 +1010,9 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     totalRequiredMinor: totalRequired,
     totalFundedMinor: totalFunded,
     // Members' surplus, plus income sitting in accounts no member's budget
-    // counted — a shared pot's own income, chiefly.
+    // counted — one owned by somebody outside the scope. Zero for a scope whose
+    // accounts are all owned by its members, which is every scope the loader
+    // builds (it closes over common ownership).
     leftoverMinor:
       memberPlans.reduce((s, m) => s + m.leftoverMinor, 0) + (monthlyIncome - attributedIncome),
     committedMinor: [...committedByAccount.values()].reduce((s, v) => s + v, 0),
@@ -964,6 +1028,95 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
 
 function transferKey(from: string, to: string, memberUserId: string): string {
   return `${from}→${to}→${memberUserId}`;
+}
+
+// ---------------------------------------------------------------------------
+// The close, as a view of the pass
+// ---------------------------------------------------------------------------
+
+/**
+ * One row of the ledger of money actually set aside, as a close reads it.
+ *
+ * The domain does not depend on the store, so this is the three columns of
+ * `core.contributions` a close needs and no more.
+ */
+export interface CloseContribution {
+  /** The account it was set aside in. A close buckets by that account's
+   *  currency, because the pass partitions by currency and a scorecard has to
+   *  say which partition it is scoring. */
+  accountId: string;
+  /**
+   * Whose money / who recorded it.
+   *
+   * Nullable because `core.contributions.user_id` predates the writers that set
+   * it; every creation site sets it today. A row without one is nobody's and is
+   * counted for nobody (decision 17 — no legacy handling beyond saying so).
+   */
+  userId: string | null;
+  amountMinor: number;
+}
+
+/** A user's month, in one currency: what they earned, planned, and set aside.
+ *  The four columns `core.month_closes` holds for a user-scoped row. */
+export interface UserMonthClose {
+  currency: string;
+  incomeMinor: number;
+  plannedMinor: number;
+  contributedMinor: number;
+}
+
+/**
+ * **A month close is per user, per currency** (decision 14), and it is a *view*.
+ *
+ * A close freezes a scorecard — _you earned X, planned Y, set aside Z_ — and the
+ * one thing it must never become is a second computation. So there is no
+ * arithmetic here that the pass has not already done: the income is
+ * `ScopeMemberPlan.monthlyIncomeMinor`, the planned figure is
+ * `.obligationMinor`, both read straight off the partition, and the only sum is
+ * over the contributions ledger, which is a ledger precisely so that summing it
+ * is the answer.
+ *
+ * That both figures are the *member's* rather than a location's is what makes
+ * the scorecard mean something. Asked of an account, "what did you earn?" had to
+ * be redefined as "what arrived", so a household holding a fed bills pot froze
+ * £0 of income against a contributed figure made entirely of transfers — a row
+ * that could never say anything. Asked of a person, it needs no redefinition,
+ * and the partition's own income is the sum of its members' (decision 15, and
+ * `closeForUser` is where that identity is cashed).
+ *
+ * One row per currency partition the user appears in, in the pass's partition
+ * order — alphabetical by currency — so one action can close every partition of
+ * their month at once. A contribution against an account the pass never planned
+ * has no currency to be bucketed by and is not counted; the caller decides which
+ * ledger rows belong to the month, because a month is not something the pass
+ * knows about.
+ */
+export function closeForUser(
+  plan: ScopePlan,
+  contributions: readonly CloseContribution[],
+  userId: string,
+): UserMonthClose[] {
+  const currencyOf = new Map(plan.accounts.map((a) => [a.accountId, a.currency] as const));
+  const contributed = new Map<string, number>();
+  for (const c of contributions) {
+    if (c.userId !== userId) continue;
+    const currency = currencyOf.get(c.accountId);
+    if (currency === undefined) continue;
+    contributed.set(currency, (contributed.get(currency) ?? 0) + c.amountMinor);
+  }
+
+  const closes: UserMonthClose[] = [];
+  for (const partition of plan.partitions) {
+    const member = partition.members.find((m) => m.userId === userId);
+    if (!member) continue;
+    closes.push({
+      currency: partition.currency,
+      incomeMinor: member.monthlyIncomeMinor,
+      plannedMinor: member.obligationMinor,
+      contributedMinor: contributed.get(partition.currency) ?? 0,
+    });
+  }
+  return closes;
 }
 
 /** A per-account running total, with an entry for every account in the

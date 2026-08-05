@@ -39,12 +39,21 @@ async function seedHousehold(store: Store, app: ReturnType<typeof buildServer>) 
   await store.updateMembershipShare(household.id, alice.id, 6600);
   await store.updateMembershipShare(household.id, bob.id, 3400);
 
-  const make = async (name: string, incomeMinor?: number) => {
+  // `who` creates the account, so `who` owns it — and since MONTH-CLOSE.md
+  // decision 15 external income counts for an account's **owner**, not for the
+  // member the roster names. Bob's salary has to arrive in an account that is
+  // actually Bob's, which is how it works outside a test: people open their own
+  // accounts and then share them into a household.
+  const make = async (
+    name: string,
+    incomeMinor?: number,
+    who: { authorization: string } = auth,
+  ) => {
     const account = (
       await app.inject({
         method: "POST",
         url: "/api/accounts",
-        headers: auth,
+        headers: who,
         payload: { name, currency: "GBP" },
       })
     ).json();
@@ -52,7 +61,7 @@ async function seedHousehold(store: Store, app: ReturnType<typeof buildServer>) 
       await app.inject({
         method: "POST",
         url: `/api/accounts/${account.id}/incomes`,
-        headers: auth,
+        headers: who,
         payload: {
           name: "Pay",
           amountMinor: incomeMinor,
@@ -64,7 +73,7 @@ async function seedHousehold(store: Store, app: ReturnType<typeof buildServer>) 
     return account;
   };
   const aliceCur = await make("alice-cur", 300000);
-  const bobCur = await make("bob-cur", 200000);
+  const bobCur = await make("bob-cur", 200000, bobAuth);
   const bills = await make("bills");
 
   for (const payload of [
@@ -93,7 +102,16 @@ async function seedHousehold(store: Store, app: ReturnType<typeof buildServer>) 
       payload,
     });
   await assign(aliceCur.id, { role: "personal", memberUserId: alice.id });
-  await assign(bobCur.id, { role: "personal", memberUserId: bob.id });
+  // Bob's account goes on the roster through the store, not through Alice: the
+  // endpoint requires the caller to be able to see the account, and Bob is a
+  // plain member here, so neither of them could do it over HTTP. What matters to
+  // the plan is that the assignment exists and that the account is Bob's.
+  await store.upsertAccountAssignment({
+    householdId: household.id,
+    accountId: bobCur.id,
+    role: "personal",
+    memberUserId: bob.id,
+  });
   await assign(bills.id, { role: "shared" });
 
   return { alice, bob, auth, bobAuth, household, aliceCur, bobCur, bills };
@@ -778,18 +796,25 @@ describe("api service", () => {
 
   it("computes a household plan with proportional shared costs + transfers", async () => {
     const { user, auth } = await seedUser(store, "alice@example.com");
-    const { user: bob } = await seedUser(store, "bob@example.com");
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
     const household = await store.createHousehold("Home", user.id);
     await store.addMembership(household.id, bob.id, "member");
     await store.updateMembershipShare(household.id, user.id, 6600);
     await store.updateMembershipShare(household.id, bob.id, 3400);
 
-    const make = async (name: string, incomeMinor?: number) => {
+    // `who` creates the account, so `who` owns it — and income counts for an
+    // account's owner (MONTH-CLOSE.md decision 15), so Bob's salary has to
+    // arrive in an account that is his.
+    const make = async (
+      name: string,
+      incomeMinor?: number,
+      who: { authorization: string } = auth,
+    ) => {
       const a = (
         await app.inject({
           method: "POST",
           url: "/api/accounts",
-          headers: auth,
+          headers: who,
           payload: { name, currency: "GBP" },
         })
       ).json();
@@ -797,7 +822,7 @@ describe("api service", () => {
         await app.inject({
           method: "POST",
           url: `/api/accounts/${a.id}/incomes`,
-          headers: auth,
+          headers: who,
           payload: {
             name: "Pay",
             amountMinor: incomeMinor,
@@ -809,7 +834,7 @@ describe("api service", () => {
       return a;
     };
     const aliceCur = await make("alice-cur", 300000);
-    const bobCur = await make("bob-cur", 200000);
+    const bobCur = await make("bob-cur", 200000, bobAuth);
     const bills = await make("bills");
     await app.inject({
       method: "POST",
@@ -834,7 +859,14 @@ describe("api service", () => {
     expect(
       (await assign(aliceCur.id, { role: "personal", memberUserId: user.id })).statusCode,
     ).toBe(200);
-    await assign(bobCur.id, { role: "personal", memberUserId: bob.id });
+    // Through the store: the endpoint wants the caller to be able to see the
+    // account, and Bob's is nobody else's to assign.
+    await store.upsertAccountAssignment({
+      householdId: household.id,
+      accountId: bobCur.id,
+      role: "personal",
+      memberUserId: bob.id,
+    });
     await assign(bills.id, { role: "shared" });
 
     const plan = (
@@ -2287,7 +2319,10 @@ describe("api service", () => {
       (
         await app.inject({
           method: "GET",
-          url: `/api/accounts/${side.id}/plan`,
+          // Dated, because one of the three departures below is Bob's share of
+          // the household's dated holiday goal and would otherwise move with
+          // the calendar.
+          url: `/api/accounts/${side.id}/plan?asOf=2026-06-01`,
           headers: h.bobAuth,
         })
       ).json(),
@@ -2302,6 +2337,18 @@ describe("api service", () => {
         confirmedMinor: 0,
         toAccountName: "bob-boat",
       },
+      // His share of the household's bills, leaving this account rather than his
+      // current one: decision 11 sends a member's transfers out of the personal
+      // account of theirs with the most income, and this one has twice his
+      // salary in it. Unnamed, because the household's bills pot is Alice's
+      // account and nobody shared it with him — the far end is an id he can act
+      // on and no more.
+      {
+        toAccountId: h.bills.id,
+        memberUserId: h.bob.id,
+        amountMinor: 36_915,
+        confirmedMinor: 0,
+      },
       {
         toAccountId: bike.id,
         memberUserId: h.bob.id,
@@ -2313,7 +2360,7 @@ describe("api service", () => {
 
     const hersResponse = await app.inject({
       method: "GET",
-      url: `/api/accounts/${side.id}/plan`,
+      url: `/api/accounts/${side.id}/plan?asOf=2026-06-01`,
       headers: h.auth,
     });
     expect(hersResponse.statusCode).toBe(200);

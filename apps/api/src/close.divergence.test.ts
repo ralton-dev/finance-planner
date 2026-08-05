@@ -342,20 +342,27 @@ describe("a month close asks two locations and never a person", () => {
         amountMinor: 7_500,
         confirmedMinor: 3_000,
       },
-      // Whole.
+      // Whole. £424 rather than the £594 this file was written against: the
+      // pot's own £500 of lodger rent is Alice's, because the pot is
+      // (MONTH-CLOSE.md decision 15, WP-C), so it is her share of the pot's
+      // bills that the £500 already sitting there nets off. The two members
+      // still transport £900 between them — the pot's £1,400 less its own £500,
+      // which is `0c35284`'s netting and did not move.
       {
         from: "acc-alice-current",
         to: "acc-house-pot",
         member: "u-alice",
-        amountMinor: 59_400,
-        confirmedMinor: 59_400,
+        amountMinor: 42_400,
+        confirmedMinor: 42_400,
       },
-      // Nobody has said this one moved.
+      // Nobody has said this one moved. Bob's gross share, un-netted: leaning on
+      // money that is in Alice's budget would have him end the month holding
+      // hers.
       {
         from: "acc-bob-current",
         to: "acc-house-pot",
         member: "u-bob",
-        amountMinor: 30_600,
+        amountMinor: 47_600,
         confirmedMinor: 0,
       },
     ]);

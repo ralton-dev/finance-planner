@@ -45,6 +45,7 @@ function owned(acc: PlainAccount): ScopeAccountInput {
     ...acc,
     role: "personal",
     memberUserId: "owner",
+    ownerUserId: "owner",
     payments: acc.payments.map((p) => ({ ...p, scope: "personal" as const })),
   };
 }
@@ -1267,6 +1268,7 @@ function household(): ScopeInput {
         accountId: "alice-cur",
         role: "personal",
         memberUserId: "alice",
+        ownerUserId: "alice",
         currency: "GBP",
         incomes: [income(300_000, { id: "alice-pay" })],
         payments: [
@@ -1283,6 +1285,7 @@ function household(): ScopeInput {
         accountId: "bob-cur",
         role: "personal",
         memberUserId: "bob",
+        ownerUserId: "bob",
         currency: "GBP",
         incomes: [income(200_000, { id: "bob-pay" })],
         payments: [],
@@ -1290,6 +1293,7 @@ function household(): ScopeInput {
       {
         accountId: "bills",
         role: "shared",
+        ownerUserId: "alice",
         currency: "GBP",
         incomes: [],
         payments: [
@@ -1431,6 +1435,7 @@ describe("householdProjectionFromScope", () => {
       accountId: "alice-isa",
       role: "personal",
       memberUserId: "alice",
+      ownerUserId: "alice",
       currency: "GBP",
       incomes: [],
       payments: [],
@@ -1471,6 +1476,7 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       accountId: "alice-isa",
       role: "personal",
       memberUserId: "alice",
+      ownerUserId: "alice",
       currency: "GBP",
       incomes: [],
       payments: [
@@ -1515,6 +1521,7 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
         accountId: "alice-eur",
         role: "personal",
         memberUserId: "alice",
+        ownerUserId: "alice",
         currency: "EUR",
         incomes: [income(100_000, { id: "alice-eur-pay" })],
         payments: [],
@@ -1522,6 +1529,7 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       {
         accountId: "eur-pot",
         role: "shared",
+        ownerUserId: "alice",
         currency: "EUR",
         incomes: [],
         payments: [
@@ -1570,6 +1578,7 @@ describe("computeScopeProjection — month one is the plan for that date", () =>
         accountId: "current",
         role: "personal",
         memberUserId: "owner",
+        ownerUserId: "owner",
         currency: "GBP",
         monthlyBufferMinor: 15_000,
         incomes: [income(200_000)],
@@ -1598,6 +1607,7 @@ describe("computeScopeProjection — month one is the plan for that date", () =>
         accountId: "pot",
         role: "personal",
         memberUserId: "owner",
+        ownerUserId: "owner",
         currency: "GBP",
         incomes: [],
         payments: [
@@ -1700,6 +1710,7 @@ describe("computeScopeProjection — a pooled account holds its reserve", () => 
         accountId: "alice-cur",
         role: "personal",
         memberUserId: "alice",
+        ownerUserId: "alice",
         currency: "GBP",
         incomes: [income(300_000)],
         payments: [],
@@ -1708,6 +1719,7 @@ describe("computeScopeProjection — a pooled account holds its reserve", () => 
         accountId: "bob-cur",
         role: "personal",
         memberUserId: "bob",
+        ownerUserId: "bob",
         currency: "GBP",
         incomes: [income(200_000, { id: "inc2" })],
         payments: [],
@@ -1715,6 +1727,7 @@ describe("computeScopeProjection — a pooled account holds its reserve", () => 
       {
         accountId: "bills",
         role: "shared",
+        ownerUserId: "alice",
         currency: "GBP",
         monthlyBufferMinor: 30_000,
         incomes: [],

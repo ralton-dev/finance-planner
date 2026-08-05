@@ -28,6 +28,11 @@ function acc(over: Partial<ScopeAccountInput> & { accountId: string }): ScopeAcc
   return {
     name: over.accountId,
     role: "shared",
+    // Every account has an owner — `core.accounts.owner_user_id` is `NOT NULL`
+    // and a shared pot is still somebody's account (decision 15). These are one
+    // person's estate unless a case says otherwise, so it is the member the
+    // roster names, and the scope's sole member when it names nobody.
+    ownerUserId: over.memberUserId ?? "owner",
     currency: "GBP",
     incomes: [],
     payments: [],
@@ -145,6 +150,7 @@ function soloScope(account: ReturnType<typeof soloAccount>): ScopeInput {
         ...account,
         role: "personal",
         memberUserId: "owner",
+        ownerUserId: "owner",
         payments: account.payments.map((p) => ({ ...p, scope: "personal" as const })),
       },
     ],
@@ -966,16 +972,23 @@ describe("computeScopePlan — what savings have spoken for", () => {
 
   it("reports a member's committed savings without changing their leftover", () => {
     expect(memberOf(p, "owner").committedMinor).toBe(60_000);
-    // Unreduced, exactly as decision 13 requires: £2,000 in, £500 of rent.
-    expect(memberOf(p, "owner").leftoverMinor).toBe(150_000);
+    // Unreduced, exactly as decision 13 requires: £2,300 in — the £2,000 salary
+    // and the pot's own £300, which is theirs because the pot is (decision 15) —
+    // less £500 of rent.
+    expect(memberOf(p, "owner").leftoverMinor).toBe(180_000);
+    // The *account's* own residual is a different question and answers £1,500:
+    // the pot's £300 is in the member's budget, not in the current account. The
+    // two agreed while a shared pot's income belonged to nobody, which is the
+    // coincidence decision 15 ended.
     expect(accountOf(p, "current").ownLeftoverMinor).toBe(150_000);
     // The residual is the one figure that *is* net of everything.
     expect(accountOf(p, "current").leftoverMinor).toBe(90_000);
   });
 
   it("leaves a shared pot's movement out of every member's committed total", () => {
-    // Nobody owns the pot, so its £100 belongs to no member — counted on the
-    // account alone rather than charged to an arbitrary one.
+    // The pot's £100 is spending the pot's money. Its *income* is its owner's
+    // (decision 15), but what a shared pot sweeps out is the household's doing —
+    // counted on the account alone rather than charged to a member.
     expect(memberOf(p, "owner").committedMinor).not.toBe(70_000);
   });
 });

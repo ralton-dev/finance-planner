@@ -661,6 +661,13 @@ async function planScope(
         // user a household of one at a 100% share rather than a special case.
         role: assigned?.role ?? "personal",
         memberUserId: assigned ? assigned.memberUserId : entry.account.ownerUserId,
+        // Whose account it is, which is a different question and always
+        // answerable: `core.accounts.owner_user_id` is `NOT NULL`, so there is
+        // never an orphan and never an excuse. The pass attributes external
+        // income by it (decision 15), so a household's shared pot earning its
+        // own lodger rent earns it for the person whose account it is rather
+        // than for nobody.
+        ownerUserId: entry.account.ownerUserId,
         currency: entry.account.currency,
         monthlyBufferMinor: entry.account.monthlyBufferMinor,
         incomes: entry.incomes,

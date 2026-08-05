@@ -14,7 +14,7 @@ const now = parseISODate("2026-01-01");
 /** One account, owned outright by one member — the degenerate scope a solo user
  *  is planned as (ONE-ENGINE.md, "the reframing"). */
 function soloScope(
-  account: Omit<ScopeAccountInput, "role" | "memberUserId" | "payments"> & {
+  account: Omit<ScopeAccountInput, "role" | "memberUserId" | "ownerUserId" | "payments"> & {
     payments: PaymentInput[];
   },
 ): ScopeInput {
@@ -26,6 +26,7 @@ function soloScope(
         ...account,
         role: "personal",
         memberUserId: "owner",
+        ownerUserId: "owner",
         payments: account.payments.map((p) => ({ ...p, scope: "personal" as const })),
       },
     ],
@@ -34,7 +35,7 @@ function soloScope(
 
 /** That account's plan, as the one pass settles it and the view reports it. */
 function soloPlan(
-  account: Omit<ScopeAccountInput, "role" | "memberUserId" | "payments"> & {
+  account: Omit<ScopeAccountInput, "role" | "memberUserId" | "ownerUserId" | "payments"> & {
     payments: PaymentInput[];
   },
   asOfDate: string,

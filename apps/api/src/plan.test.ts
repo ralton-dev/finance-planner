@@ -584,3 +584,82 @@ describe("the scope loader — what has actually moved", () => {
     expect(asked).toBe(0);
   });
 });
+
+// =============================================================================
+// Ownership, from the column to the pass
+// =============================================================================
+
+/**
+ * `core.accounts.owner_user_id` is `NOT NULL`, and since MONTH-CLOSE.md decision
+ * 15 the pass is told it: external income counts for whoever owns the account,
+ * whatever role a household gave it.
+ *
+ * This is the construction site, which is why it is in the same package as the
+ * field. `ScopeAccountInput.ownerUserId` is **required**, so a call site cannot
+ * forget it — the compiler is the guard, and this is the proof that the one
+ * caller in the tree answers with the column rather than with something that
+ * merely usually agrees with it.
+ */
+describe("the scope loader — whose account each one is", () => {
+  it("supplies every account's owner from the column, and the pass spends it", async () => {
+    const alice = await store.createUser({
+      email: "alice@example.com",
+      passwordHash: null,
+      displayName: "Alice",
+    });
+    const bob = await store.createUser({
+      email: "bob@example.com",
+      passwordHash: null,
+      displayName: "Bob",
+    });
+    const household = await store.createHousehold("Home", alice.id);
+    await store.addMembership(household.id, bob.id, "member");
+    await store.updateMembershipShare(household.id, alice.id, 6600);
+    await store.updateMembershipShare(household.id, bob.id, 3400);
+
+    const aliceCur = await account(alice.id, "alice-cur");
+    const bobCur = await account(bob.id, "bob-cur");
+    // A joint account is one person's account shared into a household: the pot
+    // is Alice's, and the lodger pays it £500 a month.
+    const pot = await account(alice.id, "house-pot");
+    await salary(aliceCur, 300_000);
+    await salary(bobCur, 200_000);
+    await salary(pot, 50_000);
+    await bill(pot, "Rent", 140_000);
+
+    for (const [accountId, role, memberUserId] of [
+      [aliceCur.id, "personal", alice.id],
+      [bobCur.id, "personal", bob.id],
+      [pot.id, "shared", null],
+    ] as const) {
+      await store.upsertAccountAssignment({
+        householdId: household.id,
+        accountId,
+        role,
+        memberUserId,
+      });
+    }
+
+    const scope = await scopeForAccount(store, pot, ASOF);
+    expect(
+      Object.fromEntries(scope.input.accounts.map((a) => [a.accountId, a.ownerUserId])),
+    ).toEqual({ [aliceCur.id]: alice.id, [bobCur.id]: bob.id, [pot.id]: alice.id });
+    // The pot's role says nobody's, and its owner says Alice's. Both are true,
+    // and only the second answers "whose income is this?".
+    expect(scope.input.accounts.find((a) => a.accountId === pot.id)!.memberUserId).toBeNull();
+
+    const gbp = scope.plan.partitions.find((p) => p.currency === "GBP")!;
+    const income = (userId: string) =>
+      gbp.members.find((m) => m.userId === userId)!.monthlyIncomeMinor;
+    expect(income(alice.id)).toBe(350_000);
+    expect(income(bob.id)).toBe(200_000);
+    // £1,400 of rent, less the £500 already in the pot: £900 travels, and the
+    // £500 relieves the share of the member whose budget counted it.
+    expect(gbp.transfers.map((t) => [t.memberUserId, t.amountMinor]).sort()).toEqual(
+      [
+        [alice.id, 42_400],
+        [bob.id, 47_600],
+      ].sort(),
+    );
+  });
+});

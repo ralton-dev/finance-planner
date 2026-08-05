@@ -29,13 +29,15 @@ import type { ScopeAccountInput, ScopeInput } from "./scope.js";
  *
  * What the pass is handed **is** a description of an estate, so this exports one
  * rather than inventing a second vocabulary: `estate.scope` is a `ScopeInput`,
- * ready for `computeScopePlan`. Everything a *store* seeder needs and the pass is
- * deliberately never told sits beside it — who owns each account, and which
- * accounts the household actually assigned — because neither is recoverable from
- * the input. An unassigned account and a household-assigned personal one are the
- * same shape by the time they reach the pass (`apps/api/src/plan.ts` gives an
- * unassigned account `role: "personal"` and its owner as `memberUserId`), which
- * is exactly the ambiguity `assignedAccountIds` resolves.
+ * ready for `computeScopePlan`. Beside it sits what a *store* seeder needs in the
+ * shape a seeder wants it — `ownerOf`, the same fact each account now carries as
+ * `ownerUserId`, as a map — and the one fact the pass is deliberately never told:
+ * which accounts the household actually assigned. That one is not recoverable
+ * from the input, because an unassigned account and a household-assigned personal
+ * one are the same shape by the time they reach the pass
+ * (`apps/api/src/plan.ts` gives an unassigned account `role: "personal"` and its
+ * owner as `memberUserId`), which is exactly the ambiguity `assignedAccountIds`
+ * resolves.
  *
  * There is no store seeder in here, and there cannot be: `@finance-planner/domain`
  * does not depend on `@finance-planner/data` and this is not the package to make
@@ -50,14 +52,17 @@ import type { ScopeAccountInput, ScopeInput } from "./scope.js";
  * against the figures written down below. `ESTATE_ASOF` is supplied for callers
  * that need to name a date; it is not a date any figure was tuned to.
  *
- * ## What it plans to, today (`21ec4e1`)
+ * ## What it plans to
  *
- * GBP partition — alice earns £3,000, bob £2,000, the pot £500 of its own:
+ * GBP partition — alice earns £3,000 of salary and, since decision 15, the pot's
+ * £500 as well (it is her account); bob earns £2,000:
  *
  *  - the pot's £1,400 of shared bills, less the £500 the pot's own income
- *    already covers (`0c35284`'s netting), split 66 / 34: alice moves
- *    **£594.00**, bob **£306.00** — the gross would have been £924 and £476,
- *    and the £500 would have sat in the pot funding nothing;
+ *    already covers (`0c35284`'s netting), split 66 / 34 gross: alice moves
+ *    **£424.00**, bob **£476.00** — £900 between them, and the £500 relieves
+ *    alice's share alone because it is alice's budget that counted it. At
+ *    `21ec4e1`, when the £500 belonged to nobody, both members leant on it and
+ *    the same £900 was split £594 / £306;
  *  - alice's out-of-household bills pot needs **£75.00**, derived, out of her
  *    current account — the relationship no fixture had;
  *  - her three authored movements (£200 / £150 / £100) all fund, out of what is
@@ -68,11 +73,13 @@ import type { ScopeAccountInput, ScopeInput } from "./scope.js";
  * user is multi-currency by construction, and `MONTH-CLOSE.md` decision 14 makes
  * a close per user **per currency** for exactly that reason.
  *
- * **Decision 15 will move some of these figures and must not move the others.**
- * The pot's £500 belongs to nobody today; WP-C gives it to the account's owner
- * (alice), which changes her income and her budget — and no other account here
- * is shared, so every other figure above is a regression guard rather than an
- * expectation to update.
+ * **Decision 15 moved some of these figures and had to move no others.** The
+ * pot's £500 belonged to nobody at `21ec4e1`; WP-C gave it to the account's
+ * owner (alice), which changed her income, her budget and how her share of the
+ * pot's bills is netted — and no other account here is shared, so every other
+ * figure above was a regression guard rather than an expectation to update.
+ * `estateWithoutSharedIncome` below is that guard, and
+ * `packages/domain/src/ownership.test.ts` holds it to the byte.
  */
 
 /** A date to plan as of. Nothing below was tuned to it — see the module note. */
@@ -94,9 +101,9 @@ export interface EstateFixture {
    * every account has exactly one owner and a "joint" account is one person's
    * account shared into a household.
    *
-   * The pass is not told this yet, which is the gap `MONTH-CLOSE.md` decision 15
-   * closes: `acc-house-pot` is alice's, and its £500 of lodger rent belongs to
-   * nobody until `ScopeAccountInput.ownerUserId` exists (WP-C).
+   * The same fact each account now carries as `ScopeAccountInput.ownerUserId`
+   * (`MONTH-CLOSE.md` decision 15, WP-C), kept here as a map because that is the
+   * shape a *store* seeder wants: it writes accounts before it has a scope.
    */
   ownerOf: Readonly<Record<string, string>>;
   /**
@@ -150,6 +157,7 @@ export const estate: EstateFixture = {
     accounts: [
       {
         accountId: "acc-alice-current",
+        ownerUserId: "u-alice",
         name: "Alice current",
         role: "personal",
         memberUserId: "u-alice",
@@ -198,6 +206,7 @@ export const estate: EstateFixture = {
       },
       {
         accountId: "acc-bob-current",
+        ownerUserId: "u-bob",
         name: "Bob current",
         role: "personal",
         memberUserId: "u-bob",
@@ -218,6 +227,7 @@ export const estate: EstateFixture = {
       },
       {
         accountId: "acc-house-pot",
+        ownerUserId: "u-alice",
         name: "House pot",
         role: "shared",
         // Shared, so nobody's — which is what makes its income unattributable
@@ -266,6 +276,7 @@ export const estate: EstateFixture = {
         // read `unfunded · £303.20` on a live screen while the household's own
         // pots were fed beside it.
         accountId: "acc-alice-bills",
+        ownerUserId: "u-alice",
         name: "Alice bills",
         role: "personal",
         memberUserId: "u-alice",
@@ -300,6 +311,7 @@ export const estate: EstateFixture = {
       },
       {
         accountId: "acc-alice-savings",
+        ownerUserId: "u-alice",
         name: "Alice savings",
         role: "personal",
         memberUserId: "u-alice",
@@ -324,6 +336,7 @@ export const estate: EstateFixture = {
       },
       {
         accountId: "acc-alice-holiday",
+        ownerUserId: "u-alice",
         name: "Alice holiday",
         role: "personal",
         memberUserId: "u-alice",
@@ -351,6 +364,7 @@ export const estate: EstateFixture = {
       },
       {
         accountId: "acc-alice-car",
+        ownerUserId: "u-alice",
         name: "Alice car fund",
         role: "personal",
         memberUserId: "u-alice",
@@ -379,6 +393,7 @@ export const estate: EstateFixture = {
         // (decision 10) — so a fixture with one currency cannot exercise the
         // partition boundary at all.
         accountId: "acc-alice-eur",
+        ownerUserId: "u-alice",
         name: "Alice euro",
         role: "personal",
         memberUserId: "u-alice",
