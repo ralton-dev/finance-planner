@@ -40,10 +40,6 @@ export interface ChartColors {
   /** Tag ramp, boldest first — the resolved twin of `tagShade()`'s `var()`s. */
   tags: string[];
   untagged: string;
-  /** One colour per series where the series carry no meaning of their own
-   *  (net worth: one line per currency). Drawn from the status palette so the
-   *  charts read as one system. */
-  series: string[];
   /** Ready-made `box-shadow` for a chart tooltip, matching `.chart-tip`. */
   tipShadow: string;
 }
@@ -65,7 +61,6 @@ export const FALLBACK_CHART_COLORS: ChartColors = {
   accent: "#b89df0",
   tags: ["#b89df0", "#9c84cf", "#816cae", "#67558e", "#4e3f6d", "#37294e"],
   untagged: "#4a463f",
-  series: ["#7be087", "#b89df0", "#7eb3f6", "#f6c66b", "#f47b6b"],
   tipShadow: "0 4px 14px rgba(0, 0, 0, 0.45)",
 };
 
@@ -120,10 +115,6 @@ export function readChartColors(from?: Element | null): ChartColors {
     accent,
     tags: fb.tags.map((value, i) => token(`--tag-${i + 1}`, value)),
     untagged: token("--tag-untagged", fb.untagged),
-    // Deliberately built from the status colours rather than a sixth token set:
-    // the net-worth lines mean "a currency", not "a state", and reusing the
-    // palette keeps every chart in the app looking like the same chart.
-    series: [funded, accent, link, needsYou, alert],
     tipShadow: token("--shadow-tip", fb.tipShadow),
   };
 }

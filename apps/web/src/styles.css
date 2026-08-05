@@ -1789,7 +1789,7 @@ td.row-actions-cell .row-edit:hover {
 
 /* ============================================================================
  * The reality loop — balance check-ins, recorded savings, transfer checklist,
- * month scorecards, net worth. Plan-vs-reality surfaces across the app.
+ * month scorecards. Plan-vs-reality surfaces across the app.
  * ============================================================================ */
 
 /* Account detail: last real balance vs. what the plan reserved. */
@@ -2147,9 +2147,9 @@ td.row-actions-cell .row-edit:hover {
 /* ============================================================================
  * Disclosures — every <details>/<summary> in the app.
  *
- * Two of these grew up apart: the net-worth trend behind a summary here, and
- * the household's danger zone. Neither had any base styling, so both took the
- * browser's own marker and whatever margins their contents happened to bring.
+ * These grew up apart — the household's danger zone and its siblings, one per
+ * screen. None had any base styling, so each took the browser's own marker and
+ * whatever margins its contents happened to bring.
  * One treatment now — a caret we draw ourselves, a pointer cursor, and a
  * summary line that a heading can sit on without opening a block of its own.
  * ========================================================================== */

@@ -28,8 +28,8 @@ interface Props {
 export function UpcomingDigest({ items, days, loading = false }: Props) {
   const shown = items.slice(0, MAX_ROWS);
   const rest = items.length - shown.length;
-  // Same convention as the net-worth summary: name the currency only when more
-  // than one is in play, otherwise the symbol already says it.
+  // The app's convention: name the currency only when more than one is in
+  // play, otherwise the symbol already says it.
   const multi = new Set(items.map((i) => i.currency)).size > 1;
 
   return (

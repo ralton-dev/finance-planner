@@ -85,8 +85,7 @@ export function ProjectionChart({
   const colors = useChartColors();
   if (points.length === 0) return null;
 
-  // The app's chart palette (shared with the Sankey and the net-worth chart),
-  // taken by meaning here: reserved is the plan, balance is real money, and
+  // The app's chart palette, shared with the Sankey and taken by meaning here: reserved is the plan, balance is real money, and
   // shortfall is a status colour that only ever means "short".
   const series: SeriesSpec[] = [{ key: "reserved", label: "reserved", color: colors.accent }];
   if (showBalance) series.push({ key: "balance", label: "balance", color: colors.funded });

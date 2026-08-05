@@ -82,9 +82,6 @@ describe("readChartColors", () => {
     expect(colors.tags).toEqual(["#111111", "#222222", "#333333", "#444444", "#555555", "#666666"]);
     expect(colors.untagged).toBe("#777777");
     expect(colors.tipShadow).toBe("0 4px 14px #999999");
-    // The series ramp is built from the status colours, not a set of its own:
-    // funded, accent, link, needs-you, alert.
-    expect(colors.series).toEqual(["#080808", "#0d0d0d", "#0b0b0b", "#090909", "#0a0a0a"]);
   });
 
   it("takes each token on its own, so a partial theme still draws", () => {

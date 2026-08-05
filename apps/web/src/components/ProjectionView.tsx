@@ -14,7 +14,7 @@ import { useAsync } from "../lib/useAsync.js";
 import { ChartFrame } from "./ChartFrame.js";
 import { DownloadButton } from "./DownloadButton.js";
 
-// Keeps recharts out of the page chunks, as the Sankey and net-worth chart do.
+// Keeps recharts out of the page chunks, as the Sankey does.
 const ProjectionChart = lazy(() =>
   import("./ProjectionChart.js").then((m) => ({ default: m.ProjectionChart })),
 );
