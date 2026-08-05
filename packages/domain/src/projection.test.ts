@@ -1639,6 +1639,7 @@ describe("computeScopeProjection — month one is the plan for that date", () =>
         totalRequiredMinor: month.totalRequiredMinor,
         totalFundedMinor: month.totalFundedMinor,
         leftoverMinor: month.leftoverMinor,
+        residualMinor: month.residualMinor,
         outboundInflowMinor: month.outboundInflowMinor,
         shortfallMinor: month.shortfallMinor,
         lines: month.lines.map((l) => [l.paymentId, l.requiredMonthlyMinor, l.fundedMonthlyMinor]),
@@ -1650,12 +1651,56 @@ describe("computeScopeProjection — month one is the plan for that date", () =>
         totalRequiredMinor: view.totalRequiredMinor,
         totalFundedMinor: view.totalFundedMinor,
         leftoverMinor: view.leftoverMinor,
+        residualMinor: view.residualMinor,
         outboundInflowMinor: view.outboundInflowMinor,
         shortfallMinor: view.shortfallMinor,
         lines: view.lines.map((l) => [l.paymentId, l.requiredMonthlyMinor, l.fundedMonthlyMinor]),
       });
     });
   }
+
+  /**
+   * **The page that disagreed with itself.** The account page's KPI prints the
+   * residual and its projection strip printed `leftoverMinor` under the same
+   * label — two right answers to two different questions, a few hundred pixels
+   * apart, and the parity test above passed throughout because it asserted the
+   * field the component read (`MINE-AND-OURS.md`, and the fifth instance of that
+   * in this repository).
+   *
+   * So the two figures are pinned **apart** here, on the account where they
+   * differ, as well as together above. A month that sends £250 to a pot has
+   * £250 less in it than a month that does not, and only one of these two
+   * figures can say so.
+   */
+  it("reports what is left in the account, which is not the same as its surplus", () => {
+    const month = forScopeAccount(projection, "current").months[0]!;
+    // £2,000 in, £150 of buffer it does not spend, £900 of rent, £400 of derived
+    // transport to the pot, £250 of authored movement.
+    expect(month.leftoverMinor).toBe(55_000);
+    expect(month.residualMinor).toBe(45_000);
+    // The £250 has gone and the £150 of buffer has not: a surplus is what the
+    // month's income had spare, a residual is what the account is holding.
+    expect(month.leftoverMinor - month.residualMinor).toBe(
+      month.outboundInflowMinor - month.bufferMinor,
+    );
+    // Every month of the horizon, not only the first: the strip's footer prints
+    // one of these per column, and each has to be that month's own answer.
+    // `income + arriving − spending − leaving`, where leaving is the derived
+    // transport this month re-derived plus the movement it funded.
+    const months = forScopeAccount(projection, "current").months;
+    months.forEach((m, i) => {
+      const transferOut = projection.months[i]!.transfers.filter(
+        (t) => t.fromAccountId === "current",
+      ).reduce((s, t) => s + t.amountMinor, 0);
+      expect(m.residualMinor).toBe(
+        m.monthlyIncomeMinor +
+          m.allocatedInflowMinor -
+          m.totalFundedMinor -
+          m.outboundInflowMinor -
+          transferOut,
+      );
+    });
+  });
 
   it("reports the month's totals off the pass rather than summing them again", () => {
     const first = projection.months[0]!.perCurrency[0]!;

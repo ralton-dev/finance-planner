@@ -80,6 +80,26 @@ export interface MonthProjection {
   totalFundedMinor: number;
   leftoverMinor: number;
   /**
+   * What is actually in the account at the end of this simulated month —
+   * `AccountPlan.residualMinor` for the month's own pass, passed through, and
+   * signed.
+   *
+   * The account page prints a residual as its LEFT OVER and printed
+   * `leftoverMinor` a few hundred pixels below it in the projection strip's
+   * footer, labelled the same way: £2,501 under a KPI reading £2,051 on the
+   * estate. Both figures were right and they answer different questions —
+   * `leftoverMinor` is the account's own income after its own bills and the
+   * transfers its owner must make, which is what a rollup wants; this is what is
+   * left in the place, which is what a month wants.
+   *
+   * Published rather than left to be reconstructed as
+   * `leftoverMinor + allocatedInflowMinor − outboundInflowMinor − …`: that
+   * arithmetic is right until a term changes meaning, which is the failure this
+   * work keeps finding, and decision 19 forbids a surface deriving a fourth
+   * left over of its own.
+   */
+  residualMinor: number;
+  /**
    * Money leaving for other accounts this month, funded from what the payments
    * left. Not subtracted from `leftoverMinor`, which keeps the engine's meaning
    * — see `AccountPlan.outboundInflowMinor`. It is here so a month that sends
@@ -366,6 +386,7 @@ function advance(sim: AccountSim, plan: AccountPlan, refDate: Date, monthKey: st
     totalRequiredMinor: plan.totalRequiredMinor,
     totalFundedMinor: plan.totalFundedMinor,
     leftoverMinor: plan.leftoverMinor,
+    residualMinor: plan.residualMinor,
     outboundInflowMinor: plan.outboundInflowMinor,
     shortfallMinor: plan.shortfallMinor,
     reservedEndMinor: totalReserved(sim.states.values()),
