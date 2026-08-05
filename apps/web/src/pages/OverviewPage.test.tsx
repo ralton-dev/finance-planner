@@ -390,19 +390,21 @@ function renderPlanned(routes: Routes = {}, meLast = false): ReturnType<typeof r
 }
 
 describe("OverviewPage — fold + doorways", () => {
-  it("leads with the aggregate headline the checklist derives", async () => {
+  it("leads with the caller's own figure, and leaves the co-member to the list", async () => {
     const { container } = renderPlanned();
 
-    // The sentence is assembled from parts (every figure is its own `.amount`
-    // so privacy mode can blur it), so it is read off the element, not matched
-    // as one text node.
+    // Decision 24. Ada is short of nothing, so her headline is her left over —
+    // £2,686.00, the figure the pass summed over the accounts she owns. It used
+    // to lead "Alex's share of housing is £40.00 short this month", which is a
+    // sentence about somebody else's money above a figure claiming to be hers.
     await waitFor(() =>
-      expect(container.querySelector(".fold-sentence")).toHaveTextContent(
-        /Alex's share of housing is £40\.00 short this month/,
-      ),
+      expect(container.querySelector(".fold-figure")).toHaveTextContent("£2,686.00"),
     );
-    // Both of the household's transfers are outstanding, so the fold asks.
-    expect(screen.getByText("Ada → Bills joint")).toBeInTheDocument();
+    expect(container.querySelector(".fold-sentence")).not.toHaveTextContent(/Alex/);
+
+    // The fact moves rather than being lost: it is a row on the checklist
+    // directly beneath, which says whose money is missing and links to it.
+    expect(await screen.findByText(/cover Alex's unfunded housing/)).toBeInTheDocument();
   });
 
   it("gives each household a card that opens its own plan", async () => {
@@ -516,15 +518,11 @@ describe("OverviewPage — fold + doorways", () => {
     expect(stub.bodyOf("PUT /api/accounts/ada/balance")).toEqual({ balanceMinor: 123_450 });
   });
 
-  it("leaves the balance history until the trend disclosure asks for it", async () => {
+  it("reads no balance history at all — the trend that needed it is gone", () => {
     renderPlanned();
-    await screen.findByRole("link", { name: /Chestnut Road/ });
-
-    // Three accounts on the page, no balance read for any of them.
+    // Net worth was the last per-account read on this page (decision 21). The
+    // Overview now costs a fixed number of requests whatever the estate holds.
     expect(stub.calls("GET /api/accounts/side/balances")).toBe(0);
-
-    fireEvent.click(screen.getByText("net worth over time"));
-    await waitFor(() => expect(stub.calls("GET /api/accounts/side/balances")).toBe(1));
   });
 
   it("sends an empty household to the screen that can fill it", async () => {

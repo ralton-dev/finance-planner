@@ -182,6 +182,12 @@ const energyDue: UpcomingItemDto = {
 function fullInput(over: Partial<NeedsYouInput> = {}): NeedsYouInput {
   return {
     asOfDate: AS_OF,
+    // Alex is reading, and Alex is the member who is £40 short — so the
+    // headline's figure is Alex's own and its sentence may name Alex. Whose
+    // money the figure counts is pinned in `needsYou.test.ts`; these tests are
+    // about what the component does with the answer.
+    userId: "alex",
+    you: { leftoverMinor: 332_662, shortfallMinor: 4_000, paymentCount: 2 },
     households: [{ plan: householdPlan(), confirmations: [benConfirmed] }],
     accounts: [
       {
@@ -229,6 +235,8 @@ function settledInput(): NeedsYouInput {
   });
   return {
     asOfDate: AS_OF,
+    userId: "alex",
+    you: { leftoverMinor: 332_662, shortfallMinor: 0, paymentCount: 2 },
     households: [
       {
         plan,

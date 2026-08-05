@@ -136,6 +136,12 @@ afterEach(() => {
 function renderPage(routes: ApiRoutes = {}) {
   api.setToken(null);
   const stub = stubApiFetch({
+    // The fold headline is the caller's own figure even on this screen
+    // (decisions 19, 20, 24), so the page has to know who is looking. Alex is
+    // the caller here and Alex is the member who is short.
+    "GET /api/auth/me": {
+      body: { id: "alex", email: "alex@example.com", displayName: "Alex", households: [] },
+    },
     "GET /api/households/hh/plan": { body: PLAN },
     "GET /api/auth/households/hh": {
       body: {
@@ -202,7 +208,7 @@ describe("HouseholdPlanPage · the fold", () => {
     expect(await screen.findByText("record Rainy day")).toBeInTheDocument();
   });
 
-  it("says the same thing as the stat row's shortfall cell", async () => {
+  it("says the same thing as the stat row's shortfall cell, when the gap is yours", async () => {
     const { container } = renderPage();
 
     const figure = await waitFor(() => {
@@ -214,6 +220,10 @@ describe("HouseholdPlanPage · the fold", () => {
     const shortfallKpi = [...container.querySelectorAll(".kpi")].find(
       (kpi) => kpi.querySelector(".kpi-label")?.textContent === "shortfall",
     );
+    // The KPI is the household's gap and the headline is the caller's; here
+    // they are the same £40 because Alex is the only member short and Alex is
+    // reading. On a household of two they part company, and that is the point
+    // of decision 24 rather than a disagreement.
     expect(shortfallKpi?.querySelector(".kpi-value")).toHaveTextContent("£40.00");
     expect(figure).toHaveTextContent("£40.00");
     expect(container.querySelector(".fold-headline")).toHaveClass("shortfall");

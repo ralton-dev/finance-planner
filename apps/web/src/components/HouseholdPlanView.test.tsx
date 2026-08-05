@@ -293,12 +293,51 @@ describe("HouseholdPlanView · the headline is the accounts it lists", () => {
     }
   });
 
-  it("names which accounts it means, whether or not anything is committed", () => {
+  it("names whose money it means, whether or not anything is committed", () => {
     const { container } = render(<HouseholdPlanView plan={PLAN} />);
     const kpi = [...container.querySelectorAll(".kpi")].find((k) =>
       k.textContent?.startsWith("left over"),
     )!;
-    expect(kpi.querySelector(".kpi-delta")).toHaveTextContent("in these accounts");
+    expect(kpi.querySelector(".kpi-delta")).toHaveTextContent("these members', added up");
+  });
+
+  /**
+   * Decision 19, and the whole point of the figure: a household's left over is
+   * its members' left overs added up, so the per-person table's LEFT OVER
+   * column sums to the KPI above it.
+   *
+   * The fixture is the cross-owner case, the only shape that tells the
+   * ownership basis from the roster basis: an authored £400 of Bo's lands in a
+   * pot Alex owns and is not spent there, so it is in Alex's residual and out
+   * of Bo's. The old derivation printed £2,800 over a member column reading
+   * £1,600 and £800; these are £2,100 and £800, and they add to £2,900.
+   */
+  it("prints the members' sum, and the member rows add up to it", () => {
+    const crossOwner: HouseholdPlanDto = {
+      ...PLAN,
+      committedMinor: 50_000,
+      householdLeftoverMinor: 330_000,
+      membersLeftoverMinor: 290_000,
+      members: [
+        { ...PLAN.members[0]!, personalLeftoverMinor: 210_000, committedMinor: 10_000 },
+        { ...PLAN.members[1]!, personalLeftoverMinor: 80_000, committedMinor: 40_000 },
+      ],
+    };
+    const { container } = render(<HouseholdPlanView plan={crossOwner} />);
+
+    const kpi = [...container.querySelectorAll(".kpi")].find((k) =>
+      k.textContent?.startsWith("left over"),
+    )!;
+    expect(kpi.querySelector(".kpi-value")).toHaveTextContent("£2,900.00");
+
+    // The per-person table is the second one; LEFT OVER is its
+    // second-from-last cell.
+    const people = container.querySelectorAll("table")[1]!;
+    const cells = [...people.querySelectorAll("tbody tr")].map((r) => {
+      const tds = r.querySelectorAll("td");
+      return tds[tds.length - 2]!.textContent;
+    });
+    expect(cells).toEqual(["£2,100.00", "£800.00"]);
   });
 
   /** A payload from an API that predates the field means what it always did. */

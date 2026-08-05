@@ -1011,6 +1011,9 @@ describe("deriveNeedsYou · accounts given a line summary instead of a plan", ()
           lineSummary: { unrecorded: [], lineCount: 4, lastFundedName: "Van" },
         }),
       ],
+      // The headline's three figures are the pass's now, not a sum over
+      // whatever the browser happens to hold (decisions 19, 24).
+      you: { leftoverMinor: 40_000, shortfallMinor: 12_500, paymentCount: 4 },
     };
     const items = deriveNeedsYou(input);
 
@@ -1226,8 +1229,38 @@ function settled(): NeedsYouInput {
 }
 
 describe("deriveHeadline", () => {
+  /**
+   * **Decisions 19, 20 and 24.** All three figures are read off `you`, which the
+   * pass sums over the accounts the caller owns — nothing here adds anything up.
+   *
+   * What stood here was a household-vs-standalone partition, and thirteen tests
+   * of it. It existed to stop a member's personal account being counted twice,
+   * once on its own row and again inside a household's scope-wide surplus; a
+   * per-owner figure has nothing to de-duplicate, so it is gone, and the
+   * shortfall and the payment count it also computed went with it. Those tests
+   * are deleted with the behaviour rather than re-baselined against it: they
+   * asserted a total over every account the caller could **see**, which on a
+   * household of two was the co-member's money as much as the reader's.
+   */
+  const you = (over: Partial<NeedsYouInput["you"] & object> = {}): NeedsYouInput["you"] => ({
+    leftoverMinor: 332_662,
+    shortfallMinor: 0,
+    paymentCount: 2,
+    ...over,
+  });
+
+  it("reads the three figures off the pass rather than summing anything", () => {
+    const input = fullInput({
+      userId: "alex",
+      you: { leftoverMinor: 210_000, shortfallMinor: 0, paymentCount: 7 },
+    });
+    const headline = deriveHeadline(input, deriveNeedsYou(input));
+    expect(headline).toMatchObject({ kind: "leftover", amountMinor: 210_000 });
+    expect(phraseText(headline.sentence)).toContain("All 7 payments funded");
+  });
+
   it("leads with the shortfall, worded as the mockup words it", () => {
-    const input = fullInput();
+    const input = fullInput({ userId: "alex", you: you({ shortfallMinor: 4_000 }) });
     const headline = deriveHeadline(input, deriveNeedsYou(input));
     expect(headline).toMatchObject({ kind: "shortfall", amountMinor: 4_000 });
     expect(phraseText(headline.sentence)).toBe(
@@ -1242,13 +1275,18 @@ describe("deriveHeadline", () => {
   });
 
   it("lets the shortfall win however much is left over", () => {
-    const input = fullInput();
+    const input = fullInput({ userId: "alex", you: you({ shortfallMinor: 4_000 }) });
     const headline = deriveHeadline(input, deriveNeedsYou(input));
     expect(headline.kind).toBe("shortfall");
     expect(headline.amountMinor).toBe(4_000);
   });
 
-  it("keeps the total as the number and names the biggest cause when two are short", () => {
+  /**
+   * **Decision 24, and the reason this whole plan exists.** A co-member being
+   * short is a fact, and it belongs on the checklist beneath the headline — not
+   * in a sentence explaining a figure it is not part of.
+   */
+  it("never names a co-member who is short, and never drops the row that does", () => {
     const plan = householdPlan({
       shortfallMinor: 54_000,
       members: [
@@ -1267,17 +1305,30 @@ describe("deriveHeadline", () => {
         }),
       ],
     });
-    const input: NeedsYouInput = { asOfDate: AS_OF, households: [household({ plan })] };
+    // Alex is reading. Alex is £40 short; Ben's £500 is Ben's.
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      userId: "alex",
+      you: { leftoverMinor: 100_000, shortfallMinor: 4_000, paymentCount: 1 },
+      households: [household({ plan })],
+    };
     const headline = deriveHeadline(input, deriveNeedsYou(input));
-    expect(headline.amountMinor).toBe(54_000);
-    expect(phraseText(headline.sentence)).toMatch(
-      /^£540\.00 is short this month, most of it Ben's share of housing\./,
-    );
+
+    expect(headline.amountMinor).toBe(4_000);
+    expect(phraseText(headline.sentence)).toMatch(/^Alex's share of housing is £40\.00 short/);
+    expect(phraseText(headline.sentence)).not.toContain("Ben");
+    // Ben's gap moved rather than being lost.
+    expect(deriveNeedsYou(input).map((i) => i.key)).toContain("shortfall:member:hh:ben");
   });
 
-  it("still says something when no member explains the gap", () => {
+  it("still says something when nothing on the page explains the gap", () => {
     const plan = householdPlan({ shortfallMinor: 2_500, members: [], lines: [] });
-    const input: NeedsYouInput = { asOfDate: AS_OF, households: [household({ plan })] };
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      userId: "alex",
+      you: { leftoverMinor: 0, shortfallMinor: 2_500, paymentCount: 0 },
+      households: [household({ plan })],
+    };
     expect(phraseText(deriveHeadline(input, deriveNeedsYou(input)).sentence)).toMatch(
       /^£25\.00 is short this month\. Everything else across 0 payments is covered/,
     );
@@ -1285,6 +1336,8 @@ describe("deriveHeadline", () => {
 
   it("switches to left over once nothing is missing, and counts what still waits", () => {
     const input = fullInput({
+      userId: "alex",
+      you: you(),
       households: [household({ plan: householdPlan({ shortfallMinor: 0, members: [] }) })],
     });
     const items = deriveNeedsYou(input);
@@ -1297,6 +1350,8 @@ describe("deriveHeadline", () => {
 
   it("uses the singular when exactly one thing waits", () => {
     const input = fullInput({
+      userId: "alex",
+      you: you(),
       households: [household({ plan: householdPlan({ shortfallMinor: 0, members: [] }) })],
       accounts: [],
       upcoming: [],
@@ -1308,27 +1363,42 @@ describe("deriveHeadline", () => {
     );
   });
 
-  it("says the month is clear when the list is empty", () => {
-    const input = settled();
+  /**
+   * **Decision 24's third sibling**, and why this reads "the transfer" rather
+   * than "both transfers". `plan.transfers` is the whole household's, so the
+   * clear-month line told Ben "both transfers settled" when one of them was
+   * Alex's. `TransferDto.memberUserId` is "the member whose money this is" and
+   * has been on the wire all along, so the fix is a filter and no API change.
+   */
+  it("says the month is clear, counting only the transfers that were yours", () => {
+    const input: NeedsYouInput = { ...settled(), userId: "ben", you: you() };
     const items = deriveNeedsYou(input);
     expect(items).toEqual([]);
+    expect(input.households![0]!.plan.transfers).toHaveLength(2);
     expect(deriveHeadline(input, items)).toEqual({
       kind: "leftover",
       amountMinor: 332_662,
       sentence: [
-        "All 2 payments funded, both transfers settled, balances current. Nothing is waiting on you.",
+        "All 2 payments funded, the transfer settled, balances current. Nothing is waiting on you.",
       ],
     });
   });
 
   it("drops the transfers clause when the plan needs none", () => {
-    const input = settled();
+    const input: NeedsYouInput = { ...settled(), userId: "ben", you: you() };
     const [entry] = input.households!;
     const noTransfers: NeedsYouInput = {
       ...input,
       households: [{ ...entry!, plan: { ...entry!.plan, transfers: [] }, confirmations: [] }],
     };
     expect(phraseText(deriveHeadline(noTransfers, deriveNeedsYou(noTransfers)).sentence)).toBe(
+      "All 2 payments funded, balances current. Nothing is waiting on you.",
+    );
+  });
+
+  it("claims none of them when it does not know who is reading", () => {
+    const input: NeedsYouInput = { ...settled(), you: you() };
+    expect(phraseText(deriveHeadline(input, deriveNeedsYou(input)).sentence)).toBe(
       "All 2 payments funded, balances current. Nothing is waiting on you.",
     );
   });
@@ -1342,241 +1412,33 @@ describe("deriveHeadline", () => {
     });
   });
 
-  it("aggregates two households worst-first: the total, named by the bigger gap", () => {
-    const other = householdPlan({
-      householdId: "hh2",
-      currency: "GBP",
-      monthlyIncomeMinor: 200_000,
-      leftoverMinor: 100_000,
-      shortfallMinor: 50_000,
-      members: [member({ userId: "cass", displayName: "Cass", shortfallMinor: 50_000 })],
-      lines: [
-        hhLine({
-          paymentId: "loan",
-          name: "Loan",
-          tag: "debt",
-          requiredMonthlyMinor: 50_000,
-          allocations: [{ userId: "cass", requiredMinor: 50_000, fundedMinor: 0 }],
-        }),
-      ],
-      transfers: [],
-    });
-    // The mockup's household (Alex, £40 short) plus a worse one (Cass, £500).
-    const input: NeedsYouInput = {
-      asOfDate: AS_OF,
-      households: [household(), household({ plan: other, confirmations: [] })],
-    };
-    const headline = deriveHeadline(input, deriveNeedsYou(input));
-
-    expect(headline.kind).toBe("shortfall");
-    expect(headline.amountMinor).toBe(54_000);
-    expect(phraseText(headline.sentence)).toBe(
-      "£540.00 is short this month, most of it Cass's share of debt. Everything else across " +
-        "3 payments is covered — clear it and you're left with £4,326.62 for the month.",
-    );
-  });
-
-  it("counts the aggregate in one currency rather than adding pounds to euros", () => {
-    const euro = householdPlan({
-      householdId: "hh-eu",
-      currency: "EUR",
-      leftoverMinor: 900_000,
-      shortfallMinor: 700_000,
-      members: [member({ userId: "luc", displayName: "Luc", shortfallMinor: 700_000 })],
-      lines: [],
-      transfers: [],
-    });
-    const input: NeedsYouInput = {
-      asOfDate: AS_OF,
-      households: [household(), household({ plan: euro, confirmations: [] })],
-    };
-    const headline = deriveHeadline(input, deriveNeedsYou(input));
-
-    // The euro household's rows still reach the list; only the figure is GBP.
-    expect(deriveNeedsYou(input).map((i) => i.key)).toContain("shortfall:member:hh-eu:luc");
-    expect(headline.amountMinor).toBe(4_000);
-    expect(phraseText(headline.sentence)).toMatch(
-      /^Alex's share of housing is £40\.00 short this month\./,
-    );
-  });
-
-  it("adds up across households and standalone accounts", () => {
-    const input: NeedsYouInput = {
-      asOfDate: AS_OF,
-      households: [household()],
-      accounts: [
-        {
-          name: "Side hustle",
-          plan: accountPlan({
-            accountId: "side",
-            shortfallMinor: 1_000,
-            leftoverMinor: 500,
-            lines: [accLine({ paymentId: "van", name: "Van" })],
-          }),
-        },
-      ],
-    };
-    const headline = deriveHeadline(input, deriveNeedsYou(input));
-    expect(headline.amountMinor).toBe(5_000);
-    expect(phraseText(headline.sentence)).toContain("across 3 payments");
-    expect(phraseText(headline.sentence)).toContain("£3,331.62");
-  });
-
   /**
-   * WP-Z. A household contributes its **own accounts**, not its members'
-   * surplus across the whole scope.
-   *
-   * `HouseholdPlanDto.leftoverMinor` is the one scope-wide figure a household
-   * plan carries, and this total is otherwise a sum of accounts. Two things
-   * went wrong at once: the household half counted money in accounts the
-   * household does not hold, and — because an account nobody assigned to a
-   * household is standalone here — the same money was then counted a second
-   * time on its own row. `householdLeftoverMinor` is the household's accounts,
-   * so the two sets are disjoint and every pound is counted once.
+   * **The floor is gone, deliberately.** A residual is signed on purpose:
+   * negative means more leaves the accounts you own than reaches them, which is
+   * decision 11's consolidation and the single most actionable thing a
+   * left-over figure can say. The old total was floored because it subtracted a
+   * committed figure a movement could be funded out of arriving money rather
+   * than out of surplus, so the arithmetic could go negative with nothing
+   * wrong. Nothing is subtracted now, so a negative is a fact about the money —
+   * and the account page's KPI and the household page's LEFT OVER column
+   * already print theirs signed. Flooring here would have been the one screen
+   * that hid it.
    */
-  describe("a household whose members hold money it does not", () => {
-    /** The household holds the bills pot; both members' current accounts are
-     *  their own, and the input lists them as standalone accounts. */
-    const potOnly = householdPlan({
-      monthlyIncomeMinor: 0,
-      totalRequiredMinor: 100_000,
-      totalFundedMinor: 100_000,
-      shortfallMinor: 0,
-      // Ben's £1,541.62 and Alex's £1,985 — none of it in the account below.
-      leftoverMinor: 352_662,
-      householdLeftoverMinor: 10_000,
-      members: [
-        member({ userId: "ben", displayName: "Ben", leftoverMinor: 154_162 }),
-        member({ userId: "alex", displayName: "Alex", leftoverMinor: 198_500 }),
-      ],
-      accounts: [
-        {
-          accountId: "bills",
-          name: "Bills joint",
-          role: "shared",
-          memberUserId: null,
-          currency: "GBP",
-          monthlyIncomeMinor: 0,
-          requiredOutflowMinor: 100_000,
-          fundedOutflowMinor: 100_000,
-          transferInMinor: 100_000,
-          transferOutMinor: 0,
-          leftoverMinor: 10_000,
-          shortfallMinor: 0,
-        },
-      ],
-      lines: [hhLine({ paymentId: "rent", name: "Rent", requiredMonthlyMinor: 100_000 })],
-      transfers: [],
-    });
-
+  it("prints a negative figure rather than flooring it at zero", () => {
     const input: NeedsYouInput = {
       asOfDate: AS_OF,
-      households: [household({ plan: potOnly, confirmations: [] })],
-      accounts: [
-        {
-          name: "Ben current",
-          plan: accountPlan({ accountId: "ben-current", leftoverMinor: 154_162 }),
-        },
-        {
-          name: "Alex current",
-          plan: accountPlan({ accountId: "alex-current", leftoverMinor: 198_500 }),
-        },
-      ],
+      userId: "alex",
+      you: { leftoverMinor: -24_400, shortfallMinor: 0, paymentCount: 3 },
+      accounts: [{ name: "Current", plan: accountPlan({ accountId: "current" }) }],
     };
-
-    it("counts each account once, whoever the plan for it belongs to", () => {
-      // £100 in the pot + £1,541.62 + £1,985. The scope-wide field would have
-      // made it £7,051.62 by counting both current accounts twice.
-      expect(deriveHeadline(input, deriveNeedsYou(input)).amountMinor).toBe(362_662);
-    });
-
-    it("says the household's own figure when it is the only input", () => {
-      const alone: NeedsYouInput = { asOfDate: AS_OF, households: input.households };
-      expect(deriveHeadline(alone, deriveNeedsYou(alone))).toMatchObject({
-        kind: "leftover",
-        amountMinor: 10_000,
-      });
-    });
-
-    it("falls back to the scope-wide figure when the API sent none", () => {
-      const older: HouseholdPlanDto = { ...potOnly };
-      delete older.householdLeftoverMinor;
-      const alone: NeedsYouInput = {
-        asOfDate: AS_OF,
-        households: [household({ plan: older, confirmations: [] })],
-      };
-      expect(deriveHeadline(alone, deriveNeedsYou(alone)).amountMinor).toBe(352_662);
-    });
-  });
-
-  /**
-   * current → pot → ISA, and the netting term that used to be subtracted here.
-   *
-   * The premise is gone, not the fixture. Two engines each counted the pound
-   * that travelled — once in the sender's surplus, again in the receiver's
-   * funded total — so a chain inflated the estate at every hop and the total had
-   * to subtract `intraEstateMovementMinor` to compensate. One pass counts it
-   * once, in the accounts, before any rollup sees it: `leftoverMinor` is an
-   * account's own income after its own bills and after the transfers its owner
-   * must make, and money that merely arrived is nobody's surplus. The term is
-   * deleted along with `computeOverview`, which was the only thing that computed
-   * it (ONE-ENGINE.md).
-   */
-  describe("a three-account chain", () => {
-    /** £1,000 in at the top; £200 spent in the pot, £400 in the ISA. */
-    const chain = (over: Partial<NeedsYouInput> = {}): NeedsYouInput => ({
-      asOfDate: AS_OF,
-      accounts: [
-        {
-          name: "Current",
-          plan: accountPlan({
-            accountId: "current",
-            monthlyIncomeMinor: 100_000,
-            leftoverMinor: 100_000,
-            lines: [accLine({ paymentId: "phone", name: "Phone", fundedMonthlyMinor: 1 })],
-          }),
-        },
-        {
-          name: "Pot",
-          plan: accountPlan({
-            accountId: "pot",
-            monthlyIncomeMinor: 0,
-            allocatedInflowMinor: 60_000,
-            leftoverMinor: 0,
-            lines: [accLine({ paymentId: "car", name: "Car", fundedMonthlyMinor: 20_000 })],
-            contributionsMTD: [{ paymentId: "car", amountMinor: 20_000 }],
-          }),
-        },
-        {
-          name: "ISA",
-          plan: accountPlan({
-            accountId: "isa",
-            monthlyIncomeMinor: 0,
-            allocatedInflowMinor: 40_000,
-            leftoverMinor: 0,
-            lines: [accLine({ paymentId: "isa-goal", name: "ISA", fundedMonthlyMinor: 40_000 })],
-            contributionsMTD: [{ paymentId: "isa-goal", amountMinor: 40_000 }],
-          }),
-        },
-      ],
-      ...over,
-    });
-
-    it("counts the pound once however many hops it makes, with nothing to net", () => {
-      // £1,000 earned at the top and £600 of it moved on. The two accounts
-      // downstream report no surplus of their own — the money that reached them
-      // is the sender's, counted there — so the estate's figure is the £1,000
-      // it actually earns, and no term is subtracted from it.
-      const input = chain();
-      const headline = deriveHeadline(input, deriveNeedsYou(input));
-      expect(headline.kind).toBe("leftover");
-      expect(headline.amountMinor).toBe(100_000);
-    });
+    expect(deriveHeadline(input, []).amountMinor).toBe(-24_400);
   });
 
   it("counts settled movements alongside settled transfers in the clear-month line", () => {
     const input: NeedsYouInput = {
       asOfDate: AS_OF,
+      userId: "alex",
+      you: { leftoverMinor: 0, shortfallMinor: 0, paymentCount: 1 },
       accounts: [
         holidayPot({
           lines: [
