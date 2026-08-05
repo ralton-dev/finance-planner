@@ -294,6 +294,7 @@ const PLANNED_ACCOUNTS = [
 const PLANNED_STATE = [
   state({
     accountId: "ada",
+    ownerUserId: "u1",
     name: "Ada current",
     householdId: "hh",
     householdRole: "personal",
@@ -302,6 +303,7 @@ const PLANNED_STATE = [
   }),
   state({
     accountId: "bills",
+    ownerUserId: "u1",
     name: "Bills joint",
     householdId: "hh",
     householdRole: "shared",
@@ -310,6 +312,7 @@ const PLANNED_STATE = [
   }),
   state({
     accountId: "side",
+    ownerUserId: "u1",
     name: "Side hustle",
     leftoverMinor: 12_500,
     latestBalanceMinor: 90_000,
@@ -428,6 +431,58 @@ describe("OverviewPage — fold + doorways", () => {
     // WP-4's cells, verbatim: the balance and how long ago anyone said so.
     expect(table).toHaveTextContent("£900.00");
     expect(table).toHaveTextContent("checked in today");
+  });
+
+  /**
+   * The third instance of the assumption this work hunts, found in the heading
+   * above the table rather than in any figure.
+   *
+   * The list is every account the caller can *see* that no household plan
+   * speaks for — so a co-member's account, shared into the household and never
+   * given a plan role, is on it. Its own row says "shared with you"; the
+   * heading above it said "your other accounts". The row is right and stays;
+   * the heading stops claiming what the row denies (decisions 20 and 25).
+   */
+  it("says 'your' over that table only when the accounts really are yours", async () => {
+    renderPlanned();
+    expect(await screen.findByRole("heading", { name: "your other accounts" })).toBeInTheDocument();
+  });
+
+  it("drops the 'your' when a co-member's account is in the list", async () => {
+    renderPlanned({
+      "GET /api/overview": {
+        body: {
+          asOfDate: AS_OF,
+          perCurrency: [
+            {
+              currency: "GBP",
+              monthlyIncomeMinor: 630_000,
+              bufferMinor: 0,
+              totalRequiredMinor: 219_000,
+              totalFundedMinor: 215_000,
+              leftoverMinor: 411_000,
+              shortfallMinor: 4_000,
+              you: { leftoverMinor: 268_600, shortfallMinor: 0, paymentCount: 2 },
+              accounts: [
+                ...PLANNED_STATE.filter((s) => s.accountId !== "side"),
+                // Alex shared it in; nobody gave it a role in the plan.
+                state({
+                  accountId: "side",
+                  ownerUserId: "u2",
+                  name: "Side hustle",
+                  leftoverMinor: 12_500,
+                }),
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    expect(await screen.findByRole("heading", { name: "other accounts" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "your other accounts" })).toBeNull();
+    // The row itself is untouched — a legitimate account to be shown.
+    expect(await screen.findByText("Side hustle")).toBeInTheDocument();
   });
 
   it("does not render the household plan a second time", async () => {

@@ -271,6 +271,7 @@ export function OverviewPage() {
               byId={byId}
               asOfDate={asOfDate}
               named={households.length > 0}
+              userId={me.data?.id}
             />
           ))}
 
@@ -426,25 +427,38 @@ function HouseholdCard({ entry, asOfDate }: { entry: HouseholdEntry; asOfDate: s
  * The accounts nobody's household plan speaks for, in the accounts index's own
  * columns — same cells, same chips, same staleness threshold, so the two
  * screens cannot describe one account two ways.
+ *
+ * **The heading says "your" only when they are all yours.** This list is every
+ * account the caller can *see* with no household plan speaking for it, and an
+ * account a co-member shared into the household without anyone giving it a
+ * plan role lands here — theirs, correctly listed, and correctly labelled
+ * "shared with you" on its own row while the heading above called it the
+ * reader's (decision 20's boundary, decision 25's wording). The row stays: it
+ * is a real account the caller can act on. Only the claim goes.
  */
 function StandaloneAccounts({
   bucket,
   byId,
   asOfDate,
   named,
+  userId,
 }: {
   bucket: CurrencyOverviewDto;
   byId: Map<string, AccountDto>;
   asOfDate: string;
   named: boolean;
+  /** Who is looking. Absent while `GET /api/users/me` is in flight, which reads
+   *  as "cannot say these are yours" rather than as "they all are". */
+  userId: string | undefined;
 }) {
   const rows = bucket.accounts.filter((s) => byId.has(s.accountId));
   if (rows.length === 0) return null;
+  const allMine = userId !== undefined && rows.every((s) => s.ownerUserId === userId);
 
   return (
     <>
       <div className="section-head">
-        <h2>{named ? "your other accounts" : "accounts"}</h2>
+        <h2>{named ? (allMine ? "your other accounts" : "other accounts") : "accounts"}</h2>
         <span className="meta">
           [{rows.length} {rows.length === 1 ? "row" : "rows"} · {bucket.currency}
           {named ? " · not in a household" : ""}]
