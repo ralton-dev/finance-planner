@@ -27,6 +27,11 @@ describe("calc service", () => {
               currency: "GBP",
               role: "personal",
               memberUserId: "owner",
+              // Required of every account since MONTH-CLOSE.md decision 15:
+              // external income counts for whoever owns the account. This body
+              // is not validated, so nothing but this fixture says so — see the
+              // note on `AccountPlanBody`.
+              ownerUserId: "owner",
               incomes: [
                 { id: "i1", amountMinor: 100_000, frequency: "monthly", anchorDate: "2026-01-01" },
               ],

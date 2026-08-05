@@ -21,6 +21,15 @@ const startedAt = Date.now();
  * ONE-ENGINE.md deletes.
  */
 interface AccountPlanBody {
+  /**
+   * Taken on trust: nothing validates this body (see the note on the route),
+   * so this is the one construction site of a `ScopeInput` in the tree that the
+   * compiler cannot hold to it. Since MONTH-CLOSE.md decision 15 every account
+   * must carry `ownerUserId` — external income counts for whoever owns the
+   * account — and a body that omits it plans an estate nobody owns: no income
+   * reaches a member's budget, so nothing funds. Validation is phase 1's, and
+   * this is now a reason for it.
+   */
   scope: ScopeInput;
   accountId: string;
   asOfDate?: string;
