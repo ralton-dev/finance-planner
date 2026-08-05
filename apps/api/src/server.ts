@@ -39,10 +39,12 @@ import {
   flowFromScope,
   householdPlanFromScope,
   householdProjectionFromScope,
+  leftoverForUser,
   overviewFromPlans,
   toISODate,
   type Transfer,
   type TransferDeparture,
+  type UserLeftover,
   type UserMonthClose,
 } from "@finance-planner/domain";
 import { createMailer, type Mailer } from "@finance-planner/mailer";
@@ -61,6 +63,7 @@ import {
   createPlanContext,
   type InflowSource,
   inflowSourcesFor,
+  type PlanContext,
   type PlannedScope,
   plansForAccounts,
   previewPlanForAccount,
@@ -252,6 +255,57 @@ async function closesForUser(
   // The pass's own partition order, currency ascending, whichever scope each row
   // came out of.
   return [...byCurrency.values()].sort((a, b) => a.currency.localeCompare(b.currency));
+}
+
+/** What one currency bucket holds **of the caller's own** — `UserLeftover`
+ *  without the currency, which the bucket it hangs off already names. */
+type OwnLeftover = Omit<UserLeftover, "currency">;
+
+/**
+ * What is left over **for the caller**, per currency, across every scope they
+ * appear in (decisions 19, 20 and 24).
+ *
+ * `closesForUser`'s shape exactly, and for the same reason: accessible accounts
+ * seed the *scopes*, and then a per-user function narrows the answer to the
+ * person. `leftoverForUser` was deliberately built to be used this way.
+ *
+ * The sum across scopes is safe and exact rather than a double count. A scope
+ * closes over common ownership — `closeScope` pulls in every account an owner
+ * owns — so all of a caller's accounts in one currency are in one scope with
+ * them, and any second scope reaching this caller reaches them through an
+ * account somebody else owns, where they own nothing to add. Two disjoint scopes
+ * share no money, which is what makes adding them the right answer.
+ *
+ * A bucket with no row here reads zero rather than being absent: the caller can
+ * see accounts in that currency and owns none of them, which is a fact worth
+ * printing rather than a gap.
+ */
+async function leftoverForCaller(
+  store: Store,
+  userId: string,
+  accounts: readonly Account[],
+  asOfDate: string,
+  ctx: PlanContext,
+): Promise<Map<string, OwnLeftover>> {
+  const byCurrency = new Map<string, OwnLeftover>();
+  // A memo hit: the overview has already planned these scopes.
+  for (const scope of await scopesFor(store, accounts, asOfDate, ctx)) {
+    for (const row of leftoverForUser(scope.plan, userId)) {
+      const known = byCurrency.get(row.currency);
+      if (!known) {
+        byCurrency.set(row.currency, {
+          leftoverMinor: row.leftoverMinor,
+          shortfallMinor: row.shortfallMinor,
+          paymentCount: row.paymentCount,
+        });
+        continue;
+      }
+      known.leftoverMinor += row.leftoverMinor;
+      known.shortfallMinor += row.shortfallMinor;
+      known.paymentCount += row.paymentCount;
+    }
+  }
+  return byCurrency;
 }
 
 /**
@@ -1426,10 +1480,25 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
 
     const overview = overviewFromPlans(plans, asOfDate);
+    const yours = await leftoverForCaller(store, userId, accounts, asOfDate, ctx);
     return {
       ...overview,
       perCurrency: overview.perCurrency.map((c) => ({
         ...c,
+        // **The caller's own money** (decisions 19, 20, 24), computed by the
+        // pass rather than assembled in the browser.
+        //
+        // Everything else in this bucket is summed over every account the
+        // caller can **see**, which is the right set for a list of accounts and
+        // the wrong one for a figure about a person: on a household of two, the
+        // dashboard's headline was a co-member's money as much as the reader's.
+        // Those totals keep their meanings on the wire to the penny and simply
+        // stop being what any screen reads.
+        //
+        // The shortfall and the payment count ride along with the left over
+        // because a headline pairing a left over that is yours with a shortfall
+        // that is the household's would state two bases in one sentence.
+        you: yours.get(c.currency) ?? { leftoverMinor: 0, shortfallMinor: 0, paymentCount: 0 },
         accounts: c.accounts.map((summary) => ({ ...summary, ...state.get(summary.accountId) })),
       })),
     };

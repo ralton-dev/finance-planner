@@ -10,6 +10,11 @@ import {
   ESTATE_CONFIRMATION_SHAPES,
   type ConfirmationShape,
 } from "../../../packages/domain/src/estate.fixture.js";
+import {
+  CROSS_OWNER_ASOF,
+  CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
+  crossOwnerScope,
+} from "../../../packages/domain/src/crossowner.fixture.js";
 import type { ApiEnv } from "./env.js";
 import { buildDailyDigest } from "./notify.js";
 import { scopeForAccount } from "./plan.js";
@@ -5409,5 +5414,436 @@ describe("flow over any scope", () => {
     const narrowed = (await flow(auth, [savings.id])).json();
     expect(narrowed.accounts).toHaveLength(1);
     expect(narrowed.edges[0]).toMatchObject({ fromAccountId: savings.id, toAccountId: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The overview is the caller's own money
+// ---------------------------------------------------------------------------
+
+/**
+ * `crossowner.fixture.ts`, walked into a store, the same way `seedEstate` walks
+ * the estate.
+ *
+ * Deliberately mechanical, and deliberately here rather than in the domain
+ * package, for `seedEstate`'s reason: `@finance-planner/domain` does not depend
+ * on `@finance-planner/data` and a fixture is not a reason to make it.
+ *
+ * Simpler than the estate's walk in exactly one way — nothing is confirmed. A
+ * confirmation would change what the checklist says and none of the figures
+ * this fixture exists for, and the fixture's own comment says so.
+ */
+async function seedCrossOwner(store: Store): Promise<SeededEstate> {
+  const userIds = new Map<string, string>();
+  const auth = new Map<string, { authorization: string }>();
+  for (const m of crossOwnerScope.members) {
+    const email = `${m.userId}@crossowner.example.com`;
+    const user = await store.createUser({
+      email,
+      passwordHash: "x",
+      displayName: m.displayName ?? m.userId,
+    });
+    userIds.set(m.userId, user.id);
+    auth.set(m.userId, {
+      authorization: `Bearer ${await signAccessToken(env.jwtSecret, { sub: user.id, email })}`,
+    });
+  }
+  const [founder, ...rest] = crossOwnerScope.members;
+  const household = await store.createHousehold("Cross", userIds.get(founder!.userId)!);
+  for (const m of rest) await store.addMembership(household.id, userIds.get(m.userId)!, "member");
+  for (const m of crossOwnerScope.members) {
+    await store.updateMembershipShare(household.id, userIds.get(m.userId)!, m.shareBp);
+  }
+
+  const accounts = new Map<string, Account>();
+  for (const a of crossOwnerScope.accounts) {
+    accounts.set(
+      a.accountId,
+      await store.createAccount({
+        ownerUserId: userIds.get(a.ownerUserId)!,
+        name: a.name ?? a.accountId,
+        currency: a.currency,
+        monthlyBufferMinor: a.monthlyBufferMinor,
+      }),
+    );
+  }
+  for (const accountId of CROSS_OWNER_ASSIGNED_ACCOUNT_IDS) {
+    const a = crossOwnerScope.accounts.find((x) => x.accountId === accountId)!;
+    await store.upsertAccountAssignment({
+      householdId: household.id,
+      accountId: accounts.get(accountId)!.id,
+      role: a.role,
+      memberUserId: a.memberUserId ? userIds.get(a.memberUserId)! : null,
+    });
+  }
+
+  for (const a of crossOwnerScope.accounts) {
+    const accountId = accounts.get(a.accountId)!.id;
+    for (const i of a.incomes) {
+      await store.createIncome({
+        accountId,
+        name: i.id,
+        amountMinor: i.amountMinor,
+        frequency: i.frequency,
+        recurrence: i.recurrence ?? null,
+        anchorDate: i.anchorDate,
+        active: i.active ?? true,
+      });
+    }
+    for (const p of a.payments) {
+      await store.createPayment({
+        accountId,
+        name: p.name,
+        category: p.category,
+        amountMinor: p.amountMinor,
+        dueDate: p.dueDate ?? null,
+        recurrence: p.recurrence ?? null,
+        targetDate: p.targetDate ?? null,
+        priority: p.priority ?? 100,
+        alreadySavedMinor: p.alreadySavedMinor ?? 0,
+        autoRenew: true,
+        active: true,
+        notes: null,
+        projectId: null,
+        scope: p.scope,
+        bearerUserId: p.bearerUserId ? userIds.get(p.bearerUserId)! : null,
+        fixedMonthlyMinor: null,
+        tag: null,
+      });
+    }
+    // One row with two faces, authored on the account the money arrives in —
+    // the sending account's `outboundInflows` are the same row read from the
+    // other end, so they are not seeded again.
+    for (const f of a.inflows ?? []) {
+      await store.createInflow({
+        accountId,
+        name: f.id,
+        source: f.source,
+        sourceAccountId: f.sourceAccountId ? accounts.get(f.sourceAccountId)!.id : null,
+        amountMinor: f.amountMinor,
+        frequency: f.frequency,
+        recurrence: f.recurrence ?? null,
+        anchorDate: f.anchorDate,
+        priority: f.priority ?? 100,
+        active: f.active ?? true,
+      });
+    }
+  }
+
+  return { householdId: household.id, userIds, accounts, auth };
+}
+
+/** One currency bucket of an overview response, as far as these tests read it. */
+interface OverviewBucket {
+  currency: string;
+  leftoverMinor: number;
+  shortfallMinor: number;
+  you: { leftoverMinor: number; shortfallMinor: number; paymentCount: number };
+  accounts: {
+    accountId: string;
+    ownerUserId: string;
+    leftoverMinor: number;
+    residualMinor: number;
+  }[];
+}
+
+describe("the overview is the caller's own money", () => {
+  let store: Store;
+  let app: ReturnType<typeof buildServer>;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    app = buildServer({ store, env, registerAuthProxy: false });
+  });
+
+  const bucketsFor = async (
+    headers: { authorization: string },
+    asOf: string,
+  ): Promise<OverviewBucket[]> =>
+    (await app.inject({ method: "GET", url: `/api/overview?asOf=${asOf}`, headers })).json()
+      .perCurrency;
+
+  const gbpFor = async (headers: { authorization: string }, asOf: string) =>
+    (await bucketsFor(headers, asOf)).find((c) => c.currency === "GBP")!;
+
+  const householdPlan = async (
+    id: string,
+    headers: { authorization: string },
+    asOf: string,
+  ): Promise<{
+    membersLeftoverMinor: number;
+    householdLeftoverMinor: number;
+    committedMinor: number;
+    members: { userId: string; displayName?: string; personalLeftoverMinor: number }[];
+    accounts: { accountId: string; leftoverMinor: number }[];
+  }> =>
+    (
+      await app.inject({ method: "GET", url: `/api/households/${id}/plan?asOf=${asOf}`, headers })
+    ).json();
+
+  /**
+   * **The three altitudes, at the API.** `mine.test.ts` pins them in the domain;
+   * this is the same three figures read off the wire the dashboard reads, so a
+   * handler cannot quietly hand a screen a different basis than the pass
+   * computed.
+   */
+  it("reports each member their own left over on the estate", async () => {
+    const seeded = await seedEstate(store, app, `${thisMonth()}-01`);
+    const alice = await gbpFor(seeded.auth.get("u-alice")!, ESTATE_ASOF);
+    const bob = await gbpFor(seeded.auth.get("u-bob")!, ESTATE_ASOF);
+
+    expect(alice.you.leftoverMinor).toBe(250_100);
+    expect(bob.you.leftoverMinor).toBe(152_400);
+
+    // And the rows on the screen add up to the figure above them — over the
+    // accounts the caller **owns**, which is the whole of decision 20.
+    const ownedSum = (bucket: OverviewBucket, userId: string) =>
+      bucket.accounts
+        .filter((a) => a.ownerUserId === userId)
+        .reduce((n, a) => n + a.residualMinor, 0);
+    expect(ownedSum(alice, seeded.userIds.get("u-alice")!)).toBe(250_100);
+    expect(ownedSum(bob, seeded.userIds.get("u-bob")!)).toBe(152_400);
+
+    // Bob's figure holds nothing of Alice's, and hers nothing of his.
+    expect(bob.accounts.some((a) => a.ownerUserId === seeded.userIds.get("u-alice"))).toBe(false);
+    expect(alice.you.leftoverMinor + bob.you.leftoverMinor).toBe(402_500);
+  });
+
+  /** A second currency is a second answer, never a term in the first
+   *  (decision 10) — Alice's EUR account sits in its own bucket with its own
+   *  `you`, and the GBP figure is untouched by it. */
+  it("keeps a second currency in a second bucket and never adds it in", async () => {
+    const seeded = await seedEstate(store, app, `${thisMonth()}-01`);
+    const buckets = await bucketsFor(seeded.auth.get("u-alice")!, ESTATE_ASOF);
+
+    expect(buckets.map((c) => c.currency)).toEqual(["EUR", "GBP"]);
+    const eur = buckets.find((c) => c.currency === "EUR")!;
+    const gbp = buckets.find((c) => c.currency === "GBP")!;
+    expect(gbp.you.leftoverMinor).toBe(250_100);
+    expect(eur.you.leftoverMinor).toBe(
+      eur.accounts
+        .filter((a) => a.ownerUserId === seeded.userIds.get("u-alice"))
+        .reduce((n, a) => n + a.residualMinor, 0),
+    );
+    expect(eur.you.leftoverMinor).not.toBe(0);
+    expect(gbp.you.leftoverMinor).not.toBe(gbp.you.leftoverMinor + eur.you.leftoverMinor);
+  });
+
+  /**
+   * **Decision 20, pinned.** An account a co-member shared into your household
+   * is a legitimate row in your list — you can see it, and there are things on
+   * it you may be asked to act on — and it is not one penny of your money.
+   */
+  it("lists an account shared to the caller and leaves it out of their figure", async () => {
+    const { user: alice, auth: aliceAuth } = await seedUser(store, "alice-share@example.com");
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob-share@example.com");
+    const household = await store.createHousehold("Ours", alice.id);
+    await store.addMembership(household.id, bob.id, "member");
+
+    const mine = await store.createAccount({
+      ownerUserId: alice.id,
+      name: "Alice current",
+      currency: "GBP",
+    });
+    const theirs = await store.createAccount({
+      ownerUserId: bob.id,
+      name: "Bob current",
+      currency: "GBP",
+    });
+    for (const [accountId, amountMinor] of [
+      [mine.id, 200_000],
+      [theirs.id, 150_000],
+    ] as const) {
+      await store.createIncome({
+        accountId,
+        name: "Salary",
+        amountMinor,
+        frequency: "monthly",
+        recurrence: null,
+        anchorDate: "2026-01-01",
+        active: true,
+      });
+    }
+    await store.createAccountShare(theirs.id, household.id, "view");
+
+    const gbp = await gbpFor(aliceAuth, "2026-08-04");
+    // In the list, named as his.
+    expect(gbp.accounts.map((a) => a.accountId).sort()).toEqual([mine.id, theirs.id].sort());
+    expect(gbp.accounts.find((a) => a.accountId === theirs.id)!.ownerUserId).toBe(bob.id);
+    // Out of the figure. The access-basis total beside it still counts both,
+    // keeps its meaning to the penny, and is not what any screen reads.
+    expect(gbp.you.leftoverMinor).toBe(200_000);
+    expect(gbp.leftoverMinor).toBe(350_000);
+    // And it is his in his own overview, not nobody's.
+    expect((await gbpFor(bobAuth, "2026-08-04")).you.leftoverMinor).toBe(150_000);
+  });
+
+  /**
+   * **Decision 24.** The shortfall and the payment count follow the left over
+   * onto the ownership basis, because a headline pairing a left over that is
+   * yours with a shortfall that is the household's states two bases in one
+   * sentence.
+   */
+  it("counts the shortfall and the payments over the accounts the caller owns", async () => {
+    const { user: alice, auth: aliceAuth } = await seedUser(store, "alice-short@example.com");
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob-short@example.com");
+    const household = await store.createHousehold("Ours", alice.id);
+    await store.addMembership(household.id, bob.id, "member");
+
+    const mine = await store.createAccount({
+      ownerUserId: alice.id,
+      name: "Alice current",
+      currency: "GBP",
+    });
+    const theirs = await store.createAccount({
+      ownerUserId: bob.id,
+      name: "Bob current",
+      currency: "GBP",
+    });
+    await store.createIncome({
+      accountId: mine.id,
+      name: "Salary",
+      amountMinor: 100_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+    // Bob has no income at all, so his bill is entirely short — and it is his
+    // bill, on his account, in a household Alice can see it through.
+    for (const [accountId, name, amountMinor] of [
+      [mine.id, "Phone", 4_500],
+      [theirs.id, "Gym", 6_000],
+    ] as const) {
+      await store.createPayment({
+        accountId,
+        name,
+        category: "monthly_recurring",
+        amountMinor,
+        dueDate: null,
+        recurrence: null,
+        targetDate: null,
+        priority: 10,
+        alreadySavedMinor: 0,
+        autoRenew: true,
+        active: true,
+        notes: null,
+        projectId: null,
+        scope: "personal",
+        bearerUserId: null,
+        fixedMonthlyMinor: null,
+        tag: null,
+      });
+    }
+    await store.createAccountShare(theirs.id, household.id, "view");
+
+    const gbp = await gbpFor(aliceAuth, "2026-08-04");
+    expect(gbp.you).toEqual({ leftoverMinor: 95_500, shortfallMinor: 0, paymentCount: 1 });
+    // The access-basis figures beside it, unchanged, counting both accounts.
+    expect(gbp.shortfallMinor).toBe(6_000);
+    expect(gbp.accounts).toHaveLength(2);
+    // His shortfall is his, and it is still reported — to him.
+    expect((await gbpFor(bobAuth, "2026-08-04")).you).toEqual({
+      leftoverMinor: 0,
+      shortfallMinor: 6_000,
+      paymentCount: 1,
+    });
+  });
+
+  /**
+   * The household response carries the same three altitudes: what each member
+   * has, and their sum. Names are gated on membership — this endpoint is
+   * members-only — and no amount is gated, which is asserted rather than
+   * assumed.
+   */
+  it("reports the members' left over on the household plan", async () => {
+    const seeded = await seedEstate(store, app, `${thisMonth()}-01`);
+    const plan = await householdPlan(
+      seeded.householdId,
+      seeded.auth.get("u-bob")!,
+      thisMonth() + "-04",
+    );
+
+    expect(plan.membersLeftoverMinor).toBe(402_500);
+    const personal = new Map(plan.members.map((m) => [m.userId, m.personalLeftoverMinor]));
+    expect(personal.get(seeded.userIds.get("u-alice")!)).toBe(250_100);
+    expect(personal.get(seeded.userIds.get("u-bob")!)).toBe(152_400);
+    // The rows on the screen add to the total above them.
+    expect(plan.members.reduce((n, m) => n + m.personalLeftoverMinor, 0)).toBe(402_500);
+
+    // Names for a member, amounts for anyone the endpoint admits — and it
+    // admits members only, which is the gate.
+    expect(plan.members.map((m) => m.displayName).sort()).toEqual(["Alice", "Bob"]);
+    const { auth: strangerAuth } = await seedUser(store, "stranger-hh@example.com");
+    const refused = await app.inject({
+      method: "GET",
+      url: `/api/households/${seeded.householdId}/plan`,
+      headers: strangerAuth,
+    });
+    expect(refused.statusCode).toBe(404);
+  });
+
+  /**
+   * **The cross-owner fixture, at the API altitude.**
+   *
+   * The only shape that tells the ownership basis from the roster basis: on the
+   * estate the two coincide to the penny, so an estate-only pin proves nothing
+   * about which one shipped. Here an implementation wired to the roster reads
+   * £3,300 for the household and £1,200 for Bob; the ownership basis reads
+   * £2,900 and £800, and both roster figures are still on the wire beside them.
+   */
+  it("reports the ownership basis, not the roster basis, on the cross-owner fixture", async () => {
+    const seeded = await seedCrossOwner(store);
+    const alice = await gbpFor(seeded.auth.get("u-alice")!, CROSS_OWNER_ASOF);
+    const bob = await gbpFor(seeded.auth.get("u-bob")!, CROSS_OWNER_ASOF);
+
+    expect(alice.you.leftoverMinor).toBe(210_000);
+    expect(bob.you.leftoverMinor).toBe(80_000);
+
+    const plan = await householdPlan(
+      seeded.householdId,
+      seeded.auth.get("u-alice")!,
+      CROSS_OWNER_ASOF,
+    );
+    expect(plan.membersLeftoverMinor).toBe(290_000);
+    expect(
+      new Map(plan.members.map((m) => [m.userId, m.personalLeftoverMinor])).get(
+        seeded.userIds.get("u-bob")!,
+      ),
+    ).toBe(80_000);
+
+    // The roster basis, unchanged on the wire and demonstrably a different
+    // answer: Bob's £400 is added back into his own account's row *and* counted
+    // again in the pot's residual.
+    expect(plan.householdLeftoverMinor).toBe(330_000);
+    expect(
+      plan.accounts.find((a) => a.accountId === seeded.accounts.get("acc-x-bob-cur")!.id)!
+        .leftoverMinor,
+    ).toBe(120_000);
+
+    // £400 of what Alice's figure counts is genuinely in an account of hers and
+    // genuinely Bob's money. The household total is unaffected: added to her,
+    // subtracted from him.
+    expect(alice.you.leftoverMinor + bob.you.leftoverMinor).toBe(290_000);
+  });
+
+  /** Month 0 of the household's walk is its plan for the same date — one
+   *  derivation, so the strip and the headline above it cannot disagree. */
+  it("agrees between the household projection strip and the household headline", async () => {
+    const seeded = await seedCrossOwner(store);
+    const headers = seeded.auth.get("u-alice")!;
+    const plan = await householdPlan(seeded.householdId, headers, CROSS_OWNER_ASOF);
+    const projection = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${seeded.householdId}/projection?asOf=${CROSS_OWNER_ASOF}&months=3`,
+        headers,
+      })
+    ).json() as { months: { membersLeftoverMinor: number; leftoverMinor: number }[] };
+
+    expect(projection.months[0]!.membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
+    expect(projection.months.map((m) => m.membersLeftoverMinor)).toEqual([
+      290_000, 290_000, 290_000,
+    ]);
   });
 });
