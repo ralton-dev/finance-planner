@@ -505,3 +505,82 @@ describe("importExport — movements survive the round trip", () => {
     });
   });
 });
+
+/**
+ * A backup is of *your* things, and `visibility` is deliberately not one of
+ * them (Ben, 2026-08-05, at review).
+ *
+ * The estate shape, never a lone user: a household of two, both members owning
+ * a project, one of them shared. Only a fixture with somebody else in it can
+ * tell "exported nothing of theirs" apart from "exported everything there
+ * was".
+ */
+describe("buildExport — projects are yours, and a restored one is personal", () => {
+  it("carries only the exporter's own projects, and brings a shared one back personal", async () => {
+    const aliceId = await seedUser("alice@example.com");
+    const bobId = await seedUser("bob@example.com");
+    const household = await store.createHousehold("Home", aliceId);
+    await store.addMembership(household.id, bobId, "member");
+
+    const current = await account(aliceId, "Alice current");
+    await store.createAccountShare(current.id, household.id, "edit");
+
+    const kitchen = await store.createProject({
+      ownerUserId: aliceId,
+      name: "Kitchen",
+      description: "shared with the household",
+      color: null,
+      targetDate: "2026-12-01",
+      visibility: "shared",
+    });
+    await store.createProject({
+      ownerUserId: aliceId,
+      name: "Rainy day",
+      description: null,
+      color: null,
+      targetDate: null,
+      visibility: "personal",
+    });
+    // Bob's, shared into the same household — so Alice can see it, and it must
+    // still stay out of her backup.
+    await store.createProject({
+      ownerUserId: bobId,
+      name: "Bathroom",
+      description: null,
+      color: null,
+      targetDate: null,
+      visibility: "shared",
+    });
+    expect((await store.listProjectsForUser(aliceId)).map((p) => p.name)).toContain("Bathroom");
+
+    const file = await buildExport(store, aliceId, ASOF);
+    // Owner-scoped: a co-member's shared project is theirs, not part of your
+    // backup, even though you can read it today.
+    expect(file.projects.map((p) => p.name)).toEqual(["Kitchen", "Rainy day"]);
+    // Four fields, and `visibility` is not among them — the export schema does
+    // not even have a place to put it.
+    expect(Object.keys(file.projects[0]!).sort()).toEqual([
+      "color",
+      "description",
+      "name",
+      "targetDate",
+    ]);
+    expect(exportFileSchema.parse(file).projects).toHaveLength(2);
+
+    // Restored into a *different* household, which is the whole reason the word
+    // does not travel: carrying "shared" would auto-share Alice's kitchen into
+    // whoever's household the importer belongs to by then.
+    const carolId = await seedUser("carol@example.com");
+    const carolHousehold = await store.createHousehold("Elsewhere", carolId);
+    expect(carolHousehold.id).not.toBe(household.id);
+    expect(await importExport(store, carolId, file)).toMatchObject({ projects: 2 });
+
+    const restored = await store.listProjectsForOwner(carolId);
+    expect(restored.map((p) => `${p.name}:${p.visibility}`).sort()).toEqual([
+      "Kitchen:personal",
+      "Rainy day:personal",
+    ]);
+    // And Alice's original is untouched — an export is a copy, not a move.
+    expect((await store.getProject(kitchen.id))?.visibility).toBe("shared");
+  });
+});

@@ -914,6 +914,437 @@ describe("api service", () => {
     expect((await store.getPayment(payment.id))?.accountId).toBe(a.id);
   });
 
+  /**
+   * A project is personal or shared into your household (MINE-AND-OURS
+   * decisions 22 and 23).
+   *
+   * Every fixture here is a **household of two** with real account shares,
+   * never a lone user: an owner-only project is invisible to the whole class of
+   * defect this feature can have, and a fixture with nobody else in it is the
+   * shape that let five field-by-field audits miss a live defect in this
+   * repository.
+   */
+  describe("projects · personal or shared", () => {
+    /** Alice and Bob, one household, both current accounts shared into it —
+     *  and an ISA of Alice's that deliberately never is. */
+    async function seedSharing() {
+      const { user: alice, auth } = await seedUser(store, "alice@example.com");
+      const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
+      const household = await store.createHousehold("Home", alice.id);
+      await store.addMembership(household.id, bob.id, "member");
+
+      const mkAccount = async (name: string, who: { authorization: string }) =>
+        (
+          await app.inject({
+            method: "POST",
+            url: "/api/accounts",
+            headers: who,
+            payload: { name, currency: "GBP" },
+          })
+        ).json();
+      const aliceCur = await mkAccount("Alice current", auth);
+      const bobCur = await mkAccount("Bob current", bobAuth);
+      const isa = await mkAccount("Alice ISA", auth);
+
+      const share = async (accountId: string, who: { authorization: string }) =>
+        (
+          await app.inject({
+            method: "POST",
+            url: `/api/accounts/${accountId}/shares`,
+            headers: who,
+            payload: { householdId: household.id, permission: "edit" },
+          })
+        ).json();
+      const aliceShare = await share(aliceCur.id, auth);
+      const bobShare = await share(bobCur.id, bobAuth);
+
+      return { alice, bob, auth, bobAuth, household, aliceCur, bobCur, isa, aliceShare, bobShare };
+    }
+
+    const mkProject = async (
+      who: { authorization: string },
+      payload: Record<string, unknown>,
+    ): Promise<{ statusCode: number; body: Record<string, string> }> => {
+      const res = await app.inject({ method: "POST", url: "/api/projects", headers: who, payload });
+      return { statusCode: res.statusCode, body: res.json() };
+    };
+
+    const mkPayment = async (
+      who: { authorization: string },
+      accountId: string,
+      payload: Record<string, unknown>,
+    ) =>
+      app.inject({
+        method: "POST",
+        url: `/api/accounts/${accountId}/payments`,
+        headers: who,
+        payload: {
+          category: "fixed_point",
+          amountMinor: 100000,
+          dueDate: "2026-09-01",
+          ...payload,
+        },
+      });
+
+    it("shows a shared project to a co-member, names its owner, and 404s a stranger", async () => {
+      const h = await seedSharing();
+      const { body: shared } = await mkProject(h.auth, { name: "Kitchen", visibility: "shared" });
+      const { body: personal } = await mkProject(h.auth, { name: "Rainy day" });
+      expect(shared.visibility).toBe("shared");
+      // Absent from the body writes the column's own default rather than
+      // nothing: a caller who has never heard of sharing keeps making personal
+      // projects.
+      expect(personal.visibility).toBe("personal");
+
+      const bobsList = (
+        await app.inject({ method: "GET", url: "/api/projects", headers: h.bobAuth })
+      ).json();
+      expect(bobsList.map((p: { name: string }) => p.name)).toEqual(["Kitchen"]);
+      expect(bobsList[0].ownerName).toBe("Owner");
+
+      const bobsRead = await app.inject({
+        method: "GET",
+        url: `/api/projects/${shared.id}`,
+        headers: h.bobAuth,
+      });
+      expect(bobsRead.statusCode).toBe(200);
+      // The personal one is not a co-member's business, and reads as absent
+      // rather than forbidden.
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: `/api/projects/${personal.id}`,
+            headers: h.bobAuth,
+          })
+        ).statusCode,
+      ).toBe(404);
+
+      const { auth: strangerAuth } = await seedUser(store, "stranger@example.com");
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: `/api/projects/${shared.id}`,
+            headers: strangerAuth,
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (await app.inject({ method: "GET", url: "/api/projects", headers: strangerAuth })).json(),
+      ).toEqual([]);
+    });
+
+    it("lets a co-member file a payment into a shared project and never rename or delete it", async () => {
+      const h = await seedSharing();
+      const { body: shared } = await mkProject(h.auth, { name: "Kitchen", visibility: "shared" });
+
+      const filed = await mkPayment(h.bobAuth, h.bobCur.id, {
+        name: "Sink",
+        projectId: shared.id,
+      });
+      expect(filed.statusCode).toBe(201);
+
+      // 403 rather than 404: he can already see it exists, so pretending
+      // otherwise would be a lie rather than a leak-stopper.
+      for (const [method, payload] of [
+        ["PATCH", { name: "Bob's kitchen now" }],
+        ["DELETE", undefined],
+      ] as const) {
+        const res = await app.inject({
+          method,
+          url: `/api/projects/${shared.id}`,
+          headers: h.bobAuth,
+          ...(payload ? { payload } : {}),
+        });
+        expect(res.statusCode).toBe(403);
+      }
+      expect((await store.getProject(shared.id))?.name).toBe("Kitchen");
+    });
+
+    /** Decision 23's first door. */
+    it("refuses a payment on an unshared account entry to a shared project, naming the account", async () => {
+      const h = await seedSharing();
+      const { body: shared } = await mkProject(h.auth, { name: "Kitchen", visibility: "shared" });
+
+      const refused = await mkPayment(h.auth, h.isa.id, {
+        name: "Buffer top-up",
+        projectId: shared.id,
+      });
+      expect(refused.statusCode).toBe(422);
+      expect(refused.json().error.code).toBe("account_not_shared");
+      // Named, because the caller has just been granted edit on it — the gate
+      // is about the household's sight of the account, not the caller's.
+      expect(refused.json().error.message).toContain("Alice ISA");
+
+      // The same payment on a shared account is fine.
+      expect(
+        (await mkPayment(h.auth, h.aliceCur.id, { name: "Worktop", projectId: shared.id }))
+          .statusCode,
+      ).toBe(201);
+    });
+
+    /** Decision 23's second door: the same body, one request later. */
+    it("refuses filing an existing payment into a shared project from an unshared account", async () => {
+      const h = await seedSharing();
+      const { body: shared } = await mkProject(h.auth, { name: "Kitchen", visibility: "shared" });
+      const payment = (await mkPayment(h.auth, h.isa.id, { name: "Buffer top-up" })).json();
+
+      const refused = await app.inject({
+        method: "PATCH",
+        url: `/api/payments/${payment.id}`,
+        headers: h.auth,
+        payload: { projectId: shared.id },
+      });
+      expect(refused.statusCode).toBe(422);
+      expect(refused.json().error.message).toContain("Alice ISA");
+      expect((await store.getPayment(payment.id))?.projectId ?? null).toBeNull();
+    });
+
+    /**
+     * The join's third mutation, and the only one no gate above reaches: the
+     * project is not changing and the account under it is. Without this the
+     * move smuggles an unshared account's payment into a shared project around
+     * both of the other doors, and every co-member starts reading a name they
+     * have no access to.
+     */
+    it("refuses moving a payment in a shared project onto an unshared account", async () => {
+      const h = await seedSharing();
+      const { body: shared } = await mkProject(h.auth, { name: "Kitchen", visibility: "shared" });
+      const payment = (
+        await mkPayment(h.auth, h.aliceCur.id, { name: "Worktop", projectId: shared.id })
+      ).json();
+
+      const refused = await app.inject({
+        method: "PATCH",
+        url: `/api/payments/${payment.id}`,
+        headers: h.auth,
+        payload: { accountId: h.isa.id },
+      });
+      expect(refused.statusCode).toBe(422);
+      expect(refused.json().error.code).toBe("account_not_shared");
+      expect(refused.json().error.message).toContain("Alice ISA");
+      // It did not move, and it is still in the project.
+      const after = await store.getPayment(payment.id);
+      expect(after?.accountId).toBe(h.aliceCur.id);
+      expect(after?.projectId).toBe(shared.id);
+
+      // And a move between two accounts that are both shared is untouched.
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `/api/payments/${payment.id}`,
+            headers: h.auth,
+            payload: { accountId: h.bobCur.id },
+          })
+        ).statusCode,
+      ).toBe(200);
+    });
+
+    /** The asymmetry itself: only the shared side has a rule. */
+    it("lets a personal project hold a payment on any account the caller owns", async () => {
+      const h = await seedSharing();
+      const { body: personal } = await mkProject(h.auth, { name: "Rainy day" });
+
+      // The unshared ISA — the account the shared side refuses.
+      expect(
+        (await mkPayment(h.auth, h.isa.id, { name: "Buffer top-up", projectId: personal.id }))
+          .statusCode,
+      ).toBe(201);
+      // And an account she owns that *is* shared into the household. The
+      // symmetric rule would have barred this the moment she shared it.
+      expect(
+        (await mkPayment(h.auth, h.aliceCur.id, { name: "Worktop", projectId: personal.id }))
+          .statusCode,
+      ).toBe(201);
+      // Moving between them is free either way.
+      const p = (await store.listPayments(h.isa.id))[0]!;
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `/api/payments/${p.id}`,
+            headers: h.auth,
+            payload: { accountId: h.aliceCur.id },
+          })
+        ).statusCode,
+      ).toBe(200);
+    });
+
+    it("refuses the flip to shared and names every payment that could not come", async () => {
+      const h = await seedSharing();
+      const { body: project } = await mkProject(h.auth, { name: "Kitchen" });
+      await mkPayment(h.auth, h.aliceCur.id, { name: "Worktop", projectId: project.id });
+      await mkPayment(h.auth, h.isa.id, { name: "Buffer top-up", projectId: project.id });
+      await mkPayment(h.auth, h.isa.id, { name: "Tiles", projectId: project.id });
+
+      const refused = await app.inject({
+        method: "PATCH",
+        url: `/api/projects/${project.id}`,
+        headers: h.auth,
+        payload: { visibility: "shared" },
+      });
+      expect(refused.statusCode).toBe(422);
+      expect(refused.json().error.code).toBe("payments_not_shared");
+      // Every one of them, so the owner can decide about each — not the first,
+      // and not a count.
+      expect(refused.json().error.message).toContain("Buffer top-up");
+      expect(refused.json().error.message).toContain("Tiles");
+      expect(refused.json().error.message).not.toContain("Worktop");
+      // Refused, never repaired: nothing was quietly unlinked to make it fit.
+      expect((await store.getProject(project.id))?.visibility).toBe("personal");
+      expect(await store.listPaymentsForProject(project.id)).toHaveLength(3);
+
+      // Withdraw the two that cannot come and the flip goes through; and
+      // shared → personal needs no permission of any kind.
+      for (const p of await store.listPayments(h.isa.id)) {
+        await app.inject({
+          method: "PATCH",
+          url: `/api/payments/${p.id}`,
+          headers: h.auth,
+          payload: { projectId: null },
+        });
+      }
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `/api/projects/${project.id}`,
+            headers: h.auth,
+            payload: { visibility: "shared" },
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: `/api/projects/${project.id}`,
+            headers: h.auth,
+            payload: { visibility: "personal" },
+          })
+        ).json().visibility,
+      ).toBe("personal");
+    });
+
+    /**
+     * `updateProjectBody` re-declares `visibility` as a bare optional rather
+     * than inheriting `createProjectBody`'s default. A `ZodDefault` surviving
+     * `.partial()` would make every PATCH that says nothing about visibility
+     * set `personal`, so renaming a shared project would silently un-share it.
+     */
+    it("leaves a shared project shared when a PATCH says nothing about visibility", async () => {
+      const h = await seedSharing();
+      const { body: shared } = await mkProject(h.auth, { name: "Kitchen", visibility: "shared" });
+      const renamed = await app.inject({
+        method: "PATCH",
+        url: `/api/projects/${shared.id}`,
+        headers: h.auth,
+        payload: { name: "Kitchen 2026" },
+      });
+      expect(renamed.json()).toMatchObject({ name: "Kitchen 2026", visibility: "shared" });
+    });
+
+    it("refuses a shared project to somebody with no household", async () => {
+      const { auth } = await seedUser(store, "solo@example.com");
+      const refused = await mkProject(auth, { name: "Alone", visibility: "shared" });
+      expect(refused.statusCode).toBe(422);
+      expect(refused.body).toMatchObject({
+        error: { code: "no_household" },
+      } as unknown as Record<string, string>);
+
+      // And the same answer on the flip, which is the door a project already
+      // created reaches it by.
+      const { body: personal } = await mkProject(auth, { name: "Alone" });
+      const flipped = await app.inject({
+        method: "PATCH",
+        url: `/api/projects/${personal.id}`,
+        headers: auth,
+        payload: { visibility: "shared" },
+      });
+      expect(flipped.statusCode).toBe(422);
+      expect(flipped.json().error.code).toBe("no_household");
+    });
+
+    /** WP-AD's store path, reached through HTTP as a person would. */
+    it("takes an unshared account's payments out of shared projects and leaves personal ones alone", async () => {
+      const h = await seedSharing();
+      const { body: shared } = await mkProject(h.auth, { name: "Kitchen", visibility: "shared" });
+      const { body: personal } = await mkProject(h.auth, { name: "Rainy day" });
+      await mkPayment(h.auth, h.aliceCur.id, { name: "Worktop", projectId: shared.id });
+      await mkPayment(h.auth, h.aliceCur.id, { name: "Buffer top-up", projectId: personal.id });
+
+      await app.inject({
+        method: "DELETE",
+        url: `/api/accounts/${h.aliceCur.id}/shares/${h.aliceShare.id}`,
+        headers: h.auth,
+      });
+
+      const sharedAfter = (
+        await app.inject({ method: "GET", url: `/api/projects/${shared.id}`, headers: h.auth })
+      ).json();
+      expect(sharedAfter.payments).toHaveLength(0);
+      const personalAfter = (
+        await app.inject({ method: "GET", url: `/api/projects/${personal.id}`, headers: h.auth })
+      ).json();
+      expect(personalAfter.payments.map((p: { name: string }) => p.name)).toEqual([
+        "Buffer top-up",
+      ]);
+    });
+
+    /**
+     * Decision 23's other direction: the three dissolutions above take away
+     * what the household held of the leaver; this takes away what the leaver
+     * held of the household. Without it the ex-member keeps a live window —
+     * names and amounts — into a household they have left.
+     */
+    it("brings a leaver's shared project back personal, stripped of what was not theirs", async () => {
+      const h = await seedSharing();
+      const { body: bobs } = await mkProject(h.bobAuth, {
+        name: "Bathroom",
+        visibility: "shared",
+      });
+      await mkPayment(h.bobAuth, h.bobCur.id, { name: "Shower", projectId: bobs.id });
+      await mkPayment(h.auth, h.aliceCur.id, { name: "Towel rail", projectId: bobs.id });
+
+      await store.removeMember(h.household.id, h.bob.id);
+
+      const after = (
+        await app.inject({ method: "GET", url: `/api/projects/${bobs.id}`, headers: h.bobAuth })
+      ).json();
+      expect(after.visibility).toBe("personal");
+      // His own payment survives in his own project; Alice's does not.
+      expect(after.payments.map((p: { name: string }) => p.name)).toEqual(["Shower"]);
+      // And the window is shut from her side too.
+      expect(
+        (await app.inject({ method: "GET", url: `/api/projects/${bobs.id}`, headers: h.auth }))
+          .statusCode,
+      ).toBe(404);
+      // Her payment still exists — it lost a project link, not itself.
+      expect((await store.listPayments(h.aliceCur.id)).map((p) => p.name)).toEqual(["Towel rail"]);
+    });
+
+    it("tells the accounts list which accounts are shared into the household", async () => {
+      const h = await seedSharing();
+      const accounts = (
+        await app.inject({ method: "GET", url: "/api/accounts", headers: h.auth })
+      ).json();
+      const byName = Object.fromEntries(
+        accounts.map((a: { name: string; sharedIntoHousehold: boolean }) => [
+          a.name,
+          a.sharedIntoHousehold,
+        ]),
+      );
+      // The field the drawer refuses on, before the round trip.
+      expect(byName).toEqual({
+        "Alice current": true,
+        "Bob current": true,
+        "Alice ISA": false,
+      });
+    });
+  });
+
   it("moves an income to another account the caller can edit", async () => {
     const { auth } = await seedUser(store);
     const mk = async (name: string) =>
