@@ -260,6 +260,108 @@ describe("TransferChecklist", () => {
   });
 });
 
+/**
+ * The source that is not one of the household's accounts.
+ *
+ * A transfer belongs to the household its money **arrives** in (WP-X), and
+ * `f3acef8` put every account a member owns into one scope with the household's
+ * — so Ada's private side account funding the joint pot is a household transfer
+ * with a source the roster does not carry. The FROM cell looked it up in
+ * `plan.accounts`, missed, and printed a bare lowercase "account", which reads
+ * like a lookup that broke rather than a thing being withheld.
+ *
+ * The API carries the name for a caller who can see the account and withholds it
+ * from one who cannot (WP-J's rule for a sender's name, unchanged). The person
+ * who has to move this money owns the account, so the person who needs the name
+ * has it.
+ */
+describe("TransferChecklist · a source the household does not hold", () => {
+  const fromOutside = (over: Partial<HouseholdPlanDto["transfers"][number]> = {}) => ({
+    ...plan,
+    transfers: [
+      {
+        fromAccountId: "acc-side",
+        toAccountId: "acc-joint",
+        memberUserId: "u1",
+        amountMinor: 25_000,
+        ...over,
+      },
+      plan.transfers[1]!,
+    ],
+  });
+
+  it("names the account for the owner, who is the one moving the money", () => {
+    render(
+      <TransferChecklist
+        plan={fromOutside({ fromAccountName: "Side account" })}
+        confirmations={[]}
+        onConfirm={noop}
+        onUndo={noop}
+      />,
+    );
+    const row = screen.getByText("Ada").closest("tr")!;
+    expect(row).toHaveTextContent("Side account");
+    expect(row).toHaveTextContent("Joint bills");
+    expect(row).toHaveTextContent("£250.00");
+  });
+
+  it("says other account to a co-member the name is not travelling to", () => {
+    render(
+      <TransferChecklist plan={fromOutside()} confirmations={[]} onConfirm={noop} onUndo={noop} />,
+    );
+    const row = screen.getByText("Ada").closest("tr")!;
+    expect(row).toHaveTextContent("other account");
+    // The amount is never gated — only the name is.
+    expect(row).toHaveTextContent("£250.00");
+    // And the row is still hers to tick off.
+    expect(screen.getAllByRole("button", { name: "mark done" })).toHaveLength(2);
+  });
+
+  it("says the same of an account this page has genuinely never heard of", () => {
+    // An old confirmation against something since deleted or unassigned: no name
+    // is being withheld and there is still none to print. One fallback, true of
+    // both, and it never claims to be a name.
+    render(
+      <TransferChecklist
+        plan={plan}
+        confirmations={[{ ...adaConfirmed, id: "conf-9", fromAccountId: "acc-gone" }]}
+        onConfirm={noop}
+        onUndo={noop}
+      />,
+    );
+    const orphan = screen.getByText(/no longer planned/).closest("tr")!;
+    expect(orphan).toHaveTextContent("other account");
+  });
+
+  it("uses the carried name in the payday plan too, off the same resolver", () => {
+    render(
+      <TransferChecklist
+        plan={{
+          ...fromOutside({ fromAccountName: "Side account" }),
+          paydaySchedule: [
+            {
+              memberUserId: "u1",
+              events: [
+                {
+                  date: "2026-08-25",
+                  transfers: [
+                    { fromAccountId: "acc-side", toAccountId: "acc-joint", amountMinor: 25_000 },
+                  ],
+                  totalMinor: 25_000,
+                },
+              ],
+            },
+          ],
+        }}
+        confirmations={[]}
+        onConfirm={noop}
+        onUndo={noop}
+      />,
+    );
+    expect(screen.getByText("Side account → Joint bills")).toBeInTheDocument();
+  });
+});
+
 // --- payday plan ------------------------------------------------------------
 
 const schedule: MemberPaydayScheduleDto[] = [

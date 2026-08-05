@@ -37,6 +37,7 @@ import {
   householdProjectionFromScope,
   overviewFromPlans,
   toISODate,
+  type Transfer,
 } from "@finance-planner/domain";
 import { createMailer, type Mailer } from "@finance-planner/mailer";
 import { type Action, type AppAbility, buildAbility, subject } from "@finance-planner/policies";
@@ -50,6 +51,7 @@ import {
   accessibleAccounts,
   computeHouseholdPlanWithSchedule,
   computePlanForAccount,
+  type HouseholdPlanWithSchedule,
   createPlanContext,
   type InflowSource,
   inflowSourcesFor,
@@ -292,6 +294,20 @@ type PlanInflowSource =
       confirmedMinor: number;
     };
 
+/**
+ * The household plan on the wire: its own shape, plus the source account's name
+ * on any transfer arriving from an account the household does not hold.
+ *
+ * Optional for the reason `PlanInflowSource.accountName` is — it is absent both
+ * when there is nothing to say and when the caller may not be told, and a client
+ * renders the same honest fallback either way. See `withTransferSources`.
+ */
+type PlanTransfer = Transfer & { fromAccountName?: string };
+
+interface HouseholdPlanResponse extends Omit<HouseholdPlanWithSchedule, "transfers"> {
+  transfers: PlanTransfer[];
+}
+
 /** Where an account sits in the user's households, when it sits in one. */
 interface AccountPlacement {
   householdId: string | null;
@@ -503,6 +519,55 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     // Null rather than an empty array keeps the old contract: nothing arriving
     // that you may be told about reads the same as nothing arriving.
     return sources.length > 0 ? sources : null;
+  };
+
+  /**
+   * The household's transfers, carrying the source account's name wherever this
+   * caller is allowed it.
+   *
+   * A transfer belongs to the household its money **arrives** in (WP-X), so once
+   * `f3acef8` put a member's private accounts in the same scope, a private
+   * account funding the shared pot became a household transfer with a source the
+   * household does not hold. `householdPlanFromScope` reports only the roster's
+   * accounts — rightly — so the name was dropped at this boundary although the
+   * scope knew it, and the checklist fell through to a bare lowercase "account",
+   * which reads like a lookup that broke.
+   *
+   * Gated exactly as `planInflowSources` gates a sender's name, and by the same
+   * mechanism rather than a second one: the id travels, the name is gated on
+   * `getAccess`. The person who has to move this money is the account's owner,
+   * and an owner can always see their own account's name — so the owner reads
+   * "Ben · Side account → Shared pot" and a co-member reads "Ben · other
+   * account". Amounts are never gated and none is gated here.
+   *
+   * Only sources off the roster are looked up: an account the household holds is
+   * already named in `plan.accounts`, for every member, and paying for a store
+   * round trip to say so again would be a second answer to a settled question.
+   */
+  const withTransferSources = async (
+    userId: string,
+    plan: HouseholdPlanWithSchedule,
+  ): Promise<HouseholdPlanResponse> => {
+    const onRoster = new Set(plan.accounts.map((a) => a.accountId));
+    /** id → name, or null for "not this caller's to see". Memoised because one
+     *  source account funds one destination per member, not one row. */
+    const seen = new Map<string, string | null>();
+    const transfers: PlanTransfer[] = [];
+    for (const t of plan.transfers) {
+      if (onRoster.has(t.fromAccountId)) {
+        transfers.push(t);
+        continue;
+      }
+      if (!seen.has(t.fromAccountId)) {
+        const source = (await store.getAccess(userId, t.fromAccountId))
+          ? await store.getAccount(t.fromAccountId)
+          : null;
+        seen.set(t.fromAccountId, source?.name ?? null);
+      }
+      const name = seen.get(t.fromAccountId);
+      transfers.push(name == null ? t : { ...t, fromAccountName: name });
+    }
+    return { ...plan, transfers };
   };
 
   // ---- health ----
@@ -1329,7 +1394,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { id } = req.params as { id: string };
     const { asOf } = req.query as { asOf?: string };
     await requireMembership(userId, id);
-    return computeHouseholdPlanWithSchedule(store, id, asOf ?? today());
+    return withTransferSources(
+      userId,
+      await computeHouseholdPlanWithSchedule(store, id, asOf ?? today()),
+    );
   });
 
   /** The household's pooled plan simulated month by month. Members only — same

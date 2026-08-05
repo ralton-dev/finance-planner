@@ -24,6 +24,23 @@ const keyOf = (t: { fromAccountId: string; toAccountId: string; memberUserId: st
   `${t.fromAccountId}|${t.toAccountId}|${t.memberUserId}`;
 
 /**
+ * What an account is called when this page has no name for it.
+ *
+ * Two ways to get here and one honest sentence for both. A transfer belongs to
+ * the household its money **arrives** in, so its source can be an account the
+ * household does not hold — a member's private account funding the shared pot —
+ * and the DTO carries that name only for a caller who can see the account. A
+ * co-member gets no name, on purpose. The other way is a row about an account
+ * this plan has genuinely never heard of: an old confirmation against something
+ * since deleted or unassigned.
+ *
+ * "other account" is true of each — it is an account other than the ones on this
+ * page — and claims nothing about which. A bare "account" claimed to be a name
+ * and read like a lookup that had broken.
+ */
+const OFF_THIS_PAGE = "other account";
+
+/**
  * A member with no payday at all gets one synthetic event on the 1st, which is
  * indistinguishable from a real first-of-the-month payday client-side — so any
  * first-of-month event reads as "start of month" rather than a pay date.
@@ -45,7 +62,14 @@ export function TransferChecklist({ plan, confirmations, onConfirm, onUndo, mont
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const c = plan.currency;
-  const accountName = new Map(plan.accounts.map((a) => [a.accountId, a.name ?? "account"]));
+  // The household's own accounts name themselves; a transfer's source need not
+  // be one of them, and brings its own name when the caller may have it.
+  const named = new Map(plan.accounts.map((a) => [a.accountId, a.name ?? "account"]));
+  for (const t of plan.transfers) {
+    if (t.fromAccountName) named.set(t.fromAccountId, t.fromAccountName);
+  }
+  /** Every account label on this page and the payday plan below it. */
+  const nameOf = (accountId: string): string => named.get(accountId) ?? OFF_THIS_PAGE;
   const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName ?? "member"]));
   const confirmedBy = new Map(confirmations.map((x) => [keyOf(x), x]));
   const plannedKeys = new Set(plan.transfers.map(keyOf));
@@ -105,8 +129,8 @@ export function TransferChecklist({ plan, confirmations, onConfirm, onUndo, mont
               return (
                 <tr key={key}>
                   <td className="name sticky-col">{memberName.get(t.memberUserId) ?? "member"}</td>
-                  <td className="muted">{accountName.get(t.fromAccountId) ?? "account"}</td>
-                  <td>{accountName.get(t.toAccountId) ?? "account"}</td>
+                  <td className="muted">{nameOf(t.fromAccountId)}</td>
+                  <td>{nameOf(t.toAccountId)}</td>
                   <td className="num">{formatMinor(t.amountMinor, c)}</td>
                   <td>
                     {done ? (
@@ -151,8 +175,8 @@ export function TransferChecklist({ plan, confirmations, onConfirm, onUndo, mont
               return (
                 <tr key={key} className="dim">
                   <td className="muted sticky-col">{memberName.get(x.memberUserId) ?? "member"}</td>
-                  <td className="muted">{accountName.get(x.fromAccountId) ?? "account"}</td>
-                  <td className="muted">{accountName.get(x.toAccountId) ?? "account"}</td>
+                  <td className="muted">{nameOf(x.fromAccountId)}</td>
+                  <td className="muted">{nameOf(x.toAccountId)}</td>
                   <td className="num dim">{formatMinor(x.amountMinor, c)}</td>
                   <td>
                     <span className="checklist-cell">
@@ -183,7 +207,7 @@ export function TransferChecklist({ plan, confirmations, onConfirm, onUndo, mont
         schedule={plan.paydaySchedule ?? []}
         currency={c}
         memberName={memberName}
-        accountName={accountName}
+        nameOf={nameOf}
       />
     </>
   );
@@ -198,12 +222,12 @@ function PaydayPlan({
   schedule,
   currency,
   memberName,
-  accountName,
+  nameOf,
 }: {
   schedule: MemberPaydayScheduleDto[];
   currency: string;
   memberName: Map<string, string>;
-  accountName: Map<string, string>;
+  nameOf: (accountId: string) => string;
 }) {
   const withEvents = schedule.filter((m) => m.events.length > 0);
   if (withEvents.length === 0) return null;
@@ -233,8 +257,7 @@ function PaydayPlan({
                 event.transfers.map((t, i) => (
                   <div key={`${t.fromAccountId}|${t.toAccountId}|${i}`} className="payday-slice">
                     <span className="payday-route">
-                      {accountName.get(t.fromAccountId) ?? "account"} →{" "}
-                      {accountName.get(t.toAccountId) ?? "account"}
+                      {nameOf(t.fromAccountId)} → {nameOf(t.toAccountId)}
                     </span>
                     <span className="num">{formatMinor(t.amountMinor, currency)}</span>
                   </div>

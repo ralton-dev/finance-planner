@@ -661,6 +661,19 @@ export interface TransferDto {
   toAccountId: string;
   memberUserId: string;
   amountMinor: number;
+  /**
+   * The source account's name, when it is not one the household holds and the
+   * caller may be told it.
+   *
+   * A transfer belongs to the household its money arrives in, so a member's
+   * private account funding the shared pot is on this list with a source
+   * `accounts` does not carry. The id always travels; the name is gated on
+   * access to that account, exactly as a sender's name is on the account page —
+   * the person who has to move the money owns the account, and an owner can
+   * always see their own account's names. Absent for a co-member, and absent
+   * when there is nothing to say; either way the row falls back.
+   */
+  fromAccountName?: string;
 }
 
 /** One payday, with the slices of the month's transfers that land on it. */

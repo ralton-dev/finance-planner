@@ -2402,6 +2402,104 @@ describe("api service", () => {
     );
   });
 
+  /**
+   * The source account the household does not hold.
+   *
+   * `f3acef8` put every account a member owns into one scope with the
+   * household's, so Alice's private side account can be the one her transfers
+   * leave (decision 11 — her personal account with the most income). The
+   * transfer belongs to the household its money arrives in (WP-X), so it is on
+   * the household's list with a source `plan.accounts` does not carry, and the
+   * checklist had no name to print.
+   *
+   * The name travels for a caller who can see the account and for nobody else —
+   * WP-J's rule for a sender's name, reused rather than re-invented. The person
+   * who has to make this transfer owns the account, so the person who needs the
+   * name has it; a co-member gets the amount, which is all their business.
+   */
+  async function seedPrivateSource(h: Awaited<ReturnType<typeof seedHousehold>>) {
+    const side = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: h.auth,
+        payload: { name: "Side account", currency: "GBP" },
+      })
+    ).json();
+    // More income than alice-cur, so it becomes the account her transfers leave.
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${side.id}/incomes`,
+      headers: h.auth,
+      payload: {
+        name: "Consulting",
+        amountMinor: 400000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    return side;
+  }
+
+  const transferFrom = (plan: { transfers: { fromAccountId: string }[] }, accountId: string) =>
+    plan.transfers.find((t) => t.fromAccountId === accountId) as
+      | { fromAccountId: string; amountMinor: number; fromAccountName?: string }
+      | undefined;
+
+  it("names a transfer's source for the owner who has to move the money", async () => {
+    const h = await seedHousehold(store, app);
+    const side = await seedPrivateSource(h);
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${h.household.id}/plan`,
+        headers: h.auth,
+      })
+    ).json();
+
+    // It really is off the roster: the household reports only what it holds.
+    expect(plan.accounts.map((a: { accountId: string }) => a.accountId)).not.toContain(side.id);
+    const mine = transferFrom(plan, side.id)!;
+    expect(mine.fromAccountName).toBe("Side account");
+    expect(mine.amountMinor).toBeGreaterThan(0);
+    // An account the household does hold is named by the roster and carries
+    // nothing extra — one answer per question.
+    expect(transferFrom(plan, h.bobCur.id)!.fromAccountName).toBeUndefined();
+  });
+
+  it("withholds it from a co-member who can see the household, not the account", async () => {
+    const h = await seedHousehold(store, app);
+    const side = await seedPrivateSource(h);
+    // Bob is a member of the household and has no access to Alice's account.
+    expect(await store.getAccess(h.bob.id, side.id)).toBeNull();
+
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${h.household.id}/plan`,
+        headers: h.bobAuth,
+      })
+    ).json();
+
+    const hers = transferFrom(plan, side.id)!;
+    expect(hers.fromAccountName).toBeUndefined();
+    // The id and the amount are never gated — only the name is. Bob has to know
+    // that £X is coming and from whom; where Alice banks is not his business.
+    expect(hers.fromAccountId).toBe(side.id);
+    expect(hers.amountMinor).toBe(
+      transferFrom(
+        (
+          await app.inject({
+            method: "GET",
+            url: `/api/households/${h.household.id}/plan`,
+            headers: h.auth,
+          })
+        ).json(),
+        side.id,
+      )!.amountMinor,
+    );
+  });
+
   it("closes a pot's month against the money that actually arrived", async () => {
     const h = await seedHousehold(store, app);
     await confirmAllInflow(h);
