@@ -47,8 +47,12 @@ async function savedByPayment(store: Store, accountId: string): Promise<Map<stri
  *
  * Every read of "what arrives here" now comes from `inflows`; `core.incomes` is
  * a table nothing consults. Only `source: "external"` reaches this — an inflow
- * out of another account you own is not income, and counting it as such would
- * inflate the estate's money in by every internal movement.
+ * out of another account is not income, and counting it as such would inflate
+ * the estate's money in by every internal movement. **Not "another account you
+ * own":** authoring one takes `requireAccess(..., "edit")` on the sender
+ * (`server.ts:1241`), so it may be a co-member's account shared to you. What
+ * disqualifies it as income is that the money is already inside, not whose it
+ * is.
  */
 function toIncomeInput(i: Inflow): IncomeInput {
   return {

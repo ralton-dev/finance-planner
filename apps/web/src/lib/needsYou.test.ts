@@ -1304,6 +1304,38 @@ function settled(): NeedsYouInput {
   };
 }
 
+/**
+ * A pot whose month is done: the payment funded, the contribution recorded, the
+ * arriving movement confirmed, the balance current. Nothing about it draws a
+ * checklist row — it exists so the clear-month line has something to count.
+ *
+ * **It is drawn with an owner on purpose.** `input.accounts` is the overview's
+ * list, and the overview is seeded from `accessibleAccounts`, so a co-member's
+ * account arrives here carrying its own arrivals. Whose the account is decides
+ * whether the sentence may count them.
+ */
+function settledPot(accountId: string, ownerUserId: string | undefined): NeedsYouAccountInput {
+  const inflowId = `inf-${accountId}`;
+  return {
+    ...holidayPot({
+      accountId,
+      ownerUserId,
+      lines: [
+        accLine({
+          paymentId: `flights-${accountId}`,
+          name: "Flights",
+          fundedMonthlyMinor: 30_000,
+          status: "funded",
+        }),
+      ],
+      contributionsMTD: [{ paymentId: `flights-${accountId}`, amountMinor: 30_000 }],
+      inflowArrivals: [arrival({ inflowId, confirmedMinor: 30_000 })],
+      inflowSources: [fromAccount({ inflowId, confirmedMinor: 30_000, ownerUserId })],
+    }),
+    name: `${accountId} pot`,
+  };
+}
+
 describe("deriveHeadline", () => {
   /**
    * **Decisions 19, 20 and 24.** All three figures are read off `you`, which the
@@ -1472,8 +1504,25 @@ describe("deriveHeadline", () => {
     );
   });
 
+  /**
+   * `GET /api/users/me` is still in flight on the first paint, so **neither**
+   * term is attributable and the whole clause is left off. The fixture this
+   * test used to carry had no `accounts` at all, so it passed by accident and
+   * locked down half of what its name claims: the account term sat outside the
+   * guard entirely and would have made an ownership claim about a stranger's
+   * pot before the page knew who was reading it.
+   */
   it("claims none of them when it does not know who is reading", () => {
-    const input: NeedsYouInput = { ...settled(), you: you() };
+    const base = settled();
+    const input: NeedsYouInput = {
+      ...base,
+      accounts: [...base.accounts!, settledPot("holiday", ME)],
+      you: you(),
+    };
+    expect(input.userId).toBeUndefined();
+    // Both terms have something to count, and neither may count it.
+    expect(input.households![0]!.plan.transfers).toHaveLength(2);
+    expect(input.accounts!.flatMap((a) => a.plan.inflowArrivals ?? [])).toHaveLength(1);
     expect(phraseText(deriveHeadline(input, deriveNeedsYou(input)).sentence)).toBe(
       "All 2 payments funded, balances current. Nothing is waiting on you.",
     );
@@ -1513,27 +1562,55 @@ describe("deriveHeadline", () => {
   it("counts settled movements alongside settled transfers in the clear-month line", () => {
     const input: NeedsYouInput = {
       asOfDate: AS_OF,
-      userId: "alex",
+      userId: ME,
       you: { leftoverMinor: 0, shortfallMinor: 0, paymentCount: 1 },
-      accounts: [
-        holidayPot({
-          lines: [
-            accLine({
-              paymentId: "flights",
-              name: "Flights",
-              fundedMonthlyMinor: 30_000,
-              status: "funded",
-            }),
-          ],
-          contributionsMTD: [{ paymentId: "flights", amountMinor: 30_000 }],
-          inflowArrivals: [arrival({ inflowId: "inf-1", confirmedMinor: 30_000 })],
-          inflowSources: [fromAccount({ inflowId: "inf-1", confirmedMinor: 30_000 })],
-        }),
-      ],
+      accounts: [settledPot("holiday", ME)],
     };
     const headline = deriveHeadline(input, deriveNeedsYou(input));
     expect(phraseText(headline.sentence)).toBe(
       "All 1 payment funded, the transfer settled, balances current. Nothing is waiting on you.",
+    );
+  });
+
+  /**
+   * **The account half of decision 24's third sibling.** The household half —
+   * filtering `plan.transfers` on `memberUserId` — landed a package earlier;
+   * this term went on reducing `inflowArrivals` over every account in
+   * `input.accounts`, and that list comes off `GET /api/overview`, which is
+   * seeded from `accessibleAccounts`. So Alice was told that Bob's movement
+   * between two of Bob's own accounts was a transfer of hers that settled, in
+   * the same sentence whose payment count is hers alone.
+   *
+   * No fixture had ever put a **co-member-owned account carrying arrivals**
+   * into `input.accounts`, which is how five audits and a full suite missed it.
+   * This is that fixture.
+   */
+  it("counts the movements into your own accounts and not into a co-member's", () => {
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      userId: "alice",
+      you: { leftoverMinor: 0, shortfallMinor: 0, paymentCount: 1 },
+      accounts: [settledPot("alice-holiday", "alice"), settledPot("bob-holiday", "bob")],
+    };
+    const items = deriveNeedsYou(input);
+    // Two arrivals are visible to Alice; exactly one of them is hers.
+    expect(input.accounts!.flatMap((a) => a.plan.inflowArrivals ?? [])).toHaveLength(2);
+    expect(items).toEqual([]);
+    expect(phraseText(deriveHeadline(input, items).sentence)).toBe(
+      "All 1 payment funded, the transfer settled, balances current. Nothing is waiting on you.",
+    );
+  });
+
+  it("counts no movement at all into an account with no owner on it", () => {
+    // An older API sends no `ownerUserId`. Unattributable is not the reader's.
+    const input: NeedsYouInput = {
+      asOfDate: AS_OF,
+      userId: "alice",
+      you: { leftoverMinor: 0, shortfallMinor: 0, paymentCount: 1 },
+      accounts: [settledPot("holiday", undefined)],
+    };
+    expect(phraseText(deriveHeadline(input, deriveNeedsYou(input)).sentence)).toBe(
+      "All 1 payment funded, balances current. Nothing is waiting on you.",
     );
   });
 });

@@ -103,9 +103,16 @@ export interface NeedsYouAccountPlan {
    *  cause, not so it can be added to anything. */
   allocatedInflowMinor?: number;
   /**
-   * What each movement from another account you own delivered into this account
-   * this month. A whole `AccountPlanDto` carries it; a caller holding only the
+   * What each movement from another account delivered into this account this
+   * month. A whole `AccountPlanDto` carries it; a caller holding only the
    * overview's per-account summary has none, and draws no movement rows.
+   *
+   * **Not "another account you own".** Authoring one takes
+   * `requireAccess(..., "edit")` on the sending account (`server.ts:1241`), so
+   * the sender may be a co-member's account shared to you — and the receiving
+   * account may be a co-member's shared to you too. Nothing here is an
+   * ownership claim, which is why anything that makes one, the clear-month
+   * line included, filters on `ownerUserId` for itself.
    *
    * **Authored movements only.** A transfer the pass derived is not one of
    * these — it has no authored row and no `inflowId` to confirm against — and
@@ -930,6 +937,22 @@ export function deriveHeadline(
   // signed and amber. Flooring would have been the one screen that hid it.
   const { leftoverMinor, shortfallMinor, paymentCount } = input.you ?? NOTHING_OF_YOURS;
 
+  // **Decision 20's predicate, in one place**, because this function makes the
+  // ownership claim twice in the same breath: once naming the cause of a
+  // shortfall, and once counting the movements that settled. Ownership, never
+  // access — `input.accounts` is the overview's, seeded from
+  // `accessibleAccounts`, so a co-member's account is in it.
+  //
+  // An unknown side owns nothing. A caller still in flight from
+  // `GET /api/users/me`, or an account whose plan carries no `ownerUserId`, is
+  // not a licence to assume the money is the reader's: the claim is dropped
+  // rather than guessed, which is what the checklist rows already do a hundred
+  // lines up.
+  const mine = (a: NeedsYouAccountInput): boolean =>
+    input.userId === undefined || a.plan.ownerUserId === undefined
+      ? false
+      : a.plan.ownerUserId === input.userId;
+
   if (shortfallMinor > 0) {
     // The sentence names the biggest cause **that is the caller's**. A
     // co-member being short is still a checklist row directly beneath this,
@@ -937,10 +960,6 @@ export function deriveHeadline(
     // moves rather than being lost. What it may not do is explain a figure it
     // is not part of.
     const households = (input.households ?? []).filter((h) => h.plan.currency === currency);
-    const mine = (a: NeedsYouAccountInput): boolean =>
-      input.userId === undefined || a.plan.ownerUserId === undefined
-        ? false
-        : a.plan.ownerUserId === input.userId;
     const facts = [
       ...households.flatMap((h) => householdShortfalls(h).filter((f) => f.userId === input.userId)),
       ...(input.accounts ?? [])
@@ -986,13 +1005,26 @@ export function deriveHeadline(
   // household's asks of you, and the movements into your own accounts. Counted
   // in the headline's currency.
   //
+  // **Both terms are on the ownership basis**, which is the basis this same
+  // sentence's payment count already uses — decision 24's third sibling, and
+  // the two halves of it landed a package apart.
+  //
   // `plan.transfers` is the whole household's, so this told Alice "all 5
-  // transfers settled" when three of them were Bob's — decision 24's third
-  // sibling, on the same sentence as the shortfall and the payment count.
+  // transfers settled" when three of them were Bob's.
   // `TransferDto.memberUserId` is "the member whose money this is" and has been
-  // on the wire all along, so the fix is a filter and no API change. With no
-  // caller yet, none of them are attributable and the clause is simply left
-  // off — better silence than a claim about somebody else's money.
+  // on the wire all along, so the fix is a filter and no API change.
+  //
+  // `input.accounts` comes off `GET /api/overview`, which is seeded from
+  // `accessibleAccounts` — a co-member's accounts included. Unfiltered, this
+  // counted Bob's movement between two of Bob's own accounts as a transfer of
+  // Alice's that settled, in the sentence whose payment count is already hers
+  // alone. `mine()` is the same predicate the shortfall's naming uses, so
+  // there is one ownership comparison in this function and not two.
+  //
+  // With no caller yet neither term is attributable, both are zero, and
+  // `transfersClause` leaves the clause off entirely: "All 3 payments funded,
+  // balances current. Nothing is waiting on you." Better silence than a claim
+  // about somebody else's money.
   const settledTransfers =
     (input.userId === undefined
       ? 0
@@ -1003,7 +1035,7 @@ export function deriveHeadline(
             0,
           )) +
     (input.accounts ?? [])
-      .filter((a) => a.plan.currency === currency)
+      .filter((a) => a.plan.currency === currency && mine(a))
       .reduce(
         (n, a) => n + (a.plan.inflowArrivals ?? []).filter((x) => x.amountMinor > 0).length,
         0,
