@@ -304,9 +304,15 @@ const NO_HOUSEHOLD: AccountPlacement = { householdId: null, householdRole: null 
  * Which household each of the caller's accounts is planned in, and as what.
  * The index needs the role to say "shared pot" rather than guess at it, and the
  * Overview needs the household id to keep from counting an account's shortfall
- * twice — once as its own row, once inside its household's members. An account
- * assigned in two households takes the first; households come back in a stable
- * order, so the answer is deterministic.
+ * twice — once as its own row, once inside its household's members.
+ *
+ * Still a loop over households, and still first-wins, although a user belongs
+ * to exactly one household now (WP-W). The rule is enforced from
+ * `0011_one_household_per_user.sql` forward, never retroactively — an additive
+ * migration may not delete the rows of an instance that predates it — so data
+ * written before then can still put somebody in two, and first-wins over a
+ * stable order is what keeps the answer deterministic when it does. On
+ * everything written since, the outer loop runs at most once.
  */
 async function accountPlacements(
   store: Store,

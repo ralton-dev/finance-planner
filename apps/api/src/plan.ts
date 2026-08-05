@@ -263,6 +263,19 @@ const getAccount = (store: Store, ctx: PlanContext, id: string): Promise<Account
  * that has actually assigned it a role. Households come back in a stable order,
  * so the answer is deterministic, matching `accountPlacements`' rule of taking
  * the first when an account is assigned in two.
+ *
+ * **This is what keeps a scope's member vector single-valued** (WP-W). A user
+ * belongs to exactly one household, sharing an account requires membership of
+ * the household shared into, and assigning one requires access to it — so an
+ * account's owner is always a member of any household that has assigned it, and
+ * the answer is always *the owner's* household. Every account reachable from
+ * another through a funding edge is editable by one person, who is in one
+ * household, so a closure can only ever collect that one roster.
+ *
+ * The loop stays because the rule is enforced from
+ * `0011_one_household_per_user.sql` forward and never retroactively. On data
+ * written before it, a second membership can still exist; first-wins over a
+ * stable order is what keeps that case deterministic rather than arbitrary.
  */
 async function householdPlanningAccount(
   store: Store,

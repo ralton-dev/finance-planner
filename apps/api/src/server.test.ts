@@ -1958,35 +1958,128 @@ describe("api service", () => {
     expect(plan.lines.every((l: { status: string }) => l.status === "funded")).toBe(true);
   });
 
+  /**
+   * Amounts travel; member *names* are gated on being able to see the
+   * household that plans the account (`planInflowSources`). Both halves are
+   * pinned here, from the two sides of one account.
+   *
+   * This case used to be Carol, who saw the household's own bills pot through
+   * a share into a household of *her* own. WP-W makes that state unreachable
+   * and not merely unusual: sharing an account requires membership of the
+   * household shared into, and a user belongs to exactly one household, so an
+   * account's owner is always a member of any household that has assigned it —
+   * and anybody who can see the account through a share is in that same
+   * household. An account planned by a household you are not in is therefore no
+   * longer something you can be shown at all, and a fixture that fabricates one
+   * at the Store would be testing a shape the product cannot produce.
+   *
+   * The property survives in the shape that *is* reachable, which is also the
+   * one that matters: a pot **no household plans**, shared read-only with the
+   * household. Alice may see what lands in it. She may not be told that it is
+   * Bob moving the money — that is a fact about his private plan, and the gate
+   * is the same line of code either way.
+   */
   it("names who is sending the money only to someone who can see the household", async () => {
     const h = await seedHousehold(store, app);
-    // Carol can see the pot — it is shared into a household of her own — but
-    // she is not in the household that funds it.
-    const { user: carol, auth: carolAuth } = await seedUser(store, "carol@example.com");
-    const other = await store.createHousehold("Carol's place", carol.id);
-    await store.createAccountShare(h.bills.id, other.id, "view");
+    // Bob's own money, outside the household plan entirely: a second current
+    // account and a pot it feeds.
+    const make = async (name: string, incomeMinor?: number) => {
+      const account = (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: h.bobAuth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+      if (incomeMinor) {
+        await app.inject({
+          method: "POST",
+          url: `/api/accounts/${account.id}/incomes`,
+          headers: h.bobAuth,
+          payload: {
+            name: "Side work",
+            amountMinor: incomeMinor,
+            frequency: "monthly",
+            anchorDate: "2026-01-01",
+          },
+        });
+      }
+      return account;
+    };
+    await make("bob-side", 120_000);
+    const bobPot = await make("bob-pot");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${bobPot.id}/payments`,
+      headers: h.bobAuth,
+      payload: { name: "Bike", category: "monthly_recurring", amountMinor: 30_000 },
+    });
+    // Shared with the household so Alice can watch it — a grant, never a role
+    // in the plan. Bob may make it because he is a member; it is the only
+    // household he could make it to.
+    const shared = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${bobPot.id}/shares`,
+      headers: h.bobAuth,
+      payload: { householdId: h.household.id, permission: "view" },
+    });
+    expect(shared.statusCode).toBe(201);
 
-    const mine = (
-      await app.inject({ method: "GET", url: `/api/accounts/${h.bills.id}/plan`, headers: h.auth })
+    const his = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${bobPot.id}/plan`,
+        headers: h.bobAuth,
+      })
     ).json();
-    expect(mine.inflowSources.map((s: { memberUserId: string }) => s.memberUserId).sort()).toEqual(
-      [h.alice.id, h.bob.id].sort(),
-    );
+    expect(his.inflowSources.map((s: { memberUserId: string }) => s.memberUserId)).toEqual([
+      h.bob.id,
+    ]);
     expect(
-      mine.inflowSources.reduce((n: number, s: { amountMinor: number }) => n + s.amountMinor, 0),
-    ).toBe(mine.allocatedInflowMinor);
+      his.inflowSources.reduce((n: number, s: { amountMinor: number }) => n + s.amountMinor, 0),
+    ).toBe(his.allocatedInflowMinor);
+    expect(his.allocatedInflowMinor).toBeGreaterThan(0);
 
     const hers = await app.inject({
       method: "GET",
-      url: `/api/accounts/${h.bills.id}/plan`,
-      headers: carolAuth,
+      url: `/api/accounts/${bobPot.id}/plan`,
+      headers: h.auth,
     });
     expect(hers.statusCode).toBe(200);
     // The amount is a fact about an account she can already see, so it is
-    // there and her copy of the plan adds up. The senders' names are not.
-    expect(hers.json().allocatedInflowMinor).toBe(mine.allocatedInflowMinor);
-    expect(hers.json().shortfallMinor).toBe(0);
+    // there and her copy of the plan adds up. The sender's name is not.
+    expect(hers.json().allocatedInflowMinor).toBe(his.allocatedInflowMinor);
+    expect(hers.json().totalRequiredMinor).toBe(his.totalRequiredMinor);
+    expect(hers.json().shortfallMinor).toBe(his.shortfallMinor);
     expect(hers.json().inflowSources).toBeNull();
+  });
+
+  /**
+   * The rule the paragraph above leans on, asserted rather than assumed: you
+   * may only share an account into a household you are in, and you are in one.
+   * It is what stops two households ever joining into one scope — a scope
+   * closes over sharing and funding edges, and both need somebody who can edit
+   * two accounts at once.
+   */
+  it("refuses to share an account into a household the owner is not in", async () => {
+    const h = await seedHousehold(store, app);
+    const { user: carol } = await seedUser(store, "carol@example.com");
+    const hers = await store.createHousehold("Carol's place", carol.id);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${h.bills.id}/shares`,
+      headers: h.auth,
+      payload: { householdId: hers.id, permission: "view" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/Not a member of that household/);
+
+    // And Alice cannot become a member of it either, because she has one.
+    await expect(store.addMembership(hers.id, h.alice.id, "member")).rejects.toThrow(
+      /already belongs to a household/,
+    );
   });
 
   /**
@@ -3961,21 +4054,33 @@ describe("flow over any scope", () => {
     });
 
   /**
-   * Alice is in two households — one with Bob, one with Carol — and also keeps
-   * a standalone ISA that no household has ever heard of, fed by a movement out
-   * of her current account. One diagram, all of it.
+   * Alice is in one household with Bob — a user belongs to exactly one (WP-W) —
+   * and also keeps a savings pair of her own that no household has ever heard
+   * of, joined by a movement she authored. One diagram, two scopes, all of it.
+   *
+   * This fixture used to give Alice a second household, which is now an
+   * unreachable state. It does not need one. What it is really testing is a
+   * diagram drawn over more than one *scope*, and money arriving across the
+   * scope's edge from a sender the caller left out — and a household of two
+   * supplies the second better than a second household did: Bob's own current
+   * account funds his 40% of the rent and is deliberately left out of every
+   * picture below, so his share arrives from nowhere while Alice's is drawn
+   * account to account.
    */
-  async function seedTwoHouseholdsAndAPot() {
+  async function seedHouseholdAndAPot() {
     const { user: alice, auth } = await seedUser(store, "alice@example.com");
-    const { user: bob } = await seedUser(store, "bob@example.com");
-    const { user: carol } = await seedUser(store, "carol@example.com");
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
 
-    const make = async (name: string, incomeMinor?: number) => {
+    const make = async (
+      name: string,
+      incomeMinor?: number,
+      who: { authorization: string } = auth,
+    ) => {
       const account = (
         await app.inject({
           method: "POST",
           url: "/api/accounts",
-          headers: auth,
+          headers: who,
           payload: { name, currency: "GBP" },
         })
       ).json();
@@ -3983,7 +4088,7 @@ describe("flow over any scope", () => {
         await app.inject({
           method: "POST",
           url: `/api/accounts/${account.id}/incomes`,
-          headers: auth,
+          headers: who,
           payload: {
             name: "Pay",
             amountMinor: incomeMinor,
@@ -3997,11 +4102,12 @@ describe("flow over any scope", () => {
 
     const current = await make("current", 400_000);
     const homeBills = await make("home-bills");
-    // Alice's second current account, the one the flat is paid out of. It is
-    // deliberately left out of the diagram below, so the flat's rent arrives
-    // across the scope's edge while the home's arrives account to account.
-    const flatCurrent = await make("flat-current", 150_000);
-    const flatBills = await make("flat-bills");
+    // Bob's, and his alone. Left out of the diagram below, so his share of the
+    // rent arrives across the scope's edge while Alice's arrives account to
+    // account.
+    const bobCurrent = await make("bob-current", 200_000, bobAuth);
+    // Alice's savings pair, in no household at all: the second scope.
+    const savings = await make("savings", 150_000);
     const isa = await make("isa");
 
     const bill = (accountId: string, name: string, amountMinor: number) =>
@@ -4012,25 +4118,31 @@ describe("flow over any scope", () => {
         payload: { name, category: "monthly_recurring", amountMinor, scope: "shared" },
       });
     await bill(homeBills.id, "Rent", 100_000);
-    await bill(flatBills.id, "Council tax", 40_000);
 
     const home = await store.createHousehold("Home", alice.id);
     await store.addMembership(home.id, bob.id, "member");
-    const flat = await store.createHousehold("Flat", alice.id);
-    await store.addMembership(flat.id, carol.id, "member");
-    const assign = (householdId: string, accountId: string, payload: object) =>
+    await store.updateMembershipRole(home.id, bob.id, "admin");
+    await store.updateMembershipShare(home.id, alice.id, 6000);
+    await store.updateMembershipShare(home.id, bob.id, 4000);
+    const assign = (
+      householdId: string,
+      accountId: string,
+      payload: object,
+      who: { authorization: string } = auth,
+    ) =>
       app.inject({
         method: "PUT",
         url: `/api/households/${householdId}/accounts/${accountId}`,
-        headers: auth,
+        headers: who,
         payload,
       });
     await assign(home.id, current.id, { role: "personal", memberUserId: alice.id });
     await assign(home.id, homeBills.id, { role: "shared" });
-    await assign(flat.id, flatCurrent.id, { role: "personal", memberUserId: alice.id });
-    await assign(flat.id, flatBills.id, { role: "shared" });
+    // Bob puts his own account in the plan; nobody else can see it, and nobody
+    // needs to.
+    await assign(home.id, bobCurrent.id, { role: "personal", memberUserId: bob.id }, bobAuth);
 
-    // The standalone leg: £600 a month from the current account into the ISA,
+    // The standalone leg: £600 a month out of the savings account into the ISA,
     // with no household anywhere in it.
     const movement = (
       await app.inject({
@@ -4040,7 +4152,7 @@ describe("flow over any scope", () => {
         payload: {
           name: "Monthly saving",
           source: "account",
-          sourceAccountId: current.id,
+          sourceAccountId: savings.id,
           amountMinor: 60_000,
           frequency: "monthly",
           anchorDate: "2026-01-01",
@@ -4048,21 +4160,21 @@ describe("flow over any scope", () => {
       })
     ).json();
 
-    return { auth, alice, current, homeBills, flatCurrent, flatBills, isa, movement };
+    return { auth, alice, current, homeBills, bobCurrent, savings, isa, movement };
   }
 
-  it("draws a scope spanning two households and a standalone pot", async () => {
-    const { auth, alice, current, homeBills, flatBills, isa, movement } =
-      await seedTwoHouseholdsAndAPot();
+  it("draws a scope spanning a household and a standalone pot", async () => {
+    const { auth, alice, current, homeBills, savings, isa, movement } =
+      await seedHouseholdAndAPot();
 
-    const res = await flow(auth, [current.id, homeBills.id, flatBills.id, isa.id]);
+    const res = await flow(auth, [current.id, homeBills.id, savings.id, isa.id]);
     expect(res.statusCode).toBe(200);
     const body = res.json();
 
     expect(body.accounts.map((a: { name: string }) => a.name)).toEqual([
       "current",
       "home-bills",
-      "flat-bills",
+      "savings",
       "isa",
     ]);
     expect(body.currency).toBe("GBP");
@@ -4070,7 +4182,7 @@ describe("flow over any scope", () => {
     // The authored movement is drawn account to account, by its own id.
     const internal = body.edges.find((e: { inflowId?: string }) => e.inflowId === movement.id);
     expect(internal).toMatchObject({
-      fromAccountId: current.id,
+      fromAccountId: savings.id,
       toAccountId: isa.id,
       amountMinor: 60_000,
       status: "funded",
@@ -4083,18 +4195,20 @@ describe("flow over any scope", () => {
     expect(
       body.edges.find(
         (e: { toAccountId: string; memberUserId?: string }) =>
-          e.toAccountId === homeBills.id && e.memberUserId,
+          e.toAccountId === homeBills.id && e.memberUserId === alice.id,
       ),
     ).toMatchObject({
       fromAccountId: current.id,
       memberUserId: alice.id,
       memberName: "Owner",
+      amountMinor: 60_000,
     });
 
-    // The flat's rent leaves an account the user left out, so it arrives across
-    // the scope's edge instead of out of thin air.
+    // Bob's share of the same rent leaves an account the user left out, so it
+    // arrives across the scope's edge instead of out of thin air. Same pot, two
+    // feeds, one drawn and one crossing the boundary.
     const arriving = body.edges.filter((e: { fromAccountId: null }) => e.fromAccountId === null);
-    expect(arriving.map((e: { toAccountId: string }) => e.toAccountId)).toEqual([flatBills.id]);
+    expect(arriving.map((e: { toAccountId: string }) => e.toAccountId)).toEqual([homeBills.id]);
 
     // Every node balances: what comes in is what goes out.
     for (const node of body.accounts) {
@@ -4112,7 +4226,7 @@ describe("flow over any scope", () => {
       (sum: number, e: { amountMinor: number }) => sum + e.amountMinor,
       0,
     );
-    expect(body.totalInflowMinor).toBe(400_000 + fromOutside);
+    expect(body.totalInflowMinor).toBe(400_000 + 150_000 + fromOutside);
   });
 
   /**
@@ -4121,7 +4235,7 @@ describe("flow over any scope", () => {
    * the money crossing the edge of the smaller scope is still drawn.
    */
   it("draws a subset of the same accounts without inventing or losing money", async () => {
-    const { auth, current, isa } = await seedTwoHouseholdsAndAPot();
+    const { auth, savings, isa } = await seedHouseholdAndAPot();
     const body = (await flow(auth, [isa.id])).json();
     expect(body.accounts).toHaveLength(1);
     expect(body.edges).toEqual([
@@ -4129,12 +4243,12 @@ describe("flow over any scope", () => {
     ]);
     expect(body.totalInflowMinor).toBe(60_000);
     // ...and the sender is untouched by not being drawn.
-    const sender = (await flow(auth, [current.id])).json();
-    expect(sender.accounts[0].incomeMinor).toBe(400_000);
+    const sender = (await flow(auth, [savings.id])).json();
+    expect(sender.accounts[0].incomeMinor).toBe(150_000);
   });
 
   it("is exactly as visible as the least visible account in the set", async () => {
-    const { auth, current } = await seedTwoHouseholdsAndAPot();
+    const { auth, current } = await seedHouseholdAndAPot();
     const { auth: strangerAuth } = await seedUser(store, "stranger@example.com");
     const theirs = (
       await app.inject({
@@ -4151,7 +4265,7 @@ describe("flow over any scope", () => {
   });
 
   it("refuses an empty scope, an oversized one, and one spanning currencies", async () => {
-    const { auth, current } = await seedTwoHouseholdsAndAPot();
+    const { auth, current } = await seedHouseholdAndAPot();
 
     const empty = await app.inject({ method: "GET", url: "/api/flow", headers: auth });
     expect(empty.statusCode).toBe(422);
@@ -4178,7 +4292,7 @@ describe("flow over any scope", () => {
   });
 
   it("takes a repeated account once, in the order the set names it", async () => {
-    const { auth, current, isa } = await seedTwoHouseholdsAndAPot();
+    const { auth, current, isa } = await seedHouseholdAndAPot();
     const body = (await flow(auth, [isa.id, current.id, isa.id])).json();
     expect(body.accounts.map((a: { name: string }) => a.name)).toEqual(["isa", "current"]);
   });
@@ -4189,17 +4303,17 @@ describe("flow over any scope", () => {
    * so a hidden account cannot be dropped from the pass that funds the others.
    */
   it("has no notion of a hidden account, so hiding one cannot move a figure", async () => {
-    const { auth, current, isa } = await seedTwoHouseholdsAndAPot();
-    const scope = [current.id, isa.id];
+    const { auth, savings, isa } = await seedHouseholdAndAPot();
+    const scope = [savings.id, isa.id];
     const before = (await flow(auth, scope)).json();
     // The client hiding the ISA still asks for the whole set.
     const after = (await flow(auth, scope)).json();
     expect(after).toEqual(before);
     // ...and asking for a smaller set is a different question, which is why
     // hiding must never be expressed that way: the movement's money leaves the
-    // current account either way, but the ISA's own node goes with it.
-    const narrowed = (await flow(auth, [current.id])).json();
+    // savings account either way, but the ISA's own node goes with it.
+    const narrowed = (await flow(auth, [savings.id])).json();
     expect(narrowed.accounts).toHaveLength(1);
-    expect(narrowed.edges[0]).toMatchObject({ fromAccountId: current.id, toAccountId: null });
+    expect(narrowed.edges[0]).toMatchObject({ fromAccountId: savings.id, toAccountId: null });
   });
 });
