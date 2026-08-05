@@ -398,6 +398,18 @@ type PlanInflowSource =
       /** The authored inflow, so "I moved it" has something to post to. */
       inflowId: string;
       fromAccountId: string;
+      /**
+       * Whose account is sending it. Ungated, exactly as `fromAccountId` beside
+       * it is and as the member variant's `memberUserId` is: the gate is on
+       * names, and an owner's id is not one.
+       *
+       * Without it a client holding a row can say what arrived and where from,
+       * and cannot say whether the money was ever its reader's — which is how
+       * the checklist came to describe a co-member's account as "your own"
+       * (MINE-AND-OURS decision 25). Absent only when the sending account has
+       * gone, which reads as "not attributable to anybody".
+       */
+      ownerUserId?: string;
       /** Only when the caller can see the sending account — see
        *  `planInflowSources`. */
       accountName?: string;
@@ -652,15 +664,18 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       sources.push({ kind: "member", ...source });
     }
 
+    // The sending account is loaded whatever the caller may be told about it:
+    // its *owner* travels and its *name* is gated, which is the same split the
+    // member rows above make and the one the whole gate is built on.
     for (const arrival of plan.inflowArrivals) {
-      const sender = (await store.getAccess(userId, arrival.fromAccountId))
-        ? await store.getAccount(arrival.fromAccountId)
-        : null;
+      const sender = await store.getAccount(arrival.fromAccountId);
+      const nameable = sender !== null && (await store.getAccess(userId, arrival.fromAccountId));
       sources.push({
         kind: "account",
         inflowId: arrival.inflowId,
         fromAccountId: arrival.fromAccountId,
-        ...(sender ? { accountName: sender.name } : {}),
+        ...(sender ? { ownerUserId: sender.ownerUserId } : {}),
+        ...(nameable && sender ? { accountName: sender.name } : {}),
         amountMinor: arrival.amountMinor,
         confirmedMinor: arrival.confirmedMinor ?? 0,
       });
@@ -865,6 +880,11 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const plan = await computePlanForAccount(store, account, asOfDate, ctx);
     return {
       ...plan,
+      // Whose account this is (decision 20). The overview's per-account summary
+      // has carried it since WP-AF and this one did not, so a screen reading a
+      // whole plan could not tell its reader's account from a co-member's —
+      // which is half of what "between your own accounts" needs to know.
+      ownerUserId: account.ownerUserId,
       // The one field on the plan that gets enriched rather than passed through:
       // the same list, with the destinations this caller may be told named. See
       // `withTransferDestinations`.

@@ -437,7 +437,11 @@ function arrival(over: Partial<InflowArrivalDto> & { inflowId: string }): Inflow
   return { fromAccountId: "current", amountMinor: 30_000, ...over };
 }
 
-/** The same movement seen from the access-gated side, where the name lives. */
+/** Who the fixtures below belong to, when they belong to the reader. */
+const ME = "me";
+
+/** The same movement seen from the access-gated side, where the name lives —
+ *  and, ungated beside it, whose account is sending the money. */
 function fromAccount(
   over: Partial<Extract<PlanInflowSourceDto, { kind: "account" }>> & { inflowId: string },
 ): PlanInflowSourceDto {
@@ -445,6 +449,7 @@ function fromAccount(
     kind: "account",
     fromAccountId: "current",
     accountName: "Current account",
+    ownerUserId: ME,
     amountMinor: 30_000,
     confirmedMinor: 0,
     ...over,
@@ -462,6 +467,7 @@ function holidayPot(over: Partial<AccountPlanDto> = {}): NeedsYouAccountInput {
     name: "Holiday pot",
     plan: accountPlan({
       accountId: "holiday",
+      ownerUserId: ME,
       monthlyIncomeMinor: 0,
       allocatedInflowMinor: 30_000,
       totalRequiredMinor: 30_000,
@@ -483,7 +489,7 @@ function holidayPot(over: Partial<AccountPlanDto> = {}): NeedsYouAccountInput {
 
 describe("deriveNeedsYou · movement", () => {
   it("is the one row a standalone pot's unmoved money produces", () => {
-    const items = deriveNeedsYou({ asOfDate: AS_OF, accounts: [holidayPot()] });
+    const items = deriveNeedsYou({ asOfDate: AS_OF, userId: ME, accounts: [holidayPot()] });
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
@@ -528,6 +534,75 @@ describe("deriveNeedsYou · movement", () => {
     expect(items).toEqual([]);
   });
 
+  /**
+   * The falsehood WP-AG screenshotted, on the household checklist:
+   *
+   *     transfer · Bob current → House pot · £400.00 · between your own accounts
+   *
+   * Bob's account is not Alice's own. The **row** is right — the money really
+   * did arrive in a pot she owns and she really is the one who can confirm it —
+   * and only the wording claimed something untrue, so the fix is a sentence and
+   * an action that is left exactly where it was (decision 25).
+   */
+  it("never calls a co-member's account one of your own", () => {
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      userId: "alice",
+      accounts: [
+        holidayPot({
+          ownerUserId: "alice",
+          inflowArrivals: [arrival({ inflowId: "inf-1", fromAccountId: "bob-current" })],
+          inflowSources: [
+            fromAccount({
+              inflowId: "inf-1",
+              fromAccountId: "bob-current",
+              accountName: "Bob current",
+              ownerUserId: "bob",
+            }),
+          ],
+        }),
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]!.label).toBe("Bob current → Holiday pot");
+    expect(phraseText(items[0]!.meta)).not.toContain("your own");
+    expect(phraseText(items[0]!.meta)).toBe(
+      "arriving from somebody else's account · aug 2026 · 0 of 1 done",
+    );
+    // Still a thing Alice can do, which is why the row survives the correction.
+    expect(items[0]!.action).toMatchObject({ kind: "confirmMovement", inflowId: "inf-1" });
+  });
+
+  it("says nothing about ownership when it has not been told who owns the ends", () => {
+    // An older API sends no `ownerUserId`, and `/api/users/me` is still in
+    // flight on the first paint. Neither is a licence to assume the money is
+    // the reader's — the claim is simply dropped.
+    const items = deriveNeedsYou({ asOfDate: AS_OF, accounts: [holidayPot()] });
+    expect(phraseText(items[0]!.meta)).toBe("between two accounts · aug 2026 · 0 of 1 done");
+  });
+
+  it("says whose accounts they are when neither end is yours", () => {
+    // A co-member's pot, shared to the caller, fed by that co-member's current
+    // account: visible, actionable, and none of it the reader's money.
+    const items = deriveNeedsYou({
+      asOfDate: AS_OF,
+      userId: "alice",
+      accounts: [
+        holidayPot({
+          ownerUserId: "bob",
+          inflowArrivals: [arrival({ inflowId: "inf-1", fromAccountId: "bob-current" })],
+          inflowSources: [
+            fromAccount({ inflowId: "inf-1", fromAccountId: "bob-current", ownerUserId: "bob" }),
+          ],
+        }),
+      ],
+    });
+    expect(phraseText(items[0]!.meta)).toBe(
+      "between somebody else's accounts · aug 2026 · 0 of 1 done",
+    );
+  });
+
   it("says 'another account' rather than an id when the name is withheld", () => {
     // The API gates the sending account's *name* on being able to see it. An
     // absence is rendered as one; the amount and the action are unaffected.
@@ -570,6 +645,7 @@ describe("deriveNeedsYou · movement", () => {
   it("counts what has already moved without asking for it again", () => {
     const items = deriveNeedsYou({
       asOfDate: AS_OF,
+      userId: ME,
       accounts: [
         holidayPot({
           inflowArrivals: [

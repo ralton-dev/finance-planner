@@ -352,6 +352,18 @@ export type PlanInflowSourceDto =
       /** The authored inflow, so "I moved it" has something to post to. */
       inflowId: string;
       fromAccountId: string;
+      /**
+       * Whose account is sending it. Ungated, like `fromAccountId` beside it:
+       * the gate is on names, and an owner's id is not one.
+       *
+       * The only thing on this row that can tell your own account from a
+       * co-member's — the sender's *name* is gated and an account you can see
+       * is not an account you own. Without it the checklist described
+       * "Bob current → House pot" as money moving **between your own accounts**
+       * (decision 25). Absent from an older API, which reads as "cannot say",
+       * and the wording must not claim ownership it cannot support.
+       */
+      ownerUserId?: string;
       /** Only when the caller can see the sending account. */
       accountName?: string;
       amountMinor: number;
@@ -365,6 +377,11 @@ export interface AccountPlanDto {
    *  never declared it, which is why the plan table's "due in N d" countdown
    *  had nothing to count from. */
   asOfDate: string;
+  /** Whose account this is (decision 20) — ownership, never access. The
+   *  overview's summary has carried it since WP-AF; a whole plan did not, so a
+   *  screen holding one could not tell its reader's own account from a
+   *  co-member's shared to them. Optional like every additive field here. */
+  ownerUserId?: string;
   currency: string;
   monthlyIncomeMinor: number;
   bufferMinor: number;

@@ -150,12 +150,17 @@ export interface NeedsYouInput {
   /** ISO date every day-count is measured against. */
   asOfDate: string;
   /**
-   * Who is looking. The checklist does not need it — every row on it is a thing
-   * somebody can act on, whoever owns the money — but the headline does, because
-   * the headline is a sentence about *you*: it filters the transfers it calls
-   * settled to the ones that were yours to make, and names only a shortfall of
-   * yours. Absent while `GET /api/users/me` is still in flight, which reads as
-   * "nothing attributable to me yet" rather than as "everything is mine".
+   * Who is looking. The headline needs it because the headline is a sentence
+   * about *you*: it filters the transfers it calls settled to the ones that were
+   * yours to make, and names only a shortfall of yours.
+   *
+   * The checklist's **rows** still do not depend on it — every one of them is a
+   * thing somebody can act on, whoever owns the money — but its **wording**
+   * does, because a movement row says whose two accounts the money runs between
+   * and used to say "your own" over a co-member's (decision 25). Absent while
+   * `GET /api/users/me` is still in flight, which reads as "nothing attributable
+   * to me yet" rather than as "everything is mine": no row is dropped, and no
+   * ownership is claimed.
    */
   userId?: string;
   /**
@@ -591,6 +596,42 @@ function derivedTransferItems(entry: NeedsYouAccountInput, month: string): Needs
  */
 const UNNAMED_SENDER = "another account";
 
+/**
+ * Whose accounts a movement runs between, said in the second person.
+ *
+ * The row itself is derived from the **receiving** account's arrivals and is
+ * defensible whoever owns the two ends — the money arrived somewhere the caller
+ * can see, and confirming it is a thing they can do. Only the sentence was
+ * wrong: it said `between your own accounts` over `Bob current → House pot`,
+ * where Bob is a co-member and the pot is the caller's (decision 25, and
+ * `notify.ts:77–78`'s defect on a second surface).
+ *
+ * Ownership, never access: an account shared to you is not an account you own,
+ * which is exactly the distinction the old wording lost. Both ends are needed —
+ * a movement *out of* your account into a co-member's is the same falsehood
+ * with the ends swapped, and reaches this list whenever the destination is
+ * shared with you.
+ *
+ * When either owner is unknown — an older API with no `ownerUserId`, or
+ * `GET /api/users/me` still in flight — no ownership claim is made at all. The
+ * absence reads as "cannot say", never as "yours".
+ */
+function movementEnds(
+  senderOwnerId: string | undefined,
+  receiverOwnerId: string | undefined,
+  userId: string | undefined,
+): string {
+  if (userId === undefined || senderOwnerId === undefined || receiverOwnerId === undefined) {
+    return "between two accounts";
+  }
+  const fromMine = senderOwnerId === userId;
+  const toMine = receiverOwnerId === userId;
+  if (fromMine && toMine) return "between your own accounts";
+  if (toMine) return "arriving from somebody else's account";
+  if (fromMine) return "leaving for somebody else's account";
+  return "between somebody else's accounts";
+}
+
 /** What is still to move on one arrival: what it delivers, less what somebody
  *  has already said moved. */
 const outstandingOf = (a: InflowArrivalDto): number => a.amountMinor - (a.confirmedMinor ?? 0);
@@ -611,15 +652,18 @@ const outstandingOf = (a: InflowArrivalDto): number => a.amountMinor - (a.confir
  * holds a plan for. One authored inflow yields one row however many of the
  * accounts it touches are in the input, so the two ends can never both ask.
  */
-function movementItems(entry: NeedsYouAccountInput, month: string): NeedsYouItem[] {
+function movementItems(
+  entry: NeedsYouAccountInput,
+  month: string,
+  userId: string | undefined,
+): NeedsYouItem[] {
   const { plan } = entry;
   const arrivals = (plan.inflowArrivals ?? []).filter((a) => a.amountMinor > 0);
+  const accountSources = (plan.inflowSources ?? []).filter((s) => s.kind === "account");
   // The sending account's name, for the movements this caller may be told about.
-  const senderName = new Map(
-    (plan.inflowSources ?? [])
-      .filter((s) => s.kind === "account")
-      .map((s) => [s.inflowId, s.accountName]),
-  );
+  const senderName = new Map(accountSources.map((s) => [s.inflowId, s.accountName]));
+  // And whose account it is, which is ungated and is a different question.
+  const senderOwner = new Map(accountSources.map((s) => [s.inflowId, s.ownerUserId]));
 
   const done = arrivals.filter((a) => outstandingOf(a) <= 0).length;
 
@@ -639,8 +683,8 @@ function movementItems(entry: NeedsYouAccountInput, month: string): NeedsYouItem
         amountMinor,
         currency: plan.currency,
         meta: [
-          `between your own accounts · ${formatMonth(month)} · ` +
-            `${done} of ${arrivals.length} done`,
+          `${movementEnds(senderOwner.get(a.inflowId), plan.ownerUserId, userId)} · ` +
+            `${formatMonth(month)} · ${done} of ${arrivals.length} done`,
         ],
         href: `/accounts/${plan.accountId}`,
         action: { kind: "confirmMovement" as const, inflowId: a.inflowId, month, amountMinor },
@@ -807,7 +851,7 @@ export function deriveNeedsYou(input: NeedsYouInput): NeedsYouItem[] {
     // Every account, not just the standalone ones: an account inside a household
     // can also be fed by another account you own, and that movement is nobody
     // else's story — the household's member rows do not know about it.
-    items.push(...movementItems(account, month));
+    items.push(...movementItems(account, month, input.userId));
     items.push(...recordItems(account, month));
     const checkin = checkinItem(account, input.asOfDate, staleAfterDays, upcoming);
     if (checkin) items.push(checkin);

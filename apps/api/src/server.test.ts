@@ -2000,6 +2000,9 @@ describe("api service", () => {
         kind: "account",
         inflowId: movement.id,
         fromAccountId: current.id,
+        // Ungated, and here it happens to be the caller: the row is what lets a
+        // screen say "between your own accounts" and mean it (decision 25).
+        ownerUserId: user.id,
         accountName: "current",
         amountMinor: 20000,
         confirmedMinor: 20000,
@@ -4117,17 +4120,25 @@ describe("inflows over HTTP", () => {
       },
     ]);
     // The id of an account I cannot see travels; its *name* does not, here or
-    // on the plan.
+    // on the plan. Its **owner** travels too, and this is the case that decides
+    // the wording: the sender is Bob's, so a screen drawing this arrival must
+    // not call it money moving between accounts of mine (decision 25). An owner
+    // id is not a name — the gate has only ever been on names.
     expect(JSON.stringify(row)).not.toContain("bob-current");
     expect(plan.inflowSources).toEqual([
       {
         kind: "account",
         inflowId: movement.id,
         fromAccountId: bobCurrent.id,
+        ownerUserId: bob.id,
         amountMinor: 20000,
         confirmedMinor: 0,
       },
     ]);
+    expect(plan.inflowSources[0]).not.toHaveProperty("accountName");
+    // And the plan says whose account the money arrived *in*, which is the
+    // other half of the same question.
+    expect(plan.ownerUserId).toBe(me.id);
 
     // Omitted, not sent empty, on the ordinary account nothing moves into.
     const other = rows.find((r: { accountId: string }) => r.accountId === quiet.id);
