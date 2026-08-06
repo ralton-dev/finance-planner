@@ -735,7 +735,10 @@ function incomeExplanation(income: IncomeInput, monthlyMinor: number): string {
   }
 }
 
-function paymentExplanation(p: PaymentInput, req: ReturnType<typeof requiredMonthlyForPayment>): string {
+function paymentExplanation(
+  p: PaymentInput,
+  req: ReturnType<typeof requiredMonthlyForPayment>,
+): string {
   const alreadySaved = p.alreadySavedMinor ?? 0;
   const remaining = Math.max(0, p.amountMinor - alreadySaved);
   const cap = contributionCapMinor(p);
@@ -1637,7 +1640,8 @@ function renderScopeDebugReport(
     }
 
     out.push("", "Phase 2b - destination account self-funding");
-    if (trace.selfFundingSteps.length === 0) out.push("- no destination account income covered its own obligations");
+    if (trace.selfFundingSteps.length === 0)
+      out.push("- no destination account income covered its own obligations");
     for (const step of trace.selfFundingSteps) {
       const target = step.kind === "payment" ? (step.paymentName ?? "payment") : "buffer reserve";
       out.push(
@@ -1688,7 +1692,8 @@ function renderScopeDebugReport(
     }
 
     out.push("", "Phase 3d - derived transfers leaving source accounts");
-    if (trace.transferOutSplits.length === 0) out.push("- no derived transfer leaves a source account");
+    if (trace.transferOutSplits.length === 0)
+      out.push("- no derived transfer leaves a source account");
     for (const split of trace.transferOutSplits) {
       out.push(
         `- ${accountLabel(split.accountId)} sends derived transfers totalling ${moneyMinor(trace.currency, split.transferOutMinor)}`,
@@ -1698,7 +1703,9 @@ function renderScopeDebugReport(
     }
 
     out.push("", "Phase 4 - authored savings movements");
-    out.push(`graph order: ${trace.savings.order.length ? trace.savings.order.map(accountLabel).join(" -> ") : "none"}`);
+    out.push(
+      `graph order: ${trace.savings.order.length ? trace.savings.order.map(accountLabel).join(" -> ") : "none"}`,
+    );
     if (trace.savings.edges.length === 0) out.push("graph edges: none");
     for (const edge of trace.savings.edges) {
       out.push(
@@ -1763,8 +1770,12 @@ function renderScopeDebugReport(
           );
         }
       }
-      const transfersIn = (partition?.transfers ?? []).filter((t) => t.toAccountId === account.accountId);
-      const transfersOut = (partition?.transfers ?? []).filter((t) => t.fromAccountId === account.accountId);
+      const transfersIn = (partition?.transfers ?? []).filter(
+        (t) => t.toAccountId === account.accountId,
+      );
+      const transfersOut = (partition?.transfers ?? []).filter(
+        (t) => t.fromAccountId === account.accountId,
+      );
       for (const transfer of transfersIn) {
         out.push(
           `  derived transfer in from ${accountLabel(transfer.fromAccountId)} for ${memberLabel(transfer.memberUserId)}: ${moneyMinor(trace.currency, transfer.amountMinor)} confirmed ${moneyMinor(trace.currency, transfer.confirmedMinor)}`,

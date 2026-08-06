@@ -43,7 +43,8 @@ export async function seedDemoData(
   asOfDate: string,
 ): Promise<DemoSeedCounts> {
   const existingHouseholds = await store.listHouseholdsForUser(userId);
-  const household = existingHouseholds[0] ?? (await store.createHousehold("Demo Household", userId));
+  const household =
+    existingHouseholds[0] ?? (await store.createHousehold("Demo Household", userId));
   const createdHousehold = existingHouseholds.length === 0;
   const partnerEmail = `demo-partner-${userId}@example.com`;
   const existingPartner = await store.getUserByEmail(partnerEmail);

@@ -1685,7 +1685,9 @@ describe("computeScopePlan — the shape of the answer", () => {
             role: "personal",
             memberUserId: "owner",
             incomes: income(100_000),
-            outboundInflows: [{ ...leaving("sweep", 30_000, "savings", 20), name: "Savings sweep" }],
+            outboundInflows: [
+              { ...leaving("sweep", 30_000, "savings", 20), name: "Savings sweep" },
+            ],
           }),
           acc({
             accountId: "bills",

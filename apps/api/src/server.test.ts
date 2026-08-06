@@ -5764,9 +5764,7 @@ describe("meta + demo seed", () => {
       kind: "household",
       householdId: household!.id,
     });
-    expect(householdDebug.json().scopes[0].labels.households[household!.id]).toBe(
-      "Demo Household",
-    );
+    expect(householdDebug.json().scopes[0].labels.households[household!.id]).toBe("Demo Household");
 
     // Second run refuses: the account is no longer empty.
     const again = await app.inject({ method: "POST", url: "/api/demo/seed", headers: auth });

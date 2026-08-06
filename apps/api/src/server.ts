@@ -912,7 +912,9 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       householdId: scope.plan.householdId,
       accountIds: scope.accountIds,
       labels: {
-        accounts: Object.fromEntries(scope.input.accounts.map((a) => [a.accountId, a.name ?? "account"])),
+        accounts: Object.fromEntries(
+          scope.input.accounts.map((a) => [a.accountId, a.name ?? "account"]),
+        ),
         users: Object.fromEntries(
           scope.input.members.map((m) => [m.userId, m.displayName ?? "user"]),
         ),

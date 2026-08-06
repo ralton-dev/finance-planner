@@ -20,7 +20,12 @@ function shortId(id: string): string {
   return id.length > 12 ? id.slice(0, 8) : id;
 }
 
-function labelId(id: string, labels: Record<string, string>, fallback: string, includeId = false): string {
+function labelId(
+  id: string,
+  labels: Record<string, string>,
+  fallback: string,
+  includeId = false,
+): string {
   const name = labels[id];
   if (!name) return includeId ? `${fallback} ${shortId(id)}` : fallback;
   return includeId ? `${name} [${id}]` : name;
@@ -46,11 +51,18 @@ function subjectLabel(data: PlanDebugDto, labels = collectLabels(data)): string 
 }
 
 function isAccountIdKey(key?: string): boolean {
-  return key === "accountId" || key === "fromAccountId" || key === "toAccountId" || key === "sourceAccountId";
+  return (
+    key === "accountId" ||
+    key === "fromAccountId" ||
+    key === "toAccountId" ||
+    key === "sourceAccountId"
+  );
 }
 
 function isUserIdKey(key?: string): boolean {
-  return key === "userId" || key === "memberUserId" || key === "ownerUserId" || key === "bearerUserId";
+  return (
+    key === "userId" || key === "memberUserId" || key === "ownerUserId" || key === "bearerUserId"
+  );
 }
 
 interface TraceEntityLabels {
@@ -100,7 +112,9 @@ function labelTraceIds(
   if (Array.isArray(value)) {
     if (key === "accountIds") {
       return value.map((item) =>
-        typeof item === "string" ? accountLabel(item, labels) : labelTraceIds(item, labels, entities),
+        typeof item === "string"
+          ? accountLabel(item, labels)
+          : labelTraceIds(item, labels, entities),
       );
     }
     if (key === "inflowIds") {
@@ -121,7 +135,8 @@ function labelTraceIds(
   if (typeof value !== "string") return value;
   if (isAccountIdKey(key)) return accountLabel(value, labels);
   if (isUserIdKey(key)) return labelId(value, labels.users, "user");
-  if (key === "householdId") return labels.households[value] ? householdLabel(value, labels) : "household";
+  if (key === "householdId")
+    return labels.households[value] ? householdLabel(value, labels) : "household";
   if (key === "scopeId") return "scope";
   if (key === "incomeId") return entityLabel(value, entities.incomes, "income");
   if (key === "inflowId") return entityLabel(value, entities.movements, "movement");
@@ -199,7 +214,11 @@ function lineClass(line: string): string {
   ) {
     return "debug-line debug-line-heading";
   }
-  if (trimmed.startsWith("scope:") || trimmed.startsWith("household:") || trimmed.startsWith("as of:")) {
+  if (
+    trimmed.startsWith("scope:") ||
+    trimmed.startsWith("household:") ||
+    trimmed.startsWith("as of:")
+  ) {
     return "debug-line debug-line-meta";
   }
   if (trimmed.startsWith("#")) return "debug-line debug-line-step";
@@ -353,8 +372,8 @@ export function DebugPlanPage() {
               <div className="section-head">
                 <h2>{title}</h2>
                 <span className="meta">
-                  {scope.accountIds.length} {scope.accountIds.length === 1 ? "account" : "accounts"} ·{" "}
-                  {scope.accountIds.map((id) => accountLabel(id, scope.labels)).join(", ")}
+                  {scope.accountIds.length} {scope.accountIds.length === 1 ? "account" : "accounts"}{" "}
+                  · {scope.accountIds.map((id) => accountLabel(id, scope.labels)).join(", ")}
                 </span>
               </div>
               <DebugReport report={scope.report} />
