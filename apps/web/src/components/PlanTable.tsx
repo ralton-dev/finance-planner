@@ -395,13 +395,14 @@ export function inflowNote(plan: AccountPlanDto): Phrase | null {
  * callers, not three rules.
  */
 export interface LeftOverLike {
+  availableLeftoverMinor?: number;
   residualMinor?: number;
   leftoverMinor: number;
   monthlyIncomeMinor: number;
 }
 
 /**
- * What LEFT OVER shows, and why it is not `leftoverMinor`.
+ * What LEFT OVER shows, and why it is not raw `leftoverMinor`.
  *
  * Measured in a browser at 1280px: this KPI read **£2,625.80** for an account
  * whose household page and flow diagram both read **£1,822.60** — the same
@@ -409,12 +410,11 @@ export interface LeftOverLike {
  * ONE-ENGINE.md exists to end, surviving in the last place it could: the page
  * that prints the plan's own field rather than what is left in the account.
  *
- * `residualMinor` is `income + arriving − spending − leaving`, signed, and it is
- * the one figure the pass publishes for all three surfaces (decision 19).
- * `leftoverMinor` keeps its meaning on the wire and is the right answer for a
- * *rollup*; it is the wrong one for a person looking at one account, which is
- * how the accounts index and the dashboard came to print £2,501.00 and £0.00
- * for accounts whose own pages read £2,051.00 and £200.00 (MINE-AND-OURS.md).
+ * `availableLeftoverMinor` is the user-facing figure: it excludes authored
+ * savings arrivals, because money saved into a pot is reserved there, not free
+ * there. `residualMinor` is the signed flow residual (`income + arriving −
+ * spending − leaving`) and remains the fallback for older payloads and graph
+ * reconciliation.
  *
  * **Every surface that prints an account's left over calls this**, so a fourth
  * one cannot be added wrong — the account page's KPI, the accounts index and
@@ -425,7 +425,7 @@ export interface LeftOverLike {
  * one and it is gone.
  */
 export function leftOverMinor(plan: LeftOverLike): number | null {
-  const residual = plan.residualMinor ?? plan.leftoverMinor;
+  const residual = plan.availableLeftoverMinor ?? plan.residualMinor ?? plan.leftoverMinor;
   if (residual === 0 && plan.monthlyIncomeMinor === 0) return null;
   return residual;
 }

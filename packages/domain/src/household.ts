@@ -376,11 +376,10 @@ export function householdPlanFromScope(
       transferInMinor: a.transferInMinor,
       transferOutMinor: a.transferOutMinor,
       movementInMinor: a.movementInMinor,
-      // The pass's residual is already net of the savings leaving; adding the
-      // committed total back gives the field its historical meaning, and the two
-      // are published side by side rather than one being derived from the other
-      // by whoever reads them.
-      leftoverMinor: a.leftoverMinor + a.committedMinor,
+      // Keep the wire's historical pre-commit shape for account rows, but base
+      // it on available money: authored savings that arrived here are reserved,
+      // not left over.
+      leftoverMinor: a.availableLeftoverMinor + a.committedMinor,
       committedMinor: a.committedMinor,
       shortfallMinor: a.shortfallMinor,
     }));

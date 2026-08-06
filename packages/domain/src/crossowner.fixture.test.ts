@@ -95,19 +95,16 @@ describe("the cross-owner fixture: a co-member's money parked in your account", 
       CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
       "GBP",
     );
-    // The old basis: `residual + committed`, summed over the roster
-    // (`household.ts:340`, and the page subtracts `committedMinor` back off it).
-    // Bob's £400 is added back into his row **and** counted again in the pot's,
-    // so the roster reads £3,300.
-    expect(household.householdLeftoverMinor).toBe(330_000);
-    expect(household.householdLeftoverMinor - household.committedMinor).toBe(290_000);
-    // The ownership basis: Σ residual over the accounts each member owns, which
-    // is every pound of external income (£3,500) less every pound spent (£600).
+    // The household rows are pre-commit: Bob's current account still shows the
+    // £400 that is promised to the pot. The free figure subtracts it back out.
+    expect(household.householdLeftoverMinor).toBe(290_000);
+    expect(household.householdLeftoverMinor - household.committedMinor).toBe(250_000);
+    // The ownership basis: Σ available money over the accounts each member owns.
     const owned = (userId: string) =>
-      gbp.accounts.filter((a) => a.ownerUserId === userId).reduce((s, a) => s + a.leftoverMinor, 0);
-    expect(owned("u-alice") + owned("u-bob")).toBe(290_000);
-    // £400 apart at the account altitude, which no assertion on the estate
-    // fixture can produce: there, both bases read £4,025.
+      gbp.accounts
+        .filter((a) => a.ownerUserId === userId)
+        .reduce((s, a) => s + a.availableLeftoverMinor, 0);
+    expect(owned("u-alice") + owned("u-bob")).toBe(250_000);
     expect(household.householdLeftoverMinor - (owned("u-alice") + owned("u-bob"))).toBe(40_000);
   });
 });

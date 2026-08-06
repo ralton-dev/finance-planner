@@ -5,7 +5,12 @@ import {
   type PaymentScope,
 } from "@finance-planner/contracts";
 import { parseISODate } from "./dates.js";
-import { contributionCapMinor, monthlyIncomeMinor, requiredMonthlyForPayment } from "./engine.js";
+import {
+  contributionCapMinor,
+  monthlyIncomeMinor,
+  monthlyMovementMinor,
+  requiredMonthlyForPayment,
+} from "./engine.js";
 import {
   buildFundingEdges,
   orderAccounts,
@@ -335,6 +340,14 @@ export interface ScopeAccountPlan {
    * (decision 11) and have to consolidate first. Flooring it would hide that.
    */
   leftoverMinor: number;
+  /**
+   * What is available after the month, excluding authored movement arrivals.
+   *
+   * `leftoverMinor` above is the flow residual and includes money parked here
+   * by a savings movement so a node can balance. This one is the user-facing
+   * "left over": money committed into a pot is reserved there, not spendable.
+   */
+  availableLeftoverMinor: number;
   shortfallMinor: number;
   /** What each authored movement delivered here. Empty when none did. */
   inflowArrivals: InflowArrival[];
@@ -1480,6 +1493,7 @@ function planCurrency(
     const fout = fundedOutflow.get(acc.accountId)!;
     const rout = requiredOutflow.get(acc.accountId)!;
     const committed = committedByAccount.get(acc.accountId)!;
+    const committedFromAvailable = savings.committedFromAvailableByAccount.get(acc.accountId)!;
     const arrivals = savings.arrivalsFor.get(acc.accountId) ?? [];
     return {
       accountId: acc.accountId,
@@ -1501,6 +1515,7 @@ function planCurrency(
         confirmedIn.get(acc.accountId)! + arrivals.reduce((s, a) => s + (a.confirmedMinor ?? 0), 0),
       ownLeftoverMinor: ownLeftover.get(acc.accountId)!,
       leftoverMinor: income + tin + min - fout - tout - committed,
+      availableLeftoverMinor: income + tin - fout - tout - committedFromAvailable,
       shortfallMinor: Math.max(0, rout - fout),
       inflowArrivals: arrivals,
       fundingCycleAccountIds: savings.cycleFor.get(acc.accountId),
@@ -1753,10 +1768,17 @@ function renderScopeDebugReport(
 
     out.push("", "Per account final breakdown");
     for (const account of partition?.accounts ?? []) {
+      const authoredFromAvailable =
+        account.monthlyIncomeMinor +
+        account.transferInMinor -
+        account.fundedOutflowMinor -
+        account.transferOutMinor -
+        account.availableLeftoverMinor;
       out.push(
         `- ${accountLabel(account.accountId)}`,
-        `  income ${moneyMinor(trace.currency, account.monthlyIncomeMinor)} + derived in ${moneyMinor(trace.currency, account.transferInMinor)} + movement in ${moneyMinor(trace.currency, account.movementInMinor)} - expenses funded ${moneyMinor(trace.currency, account.fundedOutflowMinor)} - derived out ${moneyMinor(trace.currency, account.transferOutMinor)} - authored out ${moneyMinor(trace.currency, account.committedMinor)} = residual ${moneyMinor(trace.currency, account.leftoverMinor)}`,
-        `  own leftover before authored savings: ${moneyMinor(trace.currency, account.ownLeftoverMinor)}; shortfall ${moneyMinor(trace.currency, account.shortfallMinor)}; confirmed arriving ${moneyMinor(trace.currency, account.confirmedInflowMinor)}`,
+        `  available left over: income ${moneyMinor(trace.currency, account.monthlyIncomeMinor)} + derived in ${moneyMinor(trace.currency, account.transferInMinor)} - expenses funded ${moneyMinor(trace.currency, account.fundedOutflowMinor)} - derived out ${moneyMinor(trace.currency, account.transferOutMinor)} - authored savings from available money ${moneyMinor(trace.currency, authoredFromAvailable)} = ${moneyMinor(trace.currency, account.availableLeftoverMinor)}`,
+        `  flow residual: income ${moneyMinor(trace.currency, account.monthlyIncomeMinor)} + derived in ${moneyMinor(trace.currency, account.transferInMinor)} + movement in ${moneyMinor(trace.currency, account.movementInMinor)} - expenses funded ${moneyMinor(trace.currency, account.fundedOutflowMinor)} - derived out ${moneyMinor(trace.currency, account.transferOutMinor)} - authored out ${moneyMinor(trace.currency, account.committedMinor)} = ${moneyMinor(trace.currency, account.leftoverMinor)}`,
+        `  movement in ${moneyMinor(trace.currency, account.movementInMinor)} is reserved/saved money, not counted as available left over; shortfall ${moneyMinor(trace.currency, account.shortfallMinor)}; confirmed arriving ${moneyMinor(trace.currency, account.confirmedInflowMinor)}`,
       );
       const lines = (partition?.lines ?? []).filter((l) => l.accountId === account.accountId);
       if (lines.length === 0) out.push("  expenses: none");
@@ -1970,7 +1992,7 @@ export function leftoverForUser(plan: ScopePlan, userId: string): UserLeftover[]
     for (const account of partition.accounts) {
       if (account.ownerUserId !== userId) continue;
       owned.add(account.accountId);
-      leftoverMinor += account.leftoverMinor;
+      leftoverMinor += account.availableLeftoverMinor;
       shortfallMinor += account.shortfallMinor;
     }
     leftovers.push({
@@ -2008,6 +2030,7 @@ interface SavingsResult {
   arrivalsFor: Map<string, InflowArrival[]>;
   cycleFor: Map<string, string[]>;
   brokenFor: Map<string, string>;
+  committedFromAvailableByAccount: Map<string, number>;
 }
 
 /**
@@ -2032,7 +2055,7 @@ function planSavings(pass: SavingsPass): SavingsResult {
       fromAccountId: edge.from,
       toAccountId: edge.to,
       priority: edge.priority,
-      requestedMinor: Math.max(0, monthlyIncomeMinor(edge.row, now)),
+      requestedMinor: Math.max(0, monthlyMovementMinor(edge.row, now)),
     }));
     debug.order = order;
     debug.cycles = cycles;
@@ -2057,6 +2080,7 @@ function planSavings(pass: SavingsPass): SavingsResult {
 
   const arrivalsFor = new Map<string, InflowArrival[]>();
   const movements: ScopeMovement[] = [];
+  const committedFromAvailableByAccount = tally(accounts);
 
   for (const accountId of order) {
     const account = byId.get(accountId)!;
@@ -2083,8 +2107,9 @@ function planSavings(pass: SavingsPass): SavingsResult {
     // it can never pay for an expense, because every expense was funded in phase
     // 2 from member budgets. Savings money stays savings money (decision 8).
     let own = Math.max(0, ownPool.get(accountId)!);
-    let inflow =
-      Math.max(0, inflowPool.get(accountId)!) + arrivals.reduce((sum, a) => sum + a.amountMinor, 0);
+    let spendableInflow = Math.max(0, inflowPool.get(accountId)!);
+    let reservedInflow = arrivals.reduce((sum, a) => sum + a.amountMinor, 0);
+    let inflow = spendableInflow + reservedInflow;
     const accountDebug: SavingsAccountDebugTrace | null = debug
       ? {
           accountId,
@@ -2106,7 +2131,7 @@ function planSavings(pass: SavingsPass): SavingsResult {
     // leave, and it has to keep its place in the queue or the movements behind it
     // would be funded with money already spoken for.
     for (const edge of outByAccount.get(accountId) ?? []) {
-      const requested = Math.max(0, monthlyIncomeMinor(edge.row, now));
+      const requested = Math.max(0, monthlyMovementMinor(edge.row, now));
       if (broken.has(edge.inflowId)) {
         accountDebug?.movements.push({
           rank: accountDebug.movements.length + 1,
@@ -2144,9 +2169,20 @@ function planSavings(pass: SavingsPass): SavingsResult {
       const inflowBefore = inflow;
       const fromOwn = Math.min(requested, own);
       own -= fromOwn;
-      const fromInflow = Math.min(requested - fromOwn, inflow);
-      inflow -= fromInflow;
+      const remainingAfterOwn = requested - fromOwn;
+      const fromSpendableInflow = Math.min(remainingAfterOwn, spendableInflow);
+      spendableInflow -= fromSpendableInflow;
+      const fromReservedInflow = Math.min(remainingAfterOwn - fromSpendableInflow, reservedInflow);
+      reservedInflow -= fromReservedInflow;
+      const fromInflow = fromSpendableInflow + fromReservedInflow;
+      inflow = spendableInflow + reservedInflow;
       const funded = fromOwn + fromInflow;
+      if (fromOwn + fromSpendableInflow > 0) {
+        committedFromAvailableByAccount.set(
+          accountId,
+          committedFromAvailableByAccount.get(accountId)! + fromOwn + fromSpendableInflow,
+        );
+      }
       const deliveredToPartition = funded > 0 && inPartition.has(edge.to);
       if (funded > 0 && inPartition.has(edge.to)) {
         const list = arrivalsFor.get(edge.to) ?? [];
@@ -2210,7 +2246,7 @@ function planSavings(pass: SavingsPass): SavingsResult {
         toAccountId: account.accountId,
         currency,
         priority: row.priority ?? DEFAULT_PRIORITY,
-        requestedMinor: Math.max(0, monthlyIncomeMinor(row, now)),
+        requestedMinor: Math.max(0, monthlyMovementMinor(row, now)),
         fundedMinor: 0,
         fundedFromOwnMinor: 0,
         fundedFromInflowMinor: 0,
@@ -2249,5 +2285,6 @@ function planSavings(pass: SavingsPass): SavingsResult {
     arrivalsFor,
     cycleFor,
     brokenFor,
+    committedFromAvailableByAccount,
   };
 }

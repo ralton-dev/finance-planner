@@ -932,6 +932,8 @@ describe("computeScopePlan — expenses beat savings, whatever the numbers say",
       ["b", 150_000],
     ]);
     expect(p.movements[1]).toMatchObject({ fundedFromOwnMinor: 0, fundedFromInflowMinor: 150_000 });
+    expect(accountOf(p, "pot").availableLeftoverMinor).toBe(0);
+    expect(accountOf(p, "isa").availableLeftoverMinor).toBe(0);
     expect(accountOf(p, "isa").inflowArrivals).toEqual([
       { inflowId: "b", fromAccountId: "pot", amountMinor: 150_000, confirmedMinor: 0 },
     ]);
@@ -1306,6 +1308,42 @@ describe("computeScopePlan — a savings loop is named and broken, not deadlocke
       }),
     );
     expect(p.movements[0]).toMatchObject({ requestedMinor: 10_000, fundedMinor: 10_000 });
+  });
+
+  it("keeps a one-off movement active through its calendar month", () => {
+    const p = only(
+      computeScopePlan(
+        scope({
+          accounts: [
+            acc({
+              accountId: "current",
+              role: "personal",
+              memberUserId: "owner",
+              incomes: income(300_000),
+              outboundInflows: [
+                {
+                  ...leaving("flex-payment", 201_500, "flex"),
+                  frequency: "one_off",
+                  anchorDate: "2026-08-05",
+                },
+              ],
+            }),
+            acc({ accountId: "flex", role: "personal", memberUserId: "owner" }),
+          ],
+        }),
+        "2026-08-06",
+      ),
+    );
+
+    expect(p.movements[0]).toMatchObject({
+      requestedMinor: 201_500,
+      fundedMinor: 201_500,
+    });
+    expect(accountOf(p, "current").leftoverMinor).toBe(98_500);
+    expect(accountOf(p, "current").availableLeftoverMinor).toBe(98_500);
+    expect(accountOf(p, "flex").movementInMinor).toBe(201_500);
+    expect(accountOf(p, "flex").leftoverMinor).toBe(201_500);
+    expect(accountOf(p, "flex").availableLeftoverMinor).toBe(0);
   });
 });
 

@@ -50,9 +50,10 @@ import { computeScopePlan, leftoverForUser } from "./scope.js";
  *
  * | altitude                              | GBP                     |
  * | ------------------------------------- | ----------------------- |
- * | Alice — Σ over accounts she owns      | **£2,501.00** (250_100) |
+ * | Alice — Σ over available account money | **£2,051.00** (205_100) |
  * | Bob — Σ over accounts he owns         | **£1,524.00** (152_400) |
- * | the household — their sum             | **£4,025.00** (402_500) |
+ * | the household — their sum             | **£3,575.00** (357_500) |
+ * | household rows before commitments     | **£4,025.00** (402_500) |
  * | what the household page prints today  | **£3,575.00** (357_500) |
  *
  * The £450 between the last two is three funded authored savings movements
@@ -87,7 +88,7 @@ describe("mine, and ours — one derivation at three altitudes", () => {
     // Alice owns six of the eight GBP accounts, including the shared house pot
     // (decision 15: a shared pot is still somebody's account) and the bills pot
     // the household never assigned.
-    expect(gbp("u-alice").leftoverMinor).toBe(250_100);
+    expect(gbp("u-alice").leftoverMinor).toBe(205_100);
     expect(gbp("u-bob").leftoverMinor).toBe(152_400);
   });
 
@@ -110,35 +111,29 @@ describe("mine, and ours — one derivation at three altitudes", () => {
     // €680.00 are two answers, never one (decision 10, decision 14).
     expect(leftoverForUser(plan, "u-alice")).toEqual([
       { currency: "EUR", leftoverMinor: 68_000, shortfallMinor: 0, paymentCount: 1 },
-      { currency: "GBP", leftoverMinor: 250_100, shortfallMinor: 0, paymentCount: 4 },
+      { currency: "GBP", leftoverMinor: 205_100, shortfallMinor: 0, paymentCount: 4 },
     ]);
     // And the household, denominated in one currency, never sees the other.
     expect(household.currency).toBe("GBP");
-    expect(household.membersLeftoverMinor).toBe(402_500);
+    expect(household.membersLeftoverMinor).toBe(357_500);
   });
 
   it("a household's left over is its members', added up", () => {
     expect(household.members.map((m) => [m.userId, m.personalLeftoverMinor])).toEqual([
-      ["u-alice", 250_100],
+      ["u-alice", 205_100],
       ["u-bob", 152_400],
     ]);
-    expect(household.membersLeftoverMinor).toBe(402_500);
+    expect(household.membersLeftoverMinor).toBe(357_500);
     expect(household.membersLeftoverMinor).toBe(
       gbp("u-alice").leftoverMinor + gbp("u-bob").leftoverMinor,
     );
   });
 
-  it("still reads £3,575.00 the old way, which is the £450 this work is about", () => {
-    // `householdFreeMinor` verbatim (`apps/web/src/components/HouseholdPlanView.tsx:64`),
-    // which the domain cannot import. It holds today and holds permanently:
-    // decision 19 changes no existing field's meaning, so the only thing that
-    // can move this figure is the page reading a different one (WP-AG).
+  it("reads the same free total after committed savings are removed", () => {
     expect(household.householdLeftoverMinor).toBe(402_500);
     expect(household.committedMinor).toBe(45_000);
     expect(household.householdLeftoverMinor - household.committedMinor).toBe(357_500);
-    expect(household.membersLeftoverMinor - (household.householdLeftoverMinor - 45_000)).toBe(
-      45_000,
-    );
+    expect(household.membersLeftoverMinor).toBe(household.householdLeftoverMinor - 45_000);
   });
 
   it("does not move an existing field to get there", () => {
@@ -203,31 +198,33 @@ describe("mine, and ours — a co-member's money parked in your account", () => 
   it("counts the money where it is, and says so", () => {
     // £1,700 in her current account and £400 in the pot — all £400 of it Bob's,
     // and all £400 of it in an account of hers. See the note above.
-    expect(gbp("u-alice").leftoverMinor).toBe(210_000);
+    expect(gbp("u-alice").leftoverMinor).toBe(170_000);
     // Bob's £400 has left him, and his figure is £400 lighter for it.
     expect(gbp("u-bob").leftoverMinor).toBe(80_000);
     const pot = plan.accounts.find((a) => a.accountId === "acc-x-house-pot")!;
     expect(pot.ownerUserId).toBe("u-alice");
     expect(pot.movementInMinor).toBe(40_000);
     expect(pot.leftoverMinor).toBe(40_000);
+    expect(pot.availableLeftoverMinor).toBe(0);
   });
 
   it("counts it once at the household altitude, whichever way it is read", () => {
     expect(household.members.map((m) => [m.userId, m.personalLeftoverMinor])).toEqual([
-      ["u-alice", 210_000],
+      ["u-alice", 170_000],
       ["u-bob", 80_000],
     ]);
-    expect(household.membersLeftoverMinor).toBe(290_000);
-    // £3,500 of external income less £600 spent. Attributing the £400 back to
-    // Bob would move it from one row to the other and leave this untouched.
-    expect(household.monthlyIncomeMinor - household.totalFundedMinor).toBe(290_000);
+    expect(household.membersLeftoverMinor).toBe(250_000);
+    // £3,500 of external income less £600 spent and less Bob's £400 saved into
+    // Alice's pot.
+    expect(
+      household.monthlyIncomeMinor - household.totalFundedMinor - household.committedMinor,
+    ).toBe(250_000);
   });
 
   it("is the fixture the estate cannot be: the two bases disagree here", () => {
-    // The old roster basis — `residual + committed` over the roster, which is
-    // what `householdLeftoverMinor` is — adds Bob's £400 back into his row and
-    // counts it again in the pot's. £3,300 against £2,900.
-    expect(household.householdLeftoverMinor).toBe(330_000);
+    // The pre-commit household row still includes Bob's £400 on his sending row.
+    // Subtracting `committedMinor` gives the same £2,500 member-free total.
+    expect(household.householdLeftoverMinor).toBe(290_000);
     expect(household.householdLeftoverMinor - household.membersLeftoverMinor).toBe(40_000);
     // And the per-person figures diverge with it, which is what an
     // implementation wired to the roster gets wrong while passing every estate
@@ -242,7 +239,7 @@ describe("mine, and ours — a co-member's money parked in your account", () => 
     // Decision 24. The pot's one bill is on an account Alice owns, so it is on
     // her payment count; Bob pays for half of it and it is not on his.
     expect(leftoverForUser(plan, "u-alice")).toEqual([
-      { currency: "GBP", leftoverMinor: 210_000, shortfallMinor: 0, paymentCount: 1 },
+      { currency: "GBP", leftoverMinor: 170_000, shortfallMinor: 0, paymentCount: 1 },
     ]);
     expect(leftoverForUser(plan, "u-bob")).toEqual([
       { currency: "GBP", leftoverMinor: 80_000, shortfallMinor: 0, paymentCount: 0 },

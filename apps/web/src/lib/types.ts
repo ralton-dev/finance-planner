@@ -408,17 +408,16 @@ export interface AccountPlanDto {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /** User-facing left over: free after authored savings movements. */
+  availableLeftoverMinor?: number;
   /**
    * What is actually left in the account once the month's flows have happened:
    *
    *     income + arriving − spending − leaving
    *
-   * The one number the account page, the household page and the flow diagram all
-   * print (ONE-ENGINE.md). `leftoverMinor` above is deliberately a *different*
-   * figure and keeps its meaning (decision 13): the account's own income after
-   * its own obligations, which is the right answer for a rollup and the wrong
-   * one for a picture, because summing residuals counts a transferred pound at
-   * both ends.
+   * The flow/accounting residual, kept so the graph can reconcile. It can include
+   * authored savings that arrived here, so user-facing left-over labels prefer
+   * `availableLeftoverMinor`.
    *
    * **Signed.** Negative means more is committed to leave this account than
    * reaches it, which happens when a member holds income in a personal account
@@ -595,16 +594,15 @@ export interface OverviewAccountDto {
    */
   ownerUserId?: string;
   leftoverMinor: number;
+  /** User-facing left over: free after authored savings movements. */
+  availableLeftoverMinor?: number;
   /**
    * What is actually in the account when the month has happened:
    * `income + arriving − spending − leaving`, signed.
    *
-   * The figure every surface prints under a LEFT OVER label, through
-   * {@link leftOverMinor} in `components/PlanTable.tsx`. `leftoverMinor` above
-   * keeps its meaning on the wire to the penny and is the right answer for a
-   * *rollup* — it is deliberately before savings movements leave and excludes
-   * money that arrived, which is why a savings pot read £0.00 on two lists and
-   * £200.00 on its own page (MINE-AND-OURS.md).
+   * The flow/accounting residual. A savings arrival can make this positive even
+   * though the money is reserved, so LEFT OVER labels prefer
+   * `availableLeftoverMinor`.
    */
   residualMinor?: number;
   shortfallMinor: number;
@@ -985,6 +983,8 @@ export interface MonthProjectionDto {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /** User-facing left over: free after authored savings movements. */
+  availableLeftoverMinor?: number;
   /**
    * What is in the account at the end of this projected month — the month's own
    * `residualMinor`, passed through by the pass.

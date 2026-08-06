@@ -20,8 +20,13 @@ import type {
   TransferDeparture,
 } from "./types.js";
 
+type MonthlyAmountInput = Pick<
+  IncomeInput,
+  "amountMinor" | "frequency" | "recurrence" | "anchorDate" | "active"
+>;
+
 /** Normalise a single income to its equivalent monthly amount (minor units). */
-export function monthlyIncomeMinor(income: IncomeInput, now: Date): number {
+export function monthlyIncomeMinor(income: MonthlyAmountInput, now: Date): number {
   if (income.active === false) return 0;
   switch (income.frequency) {
     case "monthly":
@@ -39,6 +44,21 @@ export function monthlyIncomeMinor(income: IncomeInput, now: Date): number {
       return Math.round(income.amountMinor / monthsUntil(now, anchor));
     }
   }
+}
+
+/** Normalise an authored account movement to what it reserves this month. */
+export function monthlyMovementMinor(movement: MonthlyAmountInput, now: Date): number {
+  if (movement.active === false) return 0;
+  if (movement.frequency === "one_off") {
+    const anchor = parseISODate(movement.anchorDate);
+    if (
+      anchor.getUTCFullYear() === now.getUTCFullYear() &&
+      anchor.getUTCMonth() === now.getUTCMonth()
+    ) {
+      return movement.amountMinor;
+    }
+  }
+  return monthlyIncomeMinor(movement, now);
 }
 
 function resolveRecurrence(p: PaymentInput): Recurrence | null {
@@ -364,6 +384,7 @@ export function accountPlanFromScope(
     // The signed residual, so the account page, the household page and the flow
     // diagram print one number rather than three derivations of it.
     residualMinor: account.leftoverMinor,
+    availableLeftoverMinor: account.availableLeftoverMinor,
     shortfallMinor: account.shortfallMinor,
     inflowArrivals: account.inflowArrivals,
     outboundInflowMinor: account.committedMinor,
@@ -390,6 +411,7 @@ export interface AccountSummary {
    */
   ownerUserId: string;
   leftoverMinor: number;
+  availableLeftoverMinor: number;
   /**
    * What is actually in the account when the month has happened —
    * `AccountPlan.residualMinor` passed through, signed.
@@ -509,12 +531,13 @@ export function overviewFromPlans(plans: AccountPlan[], asOfDate: string): Overv
     bucket.bufferMinor += plan.bufferMinor;
     bucket.totalRequiredMinor += plan.totalRequiredMinor;
     bucket.totalFundedMinor += plan.totalFundedMinor;
-    bucket.leftoverMinor += plan.leftoverMinor;
+    bucket.leftoverMinor += plan.availableLeftoverMinor;
     bucket.shortfallMinor += plan.shortfallMinor;
     bucket.accounts.push({
       accountId: plan.accountId,
       ownerUserId: plan.ownerUserId,
       leftoverMinor: plan.leftoverMinor,
+      availableLeftoverMinor: plan.availableLeftoverMinor,
       residualMinor: plan.residualMinor,
       shortfallMinor: plan.shortfallMinor,
       atRiskCount: plan.lines.filter((l) => !l.onTrack).length,

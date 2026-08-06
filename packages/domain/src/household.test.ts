@@ -190,18 +190,9 @@ describe("householdPlanFromScope", () => {
     const bills = fed.accounts.find((a) => a.accountId === "bills")!;
     expect(bills.movementInMinor).toBe(20_000);
     // Decision 12: it lands on top of the derived feed as savings, not instead
-    // of it, so the transport is unchanged and the pot simply keeps the £200.
+    // of it, so the transport is unchanged. It is reserved, not free left over.
     expect(bills.transferInMinor).toBe(100_000);
-    expect(bills.leftoverMinor).toBe(20_000);
-    // And the identity the flow page used to invert still holds — it is just
-    // no longer what the picture depends on.
-    expect(
-      bills.leftoverMinor +
-        bills.fundedOutflowMinor +
-        bills.transferOutMinor -
-        bills.monthlyIncomeMinor -
-        bills.transferInMinor,
-    ).toBe(bills.movementInMinor);
+    expect(bills.leftoverMinor).toBe(0);
   });
 });
 
@@ -291,9 +282,10 @@ describe("householdPlanFromScope — the scope is wider than the household", () 
     expect(plan.monthlyIncomeMinor).toBe(500_000);
   });
 
-  it("still counts what arrives from outside it, because the money is there", () => {
+  it("keeps what arrives from outside it reserved, because it was saved there", () => {
     const bills = plan.accounts.find((a) => a.accountId === "bills")!;
-    expect(bills.leftoverMinor).toBe(10_000);
+    expect(bills.movementInMinor).toBe(10_000);
+    expect(bills.leftoverMinor).toBe(0);
     expect(plan.committedMinor).toBe(0);
   });
 
@@ -759,14 +751,12 @@ describe("householdPlanFromScope — a household's left over is its members'", (
       "GBP",
     );
     expect(plan.members.map((m) => [m.userId, m.personalLeftoverMinor])).toEqual([
-      ["u-alice", 250_100],
+      ["u-alice", 205_100],
       ["u-bob", 152_400],
     ]);
-    expect(plan.membersLeftoverMinor).toBe(402_500);
-    // £450 of Alice's figure is in three pots the household never assigned, and
-    // it is the difference between what the page printed and what its members
-    // have. The roster figure happens to agree here — see the next test for the
-    // direction it does not.
+    expect(plan.membersLeftoverMinor).toBe(357_500);
+    // £450 of Alice's raw residual is in three pots the household never assigned.
+    // Those arrivals are savings, so the free/member figure excludes them.
     expect(plan.householdLeftoverMinor).toBe(402_500);
     expect(plan.householdLeftoverMinor - plan.committedMinor).toBe(357_500);
   });
@@ -779,14 +769,15 @@ describe("householdPlanFromScope — a household's left over is its members'", (
       "GBP",
     );
     expect(plan.members.map((m) => [m.userId, m.personalLeftoverMinor])).toEqual([
-      ["u-alice", 210_000],
+      ["u-alice", 170_000],
       ["u-bob", 80_000],
     ]);
-    // Every pound of external income (£3,500) less every pound spent (£600).
-    expect(plan.membersLeftoverMinor).toBe(290_000);
-    // The roster basis adds Bob's £400 back into his row and counts it again in
-    // the pot's, and is £400 over for it.
-    expect(plan.householdLeftoverMinor).toBe(330_000);
+    // Every pound of external income (£3,500) less every pound spent (£600) and
+    // less Bob's £400 saved into Alice's pot.
+    expect(plan.membersLeftoverMinor).toBe(250_000);
+    // The pre-commit household row still contains Bob's £400 on his sending row;
+    // the page subtracts `committedMinor` to reach the same available total.
+    expect(plan.householdLeftoverMinor).toBe(290_000);
   });
 
   it("gives a household with nobody in it no members to add up", () => {

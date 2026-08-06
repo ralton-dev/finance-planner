@@ -1614,7 +1614,7 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       "GBP",
     );
 
-    expect(walk.months[0]?.membersLeftoverMinor).toBe(402_500);
+    expect(walk.months[0]?.membersLeftoverMinor).toBe(357_500);
     expect(walk.months[0]?.membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
     // The row as it was, kept on the wire with its meaning intact and no longer
     // what a household headline reads.
@@ -1645,10 +1645,10 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       "GBP",
     );
 
-    expect(plan.membersLeftoverMinor).toBe(290_000);
-    expect(plan.householdLeftoverMinor).toBe(330_000);
+    expect(plan.membersLeftoverMinor).toBe(250_000);
+    expect(plan.householdLeftoverMinor).toBe(290_000);
     // Nothing here is tuned to a date, so every simulated month reads the same.
-    expect(walk.months.map((m) => m.membersLeftoverMinor)).toEqual([290_000, 290_000, 290_000]);
+    expect(walk.months.map((m) => m.membersLeftoverMinor)).toEqual([250_000, 250_000, 250_000]);
     expect(walk.months[0]?.membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
   });
 });

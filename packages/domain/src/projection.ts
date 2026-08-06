@@ -8,7 +8,7 @@ import {
   type ScopeInput,
   type ScopeMovement,
 } from "./scope.js";
-import type { AccountPlan, PaymentInput } from "./types.js";
+import type { AccountPlan, InflowInput, OutboundInflowInput, PaymentInput } from "./types.js";
 
 const DEFAULT_MONTHS = 12;
 const MIN_MONTHS = 1;
@@ -79,6 +79,8 @@ export interface MonthProjection {
   totalRequiredMinor: number;
   totalFundedMinor: number;
   leftoverMinor: number;
+  /** Spendable/free left over, excluding authored movement arrivals. */
+  availableLeftoverMinor: number;
   /**
    * What is actually in the account at the end of this simulated month —
    * `AccountPlan.residualMinor` for the month's own pass, passed through, and
@@ -332,6 +334,16 @@ function withState<T extends PaymentInput>(p: T, state: PaymentState): T {
   return { ...p, alreadySavedMinor: state.alreadySavedMinor, active: state.active };
 }
 
+function withMovementState<T extends InflowInput | OutboundInflowInput>(
+  movement: T,
+  refDate: Date,
+  firstMonth: boolean,
+): T {
+  if (firstMonth || movement.active === false || movement.frequency !== "one_off") return movement;
+  const anchor = parseISODate(movement.anchorDate);
+  return anchor.getTime() <= refDate.getTime() ? { ...movement, active: false } : movement;
+}
+
 function totalReserved(states: Iterable<PaymentState>): number {
   let total = 0;
   for (const s of states) total += s.alreadySavedMinor;
@@ -414,6 +426,7 @@ function advance(sim: AccountSim, plan: AccountPlan, refDate: Date, monthKey: st
     totalRequiredMinor: plan.totalRequiredMinor,
     totalFundedMinor: plan.totalFundedMinor,
     leftoverMinor: plan.leftoverMinor,
+    availableLeftoverMinor: plan.availableLeftoverMinor,
     residualMinor: plan.residualMinor,
     outboundInflowMinor: plan.outboundInflowMinor,
     shortfallMinor: plan.shortfallMinor,
@@ -436,6 +449,7 @@ function workingScope(
   input: ScopeInput,
   sims: ReadonlyMap<string, AccountSim>,
   firstMonth: boolean,
+  refDate: Date,
 ): ScopeInput {
   return {
     ...input,
@@ -445,6 +459,10 @@ function workingScope(
       return {
         ...account,
         payments: account.payments.map((p) => withState(p, states.get(p.id)!)),
+        inflows: account.inflows?.map((i) => withMovementState(i, refDate, firstMonth)),
+        outboundInflows: account.outboundInflows?.map((i) =>
+          withMovementState(i, refDate, firstMonth),
+        ),
         confirmedArrivals: firstMonth ? account.confirmedArrivals : [],
       };
     }),
@@ -511,7 +529,7 @@ export function computeScopeProjection(
   for (const [index, ref] of refs.entries()) {
     const refDate = parseISODate(ref);
     const monthKey = ref.slice(0, 7);
-    const working = workingScope(input, sims, index === 0);
+    const working = workingScope(input, sims, index === 0, refDate);
     const plan = computeScopePlan(working, ref);
     if (index === 0) cycles = plan.cycles;
 
@@ -632,7 +650,10 @@ export function householdProjectionFromScope(
         // (decision 13's surviving half); the ownership figure is added beside
         // it, never in place of it.
         leftoverMinor: sum((m) => m.leftoverMinor),
-        membersLeftoverMinor: memberOwned.reduce((n, a) => n + a.months[index]!.residualMinor, 0),
+        membersLeftoverMinor: memberOwned.reduce(
+          (n, a) => n + a.months[index]!.availableLeftoverMinor,
+          0,
+        ),
         shortfallMinor: sum((m) => m.shortfallMinor),
         // Arriving only, and only in this household's currency — the narrowing
         // `householdPlanFromScope` applies, for its reasons: the destination is

@@ -351,6 +351,13 @@ export interface AccountPlan {
    * else.
    */
   residualMinor: number;
+  /**
+   * Spendable/free leftover after authored savings movements.
+   *
+   * A savings movement that arrives here is reserved here, not available here.
+   * This is the value account and dashboard "left over" surfaces should print.
+   */
+  availableLeftoverMinor: number;
   /** Gap the month's money — own income plus allocated inflow — cannot cover
    *  (>= 0). Inflow that covers the gap takes this to 0. */
   shortfallMinor: number;

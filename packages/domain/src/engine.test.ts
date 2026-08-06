@@ -194,7 +194,10 @@ describe("requiredMonthlyForPayment", () => {
  * field the account engine produced, byte for byte, and nothing quietly moved
  * underneath the ones that were added since.
  */
-const ACCOUNT_ENGINE_AT_40F65D8: Omit<AccountPlan, "ownerUserId" | "residualMinor"> = {
+const ACCOUNT_ENGINE_AT_40F65D8: Omit<
+  AccountPlan,
+  "ownerUserId" | "residualMinor" | "availableLeftoverMinor"
+> = {
   accountId: "current",
   asOfDate: "2026-01-01",
   currency: "GBP",
@@ -376,13 +379,14 @@ describe("accountPlanFromScope — a solo user with one account does not move", 
     // existed to feed. The comparison the pin used to make is preserved exactly
     // — the same fixture, the same date, the same bytes — and it now survives
     // the deletion of the engine it was pinning against, which a call could not.
-    // Typed `Partial` so both additive fields can be deleted: they are required
+    // Typed `Partial` so additive fields can be deleted: they are required
     // on the plan now, and `delete` wants an optional operand. Deleting leaves
     // the insertion order of everything else alone, which is what the second
     // assertion checks.
     const same: Partial<AccountPlan> = { ...view };
     delete same.ownerUserId;
     delete same.residualMinor;
+    delete same.availableLeftoverMinor;
     expect(same).toEqual(ACCOUNT_ENGINE_AT_40F65D8);
     // Deep-equal is not the claim; the serialised plan is, field order included.
     expect(JSON.stringify(same)).toBe(JSON.stringify(ACCOUNT_ENGINE_AT_40F65D8));

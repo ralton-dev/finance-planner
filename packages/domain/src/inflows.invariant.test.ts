@@ -259,24 +259,30 @@ describe("the rollup adds up without netting anything", () => {
     expect(rolled().perCurrency[0]!.monthlyIncomeMinor).toBe(500_000);
   });
 
-  it("counts every pound exactly once, with no term left over to subtract", () => {
-    const bucket = rolled().perCurrency[0]!;
-    const raw = plansOf(sendingChain()).reduce((sum, p) => sum + p.leftoverMinor, 0);
+  it("keeps saved arrivals out of the user-facing rollup", () => {
+    const plans = plansOf(sendingChain());
+    const bucket = overviewFromPlans(plans, ASOF).perCurrency[0]!;
+    const raw = plans.reduce((sum, p) => sum + p.leftoverMinor, 0);
+    const available = plans.reduce((sum, p) => sum + p.availableLeftoverMinor, 0);
     // Each stop's bill is covered by the transfer the pass derives for it; the
     // authored movements carry the surplus on afterwards, as savings.
     expect(bucket.totalFundedMinor).toBe(400_000);
     expect(raw).toBe(100_000);
-    expect(bucket.leftoverMinor).toBe(100_000);
-    // £5,000 accounted for out of £5,000 earned — no netting anywhere.
-    expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(bucket.monthlyIncomeMinor);
+    expect(available).toBe(0);
+    expect(bucket.leftoverMinor).toBe(0);
+    // The raw flow still balances the graph, but the rollup exposes only free
+    // money. The £1,000 residual is saved at the end of the chain.
+    expect(bucket.totalFundedMinor + raw).toBe(bucket.monthlyIncomeMinor);
   });
 
-  it("holds at every depth of the chain, not just the end of it", () => {
-    // Two hops and four: the same identity, so the error cannot be hiding in
-    // the fixture's length.
+  it("keeps the raw balance and available rollup separate at every depth", () => {
     for (const depth of [2, 3, 4]) {
-      const bucket = rolled(sendingChain().slice(0, depth)).perCurrency[0]!;
-      expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(bucket.monthlyIncomeMinor);
+      const plans = plansOf(sendingChain().slice(0, depth));
+      const bucket = overviewFromPlans(plans, ASOF).perCurrency[0]!;
+      const raw = plans.reduce((sum, p) => sum + p.leftoverMinor, 0);
+      const available = plans.reduce((sum, p) => sum + p.availableLeftoverMinor, 0);
+      expect(bucket.totalFundedMinor + raw).toBe(bucket.monthlyIncomeMinor);
+      expect(bucket.leftoverMinor).toBe(available);
     }
   });
 

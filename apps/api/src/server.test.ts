@@ -4760,14 +4760,13 @@ describe("inflows over HTTP", () => {
     expect(bucket.monthlyIncomeMinor).toBe(300000);
     // Both £400 bills are the owner's own obligations, funded from their one
     // budget and transported by transfers the pass derives; the authored
-    // movements carry surplus on afterwards, as savings.
+    // movements carry part of the surplus on afterwards, as savings.
     expect(bucket.totalFundedMinor).toBe(80000);
-    expect(bucket.leftoverMinor).toBe(220000);
+    expect(bucket.leftoverMinor).toBe(170000);
     expect(bucket).not.toHaveProperty("intraEstateMovementMinor");
-    // The identity that has to hold for an estate that funds itself.
-    expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(
-      bucket.monthlyIncomeMinor - bucket.bufferMinor,
-    );
+    // £500 is saved at the end of the chain, so it balances the graph but is not
+    // exposed as available left over.
+    expect(bucket.totalFundedMinor + bucket.leftoverMinor).toBe(250000);
   });
 });
 
@@ -6231,6 +6230,7 @@ interface OverviewBucket {
     accountId: string;
     ownerUserId: string;
     leftoverMinor: number;
+    availableLeftoverMinor: number;
     residualMinor: number;
   }[];
 }
@@ -6285,7 +6285,7 @@ describe("the overview is the caller's own money", () => {
     const alice = await gbpFor(seeded.auth.get("u-alice")!, ESTATE_ASOF);
     const bob = await gbpFor(seeded.auth.get("u-bob")!, ESTATE_ASOF);
 
-    expect(alice.you.leftoverMinor).toBe(250_100);
+    expect(alice.you.leftoverMinor).toBe(205_100);
     expect(bob.you.leftoverMinor).toBe(152_400);
 
     // And the rows on the screen add up to the figure above them — over the
@@ -6293,13 +6293,13 @@ describe("the overview is the caller's own money", () => {
     const ownedSum = (bucket: OverviewBucket, userId: string) =>
       bucket.accounts
         .filter((a) => a.ownerUserId === userId)
-        .reduce((n, a) => n + a.residualMinor, 0);
-    expect(ownedSum(alice, seeded.userIds.get("u-alice")!)).toBe(250_100);
+        .reduce((n, a) => n + a.availableLeftoverMinor, 0);
+    expect(ownedSum(alice, seeded.userIds.get("u-alice")!)).toBe(205_100);
     expect(ownedSum(bob, seeded.userIds.get("u-bob")!)).toBe(152_400);
 
     // Bob's figure holds nothing of Alice's, and hers nothing of his.
     expect(bob.accounts.some((a) => a.ownerUserId === seeded.userIds.get("u-alice"))).toBe(false);
-    expect(alice.you.leftoverMinor + bob.you.leftoverMinor).toBe(402_500);
+    expect(alice.you.leftoverMinor + bob.you.leftoverMinor).toBe(357_500);
   });
 
   /** A second currency is a second answer, never a term in the first
@@ -6312,11 +6312,11 @@ describe("the overview is the caller's own money", () => {
     expect(buckets.map((c) => c.currency)).toEqual(["EUR", "GBP"]);
     const eur = buckets.find((c) => c.currency === "EUR")!;
     const gbp = buckets.find((c) => c.currency === "GBP")!;
-    expect(gbp.you.leftoverMinor).toBe(250_100);
+    expect(gbp.you.leftoverMinor).toBe(205_100);
     expect(eur.you.leftoverMinor).toBe(
       eur.accounts
         .filter((a) => a.ownerUserId === seeded.userIds.get("u-alice"))
-        .reduce((n, a) => n + a.residualMinor, 0),
+        .reduce((n, a) => n + a.availableLeftoverMinor, 0),
     );
     expect(eur.you.leftoverMinor).not.toBe(0);
     expect(gbp.you.leftoverMinor).not.toBe(gbp.you.leftoverMinor + eur.you.leftoverMinor);
@@ -6507,12 +6507,12 @@ describe("the overview is the caller's own money", () => {
       thisMonth() + "-04",
     );
 
-    expect(plan.membersLeftoverMinor).toBe(402_500);
+    expect(plan.membersLeftoverMinor).toBe(357_500);
     const personal = new Map(plan.members.map((m) => [m.userId, m.personalLeftoverMinor]));
-    expect(personal.get(seeded.userIds.get("u-alice")!)).toBe(250_100);
+    expect(personal.get(seeded.userIds.get("u-alice")!)).toBe(205_100);
     expect(personal.get(seeded.userIds.get("u-bob")!)).toBe(152_400);
     // The rows on the screen add to the total above them.
-    expect(plan.members.reduce((n, m) => n + m.personalLeftoverMinor, 0)).toBe(402_500);
+    expect(plan.members.reduce((n, m) => n + m.personalLeftoverMinor, 0)).toBe(357_500);
 
     // Names for a member, amounts for anyone the endpoint admits — and it
     // admits members only, which is the gate.
@@ -6533,14 +6533,15 @@ describe("the overview is the caller's own money", () => {
    * estate the two coincide to the penny, so an estate-only pin proves nothing
    * about which one shipped. Here an implementation wired to the roster reads
    * £3,300 for the household and £1,200 for Bob; the ownership basis reads
-   * £2,900 and £800, and both roster figures are still on the wire beside them.
+   * £2,500 and £800 after the saved arrival is excluded from free money, and the
+   * pre-commit household figure is still on the wire beside it.
    */
   it("reports the ownership basis, not the roster basis, on the cross-owner fixture", async () => {
     const seeded = await seedCrossOwner(store);
     const alice = await gbpFor(seeded.auth.get("u-alice")!, CROSS_OWNER_ASOF);
     const bob = await gbpFor(seeded.auth.get("u-bob")!, CROSS_OWNER_ASOF);
 
-    expect(alice.you.leftoverMinor).toBe(210_000);
+    expect(alice.you.leftoverMinor).toBe(170_000);
     expect(bob.you.leftoverMinor).toBe(80_000);
 
     const plan = await householdPlan(
@@ -6548,33 +6549,27 @@ describe("the overview is the caller's own money", () => {
       seeded.auth.get("u-alice")!,
       CROSS_OWNER_ASOF,
     );
-    expect(plan.membersLeftoverMinor).toBe(290_000);
+    expect(plan.membersLeftoverMinor).toBe(250_000);
     expect(
       new Map(plan.members.map((m) => [m.userId, m.personalLeftoverMinor])).get(
         seeded.userIds.get("u-bob")!,
       ),
     ).toBe(80_000);
 
-    // The roster basis, unchanged on the wire and demonstrably a different
-    // answer: Bob's £400 is added back into his own account's row *and* counted
-    // again in the pot's residual.
-    expect(plan.householdLeftoverMinor).toBe(330_000);
+    // The pre-commit household row is demonstrably a different answer: Bob's
+    // £400 is still shown on his sending row until `committedMinor` is removed.
+    expect(plan.householdLeftoverMinor).toBe(290_000);
     expect(
       plan.accounts.find((a) => a.accountId === seeded.accounts.get("acc-x-bob-cur")!.id)!
         .leftoverMinor,
     ).toBe(120_000);
 
-    // £400 of what Alice's figure counts is genuinely in an account of hers and
-    // genuinely Bob's money. The household total is unaffected: added to her,
-    // subtracted from him.
-    expect(alice.you.leftoverMinor + bob.you.leftoverMinor).toBe(290_000);
+    expect(alice.you.leftoverMinor + bob.you.leftoverMinor).toBe(250_000);
   });
 
   /**
-   * **Decision 25 on the wire.** Alice's row reads INCOME £2,000 · THEIR COSTS
-   * £300 · COMMITTED £100 · LEFT OVER £2,100, and a reader adding it up gets
-   * £1,600. £400 of the £500 gap is Bob's money in a pot Alice owns, and the
-   * page can now say so.
+   * **Decision 25 on the wire.** Alice's row still names Bob's £400 arrival, but
+   * it is not counted in her available left over.
    *
    * A label and nothing else: every figure the test above pins is asserted
    * again here, unchanged, because that is the acceptance criterion.
@@ -6598,10 +6593,10 @@ describe("the overview is the caller's own money", () => {
     expect(bob).not.toHaveProperty("arrivedFromOthers");
 
     // Unmoved, to the penny.
-    expect(alice.personalLeftoverMinor).toBe(210_000);
+    expect(alice.personalLeftoverMinor).toBe(170_000);
     expect(bob.personalLeftoverMinor).toBe(80_000);
-    expect(plan.membersLeftoverMinor).toBe(290_000);
-    expect(plan.householdLeftoverMinor).toBe(330_000);
+    expect(plan.membersLeftoverMinor).toBe(250_000);
+    expect(plan.householdLeftoverMinor).toBe(290_000);
   });
 
   /** Month 0 of the household's walk is its plan for the same date — one
@@ -6620,7 +6615,7 @@ describe("the overview is the caller's own money", () => {
 
     expect(projection.months[0]!.membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
     expect(projection.months.map((m) => m.membersLeftoverMinor)).toEqual([
-      290_000, 290_000, 290_000,
+      250_000, 250_000, 250_000,
     ]);
   });
 });

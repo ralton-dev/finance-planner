@@ -31,11 +31,11 @@ export interface ProjectionMonthLike {
    * £4,025. Both are real figures and neither is the one the page leads with.
    */
   leftoverMinor: number;
-  /** Account projections only: what is in the account when the month has
-   *  happened. The KPI above the strip prints the same derivation for month 1. */
+  /** Preferred user-facing left over: free after authored savings movements. */
+  availableLeftoverMinor?: number;
+  /** Account projections only: the flow residual when the month has happened. */
   residualMinor?: number;
-  /** Household projections only: `Σ residual` over the accounts this
-   *  household's members own — the strip's analogue of the page's headline. */
+  /** Household projections only: members' available left over added up. */
   membersLeftoverMinor?: number;
   shortfallMinor: number;
   reservedEndMinor: number;
@@ -69,11 +69,9 @@ function movedMinor(month: ProjectionMonthLike): number | null {
 /**
  * What the strip's LEFT OVER row prints, whatever the scope.
  *
- * One derivation read at two altitudes, exactly as the pages above it read it:
- * an account's residual, or a household's members' residuals added up. The two
- * shapes carry one field each — `movedMinor` directly above is the precedent —
- * so the first one present is the answer, and `leftoverMinor` is the fallback a
- * payload from an older API lands on rather than rendering nothing.
+ * New account payloads carry `availableLeftoverMinor`; household payloads carry
+ * `membersLeftoverMinor`. `residualMinor` and then `leftoverMinor` are fallbacks
+ * for older payloads rather than a second rule.
  *
  * Never a reconstruction. The reframing this file serves forbids a surface
  * deriving a fourth answer by algebra, and the strip is the surface that was
@@ -81,7 +79,12 @@ function movedMinor(month: ProjectionMonthLike): number | null {
  * saying £2,051, and £0.00 under one saying £200.00 (MINE-AND-OURS.md).
  */
 export function monthLeftOverMinor(month: ProjectionMonthLike): number {
-  return month.residualMinor ?? month.membersLeftoverMinor ?? month.leftoverMinor;
+  return (
+    month.availableLeftoverMinor ??
+    month.membersLeftoverMinor ??
+    month.residualMinor ??
+    month.leftoverMinor
+  );
 }
 
 /** One x-position of the chart. Nulls are gaps, never zeroes. */
