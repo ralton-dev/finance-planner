@@ -11,6 +11,7 @@ import { QuickAddProvider } from "./contexts/QuickAddContext.js";
 import { ThemeProvider } from "./contexts/ThemeContext.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AccountsPage } from "./pages/AccountsPage.js";
+import { DebugPlanPage } from "./pages/DebugPlanPage.js";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage.js";
 import { HouseholdDetailPage } from "./pages/HouseholdDetailPage.js";
 import { HouseholdHomePage } from "./pages/HouseholdHomePage.js";
@@ -63,6 +64,7 @@ export function App() {
                   <Route path="/households" element={<HouseholdHomePage />} />
                   <Route path="/households/:id" element={<HouseholdDetailPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/debug/plan" element={<DebugPlanPage />} />
                   {/* The diagram, over any set of accounts. Not nested under a
                       household: a household is one preset over that set. */}
                   <Route

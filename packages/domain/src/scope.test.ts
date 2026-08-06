@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computeScopePlan,
+  explainScopePlan,
   type ScopeAccountInput,
   type ScopeCurrencyPlan,
   type ScopeInput,
@@ -1673,5 +1674,62 @@ describe("computeScopePlan — the shape of the answer", () => {
       currency: "GBP",
       accountId: "bills",
     });
+  });
+
+  it("explains funding rank, derived transfers and authored movements", () => {
+    const debug = explainScopePlan(
+      scope({
+        accounts: [
+          acc({
+            accountId: "current",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(100_000),
+            outboundInflows: [{ ...leaving("sweep", 30_000, "savings", 20), name: "Savings sweep" }],
+          }),
+          acc({
+            accountId: "bills",
+            role: "personal",
+            memberUserId: "owner",
+            payments: [pay({ id: "rent", amountMinor: 40_000, scope: "personal" })],
+          }),
+          acc({ accountId: "savings", role: "personal", memberUserId: "owner" }),
+        ],
+      }),
+      ASOF,
+    );
+
+    const trace = debug.currencies[0]!;
+    expect(trace.fundingSteps[0]).toMatchObject({
+      rank: 1,
+      paymentId: "rent",
+      accountId: "bills",
+      memberUserId: "owner",
+      fundedMinor: 40_000,
+    });
+    expect(trace.transferDerivations).toContainEqual(
+      expect.objectContaining({
+        paymentId: "rent",
+        fromAccountId: "current",
+        toAccountId: "bills",
+        movingMinor: 40_000,
+        reason: "transfer",
+      }),
+    );
+    expect(trace.savings.accountSteps.flatMap((s) => s.movements)).toContainEqual(
+      expect.objectContaining({
+        inflowId: "sweep",
+        fromAccountId: "current",
+        toAccountId: "savings",
+        fundedMinor: 30_000,
+        status: "funded",
+      }),
+    );
+    expect(debug.report).toContain("Phase 2 - global funding queue by rank");
+    expect(debug.report).toContain("#1 rent on bills for user");
+    expect(debug.report).toContain("current -> bills");
+    expect(debug.report).toContain("movement Savings sweep");
+    expect(debug.report).toContain("Per account final breakdown");
+    expect(debug.report).toContain("Per user final breakdown");
   });
 });

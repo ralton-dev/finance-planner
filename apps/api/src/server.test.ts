@@ -231,6 +231,98 @@ describe("api service", () => {
     expect(plan.leftoverMinor).toBe(285000);
   });
 
+  it("serves the engine debug report only when explicitly enabled", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-25",
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: {
+        name: "Holiday",
+        category: "fixed_point",
+        amountMinor: 120000,
+        dueDate: "2026-09-01",
+      },
+    });
+
+    const off = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?account=${account.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(off.statusCode).toBe(404);
+
+    const on = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&account=${account.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(on.statusCode).toBe(200);
+    const body = on.json();
+    expect(body.subject).toEqual({ kind: "account", accountId: account.id });
+    expect(body.scopes).toHaveLength(1);
+    expect(body.scopes[0].labels.accounts[account.id]).toBe("A");
+    expect(body.scopes[0].labels.users).toBeTruthy();
+    expect(body.scopes[0].report).toContain("Phase 2 - global funding queue by rank");
+    expect(body.scopes[0].report).toContain("Per account final breakdown");
+    expect(body.scopes[0].trace.plan.lines[0].paymentId).toBeDefined();
+  });
+
+  it("refuses full engine debug when the planned scope contains an inaccessible account", async () => {
+    const { user: alice, auth } = await seedUser(store, "alice@example.com");
+    const { user: bob } = await seedUser(store, "bob@example.com");
+    const aliceCurrent = await store.createAccount({
+      ownerUserId: alice.id,
+      name: "Alice current",
+      currency: "GBP",
+    });
+    const bobPot = await store.createAccount({
+      ownerUserId: bob.id,
+      name: "Bob pot",
+      currency: "GBP",
+    });
+    await store.createInflow({
+      accountId: bobPot.id,
+      name: "hidden sweep",
+      source: "account",
+      sourceAccountId: aliceCurrent.id,
+      amountMinor: 10_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 100,
+      active: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&account=${aliceCurrent.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("debug_scope_not_visible");
+  });
+
   it("rejects fixed_point payments without a due date (422)", async () => {
     const { auth } = await seedUser(store);
     const account = (
@@ -5528,17 +5620,73 @@ describe("meta + demo seed", () => {
     const seed = await app.inject({ method: "POST", url: "/api/demo/seed", headers: auth });
     expect(seed.statusCode).toBe(201);
     expect(seed.json()).toEqual({
-      accounts: 1,
-      incomes: 1,
+      users: 1,
+      households: 1,
+      householdMemberships: 2,
+      accounts: 4,
+      accountShares: 1,
+      accountAssignments: 4,
+      incomes: 2,
+      accountInflows: 1,
       payments: 4,
       contributions: 1,
-      balanceSnapshots: 1,
+      balanceSnapshots: 4,
     });
 
     const accounts = await store.listAccountsForOwner(user.id);
-    expect(accounts[0]!.name).toBe("Everyday Account");
-    expect(accounts[0]!.openingBalanceMinor).toBe(250_000);
-    const payments = await store.listPayments(accounts[0]!.id);
+    expect(accounts.map((a) => a.name).sort()).toEqual([
+      "Bills Pot",
+      "Everyday Account",
+      "Savings Pot",
+    ]);
+    const everyday = accounts.find((a) => a.name === "Everyday Account")!;
+    const bills = accounts.find((a) => a.name === "Bills Pot")!;
+    const savings = accounts.find((a) => a.name === "Savings Pot")!;
+    expect(everyday.openingBalanceMinor).toBe(250_000);
+    expect(everyday.monthlyBufferMinor).toBe(20_000);
+    const partner = await store.getUserByEmail(`demo-partner-${user.id}@example.com`);
+    expect(partner).toMatchObject({ displayName: "Demo Partner" });
+    const partnerAccounts = await store.listAccountsForOwner(partner!.id);
+    expect(partnerAccounts.map((a) => a.name)).toEqual(["Partner Current"]);
+    const partnerCurrent = partnerAccounts[0]!;
+
+    const [household] = await store.listHouseholdsForUser(user.id);
+    expect(household).toMatchObject({ name: "Demo Household" });
+    const members = await store.listMembersForHousehold(household!.id);
+    expect(members).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ userId: user.id, contributionShareBp: 6_000 }),
+        expect.objectContaining({ userId: partner!.id, contributionShareBp: 4_000 }),
+      ]),
+    );
+    const assignments = await store.listAccountAssignments(household!.id);
+    expect(assignments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accountId: everyday.id,
+          role: "personal",
+          memberUserId: user.id,
+        }),
+        expect.objectContaining({ accountId: bills.id, role: "shared", memberUserId: null }),
+        expect.objectContaining({
+          accountId: savings.id,
+          role: "personal",
+          memberUserId: user.id,
+        }),
+        expect.objectContaining({
+          accountId: partnerCurrent.id,
+          role: "personal",
+          memberUserId: partner!.id,
+        }),
+      ]),
+    );
+    expect(await store.listSharesForAccount(partnerCurrent.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ householdId: household!.id, permission: "view" }),
+      ]),
+    );
+
+    const payments = await store.listPayments(bills.id);
     expect(payments.map((p) => p.name).sort()).toEqual([
       "Car insurance",
       "Phone bill",
@@ -5549,16 +5697,76 @@ describe("meta + demo seed", () => {
     // Dates are relative to today, so the plan is alive rather than historical.
     const today = new Date().toISOString().slice(0, 10);
     expect(payments.every((p) => !p.dueDate || p.dueDate > today)).toBe(true);
-    expect((await store.listBalanceSnapshots(accounts[0]!.id))[0]!.asOfDate).toBe(today);
+    expect((await store.listBalanceSnapshots(everyday.id))[0]!.asOfDate).toBe(today);
+    expect((await store.listBalanceSnapshots(bills.id))[0]!.asOfDate).toBe(today);
+    expect((await store.listBalanceSnapshots(savings.id))[0]!.asOfDate).toBe(today);
+    expect((await store.listBalanceSnapshots(partnerCurrent.id))[0]!.asOfDate).toBe(today);
+
+    const [movement] = await store.listInflows(savings.id);
+    expect(movement).toMatchObject({
+      name: "Savings sweep",
+      source: "account",
+      sourceAccountId: everyday.id,
+      amountMinor: 40_000,
+      priority: 40,
+    });
 
     // The plan actually computes over the seeded data.
     const plan = await app.inject({
       method: "GET",
-      url: `/api/accounts/${accounts[0]!.id}/plan`,
+      url: `/api/accounts/${everyday.id}/plan`,
       headers: auth,
     });
     expect(plan.statusCode).toBe(200);
     expect(plan.json().monthlyIncomeMinor).toBe(250_000);
+
+    // The hidden debug trace has enough seeded material to explain generated
+    // transfer funding and authored movement funding, not just totals.
+    const debug = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&account=${everyday.id}&asOf=${today}`,
+      headers: auth,
+    });
+    expect(debug.statusCode).toBe(200);
+    const debugScope = debug.json().scopes[0];
+    expect(debugScope.labels.accounts).toMatchObject({
+      [everyday.id]: "Everyday Account",
+      [bills.id]: "Bills Pot",
+      [savings.id]: "Savings Pot",
+      [partnerCurrent.id]: "Partner Current",
+    });
+    expect(debugScope.labels.users[partner!.id]).toBe("Demo Partner");
+    expect(debugScope.report).toContain("Phase 3 - derived transfer derivation");
+    expect(debugScope.report).toContain("Phase 4 - authored savings movements");
+    expect(debugScope.trace.plan.transfers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fromAccountId: everyday.id, toAccountId: bills.id }),
+        expect.objectContaining({ fromAccountId: partnerCurrent.id, toAccountId: bills.id }),
+      ]),
+    );
+    expect(debugScope.trace.plan.movements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fromAccountId: everyday.id,
+          toAccountId: savings.id,
+          requestedMinor: 40_000,
+        }),
+      ]),
+    );
+
+    const householdDebug = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&household=${household!.id}&asOf=${today}`,
+      headers: auth,
+    });
+    expect(householdDebug.statusCode).toBe(200);
+    expect(householdDebug.json().subject).toEqual({
+      kind: "household",
+      householdId: household!.id,
+    });
+    expect(householdDebug.json().scopes[0].labels.households[household!.id]).toBe(
+      "Demo Household",
+    );
 
     // Second run refuses: the account is no longer empty.
     const again = await app.inject({ method: "POST", url: "/api/demo/seed", headers: auth });

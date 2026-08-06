@@ -36,11 +36,13 @@ import {
   type CloseContribution,
   closeForUser,
   computeScopeProjection,
+  explainScopePlan,
   flowFromScope,
   householdPlanFromScope,
   householdProjectionFromScope,
   leftoverForUser,
   overviewFromPlans,
+  type ScopePlanDebugReport,
   toISODate,
   type Transfer,
   type TransferDeparture,
@@ -439,6 +441,32 @@ type PlanTransfer = Transfer & { fromAccountName?: string };
 
 interface HouseholdPlanResponse extends Omit<HouseholdPlanWithSchedule, "transfers"> {
   transfers: PlanTransfer[];
+}
+
+type PlanDebugSubject =
+  | { kind: "account"; accountId: string }
+  | { kind: "household"; householdId: string }
+  | { kind: "user" };
+
+interface PlanDebugLabels {
+  accounts: Record<string, string>;
+  users: Record<string, string>;
+  households: Record<string, string>;
+}
+
+interface PlanDebugScopeResponse {
+  scopeId: string;
+  householdId: string | null;
+  accountIds: readonly string[];
+  labels: PlanDebugLabels;
+  report: string;
+  trace: ScopePlanDebugReport;
+}
+
+interface PlanDebugResponse {
+  asOfDate: string;
+  subject: PlanDebugSubject;
+  scopes: PlanDebugScopeResponse[];
 }
 
 /** Where an account sits in the user's households, when it sits in one. */
@@ -856,6 +884,45 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return { ...plan, transfers };
   };
 
+  const debugScopeResponse = async (
+    userId: string,
+    scope: PlannedScope,
+    asOfDate: string,
+  ): Promise<PlanDebugScopeResponse> => {
+    const inaccessible: string[] = [];
+    for (const accountId of scope.accountIds) {
+      const access = await store.getAccess(userId, accountId);
+      if (!access) inaccessible.push(accountId);
+    }
+    if (inaccessible.length > 0) {
+      throw new HttpError(
+        403,
+        "debug_scope_not_visible",
+        "Full plan debug requires view access to every account in the planned scope",
+      );
+    }
+    const trace = explainScopePlan(scope.input, asOfDate);
+    const households: Record<string, string> = {};
+    if (scope.plan.householdId) {
+      const household = await store.getHousehold(scope.plan.householdId);
+      if (household) households[household.id] = household.name;
+    }
+    return {
+      scopeId: scope.plan.scopeId,
+      householdId: scope.plan.householdId,
+      accountIds: scope.accountIds,
+      labels: {
+        accounts: Object.fromEntries(scope.input.accounts.map((a) => [a.accountId, a.name ?? "account"])),
+        users: Object.fromEntries(
+          scope.input.members.map((m) => [m.userId, m.displayName ?? "user"]),
+        ),
+        households,
+      },
+      report: trace.report,
+      trace,
+    };
+  };
+
   // ---- health ----
   app.get(
     "/healthz",
@@ -871,6 +938,60 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   /** What the SPA needs before anyone has signed in: which optional features
    *  this deployment has turned on. Public, and deliberately tiny. */
   app.get("/api/meta", async () => ({ demoSeedEnabled: env.enableDemoSeed }));
+
+  /**
+   * Hidden calculation trace. This is not linked from the app and it is inert
+   * unless the caller explicitly passes `debug=engine`.
+   *
+   * The report prints account inputs, payments and movement rows, so it is only
+   * returned when the caller can view every account in the planned scope. A
+   * normal plan can safely expose selected facts from a wider closure; a debug
+   * trace is deliberately too exhaustive for that.
+   */
+  app.get("/api/debug/plan", async (req): Promise<PlanDebugResponse> => {
+    const userId = await authenticate(req);
+    const { debug, account, household, asOf } = req.query as {
+      debug?: string;
+      account?: string;
+      household?: string;
+      asOf?: string;
+    };
+    if (debug !== "engine") {
+      throw new HttpError(404, "not_found", "Not found");
+    }
+    if (account && household) {
+      throw new HttpError(422, "validation_error", "Choose account or household, not both");
+    }
+
+    const asOfDate = asOf ?? today();
+    const ctx = createPlanContext();
+    if (account) {
+      const { account: row } = await requireAccess(userId, account, "view");
+      const scope = await scopeForAccount(store, row, asOfDate, ctx);
+      return {
+        asOfDate,
+        subject: { kind: "account", accountId: account },
+        scopes: [await debugScopeResponse(userId, scope, asOfDate)],
+      };
+    }
+    if (household) {
+      await requireMembership(userId, household);
+      const { scope } = await scopeForHousehold(store, household, asOfDate, ctx);
+      return {
+        asOfDate,
+        subject: { kind: "household", householdId: household },
+        scopes: [await debugScopeResponse(userId, scope, asOfDate)],
+      };
+    }
+
+    const accounts = await accessibleAccounts(store, userId);
+    const scopes = await scopesFor(store, accounts, asOfDate, ctx);
+    return {
+      asOfDate,
+      subject: { kind: "user" },
+      scopes: await Promise.all(scopes.map((scope) => debugScopeResponse(userId, scope, asOfDate))),
+    };
+  });
 
   // ---- accounts ----
   /**
@@ -2464,7 +2585,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
 
   // ---- demo seed ----
   /**
-   * Plant a worked example so a brand-new account has something to look at.
+   * Plant a worked example so a brand-new profile has something to look at.
    * Exists for first-run exploration and demos, and is off unless
    * ENABLE_DEMO_SEED=true — when it is off the route 404s rather than 403s, so a
    * deployment without it doesn't advertise that it exists. (GET /api/meta is
@@ -2474,7 +2595,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const userId = await authenticate(req);
     if (!env.enableDemoSeed) throw new HttpError(404, "not_found", "Not found");
     if ((await store.listAccountsForOwner(userId)).length > 0) {
-      throw new HttpError(409, "demo_not_empty", "Demo data is only seeded into an empty account");
+      throw new HttpError(409, "demo_not_empty", "Demo data is only seeded into an empty profile");
     }
     const counts = await seedDemoData(store, userId, today());
     return reply.code(201).send(counts);

@@ -57,6 +57,7 @@ async function savedByPayment(store: Store, accountId: string): Promise<Map<stri
 function toIncomeInput(i: Inflow): IncomeInput {
   return {
     id: i.id,
+    name: i.name,
     amountMinor: i.amountMinor,
     frequency: i.frequency,
     recurrence: i.recurrence,
@@ -70,6 +71,7 @@ function toIncomeInput(i: Inflow): IncomeInput {
 function toInflowInput(i: Inflow): InflowInput {
   return {
     id: i.id,
+    name: i.name,
     amountMinor: i.amountMinor,
     frequency: i.frequency,
     recurrence: i.recurrence,
@@ -86,6 +88,7 @@ function toInflowInput(i: Inflow): InflowInput {
 function toOutboundInflowInput(i: Inflow): OutboundInflowInput {
   return {
     id: i.id,
+    name: i.name,
     toAccountId: i.accountId,
     amountMinor: i.amountMinor,
     frequency: i.frequency,
@@ -876,6 +879,7 @@ export interface PlanPreview {
 function toOverlayIncome(i: CreateIncomeBody, index: number): IncomeInput {
   return {
     id: `preview-income-${index + 1}`,
+    name: i.name,
     amountMinor: i.amountMinor,
     frequency: i.frequency,
     recurrence: i.recurrence ?? null,

@@ -492,6 +492,32 @@ export interface PlanPreviewDto {
   preview: AccountPlanDto;
 }
 
+export type PlanDebugSubjectDto =
+  | { kind: "account"; accountId: string }
+  | { kind: "household"; householdId: string }
+  | { kind: "user" };
+
+export interface PlanDebugLabelsDto {
+  accounts: Record<string, string>;
+  users: Record<string, string>;
+  households: Record<string, string>;
+}
+
+export interface PlanDebugScopeDto {
+  scopeId: string;
+  householdId: string | null;
+  accountIds: string[];
+  labels: PlanDebugLabelsDto;
+  report: string;
+  trace: unknown;
+}
+
+export interface PlanDebugDto {
+  asOfDate: string;
+  subject: PlanDebugSubjectDto;
+  scopes: PlanDebugScopeDto[];
+}
+
 /**
  * A save-up the plan funded this month with money still unrecorded against it,
  * described well enough to act on: which payment, what to call it, what the
@@ -1151,8 +1177,14 @@ export interface ImportCountsDto {
 /** Rows the demo seed planted. No projects or month closes in the worked
  *  example, so it is a narrower shape than an import. */
 export interface DemoSeedCountsDto {
+  users: number;
+  households: number;
+  householdMemberships: number;
   accounts: number;
+  accountShares: number;
+  accountAssignments: number;
   incomes: number;
+  accountInflows: number;
   payments: number;
   contributions: number;
   balanceSnapshots: number;

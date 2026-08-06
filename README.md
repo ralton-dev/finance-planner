@@ -236,7 +236,7 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   them — and **account erasure**.
 - **Installable PWA** — offline app shell, self-hosted JetBrains Mono, no CDN
   calls. `/api` is never cached.
-- **Demo seed** plants a worked example into an empty account, gated behind
+- **Demo seed** plants a worked multi-account example into an empty profile, gated behind
   `ENABLE_DEMO_SEED` and off by default.
 
 ## Architecture

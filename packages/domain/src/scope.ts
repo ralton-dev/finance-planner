@@ -385,6 +385,239 @@ export interface ScopePlan {
 }
 
 // ---------------------------------------------------------------------------
+// Debug trace
+// ---------------------------------------------------------------------------
+
+export interface ScopePlanDebugReport {
+  scopeId: string;
+  householdId: string | null;
+  asOfDate: string;
+  plan: ScopePlan;
+  currencies: ScopeCurrencyDebugTrace[];
+  report: string;
+}
+
+export interface ScopeCurrencyDebugTrace {
+  currency: string;
+  shareWeights: number[];
+  totalShareBp: number;
+  accounts: AccountDebugTrace[];
+  members: MemberDebugTrace[];
+  payments: PaymentDebugTrace[];
+  obligations: ObligationDebugTrace[];
+  fundingSteps: FundingStepDebugTrace[];
+  selfFundingSteps: SelfFundingDebugTrace[];
+  transferDerivations: TransferDerivationDebugTrace[];
+  transfers: DerivedTransfer[];
+  expenseSplits: ExpenseSplitDebugTrace[];
+  heldBack: HeldBackDebugTrace[];
+  transferOutSplits: TransferOutSplitDebugTrace[];
+  savings: SavingsDebugTrace;
+}
+
+export interface AccountDebugTrace {
+  accountId: string;
+  name?: string;
+  role: AccountRole;
+  memberUserId: string | null;
+  ownerUserId: string;
+  monthlyBufferMinor: number;
+  monthlyIncomeMinor: number;
+  incomes: IncomeDebugTrace[];
+}
+
+export interface IncomeDebugTrace {
+  incomeId: string;
+  name?: string;
+  amountMinor: number;
+  frequency: IncomeInput["frequency"];
+  active: boolean;
+  monthlyMinor: number;
+  explanation: string;
+}
+
+export interface MemberDebugTrace {
+  userId: string;
+  displayName?: string;
+  shareBp: number;
+  shareWeight: number;
+  incomeMinor: number;
+  bufferMinor: number;
+  budgetMinor: number;
+  sourceAccountId: string | null;
+}
+
+export interface PaymentDebugTrace {
+  lineIndex: number;
+  paymentId: string;
+  accountId: string;
+  name: string;
+  category: PaymentCategory;
+  scope: PaymentScope;
+  priority: number;
+  sortDate: string;
+  amountMinor: number;
+  alreadySavedMinor: number;
+  requiredMonthlyMinor: number;
+  effectiveDate: string;
+  monthsUntilDue: number;
+  occurrencesThisMonth: number;
+  explanation: string;
+  allocations: { userId: string; requiredMinor: number }[];
+}
+
+type ObligationKind = "payment" | "reserve";
+
+export interface ObligationDebugTrace {
+  obligationIndex: number;
+  kind: ObligationKind;
+  accountId: string;
+  paymentId?: string;
+  paymentName?: string;
+  memberUserId: string;
+  priority: number;
+  sortDate: string;
+  requiredMinor: number;
+  fundedMinor: number;
+  selfFundedMinor: number;
+}
+
+export interface FundingStepDebugTrace {
+  rank: number;
+  obligationIndex: number;
+  kind: ObligationKind;
+  accountId: string;
+  paymentId?: string;
+  paymentName?: string;
+  memberUserId: string;
+  priority: number;
+  sortDate: string;
+  requiredMinor: number;
+  budgetBeforeMinor: number;
+  fundedMinor: number;
+  budgetAfterMinor: number;
+  shortfallMinor: number;
+}
+
+export interface SelfFundingDebugTrace {
+  rank: number;
+  kind: ObligationKind;
+  accountId: string;
+  paymentId?: string;
+  paymentName?: string;
+  pool: "spendable" | "reserve";
+  ownerUserId: string | null;
+  wantMinor: number;
+  poolBeforeMinor: number;
+  coveredMinor: number;
+  poolAfterMinor: number;
+  entries: {
+    obligationIndex: number;
+    memberUserId: string;
+    fundedMinor: number;
+    selfFundedMinor: number;
+    transferNeededMinor: number;
+  }[];
+}
+
+export interface TransferDerivationDebugTrace {
+  obligationIndex: number;
+  kind: ObligationKind;
+  accountId: string;
+  paymentId?: string;
+  paymentName?: string;
+  memberUserId: string;
+  fundedMinor: number;
+  selfFundedMinor: number;
+  movingMinor: number;
+  fromAccountId: string | null;
+  toAccountId: string;
+  reason: "transfer" | "unfunded" | "self_funded" | "no_source" | "same_account";
+}
+
+export interface ExpenseSplitDebugTrace {
+  rank: number;
+  paymentId: string;
+  accountId: string;
+  name: string;
+  requiredMinor: number;
+  fundedMinor: number;
+  paidMinor: number;
+  ownPoolBeforeMinor: number;
+  fundedFromOwnMinor: number;
+  ownPoolAfterMinor: number;
+  inflowPoolBeforeMinor: number;
+  fundedFromInflowMinor: number;
+  inflowPoolAfterMinor: number;
+}
+
+export interface HeldBackDebugTrace {
+  accountId: string;
+  bufferMinor: number;
+  monthlyIncomeMinor: number;
+  heldBackMinor: number;
+}
+
+export interface TransferOutSplitDebugTrace {
+  accountId: string;
+  transferOutMinor: number;
+  ownPoolBeforeMinor: number;
+  fundedFromOwnMinor: number;
+  ownPoolAfterMinor: number;
+  inflowPoolBeforeMinor: number;
+  fundedFromInflowMinor: number;
+  inflowPoolAfterMinor: number;
+}
+
+export interface SavingsDebugTrace {
+  edges: {
+    inflowId: string;
+    name?: string;
+    fromAccountId: string;
+    toAccountId: string;
+    priority: number;
+    requestedMinor: number;
+  }[];
+  order: string[];
+  cycles: EstateCycle[];
+  brokenInflowIds: string[];
+  accountSteps: SavingsAccountDebugTrace[];
+  unknownSources: SavingsMovementDebugTrace[];
+}
+
+export interface SavingsAccountDebugTrace {
+  accountId: string;
+  ownPoolStartMinor: number;
+  inflowPoolStartMinor: number;
+  arrivalsMinor: number;
+  availableOwnMinor: number;
+  availableInflowMinor: number;
+  arrivals: InflowArrival[];
+  movements: SavingsMovementDebugTrace[];
+  ownPoolEndMinor: number;
+  inflowPoolEndMinor: number;
+}
+
+export interface SavingsMovementDebugTrace {
+  rank: number;
+  inflowId: string;
+  name?: string;
+  fromAccountId: string;
+  toAccountId: string;
+  priority: number;
+  requestedMinor: number;
+  ownBeforeMinor: number;
+  fundedFromOwnMinor: number;
+  ownAfterMinor: number;
+  inflowBeforeMinor: number;
+  fundedFromInflowMinor: number;
+  inflowAfterMinor: number;
+  fundedMinor: number;
+  status: EstateMovementStatus;
+  deliveredToPartition: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
 
@@ -463,6 +696,61 @@ interface MemberMoney {
   sourceAccountId: string | null;
 }
 
+interface ScopeDebugCollector {
+  currencies: ScopeCurrencyDebugTrace[];
+}
+
+interface ObligationDebugSeed {
+  kind: ObligationKind;
+  paymentId?: string;
+  paymentName?: string;
+}
+
+const emptySavingsDebug = (): SavingsDebugTrace => ({
+  edges: [],
+  order: [],
+  cycles: [],
+  brokenInflowIds: [],
+  accountSteps: [],
+  unknownSources: [],
+});
+
+function moneyMinor(currency: string, minor: number): string {
+  return `${currency} ${minor} minor`;
+}
+
+function incomeExplanation(income: IncomeInput, monthlyMinor: number): string {
+  if (income.active === false) return "inactive income contributes 0";
+  switch (income.frequency) {
+    case "monthly":
+      return `monthly income contributes its amount: ${monthlyMinor}`;
+    case "yearly":
+      return `yearly income is rounded over 12 months: ${income.amountMinor} / 12 = ${monthlyMinor}`;
+    case "custom":
+      return income.recurrence
+        ? `custom income is normalised over its recurrence: ${income.amountMinor} -> ${monthlyMinor}`
+        : `custom income without a recurrence contributes its amount: ${monthlyMinor}`;
+    case "one_off":
+      return `one-off income is spread until its anchor when it is still in the future: ${income.amountMinor} -> ${monthlyMinor}`;
+  }
+}
+
+function paymentExplanation(p: PaymentInput, req: ReturnType<typeof requiredMonthlyForPayment>): string {
+  const alreadySaved = p.alreadySavedMinor ?? 0;
+  const remaining = Math.max(0, p.amountMinor - alreadySaved);
+  const cap = contributionCapMinor(p);
+  if (p.category === "monthly_recurring") {
+    return `monthly recurring: the full amount is due this month, required = ${p.amountMinor}`;
+  }
+  if (cap !== null) {
+    return `contribution-first fixed point: remaining ${remaining}, cap ${cap}, required = min(cap, remaining) = ${req.requiredMinor}`;
+  }
+  if (p.category === "custom_recurring" && req.occurrencesThisMonth > 1) {
+    return `custom recurring lands ${req.occurrencesThisMonth} times this month, required = ${p.amountMinor} * ${req.occurrencesThisMonth} = ${req.requiredMinor}`;
+  }
+  return `save-up path: remaining ${remaining}, months until effective date ${req.monthsUntilDue}, required = ceil(remaining / months) = ${req.requiredMinor}`;
+}
+
 // ---------------------------------------------------------------------------
 // The pass
 // ---------------------------------------------------------------------------
@@ -475,10 +763,14 @@ interface MemberMoney {
  * somebody made, and it must not start reordering itself by the shape of the
  * funding graph.
  */
-export function computeScopePlan(input: ScopeInput, asOfDate: string): ScopePlan {
+export function computeScopePlan(
+  input: ScopeInput,
+  asOfDate: string,
+  debug?: ScopeDebugCollector,
+): ScopePlan {
   const now = parseISODate(asOfDate);
   const currencies = [...new Set(input.accounts.map((a) => a.currency))].sort();
-  const partitions = currencies.map((currency) => planCurrency(input, currency, now));
+  const partitions = currencies.map((currency) => planCurrency(input, currency, now, debug));
 
   return {
     scopeId: input.scopeId,
@@ -493,22 +785,80 @@ export function computeScopePlan(input: ScopeInput, asOfDate: string): ScopePlan
   };
 }
 
-function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurrencyPlan {
+export function explainScopePlan(input: ScopeInput, asOfDate: string): ScopePlanDebugReport {
+  const collector: ScopeDebugCollector = { currencies: [] };
+  const plan = computeScopePlan(input, asOfDate, collector);
+  return {
+    scopeId: plan.scopeId,
+    householdId: plan.householdId,
+    asOfDate,
+    plan,
+    currencies: collector.currencies,
+    report: renderScopeDebugReport(input, plan, collector.currencies),
+  };
+}
+
+function planCurrency(
+  input: ScopeInput,
+  currency: string,
+  now: Date,
+  debug?: ScopeDebugCollector,
+): ScopeCurrencyPlan {
   const members = input.members;
   const memberIdx = new Map(members.map((m, i) => [m.userId, i] as const));
   const shareWeights = members.map((m) => Math.max(0, m.shareBp));
   const totalShareBp = shareWeights.reduce((s, w) => s + w, 0);
   const accounts = input.accounts.filter((a) => a.currency === currency);
   const inPartition = new Set(accounts.map((a) => a.accountId));
+  const debugTrace: ScopeCurrencyDebugTrace | null = debug
+    ? {
+        currency,
+        shareWeights,
+        totalShareBp,
+        accounts: [],
+        members: [],
+        payments: [],
+        obligations: [],
+        fundingSteps: [],
+        selfFundingSteps: [],
+        transferDerivations: [],
+        transfers: [],
+        expenseSplits: [],
+        heldBack: [],
+        transferOutSplits: [],
+        savings: emptySavingsDebug(),
+      }
+    : null;
+  const obligationSeeds: ObligationDebugSeed[] = [];
 
   // ---- phase 1: attribution -----------------------------------------------
 
   const accountIncome = new Map<string, number>();
   for (const acc of accounts) {
-    accountIncome.set(
-      acc.accountId,
-      acc.incomes.reduce((sum, i) => sum + monthlyIncomeMinor(i, now), 0),
-    );
+    const incomes = acc.incomes.map((i) => {
+      const monthlyMinor = monthlyIncomeMinor(i, now);
+      return {
+        incomeId: i.id,
+        name: i.name,
+        amountMinor: i.amountMinor,
+        frequency: i.frequency,
+        active: i.active !== false,
+        monthlyMinor,
+        explanation: incomeExplanation(i, monthlyMinor),
+      };
+    });
+    const monthlyIncome = incomes.reduce((sum, i) => sum + i.monthlyMinor, 0);
+    accountIncome.set(acc.accountId, monthlyIncome);
+    debugTrace?.accounts.push({
+      accountId: acc.accountId,
+      name: acc.name,
+      role: acc.role,
+      memberUserId: acc.memberUserId ?? null,
+      ownerUserId: acc.ownerUserId,
+      monthlyBufferMinor: Math.max(0, acc.monthlyBufferMinor ?? 0),
+      monthlyIncomeMinor: monthlyIncome,
+      incomes,
+    });
   }
 
   // Per member, within this currency: what they earn, what their own buffers
@@ -553,6 +903,20 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
         bestIncome = income;
         money[i]!.sourceAccountId = a.accountId;
       }
+    }
+  }
+  if (debugTrace) {
+    for (let i = 0; i < members.length; i++) {
+      debugTrace.members.push({
+        userId: members[i]!.userId,
+        displayName: members[i]!.displayName,
+        shareBp: members[i]!.shareBp,
+        shareWeight: shareWeights[i]!,
+        incomeMinor: money[i]!.incomeMinor,
+        bufferMinor: money[i]!.bufferMinor,
+        budgetMinor: Math.max(0, money[i]!.incomeMinor - money[i]!.bufferMinor),
+        sourceAccountId: money[i]!.sourceAccountId,
+      });
     }
   }
 
@@ -609,9 +973,31 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
         allocations: members.map((m) => ({ userId: m.userId, requiredMinor: 0, fundedMinor: 0 })),
       });
       lineSortDate.push(sortDateOf(p));
+      debugTrace?.payments.push({
+        lineIndex: lineIdx,
+        paymentId: p.id,
+        accountId: acc.accountId,
+        name: p.name,
+        category: p.category,
+        scope: p.scope,
+        priority,
+        sortDate: sortDateOf(p),
+        amountMinor: p.amountMinor,
+        alreadySavedMinor: p.alreadySavedMinor ?? 0,
+        requiredMonthlyMinor: req.requiredMinor,
+        effectiveDate: req.effectiveDate,
+        monthsUntilDue: req.monthsUntilDue,
+        occurrencesThisMonth: req.occurrencesThisMonth,
+        explanation: paymentExplanation(p, req),
+        allocations: members.map((m, i) => ({
+          userId: m.userId,
+          requiredMinor: allocReq[i]!,
+        })),
+      });
       for (let i = 0; i < members.length; i++) {
         lines[lineIdx]!.allocations[i]!.requiredMinor = allocReq[i]!;
         if (allocReq[i]! > 0) {
+          obligationSeeds.push({ kind: "payment", paymentId: p.id, paymentName: p.name });
           obligations.push({
             accountId: acc.accountId,
             memberIdx: i,
@@ -633,6 +1019,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     if (acc.role !== "personal" && buffer > 0) {
       splitByShares(buffer, shareWeights).forEach((v, i) => {
         if (v > 0) {
+          obligationSeeds.push({ kind: "reserve" });
           obligations.push({
             accountId: acc.accountId,
             memberIdx: i,
@@ -664,12 +1051,34 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
         (a.o.sortDate < b.o.sortDate ? -1 : a.o.sortDate > b.o.sortDate ? 1 : 0) ||
         a.idx - b.idx,
     );
+  const obligationIndex = new Map(obligations.map((o, idx) => [o, idx] as const));
   for (const { o } of orderedObligations) {
+    const before = remaining[o.memberIdx]!;
     const funded = Math.max(0, Math.min(o.requiredMinor, remaining[o.memberIdx]!));
     o.fundedMinor = funded;
     remaining[o.memberIdx]! -= funded;
     if (o.lineIdx !== undefined) {
       lines[o.lineIdx]!.allocations[o.memberIdx]!.fundedMinor = funded;
+    }
+    if (debugTrace) {
+      const idx = obligationIndex.get(o)!;
+      const seed = obligationSeeds[idx]!;
+      debugTrace.fundingSteps.push({
+        rank: debugTrace.fundingSteps.length + 1,
+        obligationIndex: idx,
+        kind: seed.kind,
+        accountId: o.accountId,
+        paymentId: seed.paymentId,
+        paymentName: seed.paymentName,
+        memberUserId: members[o.memberIdx]!.userId,
+        priority: o.priority,
+        sortDate: o.sortDate,
+        requiredMinor: o.requiredMinor,
+        budgetBeforeMinor: before,
+        fundedMinor: funded,
+        budgetAfterMinor: remaining[o.memberIdx]!,
+        shortfallMinor: Math.max(0, o.requiredMinor - funded),
+      });
     }
   }
 
@@ -727,6 +1136,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     const want = drawing.reduce((s, o) => s + o.fundedMinor, 0);
     if (want <= 0) continue;
     const pool = head.lineIdx === undefined ? "reserve" : "spendable";
+    const poolBefore = self[pool];
     const covered = Math.min(want, self[pool]);
     self[pool] -= covered;
     // Floors, then the remainder a penny at a time in queue order: rounding up
@@ -743,6 +1153,48 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
       o.selfFundedMinor++;
       handed++;
     }
+    if (debugTrace) {
+      const headIdx = obligationIndex.get(head)!;
+      const seed = obligationSeeds[headIdx]!;
+      debugTrace.selfFundingSteps.push({
+        rank: debugTrace.selfFundingSteps.length + 1,
+        kind: seed.kind,
+        accountId: head.accountId,
+        paymentId: seed.paymentId,
+        paymentName: seed.paymentName,
+        pool,
+        ownerUserId: self.owner === null ? null : members[self.owner]!.userId,
+        wantMinor: want,
+        poolBeforeMinor: poolBefore,
+        coveredMinor: covered,
+        poolAfterMinor: self[pool],
+        entries: drawing.map((o) => ({
+          obligationIndex: obligationIndex.get(o)!,
+          memberUserId: members[o.memberIdx]!.userId,
+          fundedMinor: o.fundedMinor,
+          selfFundedMinor: o.selfFundedMinor,
+          transferNeededMinor: Math.max(0, o.fundedMinor - o.selfFundedMinor),
+        })),
+      });
+    }
+  }
+  if (debugTrace) {
+    debugTrace.obligations = obligations.map((o, idx) => {
+      const seed = obligationSeeds[idx]!;
+      return {
+        obligationIndex: idx,
+        kind: seed.kind,
+        accountId: o.accountId,
+        paymentId: seed.paymentId,
+        paymentName: seed.paymentName,
+        memberUserId: members[o.memberIdx]!.userId,
+        priority: o.priority,
+        sortDate: o.sortDate,
+        requiredMinor: o.requiredMinor,
+        fundedMinor: o.fundedMinor,
+        selfFundedMinor: o.selfFundedMinor,
+      };
+    });
   }
 
   // The lines in the order the money was spent — the same key the obligations
@@ -782,8 +1234,35 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
   const transferMap = new Map<string, DerivedTransfer>();
   for (const o of obligations) {
     const moving = o.fundedMinor - o.selfFundedMinor;
-    if (moving <= 0) continue; // unfunded, or the money is already there
     const from = money[o.memberIdx]!.sourceAccountId;
+    if (debugTrace) {
+      const idx = obligationIndex.get(o)!;
+      const seed = obligationSeeds[idx]!;
+      debugTrace.transferDerivations.push({
+        obligationIndex: idx,
+        kind: seed.kind,
+        accountId: o.accountId,
+        paymentId: seed.paymentId,
+        paymentName: seed.paymentName,
+        memberUserId: members[o.memberIdx]!.userId,
+        fundedMinor: o.fundedMinor,
+        selfFundedMinor: o.selfFundedMinor,
+        movingMinor: Math.max(0, moving),
+        fromAccountId: from,
+        toAccountId: o.accountId,
+        reason:
+          o.fundedMinor <= 0
+            ? "unfunded"
+            : moving <= 0
+              ? "self_funded"
+              : !from
+                ? "no_source"
+                : from === o.accountId
+                  ? "same_account"
+                  : "transfer",
+      });
+    }
+    if (moving <= 0) continue; // unfunded, or the money is already there
     if (!from || from === o.accountId) continue; // no source, or internal
     const key = `${from}→${o.accountId}→${o.memberIdx}`;
     const existing = transferMap.get(key);
@@ -815,6 +1294,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
       confirmedTransfers.get(transferKey(t.fromAccountId, t.toAccountId, t.memberUserId)) ?? 0,
     );
   }
+  if (debugTrace) debugTrace.transfers = transfers.map((t) => ({ ...t }));
 
   const transferIn = tally(accounts);
   const transferOut = tally(accounts);
@@ -841,12 +1321,29 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
   const requiredOutflow = tally(accounts);
   for (const line of orderedLines) {
     const paid = Math.min(line.fundedMonthlyMinor, line.requiredMonthlyMinor);
-    const fromOwn = Math.min(paid, ownPool.get(line.accountId)!);
-    ownPool.set(line.accountId, ownPool.get(line.accountId)! - fromOwn);
+    const ownBefore = ownPool.get(line.accountId)!;
+    const inflowBefore = inflowPool.get(line.accountId)!;
+    const fromOwn = Math.min(paid, ownBefore);
+    ownPool.set(line.accountId, ownBefore - fromOwn);
     const fromInflow = paid - fromOwn;
-    inflowPool.set(line.accountId, inflowPool.get(line.accountId)! - fromInflow);
+    inflowPool.set(line.accountId, inflowBefore - fromInflow);
     line.fundedFromOwnMinor = fromOwn;
     line.fundedFromInflowMinor = fromInflow;
+    debugTrace?.expenseSplits.push({
+      rank: debugTrace.expenseSplits.length + 1,
+      paymentId: line.paymentId,
+      accountId: line.accountId,
+      name: line.name,
+      requiredMinor: line.requiredMonthlyMinor,
+      fundedMinor: line.fundedMonthlyMinor,
+      paidMinor: paid,
+      ownPoolBeforeMinor: ownBefore,
+      fundedFromOwnMinor: fromOwn,
+      ownPoolAfterMinor: ownPool.get(line.accountId)!,
+      inflowPoolBeforeMinor: inflowBefore,
+      fundedFromInflowMinor: fromInflow,
+      inflowPoolAfterMinor: inflowPool.get(line.accountId)!,
+    });
     // The *bills*, taken off the lines rather than off the member obligations
     // that pay for them: buffer reserves never leave the account, and neither do
     // the pennies members round their shares up by. A bill costs what it costs.
@@ -868,7 +1365,14 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
   const heldBack = new Map<string, number>();
   for (const acc of accounts) {
     const buffer = Math.max(0, acc.monthlyBufferMinor ?? 0);
-    heldBack.set(acc.accountId, Math.max(0, buffer - accountIncome.get(acc.accountId)!));
+    const held = Math.max(0, buffer - accountIncome.get(acc.accountId)!);
+    heldBack.set(acc.accountId, held);
+    debugTrace?.heldBack.push({
+      accountId: acc.accountId,
+      bufferMinor: buffer,
+      monthlyIncomeMinor: accountIncome.get(acc.accountId)!,
+      heldBackMinor: held,
+    });
   }
 
   // Derived transfers leave the same two pools, own money first. A pool can be
@@ -879,12 +1383,25 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
   for (const acc of accounts) {
     let out = transferOut.get(acc.accountId)!;
     if (out <= 0) continue;
-    const own = Math.max(0, ownPool.get(acc.accountId)!);
+    const ownBefore = ownPool.get(acc.accountId)!;
+    const inflowBefore = inflowPool.get(acc.accountId)!;
+    const own = Math.max(0, ownBefore);
     const fromOwn = Math.min(own, out);
     ownPool.set(acc.accountId, own - fromOwn);
     out -= fromOwn;
     const inflow = Math.max(0, inflowPool.get(acc.accountId)!);
-    inflowPool.set(acc.accountId, inflow - Math.min(inflow, out));
+    const fromInflow = Math.min(inflow, out);
+    inflowPool.set(acc.accountId, inflow - fromInflow);
+    debugTrace?.transferOutSplits.push({
+      accountId: acc.accountId,
+      transferOutMinor: transferOut.get(acc.accountId)!,
+      ownPoolBeforeMinor: ownBefore,
+      fundedFromOwnMinor: fromOwn,
+      ownPoolAfterMinor: ownPool.get(acc.accountId)!,
+      inflowPoolBeforeMinor: inflowBefore,
+      fundedFromInflowMinor: fromInflow,
+      inflowPoolAfterMinor: inflowPool.get(acc.accountId)!,
+    });
   }
   // What the account's own income has left after its own bills and its owner's
   // transfers — `AccountPlan.leftoverMinor`'s figure, before any savings.
@@ -903,6 +1420,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     now,
     ownPool,
     inflowPool,
+    debug: debugTrace?.savings,
   });
 
   // ---- summaries ----------------------------------------------------------
@@ -1004,7 +1522,7 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
   const totalRequired = obligations.reduce((s, o) => s + o.requiredMinor, 0) + unattributed;
   const totalFunded = obligations.reduce((s, o) => s + o.fundedMinor, 0);
 
-  return {
+  const result = {
     currency,
     monthlyIncomeMinor: monthlyIncome,
     totalRequiredMinor: totalRequired,
@@ -1024,6 +1542,259 @@ function planCurrency(input: ScopeInput, currency: string, now: Date): ScopeCurr
     movements: savings.movements,
     cycles: savings.cycles,
   };
+  if (debugTrace) debug?.currencies.push(debugTrace);
+  return result;
+}
+
+function renderScopeDebugReport(
+  input: ScopeInput,
+  plan: ScopePlan,
+  traces: readonly ScopeCurrencyDebugTrace[],
+): string {
+  const accountName = new Map(input.accounts.map((a) => [a.accountId, a.name ?? "account"]));
+  const memberName = new Map(input.members.map((m) => [m.userId, m.displayName ?? "user"]));
+  const movementName = new Map<string, string>();
+  for (const trace of traces) {
+    for (const edge of trace.savings.edges) {
+      if (edge.name) movementName.set(edge.inflowId, edge.name);
+    }
+    for (const account of trace.savings.accountSteps) {
+      for (const movement of account.movements) {
+        if (movement.name) movementName.set(movement.inflowId, movement.name);
+      }
+    }
+    for (const movement of trace.savings.unknownSources) {
+      if (movement.name) movementName.set(movement.inflowId, movement.name);
+    }
+  }
+  const accountLabel = (id: string): string => accountName.get(id) ?? "unknown account";
+  const memberLabel = (id: string): string => memberName.get(id) ?? "unknown user";
+  const movementLabel = (id: string): string => movementName.get(id) ?? "authored movement";
+  const out: string[] = [
+    "Finance Planner engine debug report",
+    `scope: ${plan.householdId ? "household account set" : "account set"}`,
+    `household: ${plan.householdId ? "yes" : "none"}`,
+    `as of: ${plan.asOfDate}`,
+    "",
+    "This report follows the one scope pass: account inputs, member budgets, global funding rank, derived transfers, authored movements, account residuals, then user rollup.",
+  ];
+
+  for (const trace of traces) {
+    const partition = plan.partitions.find((p) => p.currency === trace.currency);
+    out.push("", `Currency ${trace.currency}`, "====================");
+
+    out.push("", "Phase 1 - account income and buffers");
+    for (const account of trace.accounts) {
+      out.push(
+        `- ${accountLabel(account.accountId)} role=${account.role} owner=${memberLabel(account.ownerUserId)} rosterMember=${account.memberUserId ? memberLabel(account.memberUserId) : "none"}`,
+        `  income total: ${moneyMinor(trace.currency, account.monthlyIncomeMinor)}; buffer: ${moneyMinor(trace.currency, account.monthlyBufferMinor)}`,
+      );
+      if (account.incomes.length === 0) {
+        out.push("  incomes: none");
+      } else {
+        for (const income of account.incomes) {
+          out.push(
+            `  income ${income.name ?? "income"}: amount ${moneyMinor(trace.currency, income.amountMinor)}, frequency ${income.frequency}, active=${income.active} -> monthly ${moneyMinor(trace.currency, income.monthlyMinor)} (${income.explanation})`,
+          );
+        }
+      }
+    }
+
+    out.push("", "Phase 1 - member attribution");
+    for (const member of trace.members) {
+      out.push(
+        `- ${memberLabel(member.userId)} shareWeight=${member.shareWeight}/${trace.totalShareBp || 0}, normalisedShareBp=${member.shareBp}`,
+        `  income ${moneyMinor(trace.currency, member.incomeMinor)} - personal buffers ${moneyMinor(trace.currency, member.bufferMinor)} = budget ${moneyMinor(trace.currency, member.budgetMinor)}`,
+        `  transfer source account: ${member.sourceAccountId ? accountLabel(member.sourceAccountId) : "none"}`,
+      );
+    }
+
+    out.push("", "Phase 1 - payment requirements and allocation");
+    if (trace.payments.length === 0) out.push("- no active payments in this currency");
+    for (const payment of trace.payments) {
+      out.push(
+        `- ${payment.name} on ${accountLabel(payment.accountId)} priority=${payment.priority}, sortDate=${payment.sortDate}`,
+        `  category=${payment.category}, scope=${payment.scope}, amount=${moneyMinor(trace.currency, payment.amountMinor)}, alreadySaved=${moneyMinor(trace.currency, payment.alreadySavedMinor)}`,
+        `  required=${moneyMinor(trace.currency, payment.requiredMonthlyMinor)}, effectiveDate=${payment.effectiveDate}, months=${payment.monthsUntilDue}, occurrencesThisMonth=${payment.occurrencesThisMonth}`,
+        `  formula: ${payment.explanation}`,
+      );
+      for (const allocation of payment.allocations) {
+        out.push(
+          `  allocation -> ${memberLabel(allocation.userId)} requires ${moneyMinor(trace.currency, allocation.requiredMinor)}`,
+        );
+      }
+    }
+
+    out.push("", "Phase 2 - global funding queue by rank");
+    if (trace.fundingSteps.length === 0) out.push("- no obligations queued");
+    for (const step of trace.fundingSteps) {
+      const target = step.kind === "payment" ? (step.paymentName ?? "payment") : "buffer reserve";
+      out.push(
+        `#${step.rank} ${target} on ${accountLabel(step.accountId)} for ${memberLabel(step.memberUserId)}`,
+        `  priority=${step.priority}, sortDate=${step.sortDate}, required=${moneyMinor(trace.currency, step.requiredMinor)}`,
+        `  member budget before ${moneyMinor(trace.currency, step.budgetBeforeMinor)}; funded ${moneyMinor(trace.currency, step.fundedMinor)}; after ${moneyMinor(trace.currency, step.budgetAfterMinor)}; shortfall ${moneyMinor(trace.currency, step.shortfallMinor)}`,
+      );
+    }
+
+    out.push("", "Phase 2b - destination account self-funding");
+    if (trace.selfFundingSteps.length === 0) out.push("- no destination account income covered its own obligations");
+    for (const step of trace.selfFundingSteps) {
+      const target = step.kind === "payment" ? (step.paymentName ?? "payment") : "buffer reserve";
+      out.push(
+        `#${step.rank} ${accountLabel(step.accountId)} ${target} draws from ${step.pool} pool`,
+        `  pool owner=${step.ownerUserId ? memberLabel(step.ownerUserId) : "unowned in this scope"}, wanted=${moneyMinor(trace.currency, step.wantMinor)}, pool before=${moneyMinor(trace.currency, step.poolBeforeMinor)}, covered=${moneyMinor(trace.currency, step.coveredMinor)}, pool after=${moneyMinor(trace.currency, step.poolAfterMinor)}`,
+      );
+      for (const entry of step.entries) {
+        out.push(
+          `  ${memberLabel(entry.memberUserId)} funded ${moneyMinor(trace.currency, entry.fundedMinor)}; already in destination ${moneyMinor(trace.currency, entry.selfFundedMinor)}; transfer still needed ${moneyMinor(trace.currency, entry.transferNeededMinor)}`,
+        );
+      }
+    }
+
+    out.push("", "Phase 3 - derived transfer derivation");
+    if (trace.transferDerivations.length === 0) out.push("- no funded obligation needed transport");
+    for (const d of trace.transferDerivations) {
+      const target = d.kind === "payment" ? (d.paymentName ?? "payment") : "buffer reserve";
+      const from = d.fromAccountId ? accountLabel(d.fromAccountId) : "no source account";
+      out.push(
+        `- ${target} for ${memberLabel(d.memberUserId)} on ${accountLabel(d.toAccountId)}`,
+        `  funded=${moneyMinor(trace.currency, d.fundedMinor)}, already in destination=${moneyMinor(trace.currency, d.selfFundedMinor)}, moving=${moneyMinor(trace.currency, d.movingMinor)}, from=${from}, reason=${d.reason}`,
+      );
+    }
+    out.push("  aggregated derived transfers:");
+    if (trace.transfers.length === 0) out.push("  - none");
+    for (const t of trace.transfers) {
+      out.push(
+        `  - ${accountLabel(t.fromAccountId)} -> ${accountLabel(t.toAccountId)} for ${memberLabel(t.memberUserId)}: amount ${moneyMinor(trace.currency, t.amountMinor)}, confirmed ${moneyMinor(trace.currency, t.confirmedMinor)}`,
+      );
+    }
+
+    out.push("", "Phase 3b - expense funding sources by account pool");
+    if (trace.expenseSplits.length === 0) out.push("- no payment lines to split");
+    for (const split of trace.expenseSplits) {
+      out.push(
+        `#${split.rank} ${split.name} on ${accountLabel(split.accountId)}`,
+        `  paid ${moneyMinor(trace.currency, split.paidMinor)} of required ${moneyMinor(trace.currency, split.requiredMinor)}; line funded total ${moneyMinor(trace.currency, split.fundedMinor)}`,
+        `  own pool ${moneyMinor(trace.currency, split.ownPoolBeforeMinor)} -> ${moneyMinor(trace.currency, split.ownPoolAfterMinor)}; funded from own ${moneyMinor(trace.currency, split.fundedFromOwnMinor)}`,
+        `  inflow pool ${moneyMinor(trace.currency, split.inflowPoolBeforeMinor)} -> ${moneyMinor(trace.currency, split.inflowPoolAfterMinor)}; funded from arriving money ${moneyMinor(trace.currency, split.fundedFromInflowMinor)}`,
+      );
+    }
+
+    out.push("", "Phase 3c - buffer held back from savings");
+    for (const held of trace.heldBack) {
+      out.push(
+        `- ${accountLabel(held.accountId)} buffer ${moneyMinor(trace.currency, held.bufferMinor)} against income ${moneyMinor(trace.currency, held.monthlyIncomeMinor)} -> held back from savings ${moneyMinor(trace.currency, held.heldBackMinor)}`,
+      );
+    }
+
+    out.push("", "Phase 3d - derived transfers leaving source accounts");
+    if (trace.transferOutSplits.length === 0) out.push("- no derived transfer leaves a source account");
+    for (const split of trace.transferOutSplits) {
+      out.push(
+        `- ${accountLabel(split.accountId)} sends derived transfers totalling ${moneyMinor(trace.currency, split.transferOutMinor)}`,
+        `  own pool ${moneyMinor(trace.currency, split.ownPoolBeforeMinor)} -> ${moneyMinor(trace.currency, split.ownPoolAfterMinor)}; paid from own ${moneyMinor(trace.currency, split.fundedFromOwnMinor)}`,
+        `  inflow pool ${moneyMinor(trace.currency, split.inflowPoolBeforeMinor)} -> ${moneyMinor(trace.currency, split.inflowPoolAfterMinor)}; paid from arriving money ${moneyMinor(trace.currency, split.fundedFromInflowMinor)}`,
+      );
+    }
+
+    out.push("", "Phase 4 - authored savings movements");
+    out.push(`graph order: ${trace.savings.order.length ? trace.savings.order.map(accountLabel).join(" -> ") : "none"}`);
+    if (trace.savings.edges.length === 0) out.push("graph edges: none");
+    for (const edge of trace.savings.edges) {
+      out.push(
+        `movement ${edge.name ?? movementLabel(edge.inflowId)}: ${accountLabel(edge.fromAccountId)} -> ${accountLabel(edge.toAccountId)}, priority=${edge.priority}, requested=${moneyMinor(trace.currency, edge.requestedMinor)}`,
+      );
+    }
+    if (trace.savings.cycles.length > 0) {
+      for (const cycle of trace.savings.cycles) {
+        out.push(
+          `cycle: accounts ${cycle.accountIds.map(accountLabel).join(" -> ")}; movements ${cycle.inflowIds.map(movementLabel).join(" -> ")}; broken=${movementLabel(cycle.brokenInflowId)}`,
+        );
+      }
+    }
+    for (const account of trace.savings.accountSteps) {
+      out.push(
+        `- ${accountLabel(account.accountId)} starts savings with own pool ${moneyMinor(trace.currency, account.ownPoolStartMinor)} and inflow pool ${moneyMinor(trace.currency, account.inflowPoolStartMinor)} plus arrivals ${moneyMinor(trace.currency, account.arrivalsMinor)}`,
+      );
+      if (account.arrivals.length > 0) {
+        for (const arrival of account.arrivals) {
+          out.push(
+            `  arrival ${movementLabel(arrival.inflowId)} from ${accountLabel(arrival.fromAccountId)}: ${moneyMinor(trace.currency, arrival.amountMinor)} confirmed ${moneyMinor(trace.currency, arrival.confirmedMinor ?? 0)}`,
+          );
+        }
+      }
+      if (account.movements.length === 0) out.push("  no authored movements leave this account");
+      for (const movement of account.movements) {
+        out.push(
+          `  #${movement.rank} movement ${movement.name ?? movementLabel(movement.inflowId)}: ${accountLabel(movement.fromAccountId)} -> ${accountLabel(movement.toAccountId)} priority=${movement.priority}, requested=${moneyMinor(trace.currency, movement.requestedMinor)}, status=${movement.status}`,
+          `    own ${moneyMinor(trace.currency, movement.ownBeforeMinor)} -> ${moneyMinor(trace.currency, movement.ownAfterMinor)}; funded from own ${moneyMinor(trace.currency, movement.fundedFromOwnMinor)}`,
+          `    inflow ${moneyMinor(trace.currency, movement.inflowBeforeMinor)} -> ${moneyMinor(trace.currency, movement.inflowAfterMinor)}; funded from arriving money ${moneyMinor(trace.currency, movement.fundedFromInflowMinor)}; delivered inside partition=${movement.deliveredToPartition}`,
+        );
+      }
+      out.push(
+        `  savings pools end: own ${moneyMinor(trace.currency, account.ownPoolEndMinor)}, inflow ${moneyMinor(trace.currency, account.inflowPoolEndMinor)}`,
+      );
+    }
+    if (trace.savings.unknownSources.length > 0) {
+      out.push("unknown-source movement rows:");
+      for (const movement of trace.savings.unknownSources) {
+        out.push(
+          `- ${movement.name ?? movementLabel(movement.inflowId)}: sender account is outside this planned scope; requested ${moneyMinor(trace.currency, movement.requestedMinor)} funds 0`,
+        );
+      }
+    }
+
+    out.push("", "Per account final breakdown");
+    for (const account of partition?.accounts ?? []) {
+      out.push(
+        `- ${accountLabel(account.accountId)}`,
+        `  income ${moneyMinor(trace.currency, account.monthlyIncomeMinor)} + derived in ${moneyMinor(trace.currency, account.transferInMinor)} + movement in ${moneyMinor(trace.currency, account.movementInMinor)} - expenses funded ${moneyMinor(trace.currency, account.fundedOutflowMinor)} - derived out ${moneyMinor(trace.currency, account.transferOutMinor)} - authored out ${moneyMinor(trace.currency, account.committedMinor)} = residual ${moneyMinor(trace.currency, account.leftoverMinor)}`,
+        `  own leftover before authored savings: ${moneyMinor(trace.currency, account.ownLeftoverMinor)}; shortfall ${moneyMinor(trace.currency, account.shortfallMinor)}; confirmed arriving ${moneyMinor(trace.currency, account.confirmedInflowMinor)}`,
+      );
+      const lines = (partition?.lines ?? []).filter((l) => l.accountId === account.accountId);
+      if (lines.length === 0) out.push("  expenses: none");
+      for (const line of lines) {
+        out.push(
+          `  expense ${line.name} priority=${line.priority}: required ${moneyMinor(trace.currency, line.requiredMonthlyMinor)}, funded ${moneyMinor(trace.currency, line.fundedMonthlyMinor)} (own ${moneyMinor(trace.currency, line.fundedFromOwnMinor)}, arriving ${moneyMinor(trace.currency, line.fundedFromInflowMinor)}), onTrack=${line.onTrack}`,
+        );
+        for (const allocation of line.allocations) {
+          out.push(
+            `    ${memberLabel(allocation.userId)} required ${moneyMinor(trace.currency, allocation.requiredMinor)}, funded ${moneyMinor(trace.currency, allocation.fundedMinor)}`,
+          );
+        }
+      }
+      const transfersIn = (partition?.transfers ?? []).filter((t) => t.toAccountId === account.accountId);
+      const transfersOut = (partition?.transfers ?? []).filter((t) => t.fromAccountId === account.accountId);
+      for (const transfer of transfersIn) {
+        out.push(
+          `  derived transfer in from ${accountLabel(transfer.fromAccountId)} for ${memberLabel(transfer.memberUserId)}: ${moneyMinor(trace.currency, transfer.amountMinor)} confirmed ${moneyMinor(trace.currency, transfer.confirmedMinor)}`,
+        );
+      }
+      for (const transfer of transfersOut) {
+        out.push(
+          `  derived transfer out to ${accountLabel(transfer.toAccountId)} for ${memberLabel(transfer.memberUserId)}: ${moneyMinor(trace.currency, transfer.amountMinor)} confirmed ${moneyMinor(trace.currency, transfer.confirmedMinor)}`,
+        );
+      }
+      for (const movement of (partition?.movements ?? []).filter(
+        (m) => m.fromAccountId === account.accountId || m.toAccountId === account.accountId,
+      )) {
+        out.push(
+          `  authored movement ${movementLabel(movement.inflowId)} ${accountLabel(movement.fromAccountId)} -> ${accountLabel(movement.toAccountId)}: requested ${moneyMinor(trace.currency, movement.requestedMinor)}, funded ${moneyMinor(trace.currency, movement.fundedMinor)} (own ${moneyMinor(trace.currency, movement.fundedFromOwnMinor)}, arriving ${moneyMinor(trace.currency, movement.fundedFromInflowMinor)}), status=${movement.status}`,
+        );
+      }
+    }
+
+    out.push("", "Per user final breakdown");
+    for (const member of partition?.members ?? []) {
+      out.push(
+        `- ${memberLabel(member.userId)}`,
+        `  income ${moneyMinor(trace.currency, member.monthlyIncomeMinor)}; obligations required ${moneyMinor(trace.currency, member.obligationMinor)}; funded ${moneyMinor(trace.currency, member.fundedMinor)}; shortfall ${moneyMinor(trace.currency, member.shortfallMinor)}`,
+        `  leftover after funded obligations ${moneyMinor(trace.currency, member.leftoverMinor)}; authored savings committed ${moneyMinor(trace.currency, member.committedMinor)}; source account ${member.sourceAccountId ? accountLabel(member.sourceAccountId) : "none"}`,
+      );
+    }
+  }
+
+  return out.join("\n");
 }
 
 function transferKey(from: string, to: string, memberUserId: string): string {
@@ -1217,6 +1988,7 @@ interface SavingsPass {
   ownPool: Map<string, number>;
   /** Mutated: what arrived at each account and nothing has spent. */
   inflowPool: Map<string, number>;
+  debug?: SavingsDebugTrace;
 }
 
 interface SavingsResult {
@@ -1238,10 +2010,23 @@ interface SavingsResult {
  * produced, rather than a second engine's idea of the same accounts' money.
  */
 function planSavings(pass: SavingsPass): SavingsResult {
-  const { accounts, inPartition, currency, now, ownPool, inflowPool } = pass;
+  const { accounts, inPartition, currency, now, ownPool, inflowPool, debug } = pass;
   const byId = new Map(accounts.map((a) => [a.accountId, a]));
   const edges = buildFundingEdges(accounts);
   const { order, cycles, broken } = orderAccounts([...byId.keys()], edges);
+  if (debug) {
+    debug.edges = edges.map((edge) => ({
+      inflowId: edge.inflowId,
+      name: edge.row.name,
+      fromAccountId: edge.from,
+      toAccountId: edge.to,
+      priority: edge.priority,
+      requestedMinor: Math.max(0, monthlyIncomeMinor(edge.row, now)),
+    }));
+    debug.order = order;
+    debug.cycles = cycles;
+    debug.brokenInflowIds = [...broken].sort();
+  }
 
   const cycleFor = new Map<string, string[]>();
   const brokenFor = new Map<string, string>();
@@ -1289,6 +2074,20 @@ function planSavings(pass: SavingsPass): SavingsResult {
     let own = Math.max(0, ownPool.get(accountId)!);
     let inflow =
       Math.max(0, inflowPool.get(accountId)!) + arrivals.reduce((sum, a) => sum + a.amountMinor, 0);
+    const accountDebug: SavingsAccountDebugTrace | null = debug
+      ? {
+          accountId,
+          ownPoolStartMinor: ownPool.get(accountId)!,
+          inflowPoolStartMinor: inflowPool.get(accountId)!,
+          arrivalsMinor: arrivals.reduce((sum, a) => sum + a.amountMinor, 0),
+          availableOwnMinor: own,
+          availableInflowMinor: inflow,
+          arrivals,
+          movements: [],
+          ownPoolEndMinor: own,
+          inflowPoolEndMinor: inflow,
+        }
+      : null;
 
     // A movement the pass has decided to ignore must not eat the sender's money
     // on its way past: it is not happening, so it costs nothing. Everything else
@@ -1298,6 +2097,24 @@ function planSavings(pass: SavingsPass): SavingsResult {
     for (const edge of outByAccount.get(accountId) ?? []) {
       const requested = Math.max(0, monthlyIncomeMinor(edge.row, now));
       if (broken.has(edge.inflowId)) {
+        accountDebug?.movements.push({
+          rank: accountDebug.movements.length + 1,
+          inflowId: edge.inflowId,
+          name: edge.row.name,
+          fromAccountId: edge.from,
+          toAccountId: edge.to,
+          priority: edge.priority,
+          requestedMinor: requested,
+          ownBeforeMinor: own,
+          fundedFromOwnMinor: 0,
+          ownAfterMinor: own,
+          inflowBeforeMinor: inflow,
+          fundedFromInflowMinor: 0,
+          inflowAfterMinor: inflow,
+          fundedMinor: 0,
+          status: "broken_cycle",
+          deliveredToPartition: false,
+        });
         movements.push({
           inflowId: edge.inflowId,
           fromAccountId: edge.from,
@@ -1312,16 +2129,39 @@ function planSavings(pass: SavingsPass): SavingsResult {
         });
         continue;
       }
+      const ownBefore = own;
+      const inflowBefore = inflow;
       const fromOwn = Math.min(requested, own);
       own -= fromOwn;
       const fromInflow = Math.min(requested - fromOwn, inflow);
       inflow -= fromInflow;
       const funded = fromOwn + fromInflow;
+      const deliveredToPartition = funded > 0 && inPartition.has(edge.to);
       if (funded > 0 && inPartition.has(edge.to)) {
         const list = arrivalsFor.get(edge.to) ?? [];
         list.push({ inflowId: edge.inflowId, fromAccountId: edge.from, amountMinor: funded });
         arrivalsFor.set(edge.to, list);
       }
+      const status: EstateMovementStatus =
+        funded >= requested ? "funded" : funded > 0 ? "short" : "unfunded";
+      accountDebug?.movements.push({
+        rank: accountDebug.movements.length + 1,
+        inflowId: edge.inflowId,
+        name: edge.row.name,
+        fromAccountId: edge.from,
+        toAccountId: edge.to,
+        priority: edge.priority,
+        requestedMinor: requested,
+        ownBeforeMinor: ownBefore,
+        fundedFromOwnMinor: fromOwn,
+        ownAfterMinor: own,
+        inflowBeforeMinor: inflowBefore,
+        fundedFromInflowMinor: fromInflow,
+        inflowAfterMinor: inflow,
+        fundedMinor: funded,
+        status,
+        deliveredToPartition,
+      });
       movements.push({
         inflowId: edge.inflowId,
         fromAccountId: edge.from,
@@ -1332,11 +2172,16 @@ function planSavings(pass: SavingsPass): SavingsResult {
         fundedMinor: funded,
         fundedFromOwnMinor: fromOwn,
         fundedFromInflowMinor: fromInflow,
-        status: funded >= requested ? "funded" : funded > 0 ? "short" : "unfunded",
+        status,
       });
     }
     ownPool.set(accountId, own);
     inflowPool.set(accountId, inflow);
+    if (accountDebug) {
+      accountDebug.ownPoolEndMinor = own;
+      accountDebug.inflowPoolEndMinor = inflow;
+      debug!.accountSteps.push(accountDebug);
+    }
   }
 
   // Movements this pass can see arriving but not leaving: their sending account
@@ -1348,7 +2193,7 @@ function planSavings(pass: SavingsPass): SavingsResult {
     for (const row of account.inflows ?? []) {
       if (row.source !== "account" || row.active === false || !row.sourceAccountId) continue;
       if (known.has(row.id)) continue;
-      movements.push({
+      const movement: ScopeMovement = {
         inflowId: row.id,
         fromAccountId: row.sourceAccountId,
         toAccountId: account.accountId,
@@ -1359,6 +2204,25 @@ function planSavings(pass: SavingsPass): SavingsResult {
         fundedFromOwnMinor: 0,
         fundedFromInflowMinor: 0,
         status: "unknown_source",
+      };
+      movements.push(movement);
+      debug?.unknownSources.push({
+        rank: debug.unknownSources.length + 1,
+        inflowId: movement.inflowId,
+        name: row.name,
+        fromAccountId: movement.fromAccountId,
+        toAccountId: movement.toAccountId,
+        priority: movement.priority,
+        requestedMinor: movement.requestedMinor,
+        ownBeforeMinor: 0,
+        fundedFromOwnMinor: 0,
+        ownAfterMinor: 0,
+        inflowBeforeMinor: 0,
+        fundedFromInflowMinor: 0,
+        inflowAfterMinor: 0,
+        fundedMinor: 0,
+        status: "unknown_source",
+        deliveredToPartition: false,
       });
     }
   }

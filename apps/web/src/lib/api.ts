@@ -23,6 +23,7 @@ import type {
   OidcMetaDto,
   OverviewDto,
   PaymentDto,
+  PlanDebugDto,
   PlanPreviewDto,
   ProjectDetailDto,
   ProjectDto,
@@ -303,6 +304,13 @@ export class ApiClient {
       "POST",
       `/api/accounts/${accountId}/plan/preview${query({ asOf })}`,
       body,
+    );
+  }
+  /** Hidden engine trace. Requires `debug=engine`; normal screens never call it. */
+  debugPlan(params: { account?: string; household?: string; asOf?: string }) {
+    return this.request<PlanDebugDto>(
+      "GET",
+      `/api/debug/plan${query({ debug: "engine", ...params })}`,
     );
   }
   /** The plan month by month. `months` is clamped to 1..24 server-side (default 12). */

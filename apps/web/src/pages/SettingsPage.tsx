@@ -1,5 +1,5 @@
 import { type ChangeEvent, type FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
 import { api, ApiError } from "../lib/api.js";
 import { filenameFromDisposition, readTextFile, saveBlob } from "../lib/files.js";
@@ -51,6 +51,8 @@ export function SettingsPage() {
       <TwoFactorSection enabled={user.totpEnabled === true} onChanged={() => me.refetch()} />
 
       <DataSection />
+
+      <DiagnosticsSection />
 
       <DangerZone email={user.email} />
     </section>
@@ -255,6 +257,26 @@ function DataSection() {
             {importError}
           </p>
         )}
+      </div>
+    </>
+  );
+}
+
+/** Low-traffic support tools. Kept in settings so it is discoverable when
+ *  needed without becoming part of the day-to-day planning flow. */
+function DiagnosticsSection() {
+  return (
+    <>
+      <div className="section-head">
+        <h2>diagnostics</h2>
+      </div>
+      <div className="settings-panel">
+        <div className="settings-actions">
+          <Link className="button-link ghost" to="/debug/plan?debug=engine">
+            plan debug
+          </Link>
+        </div>
+        <p className="auth-hint">calculation trace for every visible planning scope.</p>
       </div>
     </>
   );

@@ -25,6 +25,16 @@ interface AuthValue {
 
 const AuthContext = createContext<AuthValue | null>(null);
 
+async function seedDemoIfEnabled(): Promise<void> {
+  try {
+    const meta = await api.meta();
+    if (meta.demoSeedEnabled) await api.seedDemo();
+  } catch {
+    // Registration should still succeed if a deployment has no seed, or if the
+    // profile stopped being empty between login and seed.
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserDto | null>(null);
   const [status, setStatus] = useState<Status>("loading");
@@ -70,6 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await api.login({ email, password });
       // A brand-new account cannot have 2FA yet, so this is always a session.
       if ("totpRequired" in res) throw new Error("unexpected 2FA challenge after registration");
+      await seedDemoIfEnabled();
       setUser(res.user);
       setStatus("authed");
     },

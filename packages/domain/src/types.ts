@@ -3,6 +3,8 @@ import type { Frequency, PaymentCategory, Recurrence } from "@finance-planner/co
 /** An income stream on an account. Amounts in integer minor units. */
 export interface IncomeInput {
   id: string;
+  /** Optional display label. The maths keys by `id`; this is only for traces. */
+  name?: string;
   amountMinor: number;
   frequency: Frequency;
   recurrence?: Recurrence | null;
@@ -35,6 +37,8 @@ export type InflowSourceKind = "external" | "account";
  */
 export interface InflowInput {
   id: string;
+  /** Optional display label. The maths keys by `id`; this is only for traces. */
+  name?: string;
   amountMinor: number;
   frequency: Frequency;
   recurrence?: Recurrence | null;
@@ -67,6 +71,8 @@ export interface InflowInput {
  */
 export interface OutboundInflowInput {
   id: string;
+  /** Optional display label. The maths keys by `id`; this is only for traces. */
+  name?: string;
   /** The account the money arrives in. Never this account. */
   toAccountId: string;
   amountMinor: number;
