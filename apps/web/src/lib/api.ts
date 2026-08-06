@@ -306,8 +306,8 @@ export class ApiClient {
       body,
     );
   }
-  /** Hidden engine trace. Requires `debug=engine`; normal screens never call it. */
-  debugPlan(params: { account?: string; household?: string; asOf?: string }) {
+  /** Hidden engine trace. Requires `debug=engine` and an explicit disclosure acknowledgement. */
+  debugPlan(params: { account?: string; household?: string; asOf?: string; ack?: string }) {
     return this.request<PlanDebugDto>(
       "GET",
       `/api/debug/plan${query({ debug: "engine", ...params })}`,

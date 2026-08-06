@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api.js";
@@ -47,11 +47,17 @@ describe("DebugPlanPage", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("location")).toHaveTextContent("/debug/plan?debug=engine"),
     );
+    expect(screen.getByRole("dialog", { name: /full household finance trace/i })).toBeVisible();
+    expect(debugPlan).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /show full debug trace/i }));
+
     await waitFor(() =>
       expect(debugPlan).toHaveBeenCalledWith({
         account: undefined,
         household: undefined,
         asOf: undefined,
+        ack: "full-household-finance",
       }),
     );
   });

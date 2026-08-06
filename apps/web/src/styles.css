@@ -1500,6 +1500,33 @@ button.tiny {
   color: var(--accent);
 }
 
+.debug-disclosure-page {
+  min-height: min(72vh, 42rem);
+  display: grid;
+  place-items: center;
+}
+.debug-disclosure {
+  width: min(100%, 34rem);
+  padding: 1.25rem;
+  border: 1px solid var(--alert);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: 0 16px 42px color-mix(in srgb, var(--ink) 16%, transparent);
+}
+.debug-disclosure h1 {
+  margin-top: 0.15rem;
+}
+.debug-disclosure p {
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+.debug-disclosure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
 .debug-report {
   margin: 0;
   padding: 1rem;

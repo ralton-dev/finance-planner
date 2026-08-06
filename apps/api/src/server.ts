@@ -469,6 +469,8 @@ interface PlanDebugResponse {
   scopes: PlanDebugScopeResponse[];
 }
 
+const PLAN_DEBUG_ACK = "full-household-finance";
+
 /** Where an account sits in the user's households, when it sits in one. */
 interface AccountPlacement {
   householdId: string | null;
@@ -895,11 +897,25 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       if (!access) inaccessible.push(accountId);
     }
     if (inaccessible.length > 0) {
-      throw new HttpError(
-        403,
-        "debug_scope_not_visible",
-        "Full plan debug requires view access to every account in the planned scope",
-      );
+      const householdId = scope.plan.householdId;
+      const members = householdId ? await store.listMembersForHousehold(householdId) : [];
+      const memberIds = new Set(members.map((m) => m.userId));
+      const accountOwners = new Map(scope.input.accounts.map((a) => [a.accountId, a.ownerUserId]));
+      const householdMemberDebug =
+        householdId !== null &&
+        memberIds.has(userId) &&
+        inaccessible.every((id) => {
+          if (scope.householdOf.get(id) === householdId) return true;
+          const ownerUserId = accountOwners.get(id);
+          return ownerUserId !== undefined && memberIds.has(ownerUserId);
+        });
+      if (!householdMemberDebug) {
+        throw new HttpError(
+          403,
+          "debug_scope_not_visible",
+          "Full plan debug requires view access to every non-household account in the planned scope",
+        );
+      }
     }
     const trace = explainScopePlan(scope.input, asOfDate);
     const households: Record<string, string> = {};
@@ -942,27 +958,36 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.get("/api/meta", async () => ({ demoSeedEnabled: env.enableDemoSeed }));
 
   /**
-   * Hidden calculation trace. This is not linked from the app and it is inert
-   * unless the caller explicitly passes `debug=engine`.
+   * Hidden calculation trace. This is kept out of primary navigation and it is
+   * inert unless the caller explicitly passes `debug=engine` and acknowledges
+   * the household-finance disclosure.
    *
-   * The report prints account inputs, payments and movement rows, so it is only
-   * returned when the caller can view every account in the planned scope. A
-   * normal plan can safely expose selected facts from a wider closure; a debug
-   * trace is deliberately too exhaustive for that.
+   * The report prints account inputs, payments and movement rows. With the
+   * acknowledgement, a household member may read the full household calculation,
+   * including member-owned personal accounts that are not otherwise shared with
+   * them. Inaccessible accounts outside that household are still refused.
    */
   app.get("/api/debug/plan", async (req): Promise<PlanDebugResponse> => {
     const userId = await authenticate(req);
-    const { debug, account, household, asOf } = req.query as {
+    const { debug, account, household, asOf, ack } = req.query as {
       debug?: string;
       account?: string;
       household?: string;
       asOf?: string;
+      ack?: string;
     };
     if (debug !== "engine") {
       throw new HttpError(404, "not_found", "Not found");
     }
     if (account && household) {
       throw new HttpError(422, "validation_error", "Choose account or household, not both");
+    }
+    if (ack !== PLAN_DEBUG_ACK) {
+      throw new HttpError(
+        403,
+        "debug_ack_required",
+        "Acknowledge full household finance debug before loading the trace",
+      );
     }
 
     const asOfDate = asOf ?? today();

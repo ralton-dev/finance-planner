@@ -1,9 +1,10 @@
-import { type ReactNode, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { type ReactNode, useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 import type { PlanDebugDto, PlanDebugLabelsDto, PlanDebugScopeDto } from "../lib/types.js";
 import { useAsync } from "../lib/useAsync.js";
 
+const PLAN_DEBUG_ACK = "full-household-finance";
 const EMPTY_LABELS: PlanDebugLabelsDto = { accounts: {}, users: {}, households: {} };
 
 function collectLabels(data: PlanDebugDto): PlanDebugLabelsDto {
@@ -254,6 +255,10 @@ function DebugOptions({ data }: { data?: PlanDebugDto }) {
           <span>turns on the hidden calculation trace; it is not a separate engine.</span>
         </div>
         <div>
+          <code>ack={PLAN_DEBUG_ACK}</code>
+          <span>required after acknowledging that full household finances will be visible.</span>
+        </div>
+        <div>
           <code>account=&lt;account-id&gt;</code>
           <span>filters the trace to the full scope containing that account.</span>
         </div>
@@ -273,14 +278,14 @@ function DebugOptions({ data }: { data?: PlanDebugDto }) {
       {(accounts.length > 0 || households.length > 0) && (
         <div className="debug-targets">
           {households.map(([id, name]) => (
-            <a href={`/debug/plan?debug=engine&household=${id}`} key={id}>
+            <Link to={`/debug/plan?debug=engine&household=${id}`} key={id}>
               household: {name}
-            </a>
+            </Link>
           ))}
           {accounts.map(([id, name]) => (
-            <a href={`/debug/plan?debug=engine&account=${id}`} key={id}>
+            <Link to={`/debug/plan?debug=engine&account=${id}`} key={id}>
               account: {name}
-            </a>
+            </Link>
           ))}
         </div>
       )}
@@ -288,16 +293,54 @@ function DebugOptions({ data }: { data?: PlanDebugDto }) {
   );
 }
 
+function DebugDisclosure({ onAcknowledge }: { onAcknowledge: () => void }) {
+  return (
+    <section className="debug-disclosure-page">
+      <div
+        aria-labelledby="debug-disclosure-title"
+        aria-modal="true"
+        className="debug-disclosure"
+        role="dialog"
+      >
+        <p className="eyebrow">debug disclosure</p>
+        <h1 id="debug-disclosure-title">full household finance trace</h1>
+        <p>
+          This debugger prints the raw calculation scope. It can include other household members'
+          personal accounts, income, payments, transfers, balances, funding order and shortfalls.
+        </p>
+        <p>
+          Nothing is redacted inside the trace. Open it only when everyone in the household
+          understands that these details are visible for debugging the maths.
+        </p>
+        <div className="debug-disclosure-actions">
+          <button type="button" className="danger" onClick={onAcknowledge}>
+            show full debug trace
+          </button>
+          <Link className="button-link ghost" to="/settings">
+            back to settings
+          </Link>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function DebugPlanPage() {
   const [params, setParams] = useSearchParams();
+  const [acknowledged, setAcknowledged] = useState(false);
   const enabled = params.get("debug") === "engine";
   const account = params.get("account") ?? undefined;
   const household = params.get("household") ?? undefined;
   const asOf = params.get("asOf") ?? undefined;
+  const invalidTarget = Boolean(account && household);
+  const canFetch = enabled && acknowledged && !invalidTarget;
 
   const debug = useAsync<PlanDebugDto | null>(
-    () => (enabled ? api.debugPlan({ account, household, asOf }) : Promise.resolve(null)),
-    [enabled, account, household, asOf],
+    () =>
+      canFetch
+        ? api.debugPlan({ account, household, asOf, ack: PLAN_DEBUG_ACK })
+        : Promise.resolve(null),
+    [canFetch, account, household, asOf],
   );
 
   useEffect(() => {
@@ -315,7 +358,7 @@ export function DebugPlanPage() {
     return <p className="muted">loading debug trace…</p>;
   }
 
-  if (account && household) {
+  if (invalidTarget) {
     return (
       <section>
         <h1>
@@ -324,6 +367,10 @@ export function DebugPlanPage() {
         <p className="error">choose account or household, not both.</p>
       </section>
     );
+  }
+
+  if (!acknowledged) {
+    return <DebugDisclosure onAcknowledge={() => setAcknowledged(true)} />;
   }
 
   if (debug.loading) return <p className="muted">loading…</p>;

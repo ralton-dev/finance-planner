@@ -274,7 +274,7 @@ describe("api service", () => {
 
     const on = await app.inject({
       method: "GET",
-      url: `/api/debug/plan?debug=engine&account=${account.id}&asOf=2026-01-01`,
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&account=${account.id}&asOf=2026-01-01`,
       headers: auth,
     });
     expect(on.statusCode).toBe(200);
@@ -288,7 +288,24 @@ describe("api service", () => {
     expect(body.scopes[0].trace.plan.lines[0].paymentId).toBeDefined();
   });
 
-  it("refuses full engine debug when the planned scope contains an inaccessible account", async () => {
+  it("requires acknowledgement before returning any full engine debug trace", async () => {
+    const { user, auth } = await seedUser(store);
+    const account = await store.createAccount({
+      ownerUserId: user.id,
+      name: "A",
+      currency: "GBP",
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&account=${account.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("debug_ack_required");
+  });
+
+  it("refuses acknowledged engine debug when the planned scope contains an inaccessible non-household account", async () => {
     const { user: alice, auth } = await seedUser(store, "alice@example.com");
     const { user: bob } = await seedUser(store, "bob@example.com");
     const aliceCurrent = await store.createAccount({
@@ -316,11 +333,34 @@ describe("api service", () => {
 
     const res = await app.inject({
       method: "GET",
-      url: `/api/debug/plan?debug=engine&account=${aliceCurrent.id}&asOf=2026-01-01`,
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&account=${aliceCurrent.id}&asOf=2026-01-01`,
       headers: auth,
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("debug_scope_not_visible");
+  });
+
+  it("allows acknowledged household debug over member personal accounts that are not shared", async () => {
+    const { auth, household, bobCur } = await seedHousehold(store, app);
+
+    const unacknowledged = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&household=${household.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(unacknowledged.statusCode).toBe(403);
+    expect(unacknowledged.json().error.code).toBe("debug_ack_required");
+
+    const acknowledged = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&household=${household.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(acknowledged.statusCode).toBe(200);
+    const body = acknowledged.json();
+    expect(body.subject).toEqual({ kind: "household", householdId: household.id });
+    expect(body.scopes[0].labels.accounts[bobCur.id]).toBe("bob-cur");
+    expect(body.scopes[0].report).toContain("bob-cur");
   });
 
   it("rejects fixed_point payments without a due date (422)", async () => {
@@ -5724,7 +5764,7 @@ describe("meta + demo seed", () => {
     // transfer funding and authored movement funding, not just totals.
     const debug = await app.inject({
       method: "GET",
-      url: `/api/debug/plan?debug=engine&account=${everyday.id}&asOf=${today}`,
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&account=${everyday.id}&asOf=${today}`,
       headers: auth,
     });
     expect(debug.statusCode).toBe(200);
@@ -5756,7 +5796,7 @@ describe("meta + demo seed", () => {
 
     const householdDebug = await app.inject({
       method: "GET",
-      url: `/api/debug/plan?debug=engine&household=${household!.id}&asOf=${today}`,
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&household=${household!.id}&asOf=${today}`,
       headers: auth,
     });
     expect(householdDebug.statusCode).toBe(200);
