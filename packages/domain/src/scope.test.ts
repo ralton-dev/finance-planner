@@ -1765,11 +1765,20 @@ describe("computeScopePlan — the shape of the answer", () => {
         status: "funded",
       }),
     );
+    expect(debug.plan.partitions[0]!.members[0]).toMatchObject({
+      leftoverMinor: 60_000,
+      availableLeftoverMinor: 30_000,
+      committedMinor: 30_000,
+    });
     expect(debug.report).toContain("Phase 2 - global funding queue by rank");
     expect(debug.report).toContain("#1 rent on bills for user");
     expect(debug.report).toContain("current -> bills");
     expect(debug.report).toContain("movement Savings sweep");
     expect(debug.report).toContain("Per account final breakdown");
     expect(debug.report).toContain("Per user final breakdown");
+    expect(debug.report).toContain("available left over across owned accounts GBP 30000 minor");
+    expect(debug.report).toContain(
+      "funding budget leftover before authored savings GBP 60000 minor; authored savings committed GBP 30000 minor",
+    );
   });
 });

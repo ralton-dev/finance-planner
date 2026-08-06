@@ -279,6 +279,15 @@ export interface ScopeMemberPlan {
   /** Discretionary surplus after the buffer + obligations (>= 0). Keeps its
    *  meaning exactly (decision 13): it is **not** reduced by `committedMinor`. */
   leftoverMinor: number;
+  /**
+   * User-facing leftover after authored savings are reserved.
+   *
+   * Same basis as `leftoverForUser`: sum the available leftovers of the
+   * accounts this member owns in this currency. This deliberately excludes
+   * movement arrivals into savings pots, because those are reserved money, not
+   * free money.
+   */
+  availableLeftoverMinor: number;
   /** Of that leftover, what funded savings movements out of this member's own
    *  accounts have spoken for (decision 13). Added alongside, never netted. */
   committedMinor: number;
@@ -1454,37 +1463,6 @@ function planCurrency(
     }
   }
 
-  const memberPlans: ScopeMemberPlan[] = members.map((m, i) => {
-    const ob = obligations.filter((o) => o.memberIdx === i);
-    const obligation = ob.reduce((s, o) => s + o.requiredMinor, 0);
-    const funded = ob.reduce((s, o) => s + o.fundedMinor, 0);
-    // A member's committed savings are the funded movements leaving the
-    // personal accounts the roster names as theirs. Movements out of a shared
-    // pot belong to no one member and are counted on the account alone —
-    // deliberately still a role question, and not the ownership one decision 15
-    // moved income onto: a pot the household sweeps into an ISA is spending the
-    // household's money, whoever's name is on it.
-    const committed = accounts
-      .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
-      .reduce((s, a) => s + committedByAccount.get(a.accountId)!, 0);
-    return {
-      userId: m.userId,
-      displayName: m.displayName,
-      currency,
-      shareBp:
-        totalShareBp > 0
-          ? Math.round((shareWeights[i]! / totalShareBp) * 10_000)
-          : Math.round(10_000 / members.length),
-      monthlyIncomeMinor: money[i]!.incomeMinor,
-      obligationMinor: obligation,
-      fundedMinor: funded,
-      leftoverMinor: remaining[i]!,
-      committedMinor: committed,
-      shortfallMinor: Math.max(0, obligation - funded),
-      sourceAccountId: money[i]!.sourceAccountId,
-    };
-  });
-
   const accountPlans: ScopeAccountPlan[] = accounts.map((acc) => {
     const income = accountIncome.get(acc.accountId)!;
     const tin = transferIn.get(acc.accountId)!;
@@ -1520,6 +1498,41 @@ function planCurrency(
       inflowArrivals: arrivals,
       fundingCycleAccountIds: savings.cycleFor.get(acc.accountId),
       fundingCycleBrokenInflowId: savings.brokenFor.get(acc.accountId),
+    };
+  });
+
+  const memberPlans: ScopeMemberPlan[] = members.map((m, i) => {
+    const ob = obligations.filter((o) => o.memberIdx === i);
+    const obligation = ob.reduce((s, o) => s + o.requiredMinor, 0);
+    const funded = ob.reduce((s, o) => s + o.fundedMinor, 0);
+    // A member's committed savings are the funded movements leaving the
+    // personal accounts the roster names as theirs. Movements out of a shared
+    // pot belong to no one member and are counted on the account alone —
+    // deliberately still a role question, and not the ownership one decision 15
+    // moved income onto: a pot the household sweeps into an ISA is spending the
+    // household's money, whoever's name is on it.
+    const committed = accounts
+      .filter((a) => a.role === "personal" && a.memberUserId === m.userId)
+      .reduce((s, a) => s + committedByAccount.get(a.accountId)!, 0);
+    const availableLeftover = accountPlans
+      .filter((a) => a.ownerUserId === m.userId)
+      .reduce((s, a) => s + a.availableLeftoverMinor, 0);
+    return {
+      userId: m.userId,
+      displayName: m.displayName,
+      currency,
+      shareBp:
+        totalShareBp > 0
+          ? Math.round((shareWeights[i]! / totalShareBp) * 10_000)
+          : Math.round(10_000 / members.length),
+      monthlyIncomeMinor: money[i]!.incomeMinor,
+      obligationMinor: obligation,
+      fundedMinor: funded,
+      leftoverMinor: remaining[i]!,
+      availableLeftoverMinor: availableLeftover,
+      committedMinor: committed,
+      shortfallMinor: Math.max(0, obligation - funded),
+      sourceAccountId: money[i]!.sourceAccountId,
     };
   });
 
@@ -1819,10 +1832,21 @@ function renderScopeDebugReport(
 
     out.push("", "Per user final breakdown");
     for (const member of partition?.members ?? []) {
+      const ownedAccounts = (partition?.accounts ?? []).filter(
+        (account) => account.ownerUserId === member.userId,
+      );
       out.push(
         `- ${memberLabel(member.userId)}`,
         `  income ${moneyMinor(trace.currency, member.monthlyIncomeMinor)}; obligations required ${moneyMinor(trace.currency, member.obligationMinor)}; funded ${moneyMinor(trace.currency, member.fundedMinor)}; shortfall ${moneyMinor(trace.currency, member.shortfallMinor)}`,
-        `  leftover after funded obligations ${moneyMinor(trace.currency, member.leftoverMinor)}; authored savings committed ${moneyMinor(trace.currency, member.committedMinor)}; source account ${member.sourceAccountId ? accountLabel(member.sourceAccountId) : "none"}`,
+        `  available left over across owned accounts ${moneyMinor(trace.currency, member.availableLeftoverMinor)}`,
+      );
+      for (const account of ownedAccounts) {
+        out.push(
+          `    ${accountLabel(account.accountId)} contributes available ${moneyMinor(trace.currency, account.availableLeftoverMinor)}`,
+        );
+      }
+      out.push(
+        `  funding budget leftover before authored savings ${moneyMinor(trace.currency, member.leftoverMinor)}; authored savings committed ${moneyMinor(trace.currency, member.committedMinor)}; source account ${member.sourceAccountId ? accountLabel(member.sourceAccountId) : "none"}`,
       );
     }
   }
@@ -1931,8 +1955,9 @@ export function closeForUser(
 export interface UserLeftover {
   currency: string;
   /**
-   * `Σ ScopeAccountPlan.leftoverMinor` over the accounts this person **owns** —
-   * the residual, signed, exactly as the account altitude reports it.
+   * `Σ ScopeAccountPlan.availableLeftoverMinor` over the accounts this person
+   * **owns** — the user-facing available amount, excluding reserved movement
+   * arrivals.
    */
   leftoverMinor: number;
   /** `Σ ScopeAccountPlan.shortfallMinor` over the same accounts (>= 0). */
@@ -1945,13 +1970,13 @@ export interface UserLeftover {
  * **What is left over for this person** (decision 19), and it is a *view*.
  *
  * `closeForUser`'s shape, deliberately, and for the same reason: no arithmetic
- * the pass has not already done. An account's left over is its residual —
- * `income + arriving − spending − leaving`, which is
- * `ScopeAccountPlan.leftoverMinor`. A **person's** is that, summed over the
- * accounts they own. A **household's** is its members', added up
+ * the pass has not already done. An account's left over is its available
+ * leftover — `ScopeAccountPlan.availableLeftoverMinor`, not the flow residual
+ * that includes reserved savings arrivals. A **person's** is that, summed over
+ * the accounts they own. A **household's** is its members', added up
  * (`HouseholdPlan.membersLeftoverMinor`). Each altitude is a plain sum of the
  * one below it, so the rows on a screen add up to the total above them; nothing
- * is netted and nothing is reconstructed by algebra.
+ * is reconstructed by algebra.
  *
  * **Ownership, never access** (decision 20). An account a co-member shared into
  * the household is theirs and appears in their figure, not in yours; a shared
