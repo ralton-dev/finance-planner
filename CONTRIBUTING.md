@@ -19,9 +19,10 @@ reporting instead of opening a public issue.
 ## Local setup
 
 See [`README.md`](./README.md) for the three local-dev modes and prerequisites
-(Node 22, pnpm 10, Docker). The short version:
+(Node 24, pnpm 10, Docker). The short version:
 
 ```bash
+npm i -g corepack                          # Node 25+ no longer bundles it
 corepack enable
 pnpm install
 cp .env.example .env
