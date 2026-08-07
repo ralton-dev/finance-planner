@@ -45,6 +45,14 @@ jobs:
       - name: Build
         run: pnpm build
 
+  # Signs in against a real stack and fails on anything the pages fetch that
+  # returns 400 or more. It used to load the login screen and nothing else,
+  # which is how 1409e5f — six deleted routes the client still called — went
+  # through here green while two pages 404'd on every load.
+  #
+  # No build step of its own: Playwright's webServer builds the SPA, and the
+  # harness (apps/web/e2e/stack.mts) runs the api and auth from source over one
+  # shared store, so nothing else needs compiling first.
   e2e:
     runs-on: ubuntu-latest
     needs: build-test
@@ -65,8 +73,19 @@ jobs:
       - name: Install Playwright browser
         run: pnpm --filter @finance-planner/web exec playwright install --with-deps chromium
 
-      - name: Run Playwright E2E
+      - name: Sign in and walk the app (Playwright)
         run: pnpm --filter @finance-planner/web test:e2e
+
+      # A failure here names a URL and a status; the trace says which click led
+      # to it. Without the artifact that has to be reproduced locally first.
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces
+          path: apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
 
   integration:
     runs-on: ubuntu-latest

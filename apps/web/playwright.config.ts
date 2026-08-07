@@ -27,7 +27,11 @@ export default defineConfig({
     port: PORT,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
+    // Piped so the harness's one-line summary of what it seeded is in the log
+    // when a run goes red; `warn` keeps Fastify's per-request logging out of it,
+    // which otherwise buries the failure under a few hundred lines of JSON.
     stdout: "pipe",
+    env: { LOG_LEVEL: "warn" },
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });
