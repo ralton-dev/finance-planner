@@ -343,10 +343,9 @@ export function DebugPlanPage() {
     [canFetch, account, household, asOf],
   );
 
-  useEffect(() => {
-    if (debug.data) logDebugReport(debug.data);
-  }, [debug.data]);
-
+  // Deliberately not logged on load. The console is a place things linger and
+  // get captured — a whole household's finances should reach it only when
+  // somebody presses the button below and asks for that.
   useEffect(() => {
     if (enabled) return;
     const next = new URLSearchParams(params);
