@@ -98,9 +98,21 @@ means a later push superseded it — check whether `build-test` passed before th
 rather than assuming either way.
 
 CI runs `e2e`, `integration` and `stack-smoke`, which the local gate does not. Wait for
-green before starting a wave that builds on the last one. Note `e2e` is a single
-16-line smoke test: it once stayed green through a commit where two pages threw 404s.
-**CI green does not mean the app works.**
+green before starting a wave that builds on the last one.
+
+**`e2e` used to be a single 16-line smoke test, and it stayed green through a commit
+where two pages threw 404s.** That is no longer true: the said-and-done plan added
+`journey.spec.ts`, which signs in, walks six pages and fails on any response ≥400 they
+fetch. It was proven by deleting the route behind `api.getHousehold()` and watching the
+suite go red with two 404s — **both pages still rendered**, and only the wire assertion
+caught it.
+
+So the specific hole is closed. **The general warning stands: CI green does not mean
+the app works.** Every live defect in the said-and-done plan was found on a real screen
+or by a browser pass inside a package, never by a passing suite — and `stack-smoke`,
+despite its name, still only probes `/healthz` on three ports and `GET /` on the web
+container. It never signs in and never touches a business route, so it would have
+stayed green through that commit too.
 
 ## The watchdog
 
