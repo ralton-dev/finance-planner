@@ -6725,10 +6725,16 @@ describe("the overview is the caller's own money", () => {
    *
    * The only shape that tells the ownership basis from the roster basis: on the
    * estate the two coincide to the penny, so an estate-only pin proves nothing
-   * about which one shipped. Here an implementation wired to the roster reads
-   * £3,300 for the household and £1,200 for Bob; the ownership basis reads
-   * £2,500 and £800 after the saved arrival is excluded from free money, and the
-   * pre-commit household figure is still on the wire beside it.
+   * about which one shipped. The roster basis reads £3,300 for the household and
+   * £1,200 for Bob; the ownership basis reads £2,500 and £800 after the saved
+   * arrival is excluded from free money.
+   *
+   * `membersLeftoverMinor` is the headline and is the ownership basis. Since
+   * `199b345` the household's own row applies the arrival it records, so
+   * `householdLeftoverMinor` is now exactly that roster figure — Bob's £400
+   * counted on his sending row and again in the pot it reached — sitting on the
+   * wire beside the headline rather than being it. Both are asserted here so the
+   * two cannot quietly swap places.
    */
   it("reports the ownership basis, not the roster basis, on the cross-owner fixture", async () => {
     const seeded = await seedCrossOwner(store);
@@ -6750,9 +6756,13 @@ describe("the overview is the caller's own money", () => {
       ),
     ).toBe(80_000);
 
-    // The pre-commit household row is demonstrably a different answer: Bob's
-    // £400 is still shown on his sending row until `committedMinor` is removed.
-    expect(plan.householdLeftoverMinor).toBe(290_000);
+    // The household row is demonstrably a different answer, and £800 apart from
+    // the headline rather than £400: Bob's arrival is counted at both ends, and
+    // removing `committedMinor` takes out one of the two and leaves the other.
+    expect(plan.householdLeftoverMinor).toBe(330_000);
+    expect(plan.householdLeftoverMinor - plan.membersLeftoverMinor).toBe(80_000);
+    // Bob's own account is unmoved: nobody else's money is parked in it, so
+    // applying arrivals has nothing to apply here.
     expect(
       plan.accounts.find((a) => a.accountId === seeded.accounts.get("acc-x-bob-cur")!.id)!
         .leftoverMinor,
@@ -6786,11 +6796,13 @@ describe("the overview is the caller's own money", () => {
     // absent rather than an empty list — the ordinary case says nothing at all.
     expect(bob).not.toHaveProperty("arrivedFromOthers");
 
-    // Unmoved, to the penny.
+    // Unmoved, to the penny — the label is a label, and none of the ownership
+    // figures shift for it.
     expect(alice.personalLeftoverMinor).toBe(170_000);
     expect(bob.personalLeftoverMinor).toBe(80_000);
     expect(plan.membersLeftoverMinor).toBe(250_000);
-    expect(plan.householdLeftoverMinor).toBe(290_000);
+    // The roster figure beside them, asserted again for the same reason.
+    expect(plan.householdLeftoverMinor).toBe(330_000);
   });
 
   /** Month 0 of the household's walk is its plan for the same date — one
