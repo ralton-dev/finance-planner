@@ -4,7 +4,7 @@ import { RealityStrip } from "../components/RealityStrip.js";
 import type { AccountPlanDto } from "../lib/types.js";
 
 /**
- * **Red pin — issue #45. Flipped by WP-AT.**
+ * **Pin — issue #45. Flipped by WP-AT; green since.**
  *
  * > The banner subtracts a month's balance from a cumulative total and calls
  * > the difference a shortfall.
@@ -60,6 +60,20 @@ import type { AccountPlanDto } from "../lib/types.js";
  * does not hold it* — and it is to be **explained on screen, not floored away**.
  * A replacement that reaches zero by clamping has failed. So the assertion
  * below is exactly one thing: **not £222.94**.
+ *
+ * ## What WP-AT put there instead
+ *
+ * The £176.55 is printed, in words that say which of the two numbers is a
+ * record and which is an observation:
+ *
+ * > £46.39 is still on its way. Even after it lands, £176.55 of what is
+ * > recorded as saved here is not in the account — either it never moved in, or
+ * > the saved figures below are too high.
+ *
+ * That exact wording is asserted in `components/RealityStrip.test.tsx`, which
+ * is the file that owns the sentence. This one stays a pin: it asserts the
+ * defect is gone and deliberately not how, so rewording the banner never
+ * reopens #45 by accident.
  *
  * ## The shape this fixture refuses to avoid
  *
@@ -121,7 +135,7 @@ describe("the reality banner, on Ben's figures", () => {
   });
 
   /** **The pin.** One assertion, and it is a negative one on purpose. */
-  it.fails("does not call the account £222.94 short", () => {
+  it("does not call the account £222.94 short", () => {
     render(<RealityStrip plan={plan} />);
     expect(screen.queryByText(WHAT_THE_BANNER_SAID)).not.toBeInTheDocument();
   });
