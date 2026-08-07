@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { accountPlanFromScope, monthlyIncomeMinor, requiredMonthlyForPayment } from "./engine.js";
+import {
+  accountPlanFromScope,
+  monthlyIncomeMinor,
+  monthlyMovementMinor,
+  requiredMonthlyForPayment,
+} from "./engine.js";
 import { parseISODate } from "./dates.js";
 import { computeScopePlan, type ScopeInput } from "./scope.js";
 import type { AccountPlan, IncomeInput, PaymentInput } from "./types.js";
@@ -37,6 +42,42 @@ describe("monthlyIncomeMinor", () => {
       active: false,
     };
     expect(monthlyIncomeMinor(income, now)).toBe(0);
+  });
+});
+
+/**
+ * A movement normalises like an income except in one place: a one-off dated
+ * earlier in the *current* month still moves in full, where an income that far
+ * gone contributes nothing. The month has not closed, so the sweep is still
+ * this month's business.
+ */
+describe("monthlyMovementMinor", () => {
+  const movement = (over: Partial<IncomeInput> = {}): IncomeInput => ({
+    id: "m1",
+    amountMinor: 50_000,
+    frequency: "one_off",
+    anchorDate: AS_OF,
+    ...over,
+  });
+
+  it("excludes an inactive movement", () => {
+    expect(monthlyMovementMinor(movement({ active: false }), now)).toBe(0);
+  });
+
+  it("moves a one-off dated earlier this month in full, where an income would not", () => {
+    const earlier = movement({ anchorDate: "2026-01-01" });
+    const asOfLater = parseISODate("2026-01-20");
+    expect(monthlyMovementMinor(earlier, asOfLater)).toBe(50_000);
+    expect(monthlyIncomeMinor(earlier, asOfLater)).toBe(0);
+  });
+
+  it("spreads a one-off still months away, exactly as an income does", () => {
+    const ahead = movement({ amountMinor: 60_000, anchorDate: "2026-04-01" });
+    expect(monthlyMovementMinor(ahead, now)).toBe(monthlyIncomeMinor(ahead, now));
+  });
+
+  it("passes a recurring movement straight through", () => {
+    expect(monthlyMovementMinor(movement({ frequency: "monthly" }), now)).toBe(50_000);
   });
 });
 

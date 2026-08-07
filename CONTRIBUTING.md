@@ -52,7 +52,7 @@ pnpm format          # prettier --write .
 pnpm lint            # eslint
 pnpm typecheck       # tsc --noEmit across workspaces
 pnpm test            # unit + component (MemoryStore-backed)
-pnpm coverage        # engine: ≥95% lines / ≥80% branches (gated)
+pnpm coverage        # engine: ≥99.9% lines / ≥95.5% branches (gated)
 pnpm --filter @finance-planner/data test:int   # integration vs real Postgres
 pnpm --filter @finance-planner/web test:e2e    # Playwright
 ```
@@ -68,8 +68,13 @@ Tests are completed **with** the feature, not after. A PR isn't done until:
   at-risk vs on-track) have RTL component tests.
 - Any user-visible journey change extends a Playwright spec.
 
-The engine is the heart of the product and is held to a higher coverage bar
-(95/80). Don't lower it — extend it.
+The engine is the heart of the product and is held to a higher coverage bar.
+The thresholds sit just under what the package actually holds — currently
+99.9/95.5 — so ordinary noise passes and a real regression fails. They were
+once set far below the achieved figure, which is how a large, lightly-tested
+addition landed with CI green and the drop visible only to somebody measuring
+both sides of the diff. A gate below the achieved level is not a gate. Don't
+lower it — extend it, and raise the numbers when the figure rises.
 
 ### Style
 

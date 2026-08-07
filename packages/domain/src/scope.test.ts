@@ -7,7 +7,7 @@ import {
   type ScopeInput,
   type ScopePaymentInput,
 } from "./scope.js";
-import type { OutboundInflowInput, PaymentInput } from "./types.js";
+import type { IncomeInput, OutboundInflowInput, PaymentInput } from "./types.js";
 
 const ASOF = "2026-08-04";
 
@@ -1770,15 +1770,121 @@ describe("computeScopePlan — the shape of the answer", () => {
       availableLeftoverMinor: 30_000,
       committedMinor: 30_000,
     });
-    expect(debug.report).toContain("Phase 2 - global funding queue by rank");
-    expect(debug.report).toContain("#1 rent on bills for user");
-    expect(debug.report).toContain("current -> bills");
-    expect(debug.report).toContain("movement Savings sweep");
-    expect(debug.report).toContain("Per account final breakdown");
-    expect(debug.report).toContain("Per user final breakdown");
-    expect(debug.report).toContain("available left over across owned accounts GBP 30000 minor");
-    expect(debug.report).toContain(
-      "funding budget leftover before authored savings GBP 60000 minor; authored savings committed GBP 30000 minor",
-    );
+    // The text these figures are laid out in is the API's
+    // (`apps/api/src/plan-debug-report.ts`), and is asserted there.
+  });
+
+  /**
+   * The explanations are built mid-pass, out of the same call whose result they
+   * describe, so they cannot be generated anywhere else — and that is exactly
+   * why they are pinned. An explanation that drifts from its own arithmetic is
+   * worse than no explanation, because it is believed.
+   */
+  const explainIncome = (over: Partial<IncomeInput> & { id: string; amountMinor: number }) =>
+    explainScopePlan(
+      scope({
+        accounts: [
+          acc({
+            accountId: "current",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: [{ frequency: "monthly", anchorDate: ASOF, ...over }],
+          }),
+        ],
+      }),
+      ASOF,
+    ).currencies[0]!.accounts[0]!.incomes[0]!;
+
+  it.each([
+    ["monthly", { id: "i", amountMinor: 120_000 }, "monthly income contributes its amount"],
+    [
+      "yearly",
+      { id: "i", amountMinor: 120_000, frequency: "yearly" as const },
+      "yearly income is rounded over 12 months: 120000 / 12 = 10000",
+    ],
+    [
+      "custom with a recurrence",
+      {
+        id: "i",
+        amountMinor: 20_000,
+        frequency: "custom" as const,
+        recurrence: { interval: 2, unit: "month" as const, anchor: ASOF },
+      },
+      "custom income is normalised over its recurrence: 20000 -> 10000",
+    ],
+    [
+      "custom with no recurrence",
+      { id: "i", amountMinor: 20_000, frequency: "custom" as const },
+      "custom income without a recurrence contributes its amount: 20000",
+    ],
+    [
+      "a one-off still ahead",
+      { id: "i", amountMinor: 60_000, frequency: "one_off" as const, anchorDate: "2026-11-04" },
+      "one-off income is spread until its anchor when it is still in the future: 60000 -> 20000",
+    ],
+    [
+      "an inactive row",
+      { id: "i", amountMinor: 120_000, active: false },
+      "inactive income contributes 0",
+    ],
+  ])("explains %s income", (_name, over, expected) => {
+    expect(explainIncome(over).explanation).toContain(expected);
+  });
+
+  const explainPayment = (payment: ScopePaymentInput) =>
+    explainScopePlan(
+      scope({
+        accounts: [
+          acc({
+            accountId: "bills",
+            role: "personal",
+            memberUserId: "owner",
+            incomes: income(500_000),
+            payments: [payment],
+          }),
+        ],
+      }),
+      ASOF,
+    ).currencies[0]!.payments[0]!;
+
+  it.each([
+    [
+      "a monthly recurring bill",
+      pay({ id: "rent", amountMinor: 40_000 }),
+      "monthly recurring: the full amount is due this month, required = 40000",
+    ],
+    [
+      "a contribution-first fixed point",
+      pay({
+        id: "holiday",
+        amountMinor: 100_000,
+        category: "fixed_point",
+        fixedMonthlyMinor: 15_000,
+        alreadySavedMinor: 20_000,
+      }),
+      "contribution-first fixed point: remaining 80000, cap 15000, required = min(cap, remaining) = 15000",
+    ],
+    [
+      "a custom recurring landing more than once",
+      pay({
+        id: "weekly",
+        amountMinor: 10_000,
+        category: "custom_recurring",
+        recurrence: { interval: 1, unit: "week", anchor: ASOF },
+      }),
+      "times this month, required = 10000 *",
+    ],
+    [
+      "a dated save-up",
+      pay({
+        id: "tax",
+        amountMinor: 120_000,
+        category: "fixed_point",
+        targetDate: "2026-11-04",
+      }),
+      "save-up path: remaining 120000, months until effective date 3, required = ceil(remaining / months) = 40000",
+    ],
+  ])("explains %s", (_name, payment, expected) => {
+    expect(explainPayment(payment).explanation).toContain(expected);
   });
 });
