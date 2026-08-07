@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stubApiFetch, type FetchStub, type Routes as StubRoutes } from "../test/apiMock.js";
 import { ResetPasswordPage } from "./ResetPasswordPage.js";

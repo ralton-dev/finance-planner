@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router";
 import { useAuth } from "../auth/AuthContext.js";
 import { api, ApiError } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";

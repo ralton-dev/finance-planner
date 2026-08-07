@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import { Amount } from "../components/Amount.js";
 import { ChartFrame } from "../components/ChartFrame.js";
 import { DownloadButton } from "../components/DownloadButton.js";

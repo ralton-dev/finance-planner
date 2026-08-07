@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.js";
 import { usePrivacy } from "../contexts/PrivacyContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";

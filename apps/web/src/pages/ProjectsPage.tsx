@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { useAuth } from "../auth/AuthContext.js";
 import { api, ApiError } from "../lib/api.js";
 import { useAsync } from "../lib/useAsync.js";
