@@ -79,6 +79,38 @@ export type ReadinessResponse = z.infer<typeof readinessResponse>;
 // Request body schemas (shared by services and the web client)
 // ---------------------------------------------------------------------------
 
+/**
+ * A create schema's shape, made partial, with every `.default()` taken off
+ * first — the shape a PATCH body has to have.
+ *
+ * `.partial()` on its own used to be enough. Zod 3 short-circuited an absent
+ * optional before its default ran, so an update body only ever held what the
+ * caller actually sent. Zod 4 runs the default instead, and the field arrives
+ * carrying a value nobody asked for. Nothing downstream can tell the
+ * difference: the API writes what it is handed, and its `defined()` filter only
+ * drops `undefined`. So a request that renamed a payment would also reset its
+ * priority, zero the money already set aside against it, re-activate it if it
+ * had been paused, and turn a personal expense into a household-shared one —
+ * answering 200 the whole way, with nothing logged and nothing to notice.
+ *
+ * Stripping the defaults restores the older meaning: absent stays absent. The
+ * field keeps its type and every check on it, so an update that *does* name a
+ * field is validated exactly as before.
+ */
+type WithoutDefaults<T extends z.ZodRawShape> = {
+  [K in keyof T]: T[K] extends z.ZodDefault<infer Inner> ? Inner : T[K];
+};
+
+function patchable<T extends z.ZodRawShape>(shape: T) {
+  const stripped = Object.fromEntries(
+    Object.entries(shape).map(([key, field]) => [
+      key,
+      field instanceof z.ZodDefault ? field.removeDefault() : field,
+    ]),
+  ) as WithoutDefaults<T>;
+  return z.object(stripped).partial();
+}
+
 export const registerBody = z.object({
   email: z.string().email(),
   password: z.string().min(8),
@@ -158,7 +190,7 @@ export type CreateAccountBody = z.infer<typeof createAccountBody>;
  * attempt and passes: a client that PATCHes its whole form is not asking for
  * anything.
  */
-export const updateAccountBody = createAccountBody.omit({ currency: true }).partial();
+export const updateAccountBody = patchable(createAccountBody.omit({ currency: true }).shape);
 export type UpdateAccountBody = z.infer<typeof updateAccountBody>;
 
 export const createIncomeBody = z.object({
@@ -172,7 +204,7 @@ export const createIncomeBody = z.object({
 export type CreateIncomeBody = z.infer<typeof createIncomeBody>;
 /** Updates may also move the income to another account via `accountId`
  *  (requires edit access to both the source and destination accounts). */
-export const updateIncomeBody = createIncomeBody.partial().extend({
+export const updateIncomeBody = patchable(createIncomeBody.shape).extend({
   accountId: z.string().uuid().optional(),
 });
 
@@ -235,9 +267,9 @@ export type CreateInflowBody = z.infer<typeof createInflowBody>;
  * never named it. Delete and author again; the API rejects the attempt rather
  * than ignoring it.
  */
-export const updateInflowBody = inflowObject
-  .omit({ source: true, sourceAccountId: true })
-  .partial();
+export const updateInflowBody = patchable(
+  inflowObject.omit({ source: true, sourceAccountId: true }).shape,
+);
 export type UpdateInflowBody = z.infer<typeof updateInflowBody>;
 
 const paymentObject = z.object({
@@ -278,7 +310,7 @@ export const createPaymentBody = paymentObject.refine(
 export type CreatePaymentBody = z.infer<typeof createPaymentBody>;
 /** Updates may also move the payment to another account via `accountId`
  *  (requires edit access to both the source and destination accounts). */
-export const updatePaymentBody = paymentObject.partial().extend({
+export const updatePaymentBody = patchable(paymentObject.shape).extend({
   accountId: z.string().uuid().optional(),
 });
 
@@ -405,14 +437,14 @@ export const createProjectBody = z.object({
 });
 export type CreateProjectBody = z.infer<typeof createProjectBody>;
 /**
- * `visibility` is re-declared as a bare optional rather than inherited from
- * `.partial()`: a `ZodDefault` that survives into a PATCH body would make every
- * update that says nothing about visibility silently set `personal`, quietly
- * un-sharing a project on a rename.
+ * This is where the hazard `patchable` exists for was first found, back when
+ * only one field had it: a `ZodDefault` that survives into a PATCH body makes
+ * every update saying nothing about visibility silently set `personal`,
+ * quietly un-sharing a project on a rename. The bare optional that used to be
+ * hand-written here is now what `patchable` does to every defaulted field, so
+ * the special case has gone.
  */
-export const updateProjectBody = createProjectBody.partial().extend({
-  visibility: projectVisibility.optional(),
-});
+export const updateProjectBody = patchable(createProjectBody.shape);
 
 // ---------------------------------------------------------------------------
 // Account settings
