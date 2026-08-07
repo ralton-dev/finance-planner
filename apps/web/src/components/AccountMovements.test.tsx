@@ -640,12 +640,12 @@ describe("AccountMovements — the movements nobody authored", () => {
       );
 
       // The button is drawn only for the member the row belongs to, which is a
-      // comparison against `GET /api/auth/me`. Until that answers there is no
-      // button for anybody — so anchoring on the plan-rendered row asserted the
-      // rule against a screen that had not yet read who is asking, and would
-      // have passed just as well had this stub returned *me*. Draining first is
-      // what makes it a claim about Alex; the sibling test above, where the
-      // button does appear, is the other half of that claim.
+      // comparison against `GET /api/auth/me`. "derived transfer" is up before
+      // that answers, so the old anchor here was satisfied by the plan and the
+      // fetch was drained only by accident — `findBy*` polls, and the poll
+      // happened to outlast the request. Measured, not assumed: point this stub
+      // at *me* and the old form does fail, so it was incidental rather than
+      // broken. Draining on purpose is what stops it depending on that.
       await mounted();
       expect(screen.getByText("derived transfer")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "moved" })).toBeNull();
@@ -835,10 +835,12 @@ describe("AccountMovements — one row per destination, not one row for the lot"
         },
       },
     );
-    // "another account" is what an unresolvable id reads as — and every id is
-    // unresolvable until `GET /api/accounts` answers, so before it does this
-    // assertion holds for an account the caller can see perfectly well. The
-    // gate is the accounts fetch, not the plan-rendered row.
+    // Not the fetch, as it turns out. A derived *departure* is named by
+    // `toAccountName` off the plan (`derivedDepartures`), never through the
+    // accounts list — so unlike the arriving side, which resolves its far end
+    // through `GET /api/accounts`, nothing here is gated on a fetch at all and
+    // this test never raced one. Draining anyway, so the row is asserted on a
+    // settled screen and the two sides of this file read the same way.
     await mounted();
     const item = screen.getByText("derived transfer").closest("li")!;
     expect(item).toHaveTextContent("→ another account");
