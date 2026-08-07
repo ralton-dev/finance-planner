@@ -27,6 +27,7 @@ import {
   type Contribution,
   createStore,
   type MonthClose,
+  type NewConfirmedContribution,
   type Project,
   type Store,
 } from "@finance-planner/data";
@@ -172,6 +173,46 @@ function asOfDateForMonth(month: string, verb: "close" | "confirm"): string {
   if (month === current) return now;
   const [year, mon] = month.split("-").map(Number);
   return toISODate(new Date(Date.UTC(year!, mon!, 0))); // day 0 of the next month
+}
+
+/**
+ * The ledger rows a confirmed transfer implies: this member's share of every
+ * bill the destination account holds, one slice per payment.
+ *
+ * Derivation only — it writes nothing. The rows go down with the confirmation
+ * in a single call, because a confirmation and the slices under it are one
+ * statement about one movement rather than a record and some consequences of
+ * it. Both confirm handlers asked this same question of two differently-shaped
+ * plans and each answered it in its own write loop; the question is the same
+ * one, so it is asked once.
+ */
+function fundedSlices(
+  lines: readonly {
+    paymentId: string;
+    accountId: string;
+    allocations: readonly { userId: string; fundedMinor: number }[];
+  }[],
+  toAccountId: string,
+  memberUserId: string,
+  month: string,
+): NewConfirmedContribution[] {
+  const slices: NewConfirmedContribution[] = [];
+  for (const line of lines) {
+    if (line.accountId !== toAccountId) continue;
+    const funded = line.allocations.find((a) => a.userId === memberUserId)?.fundedMinor ?? 0;
+    // A bill this member funds none of is not a slice of theirs; booking £0
+    // against it would record a payment nobody made.
+    if (funded <= 0) continue;
+    slices.push({
+      paymentId: line.paymentId,
+      accountId: toAccountId,
+      userId: memberUserId,
+      month,
+      amountMinor: funded,
+      note: null,
+    });
+  }
+  return slices;
 }
 
 /** Per-payment money set aside during the current month. */
@@ -2079,36 +2120,23 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(422, "no_planned_transfer", "No matching planned transfer");
     }
 
-    const confirmation = await store.createTransferConfirmation({
-      householdId: id,
-      // A household transfer is derived from the plan, not authored: there is no
-      // inflow row behind it to point at.
-      inflowId: null,
-      month,
-      fromAccountId: body.fromAccountId,
-      toAccountId: body.toAccountId,
-      memberUserId: body.memberUserId,
-      amountMinor: transfer.amountMinor,
-    });
-    // The transfer funds this member's share of every bill in the destination
-    // account; book each slice against its payment so un-confirming can undo it.
-    const contributions = [];
-    for (const line of plan.lines) {
-      if (line.accountId !== body.toAccountId) continue;
-      const funded = line.allocations.find((a) => a.userId === body.memberUserId)?.fundedMinor ?? 0;
-      if (funded <= 0) continue;
-      contributions.push(
-        await store.createContribution({
-          paymentId: line.paymentId,
-          accountId: body.toAccountId,
-          userId: body.memberUserId,
-          month,
-          amountMinor: funded,
-          note: null,
-          transferConfirmationId: confirmation.id,
-        }),
-      );
-    }
+    // One write: the confirmation and every slice it books, or neither. A loop
+    // appending rows after the confirmation could stop half way and leave a
+    // movement standing over a ledger that accounts for less than it claims.
+    const { confirmation, contributions } = await store.createTransferConfirmationWithContributions(
+      {
+        householdId: id,
+        // A household transfer is derived from the plan, not authored: there is
+        // no inflow row behind it to point at.
+        inflowId: null,
+        month,
+        fromAccountId: body.fromAccountId,
+        toAccountId: body.toAccountId,
+        memberUserId: body.memberUserId,
+        amountMinor: transfer.amountMinor,
+      },
+      fundedSlices(plan.lines, body.toAccountId, body.memberUserId, month),
+    );
     return reply.code(201).send({ confirmation, contributions });
   });
 
@@ -2323,36 +2351,21 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(422, "no_planned_transfer", "No matching planned transfer");
     }
 
-    const confirmation = await store.createTransferConfirmation({
-      // Neither: a transfer the pass derived for a scope no household applies to
-      // is scoped by its two accounts, its month and the member who moves it.
-      householdId: null,
-      inflowId: null,
-      month,
-      fromAccountId: body.fromAccountId,
-      toAccountId: id,
-      memberUserId: userId,
-      amountMinor: transfer.amountMinor,
-    });
-    // The transfer funds this member's share of every bill in the destination
-    // account; book each slice against its payment so un-confirming can undo it.
-    const contributions: Contribution[] = [];
-    for (const line of partition?.lines ?? []) {
-      if (line.accountId !== id) continue;
-      const funded = line.allocations.find((a) => a.userId === userId)?.fundedMinor ?? 0;
-      if (funded <= 0) continue;
-      contributions.push(
-        await store.createContribution({
-          paymentId: line.paymentId,
-          accountId: id,
-          userId,
-          month,
-          amountMinor: funded,
-          note: null,
-          transferConfirmationId: confirmation.id,
-        }),
-      );
-    }
+    // One write, exactly as the household twin does it.
+    const { confirmation, contributions } = await store.createTransferConfirmationWithContributions(
+      {
+        // Neither: a transfer the pass derived for a scope no household applies
+        // to is scoped by its two accounts, its month and the member who moves it.
+        householdId: null,
+        inflowId: null,
+        month,
+        fromAccountId: body.fromAccountId,
+        toAccountId: id,
+        memberUserId: userId,
+        amountMinor: transfer.amountMinor,
+      },
+      fundedSlices(partition?.lines ?? [], id, userId, month),
+    );
     return reply.code(201).send({ confirmation, contributions });
   });
 
