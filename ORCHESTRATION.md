@@ -25,24 +25,34 @@ Plus `pnpm coverage` when `packages/domain` is touched, and
 `pnpm --filter @finance-planner/data test:int` when a migration is added.
 
 **What the coverage gate actually is.** The thresholds that fail the build live in
-`packages/domain/vitest.config.ts` — statements, lines and functions **95**, branches
-**80**. Those are the only numbers that can break CI; read them there rather than from
-here, because a figure copied into prose goes stale and this one did.
+`packages/domain/vitest.config.ts` — as of **2026-08-07**: lines **99.9**, functions
+**100**, branches **95.5**, statements **99.8**. **Read them from the config, not from
+here.** Two separate briefs have now stated this gate wrong from memory, in opposite
+directions, and prose is where the rot starts.
 
-For a long time this section named a floor of "99.87% statements / 95.84% branches —
-do not ratchet down". It was unmeetable. Measured on an unmodified tree on
-**2026-08-07**: **99.89% statements (969/970), 95.62% branches (546/571), 100%
-functions, 100% lines** — and 95.84% is not a value 571 branches can produce at all.
-Anyone obeying it literally would have concluded they had broken something they had
-not touched. The same tree measured identically under vitest 4.1.8 and 4.1.10, which
-is worth knowing on its own: a coverage-tool bump is not a plausible explanation for a
-number that moved.
+They sit deliberately just under what the package holds, so ordinary noise passes and
+a real regression fails — `functions: 100` has no slack at all. That is a recent and
+hard-won shape. The config's own comment records why: the thresholds **used to be
+95/95/80/95 while the package was measuring 99.9/100/95.6/99.9**, and that gap is how
+~900 lines of lightly-tested tracing landed in `scope.ts` with CI green, the drop
+visible only to someone measuring both sides of the diff. Its conclusion is the
+sentence to carry: _a gate below the achieved level is not a gate._ Raise the
+thresholds when the figure rises; **never lower them to make a change fit.**
 
-The anti-ratchet intent was right even though the number was wrong, so keep it, and
-keep it honest: the enforced thresholds are a floor with a lot of slack, and coverage
-sliding from 95.6% branches to 80.1% would pass CI in silence. Treat the observed
-figures above as the reference a change should be explained against, re-measure rather
-than trusting them, and **date any figure you write down here**.
+So if a change drops coverage, the gate is supposed to stop you, and the fix is the
+test rather than the threshold. Do not be reassured by CI passing on a number you have
+not looked at.
+
+The older mistake, for anyone who finds it quoted elsewhere: this section used to name
+a floor of "99.87% statements / 95.84% branches — do not ratchet down", which was
+never meetable — 95.84% is not a value 571 branches can produce. On `main`'s tree,
+measured **2026-08-07**, `packages/domain` held **99.89% statements (969/970), 95.62%
+branches (546/571), 100% functions, 100% lines**. Two things about those figures:
+they came from `main` and a branch in flight may legitimately report slightly
+different ones, so name the tree whenever you write a number down; and the same tree
+measured **identically under vitest 4.1.8 and 4.1.10**, so a coverage-tool bump is not
+a plausible explanation for a number that has moved. **Date any figure you record
+here, and re-measure rather than trusting it.**
 
 `prettier --check` is repo-wide and fatal. A stray untracked file breaks it.
 
@@ -168,8 +178,11 @@ exist — one per service:
 Use one of those. **Do not write down a `node --import .../.pnpm/tsx@<version>/...`
 loader path**, which is what this section used to recommend. That path carries the
 resolved version in it, so it is wrong again on the next bump — and it goes stale
-faster than that: the range `^4.23.1` resolved to **4.23.10** on the very install that
-introduced it. The per-app binary has no version in it and survives.
+faster than that, because a caret range floats to a new patch on an ordinary install
+without anything in the repository changing. Two agents recently reported different
+`tsx` versions and both were right; they were reading different branches. No version
+number is deliberately named here for that reason. The per-app binary has none in it
+and survives.
 
 Ports already spent, so the next run picks elsewhere: **4310–4312, 4410–4412 and
 4510–4512** across three harnesses in the mine-and-ours work, and **4610–4611, 4620,
@@ -182,10 +195,10 @@ time with `Top-level await is currently not supported with the "cjs" output form
 a dozen errors that say nothing about the actual problem, which is the file extension.
 `.mts` forces ESM and the same file runs unchanged.
 
-A harness outside the repo also cannot resolve bare specifiers like `@finance-planner/data`
-or `jose`: the lookup walks up from the scratchpad and never reaches the repo's
-`node_modules`. Import by absolute `file://` URL instead, pointing straight at the
-TypeScript source — which is what the workspace packages export anyway:
+A harness outside the repo also cannot resolve bare specifiers like
+`@finance-planner/data` or `jose`: the lookup walks up from the scratchpad and never
+reaches the repo's `node_modules`. Import by absolute `file://` URL instead, pointing
+straight at the TypeScript source — which is what the workspace packages export anyway:
 
 ```
 const ROOT = "file:///abs/path/to/worktree";
