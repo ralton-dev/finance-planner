@@ -3235,8 +3235,7 @@ describe("api service", () => {
 
   const transferFrom = (plan: { transfers: { fromAccountId: string }[] }, accountId: string) =>
     plan.transfers.find((t) => t.fromAccountId === accountId) as
-      | { fromAccountId: string; amountMinor: number; fromAccountName?: string }
-      | undefined;
+      { fromAccountId: string; amountMinor: number; fromAccountName?: string } | undefined;
 
   it("names a transfer's source for the owner who has to move the money", async () => {
     const h = await seedHousehold(store, app);

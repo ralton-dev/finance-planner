@@ -1,9 +1,6 @@
 export type Frequency = "monthly" | "yearly" | "custom" | "one_off";
 export type PaymentCategory =
-  | "monthly_recurring"
-  | "yearly_recurring"
-  | "custom_recurring"
-  | "fixed_point";
+  "monthly_recurring" | "yearly_recurring" | "custom_recurring" | "fixed_point";
 export type PaymentScope = "shared" | "personal";
 export type AccountRole = "shared" | "personal";
 

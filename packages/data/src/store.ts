@@ -143,9 +143,7 @@ export interface ContributionTotal {
  * two callers asking the same thing get the same row.
  */
 export type MonthCloseScope =
-  | { householdId: string }
-  | { accountId: string }
-  | { userId: string; currency?: string };
+  { householdId: string } | { accountId: string } | { userId: string; currency?: string };
 
 /** Effective access a user has to an account. */
 export interface AccountAccess {
