@@ -1050,39 +1050,75 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     };
   };
 
+  /**
+   * One scope's trace, with every term in it and only the account names this
+   * caller may be told.
+   *
+   * **Membership admits, `view` names** (decision 41) — the same rule the other
+   * three surfaces now keep, and the reason the escape hatch that used to live
+   * here is gone rather than narrowed. The old gate was one all-or-nothing
+   * predicate doing two jobs, and it failed in both directions:
+   *
+   * It failed **open**, licensing a name because the account's *owner* is a
+   * member of the household — an account-level fact standing in for a
+   * household-level one, and true of a co-member's wholly private pot that no
+   * household has ever heard of. The 403 one line below said the opposite
+   * ("every non-household account"), and one of them had to be wrong.
+   *
+   * It failed **closed**, and that half is reachable without any legacy data at
+   * all: `closeScope` walks funding edges, so a non-member's account feeding the
+   * household pot is in the household's scope by construction. One such account
+   * refused a legitimate member the entire surface, permanently.
+   *
+   * Both are the same mis-sizing, so both go the same way. The refusal is now
+   * only about membership — a caller outside the scope's household still gets
+   * nothing, and a scope with no household at all is unchanged — and the naming
+   * is a separate, per-account question with no all-or-nothing in it.
+   *
+   * **This does not weaken the doctrine above.** That argument is that a trace
+   * hiding half its terms would not explain the number it exists to explain, and
+   * it stands: a name is not a term. Every income, bill, balance and share still
+   * travels, including the co-member private-account figures Ben accepted on
+   * 2026-08-04 (*"if you don't want them to see it, simply don't include it"*).
+   * Only the labels move, and the trace still adds up in front of the reader.
+   */
   const debugScopeResponse = async (
     userId: string,
     scope: PlannedScope,
     asOfDate: string,
   ): Promise<PlanDebugScopeResponse> => {
-    const inaccessible: string[] = [];
-    for (const accountId of scope.accountIds) {
-      const access = await store.getAccess(userId, accountId);
-      if (!access) inaccessible.push(accountId);
-    }
-    if (inaccessible.length > 0) {
+    const visible = await visibleAccountIds(userId);
+    /** In the calculation with all its figures, and not named. */
+    const withheld = new Set(scope.accountIds.filter((id) => !visible.has(id)));
+    if (withheld.size > 0) {
       const householdId = scope.plan.householdId;
       const members = householdId ? await store.listMembersForHousehold(householdId) : [];
-      const memberIds = new Set(members.map((m) => m.userId));
-      const accountOwners = new Map(scope.input.accounts.map((a) => [a.accountId, a.ownerUserId]));
-      const householdMemberDebug =
-        householdId !== null &&
-        memberIds.has(userId) &&
-        inaccessible.every((id) => {
-          if (scope.householdOf.get(id) === householdId) return true;
-          const ownerUserId = accountOwners.get(id);
-          return ownerUserId !== undefined && memberIds.has(ownerUserId);
-        });
-      if (!householdMemberDebug) {
+      if (!members.some((m) => m.userId === userId)) {
         throw new HttpError(
           403,
           "debug_scope_not_visible",
-          "Full plan debug requires view access to every non-household account in the planned scope",
+          "Full plan debug over a scope you cannot wholly see is for members of the household it plans",
         );
       }
     }
-    const trace = explainScopePlan(scope.input, asOfDate);
-    const report = renderScopeDebugReport(scope.input, trace.plan, trace.currencies);
+    // **Redacted once, before anything is derived from it**, because this
+    // response says an account's name in three places — `labels`, the rendered
+    // `report`, and `trace.plan`, which republishes the input's names — and
+    // gating one of the three would be theatre. Safe to do before planning: the
+    // pass never reads a name, it only carries it (`scope.ts`'s two `name:`
+    // sites are both pass-throughs into output), so every figure below is the
+    // figure the un-redacted input produces.
+    const input =
+      withheld.size === 0
+        ? scope.input
+        : {
+            ...scope.input,
+            accounts: scope.input.accounts.map((a) =>
+              withheld.has(a.accountId) ? { ...a, name: undefined } : a,
+            ),
+          };
+    const trace = explainScopePlan(input, asOfDate);
+    const report = renderScopeDebugReport(input, trace.plan, trace.currencies);
     const households: Record<string, string> = {};
     if (scope.plan.householdId) {
       const household = await store.getHousehold(scope.plan.householdId);
@@ -1093,8 +1129,13 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       householdId: scope.plan.householdId,
       accountIds: scope.accountIds,
       labels: {
+        // Absent, not a stand-in — the key is simply not there, and
+        // `DebugPlanPage`'s `labelId` already falls back to "account" (and to
+        // "account 1a2b3c" where it needs to tell two of them apart). Every
+        // account here has a name in the store, so an absence can only be one
+        // this caller may not be told.
         accounts: Object.fromEntries(
-          scope.input.accounts.map((a) => [a.accountId, a.name ?? "account"]),
+          input.accounts.flatMap((a) => (a.name === undefined ? [] : [[a.accountId, a.name]])),
         ),
         users: Object.fromEntries(
           scope.input.members.map((m) => [m.userId, m.displayName ?? "user"]),

@@ -6110,8 +6110,19 @@ describe("plan debug", () => {
     expect(res.json().error.code).toBe("debug_scope_not_visible");
   });
 
-  it("allows acknowledged household debug over member personal accounts that are not shared", async () => {
-    const { auth, household, bobCur } = await seedHousehold(store, app);
+  /**
+   * Decision 41 on the trace. The trace keeps every term and loses the names
+   * this reader may not be told — `bob-cur` is on Home's roster and shared with
+   * nobody, so Alice reads all of its figures and none of its name.
+   *
+   * This test used to assert the opposite (`labels.accounts[bobCur.id]` was
+   * `"bob-cur"`, and the report contained it), which was the leak written down
+   * and passing. The route's own doctrine is not weakened by the change: its
+   * argument is that a trace hiding half its **terms** would not explain the
+   * number it exists to explain, and a name is not a term.
+   */
+  it("allows acknowledged household debug over member personal accounts, and does not name them", async () => {
+    const { auth, household, aliceCur, bobCur } = await seedHousehold(store, app);
 
     const unacknowledged = await app.inject({
       method: "GET",
@@ -6129,8 +6140,118 @@ describe("plan debug", () => {
     expect(acknowledged.statusCode).toBe(200);
     const body = acknowledged.json();
     expect(body.subject).toEqual({ kind: "household", householdId: household.id });
-    expect(body.scopes[0].labels.accounts[bobCur.id]).toBe("bob-cur");
-    expect(body.scopes[0].report).toContain("bob-cur");
+
+    // Absent, not a stand-in, and absent from all three places this response
+    // says a name: the label map, the rendered report, and `trace.plan`, which
+    // republishes the input's accounts.
+    const scope = body.scopes[0];
+    expect(scope.labels.accounts[bobCur.id]).toBeUndefined();
+    expect(scope.report).not.toContain("bob-cur");
+    expect(acknowledged.payload).not.toContain('"name":"bob-cur"');
+
+    // Alice's own is named, and Bob's account is still wholly in the
+    // calculation: it is on the roster, it earns £2,000 a month, and the trace
+    // that has to explain her share needs every penny of it.
+    expect(scope.labels.accounts[aliceCur.id]).toBe("alice-cur");
+    expect(scope.accountIds).toContain(bobCur.id);
+    const accounts = scope.trace.plan.partitions[0].accounts;
+    const bobRow = accounts.find((a: { accountId: string }) => a.accountId === bobCur.id);
+    expect(bobRow.monthlyIncomeMinor).toBe(200_000);
+    expect(bobRow).not.toHaveProperty("name");
+    // Alice's row in the same trace keeps its name, which is the half that is
+    // easiest to break.
+    const aliceRow = accounts.find((a: { accountId: string }) => a.accountId === aliceCur.id);
+    expect(aliceRow.name).toBe("alice-cur");
+  });
+
+  /**
+   * The half that failed **closed**, and the half no legacy data is needed to
+   * reach: `closeScope` walks funding edges, so an outsider's account feeding
+   * the household pot is in the household's scope by construction. The old
+   * all-or-nothing predicate refused Alice her own household's trace over it,
+   * permanently — an account-level rule ("do you have access to every one of
+   * these") applied to a household-level surface it was never sized for.
+   */
+  it("gives a member the trace when an outsider's account funds the household", async () => {
+    const { auth, household, bills } = await seedHousehold(store, app);
+    const { user: carol } = await seedUser(store, "carol@example.com");
+    const carolAccount = await store.createAccount({
+      ownerUserId: carol.id,
+      name: "carol private",
+      currency: "GBP",
+    });
+    await store.createIncome({
+      accountId: carolAccount.id,
+      name: "Pay",
+      amountMinor: 500_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+    await store.createInflow({
+      accountId: bills.id,
+      name: "Carol's contribution",
+      source: "account",
+      sourceAccountId: carolAccount.id,
+      amountMinor: 10_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 50,
+      active: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&household=${household.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    // It used to be 403 `debug_scope_not_visible`.
+    expect(res.statusCode).toBe(200);
+    const scope = res.json().scopes[0];
+    expect(scope.accountIds).toContain(carolAccount.id);
+    expect(scope.labels.accounts[carolAccount.id]).toBeUndefined();
+    expect(res.payload).not.toContain('"name":"carol private"');
+    expect(scope.report).not.toContain("carol private");
+  });
+
+  /** Membership is what admits; a scope with no household behind it is refused
+   *  exactly as before. */
+  it("still refuses a scope the caller cannot wholly see with no household in it", async () => {
+    const { user: alice, auth } = await seedUser(store, "alice@example.com");
+    const { user: bob } = await seedUser(store, "bob@example.com");
+    const aliceCurrent = await store.createAccount({
+      ownerUserId: alice.id,
+      name: "Alice solo",
+      currency: "GBP",
+    });
+    const bobPot = await store.createAccount({
+      ownerUserId: bob.id,
+      name: "Bob solo pot",
+      currency: "GBP",
+    });
+    await store.createInflow({
+      accountId: bobPot.id,
+      name: "hidden sweep",
+      source: "account",
+      sourceAccountId: aliceCurrent.id,
+      amountMinor: 10_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 100,
+      active: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&account=${aliceCurrent.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("debug_scope_not_visible");
+    expect(res.payload).not.toContain("Bob solo pot");
   });
 });
 
