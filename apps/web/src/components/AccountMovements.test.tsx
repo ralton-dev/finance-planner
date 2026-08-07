@@ -125,7 +125,11 @@ describe("AccountMovements — the two faces of one row", () => {
       },
     });
 
-    const arriving = (await screen.findByText("arriving here")).closest("div")!.parentElement!;
+    // "arriving here" is a heading the section always draws, so finding it says
+    // nothing about the rows underneath it having landed — and "Salary is not in
+    // this list" is true of a list with nothing in it.
+    await mounted();
+    const arriving = screen.getByText("arriving here").closest("div")!.parentElement!;
     expect(within(arriving).getByText("Current account →")).toBeInTheDocument();
     expect(within(arriving).queryByText("Salary")).toBeNull();
 
@@ -207,7 +211,11 @@ describe("AccountMovements — authoring", () => {
   /** Opens the drawer from one side or the other. */
   async function openDrawer(target: AccountDto, label: string, routes: Routes = {}) {
     renderFor(target, routes);
-    fireEvent.click((await screen.findAllByRole("button", { name: `${label} →` }))[0]!);
+    // The drawer's account picker is the accounts fetch's product. Opening it
+    // before that lands gives a select with nothing in it but the placeholder,
+    // which is a different screen from the one these tests mean to assert on.
+    await mounted();
+    fireEvent.click(screen.getAllByRole("button", { name: `${label} →` })[0]!);
     return screen.getByTestId("drawer");
   }
 
@@ -412,7 +420,11 @@ describe("AccountMovements — a loop you have just closed", () => {
 
   it("says nothing when there is no loop", async () => {
     renderFor(POT, {}, { plan: { accountId: "pot" } as AccountPlanDto });
-    await screen.findByText("movements");
+    // "movements" is the section's own heading, up from the first paint. The
+    // loop note is not: it names its accounts out of the accounts fetch, so
+    // before that answers there is no loop note to find whatever the plan says.
+    await mounted();
+    expect(screen.getByText("movements")).toBeInTheDocument();
     expect(screen.queryByText(/funding loop/)).toBeNull();
   });
 });
@@ -518,8 +530,8 @@ describe("AccountMovements — the movements nobody authored", () => {
     // is asking, and this render stubs no `/auth/me`.
     renderFor(POT, {}, { plan: derivedPlan() });
 
-    const row = await screen.findByText("derived transfer");
-    const item = row.closest("li")!;
+    await mounted();
+    const item = screen.getByText("derived transfer").closest("li")!;
     expect(item).toHaveTextContent("£303.20");
     expect(item).toHaveTextContent("Ben →");
     expect(within(item).queryByRole("button", { name: "edit" })).toBeNull();
@@ -627,14 +639,26 @@ describe("AccountMovements — the movements nobody authored", () => {
         { plan: derivedPlan() },
       );
 
-      await screen.findByText("derived transfer");
+      // The button is drawn only for the member the row belongs to, which is a
+      // comparison against `GET /api/auth/me`. Until that answers there is no
+      // button for anybody — so anchoring on the plan-rendered row asserted the
+      // rule against a screen that had not yet read who is asking, and would
+      // have passed just as well had this stub returned *me*. Draining first is
+      // what makes it a claim about Alex; the sibling test above, where the
+      // button does appear, is the other half of that claim.
+      await mounted();
+      expect(screen.getByText("derived transfer")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "moved" })).toBeNull();
     });
   });
 
   it("stops claiming nothing moves in, and says the narrower true thing instead", async () => {
     renderFor(POT, {}, { plan: derivedPlan() });
-    await screen.findByText("derived transfer");
+    // Which of the two sentences the arriving list shows turns on whether it has
+    // any authored rows, and that is the fetch's answer — asserted before it
+    // lands, both sentences are being read off a list that is merely empty.
+    await mounted();
+    expect(screen.getByText("derived transfer")).toBeInTheDocument();
     expect(screen.queryByText(/nothing moves into this account/)).toBeNull();
     expect(screen.getByText(/nothing you authored/)).toBeInTheDocument();
   });
@@ -671,8 +695,8 @@ describe("AccountMovements — the movements nobody authored", () => {
       },
     );
 
-    const row = await screen.findByText("derived transfer");
-    const item = row.closest("li")!;
+    await mounted();
+    const item = screen.getByText("derived transfer").closest("li")!;
     expect(item).toHaveTextContent("£220.00");
     expect(item).toHaveTextContent("→ Holiday pot");
     expect(screen.getByText(/already taken out of left over above/)).toBeInTheDocument();
@@ -747,7 +771,7 @@ describe("AccountMovements — one row per destination, not one row for the lot"
 
   it("names each destination and gives it its own amount", async () => {
     renderFor(CURRENT, {}, { plan: THREE });
-    await screen.findAllByText("derived transfer");
+    await mounted();
 
     const items = rows();
     expect(items).toHaveLength(3);
@@ -764,7 +788,7 @@ describe("AccountMovements — one row per destination, not one row for the lot"
 
   it("reads each one's own settled state, and never a hardcoded one", async () => {
     renderFor(CURRENT, {}, { plan: THREE });
-    await screen.findAllByText("derived transfer");
+    await mounted();
     // Fully confirmed reads moved; part-confirmed and unconfirmed do not. The
     // old row said "derived" for every destination whatever anyone had ticked,
     // because a scalar has no confirmation of its own.
@@ -786,7 +810,10 @@ describe("AccountMovements — one row per destination, not one row for the lot"
       { "GET /api/auth/me": { body: { id: "me", email: "b@example.com", displayName: "Ben" } } },
       { plan: THREE, canEdit: true },
     );
-    await screen.findAllByText("derived transfer");
+    // This render stubs `/api/auth/me` as the member every one of the three rows
+    // belongs to, which is the only way "no button" says anything: before that
+    // answers, no row anywhere has a settle button to offer.
+    await mounted();
     for (const li of rows()) {
       expect(within(li).queryByRole("button", { name: "moved" })).toBeNull();
       expect(within(li).queryByRole("button", { name: "undo" })).toBeNull();
@@ -808,7 +835,12 @@ describe("AccountMovements — one row per destination, not one row for the lot"
         },
       },
     );
-    const item = (await screen.findByText("derived transfer")).closest("li")!;
+    // "another account" is what an unresolvable id reads as — and every id is
+    // unresolvable until `GET /api/accounts` answers, so before it does this
+    // assertion holds for an account the caller can see perfectly well. The
+    // gate is the accounts fetch, not the plan-rendered row.
+    await mounted();
+    const item = screen.getByText("derived transfer").closest("li")!;
     expect(item).toHaveTextContent("→ another account");
     expect(item).toHaveTextContent("£700.00");
   });
@@ -852,8 +884,14 @@ describe("AccountMovements — a movement that duplicates the derived feed", () 
       { plan: bothPlan },
     );
 
+    // The note is a function of the plan prop and is on screen from the first
+    // paint, so waiting on it waits for nothing. The authored row it talks about
+    // arrives from `GET …/inflows`, which is what has to have landed.
+    await mounted();
+    expect(screen.getByText("Monthly top-up")).toBeInTheDocument();
+
     expect(
-      await screen.findByText(
+      screen.getByText(
         /a month already arrives here as a transfer the plan derives for these bills/,
       ),
     ).toBeInTheDocument();
@@ -869,7 +907,11 @@ describe("AccountMovements — a movement that duplicates the derived feed", () 
       { "GET /api/accounts/pot/inflows": { body: [movement({ id: "inf-1", accountId: "pot" })] } },
       { plan: bothPlan },
     );
-    await screen.findByText(/a month already arrives here/);
+    // "Nothing says short" is true of a screen with nothing on it, so the
+    // authored row has to be up before it means anything.
+    await mounted();
+    expect(screen.getByText("Monthly top-up")).toBeInTheDocument();
+    expect(screen.getByText(/a month already arrives here/)).toBeInTheDocument();
     expect(screen.queryByText(/short/i)).toBeNull();
   });
 
@@ -894,7 +936,13 @@ describe("AccountMovements — a movement that duplicates the derived feed", () 
       { plan: { ...bothPlan, accountId: "theirs" }, canEdit: false },
     );
 
-    const note = await screen.findByText(/a month already arrives here/);
+    // Both halves of this test are about the authored row — what the note says
+    // about it, and the button that is not next to it — so both wait on the
+    // fetch that brings it, never on the plan-rendered note.
+    await mounted();
+    expect(screen.getByText("Monthly top-up")).toBeInTheDocument();
+
+    const note = screen.getByText(/a month already arrives here/);
     expect(note).toHaveTextContent(
       /an authored movement lands on top of it as savings, not instead of it\./,
     );
@@ -905,10 +953,36 @@ describe("AccountMovements — a movement that duplicates the derived feed", () 
     expect(within(authored).queryByRole("button", { name: "✕" })).toBeNull();
   });
 
-  it("stays quiet when only one of the two feeds an account", async () => {
-    // Derived only.
+  /**
+   * Both halves of "only one of the two", because an absence is the assertion
+   * this file gets wrong most easily.
+   *
+   * The old version of this test waited on "derived transfer" — a row the `plan`
+   * prop renders synchronously — and then asserted the note was absent. Every
+   * term in it was a fact about the props, so it held at the first paint and
+   * would have gone on holding it if `GET …/inflows` had never answered at all.
+   * The authored-only half below is the one that can be nailed to the fetch: its
+   * anchor is the row the fetch brings, so withholding that row fails it.
+   */
+  it("stays quiet when only the derived feed arrives", async () => {
     renderFor(POT, {}, { plan: { ...bothPlan, allocatedInflowMinor: 40_000, inflowArrivals: [] } });
-    await screen.findByText("derived transfer");
+    // Nothing the fetch returns is on screen in this direction — it returns no
+    // rows — so draining it is the only way to tell "the authored list is empty"
+    // from "the authored list has not answered yet".
+    await mounted();
+    expect(screen.getByText("derived transfer")).toBeInTheDocument();
+    expect(screen.queryByText(/a month already arrives here/)).toBeNull();
+  });
+
+  it("stays quiet when only the authored movement arrives", async () => {
+    renderFor(
+      POT,
+      { "GET /api/accounts/pot/inflows": { body: [movement({ id: "inf-1", accountId: "pot" })] } },
+      { plan: { ...bothPlan, allocatedInflowMinor: 40_000, inflowSources: [] } },
+    );
+    // The row is on screen only once `GET …/inflows` has answered, so the
+    // absence below is read off the settled screen rather than the empty one.
+    expect(await screen.findByText("Monthly top-up")).toBeInTheDocument();
     expect(screen.queryByText(/a month already arrives here/)).toBeNull();
   });
 });
