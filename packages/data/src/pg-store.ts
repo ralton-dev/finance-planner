@@ -51,12 +51,14 @@ import {
   type AccountAccess,
   type AccountPatch,
   assertInflowShape,
+  type ContributionPatch,
   type ContributionTotal,
   HouseholdExclusivityError,
   type MonthCloseScope,
   type NewAccount,
   type NewAccountAssignment,
   type NewBalanceSnapshot,
+  type NewConfirmedContribution,
   type NewContribution,
   type NewIncome,
   type NewInflow,
@@ -71,6 +73,49 @@ import {
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 const rec = (v: unknown): Recurrence | null => (v as Recurrence | null) ?? null;
+
+/**
+ * The part of the handle a write needs, so that one piece of insert code runs
+ * both on `this.db` and inside a `transaction` callback — which is handed a
+ * `PgTransaction`, not the `Database` the store was built with. Structural, so
+ * neither drizzle type has to be named here.
+ */
+type Writer = Pick<Database, "insert">;
+
+async function insertTransferConfirmation(
+  w: Writer,
+  input: NewTransferConfirmation,
+): Promise<TransferConfirmation> {
+  const [row] = await w
+    .insert(s.transferConfirmations)
+    .values({
+      householdId: input.householdId,
+      inflowId: input.inflowId,
+      month: input.month,
+      fromAccountId: input.fromAccountId,
+      toAccountId: input.toAccountId,
+      memberUserId: input.memberUserId,
+      amountMinor: input.amountMinor,
+    })
+    .returning();
+  return mapTransferConfirmation(row!);
+}
+
+async function insertContribution(w: Writer, input: NewContribution): Promise<Contribution> {
+  const [row] = await w
+    .insert(s.contributions)
+    .values({
+      paymentId: input.paymentId,
+      accountId: input.accountId,
+      userId: input.userId,
+      month: input.month,
+      amountMinor: input.amountMinor,
+      note: input.note,
+      transferConfirmationId: input.transferConfirmationId,
+    })
+    .returning();
+  return mapContribution(row!);
+}
 
 function mapUser(r: typeof s.users.$inferSelect): User {
   return {
@@ -1016,19 +1061,7 @@ export class PgStore implements Store {
   }
 
   async createContribution(input: NewContribution): Promise<Contribution> {
-    const [row] = await this.db
-      .insert(s.contributions)
-      .values({
-        paymentId: input.paymentId,
-        accountId: input.accountId,
-        userId: input.userId,
-        month: input.month,
-        amountMinor: input.amountMinor,
-        note: input.note,
-        transferConfirmationId: input.transferConfirmationId,
-      })
-      .returning();
-    return mapContribution(row!);
+    return insertContribution(this.db, input);
   }
 
   async getContribution(id: string): Promise<Contribution | null> {
@@ -1061,6 +1094,21 @@ export class PgStore implements Store {
     return rows.map((r) => ({ paymentId: r.paymentId, totalMinor: Number(r.total) }));
   }
 
+  async updateContribution(id: string, patch: ContributionPatch): Promise<Contribution | null> {
+    const set: Partial<typeof s.contributions.$inferInsert> = {};
+    if (patch.amountMinor !== undefined) set.amountMinor = patch.amountMinor;
+    if (patch.month !== undefined) set.month = patch.month;
+    if (patch.note !== undefined) set.note = patch.note;
+    // An UPDATE with no assignments is a syntax error, not a no-op.
+    if (Object.keys(set).length === 0) return this.getContribution(id);
+    const [row] = await this.db
+      .update(s.contributions)
+      .set(set)
+      .where(eq(s.contributions.id, id))
+      .returning();
+    return row ? mapContribution(row) : null;
+  }
+
   async deleteContribution(id: string): Promise<void> {
     await this.db.delete(s.contributions).where(eq(s.contributions.id, id));
   }
@@ -1091,19 +1139,26 @@ export class PgStore implements Store {
   }
 
   async createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation> {
-    const [row] = await this.db
-      .insert(s.transferConfirmations)
-      .values({
-        householdId: input.householdId,
-        inflowId: input.inflowId,
-        month: input.month,
-        fromAccountId: input.fromAccountId,
-        toAccountId: input.toAccountId,
-        memberUserId: input.memberUserId,
-        amountMinor: input.amountMinor,
-      })
-      .returning();
-    return mapTransferConfirmation(row!);
+    return insertTransferConfirmation(this.db, input);
+  }
+
+  async createTransferConfirmationWithContributions(
+    confirmation: NewTransferConfirmation,
+    contributions: readonly NewConfirmedContribution[],
+  ): Promise<{ confirmation: TransferConfirmation; contributions: Contribution[] }> {
+    // One transaction, so the unit is the database's rather than this process's:
+    // a duplicate confirmation caught by one of the three unique indexes, an FK
+    // refusing a contribution whose payment has just been deleted, or a
+    // connection lost mid-loop all leave the same nothing behind. MemoryStore
+    // states the same guarantee by compensating, having no other way to.
+    return this.db.transaction(async (tx) => {
+      const written = await insertTransferConfirmation(tx, confirmation);
+      const rows: Contribution[] = [];
+      for (const c of contributions) {
+        rows.push(await insertContribution(tx, { ...c, transferConfirmationId: written.id }));
+      }
+      return { confirmation: written, contributions: rows };
+    });
   }
 
   async getTransferConfirmation(id: string): Promise<TransferConfirmation | null> {

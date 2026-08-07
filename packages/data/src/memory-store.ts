@@ -26,12 +26,14 @@ import {
   type AccountAccess,
   type AccountPatch,
   assertInflowShape,
+  type ContributionPatch,
   type ContributionTotal,
   HouseholdExclusivityError,
   type MonthCloseScope,
   type NewAccount,
   type NewAccountAssignment,
   type NewBalanceSnapshot,
+  type NewConfirmedContribution,
   type NewContribution,
   type NewIncome,
   type NewInflow,
@@ -767,6 +769,19 @@ export class MemoryStore implements Store {
     return [...totals.entries()].map(([paymentId, totalMinor]) => ({ paymentId, totalMinor }));
   }
 
+  async updateContribution(id: string, patch: ContributionPatch): Promise<Contribution | null> {
+    const existing = this.contributions.get(id);
+    if (!existing) return null;
+    const updated: Contribution = {
+      ...existing,
+      ...(patch.amountMinor !== undefined && { amountMinor: patch.amountMinor }),
+      ...(patch.month !== undefined && { month: patch.month }),
+      ...(patch.note !== undefined && { note: patch.note }),
+    };
+    this.contributions.set(id, updated);
+    return updated;
+  }
+
   async deleteContribution(id: string): Promise<void> {
     this.contributions.delete(id);
   }
@@ -818,6 +833,34 @@ export class MemoryStore implements Store {
     const t: TransferConfirmation = { ...input, id: randomUUID(), createdAt: now() };
     this.transferConfirmations.set(t.id, t);
     return t;
+  }
+
+  async createTransferConfirmationWithContributions(
+    confirmation: NewTransferConfirmation,
+    contributions: readonly NewConfirmedContribution[],
+  ): Promise<{ confirmation: TransferConfirmation; contributions: Contribution[] }> {
+    const written = await this.createTransferConfirmation(confirmation);
+    try {
+      const rows: Contribution[] = [];
+      for (const c of contributions) {
+        // What `contributions.payment_id` and `contributions.account_id` say in
+        // the database: NOT NULL REFERENCES (0004). PgStore gets this refusal
+        // from Postgres in the middle of the same transaction, so the row it
+        // rejects is the row this loop is on; state it here so both stores fail
+        // in the same place for the same reason.
+        if (!this.payments.has(c.paymentId)) throw new Error("no such payment");
+        if (!this.accounts.has(c.accountId)) throw new Error("no such account");
+        rows.push(await this.createContribution({ ...c, transferConfirmationId: written.id }));
+      }
+      return { confirmation: written, contributions: rows };
+    } catch (err) {
+      // The whole point of the method: a confirmation is never left standing
+      // over a ledger that accounts for less than it claims. Deleting the
+      // confirmation takes the rows already written with it, which is the same
+      // cascade un-confirming uses.
+      await this.deleteTransferConfirmation(written.id);
+      throw err;
+    }
   }
 
   async getTransferConfirmation(id: string): Promise<TransferConfirmation | null> {

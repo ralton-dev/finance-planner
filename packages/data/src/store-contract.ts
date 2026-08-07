@@ -540,6 +540,28 @@ export async function exerciseStore(store: Store): Promise<void> {
   );
   expect(afterDelete.get(p1.id)).toBe(20_000);
 
+  // A recorded contribution is correctable: a mistyped amount is an edit, not a
+  // delete and a re-record (decision 30). What is left unsaid is left alone.
+  const amended = await store.updateContribution(c1.id, { amountMinor: 21_000 });
+  expect(amended?.amountMinor).toBe(21_000);
+  expect(amended?.month).toBe("2026-07-01");
+  expect(amended?.note).toBe("July");
+  // The derived already-saved moves with it, which is the point of editing.
+  const afterPatch = new Map(
+    (await store.sumContributionsByPayment(account.id)).map((t) => [t.paymentId, t.totalMinor]),
+  );
+  expect(afterPatch.get(p1.id)).toBe(21_000);
+  // A null note is a note removed; a patch that says nothing changes nothing.
+  expect(
+    (await store.updateContribution(c1.id, { month: "2026-06-01", note: null }))?.note,
+  ).toBeNull();
+  const untouched = await store.updateContribution(c1.id, {});
+  expect(untouched?.month).toBe("2026-06-01");
+  expect(untouched?.amountMinor).toBe(21_000);
+  // Nothing to correct reads back as nothing, not as a throw.
+  expect(await store.updateContribution("00000000-0000-0000-0000-000000000000", {})).toBeNull();
+  await store.updateContribution(c1.id, { month: "2026-07-01" }); // put July back
+
   // --- balance snapshots ---
   const b1 = await store.upsertBalanceSnapshot({
     accountId: account.id,
@@ -770,6 +792,74 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(await store.getTransferConfirmation(confirmation.id)).toBeNull();
   expect(await store.getContribution(linked.id)).toBeNull();
   expect(await store.getContribution(c3.id)).not.toBeNull(); // unlinked ones survive
+
+  // --- a movement and the rows it writes are one write ---
+  // Un-confirming has always taken both halves. Writing them did not: the
+  // confirm handlers created the confirmation and then appended contributions
+  // one at a time, so a failure part-way left a confirmation standing over a
+  // ledger that accounted for less than it claimed. This is the other half of
+  // that cascade, and the only writer that stamps `transferConfirmationId`.
+  const octoberInput = {
+    householdId: null,
+    inflowId: null,
+    month: "2026-10-01",
+    fromAccountId: currentAccount.id,
+    toAccountId: account.id,
+    memberUserId: user.id,
+    amountMinor: 24_500,
+  };
+  const slice = (paymentId: string, month: string, amountMinor: number) => ({
+    paymentId,
+    accountId: account.id,
+    userId: user.id,
+    month,
+    amountMinor,
+    note: null,
+  });
+  const october = await store.createTransferConfirmationWithContributions(octoberInput, [
+    slice(p1.id, "2026-10-01", 20_000),
+    slice(p2.id, "2026-10-01", 4_500),
+  ]);
+  expect(october.contributions).toHaveLength(2);
+  // Stamped by the method: the caller never supplies the id, and so can never
+  // supply one pointing at a different confirmation.
+  expect(
+    october.contributions.every((c) => c.transferConfirmationId === october.confirmation.id),
+  ).toBe(true);
+  // Compared as a set, not a sequence: written in one Postgres transaction these
+  // rows share a `created_at` — `now()` is the transaction's clock — so their
+  // order among themselves is not a fact either store promises.
+  expect(
+    (await store.listContributionsForAccount(account.id, "2026-10-01"))
+      .map((c) => c.amountMinor)
+      .sort((a, b) => a - b),
+  ).toEqual([4_500, 20_000]);
+
+  // The partial failure, which is the whole reason this method exists. The
+  // confirmation is written, the first slice lands, and the second names a
+  // payment that does not exist — the FK `contributions.payment_id` has carried
+  // since 0004. Nothing survives it.
+  const novemberInput = { ...octoberInput, month: "2026-11-01" };
+  await expect(
+    store.createTransferConfirmationWithContributions(novemberInput, [
+      slice(p1.id, "2026-11-01", 20_000),
+      slice("00000000-0000-0000-0000-000000000000", "2026-11-01", 4_500),
+    ]),
+  ).rejects.toThrow();
+  expect(await store.listContributionsForAccount(account.id, "2026-11-01")).toEqual([]);
+  expect(await store.listDerivedTransferConfirmationsForAccount(account.id, "2026-11-01")).toEqual(
+    [],
+  );
+  // And the proof that the confirmation is really gone rather than merely
+  // unlisted: November is still confirmable. A row left behind would be refused
+  // by `transfer_confirmations_derived_month_unique`.
+  const november = await store.createTransferConfirmationWithContributions(novemberInput, [
+    slice(p1.id, "2026-11-01", 20_000),
+  ]);
+  expect(november.contributions).toHaveLength(1);
+  // Un-confirming still takes both halves of what this wrote.
+  await store.deleteTransferConfirmation(november.confirmation.id);
+  expect(await store.getContribution(november.contributions[0]!.id)).toBeNull();
 
   // --- month closes ---
   const julyClose = await store.createMonthClose({

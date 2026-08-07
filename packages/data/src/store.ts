@@ -98,6 +98,16 @@ export type NewContribution = Omit<Contribution, "id" | "createdAt">;
 export type NewBalanceSnapshot = Omit<BalanceSnapshot, "id" | "createdAt">;
 export type NewTransferConfirmation = Omit<TransferConfirmation, "id" | "createdAt">;
 /**
+ * One slice of a movement, on its way to being written under it.
+ *
+ * It names no `transferConfirmationId` because it cannot yet have one — the
+ * confirmation it belongs to does not exist until the same call creates it, and
+ * a caller that could supply the id could supply the wrong one.
+ */
+export type NewConfirmedContribution = Omit<NewContribution, "transferConfirmationId">;
+/** What a recorded contribution can be corrected to. */
+export type ContributionPatch = Partial<Pick<Contribution, "amountMinor" | "month" | "note">>;
+/**
  * `userId` and `currency` are optional here and required nowhere else: a
  * household or account close names neither, so writing one should not have to
  * say so twice. A user close names both — and the Store refuses one that names
@@ -475,6 +485,8 @@ export interface Store {
   listContributionsForAccount(accountId: string, month?: string): Promise<Contribution[]>;
   /** All-time contribution totals per payment for one account. */
   sumContributionsByPayment(accountId: string): Promise<ContributionTotal[]>;
+  /** Correct a recorded contribution. Null if there is no such row. */
+  updateContribution(id: string, patch: ContributionPatch): Promise<Contribution | null>;
   deleteContribution(id: string): Promise<void>;
 
   // ---- balance snapshots (manual check-ins) ----
@@ -494,6 +506,30 @@ export interface Store {
    * `transfer_confirmations_derived_month_unique`).
    */
   createTransferConfirmation(input: NewTransferConfirmation): Promise<TransferConfirmation>;
+  /**
+   * Record a movement **and** the ledger rows it writes, as one fact.
+   *
+   * A confirmation says "I moved £220"; the contributions under it say which
+   * bills the £220 paid into. They are one statement, not a record and some
+   * consequences of it — which is why `deleteTransferConfirmation` has always
+   * taken both. Writing them had no such rule: the two confirm handlers created
+   * the confirmation and then appended contributions one at a time, so a
+   * failure part-way left a confirmation standing over a ledger that accounted
+   * for less than it claimed, and nothing on any screen would say so.
+   *
+   * Either every row here exists or none does. Each contribution is stamped
+   * with the new confirmation's id by this method, so no caller can write one
+   * that points somewhere else.
+   *
+   * Deliberately a compound method rather than a transaction primitive on this
+   * interface: atomicity is needed for exactly this one compound fact, and a
+   * general `Store.transaction` would be a larger change than every defect it
+   * was introduced to fix.
+   */
+  createTransferConfirmationWithContributions(
+    confirmation: NewTransferConfirmation,
+    contributions: readonly NewConfirmedContribution[],
+  ): Promise<{ confirmation: TransferConfirmation; contributions: Contribution[] }>;
   getTransferConfirmation(id: string): Promise<TransferConfirmation | null>;
   /** Confirmations for a household in one month (ISO first-of-month date). */
   listTransferConfirmations(householdId: string, month: string): Promise<TransferConfirmation[]>;

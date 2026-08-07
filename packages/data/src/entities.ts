@@ -310,9 +310,11 @@ export interface TransferConfirmation {
 }
 
 /**
- * One row per notification actually sent. The (userId, date, kind) key is the
- * idempotency guard: a second attempt on the same day for the same kind is
- * refused by the unique index rather than by the sender remembering.
+ * One row per claim on the right to send a notification — written **before**
+ * the send, not after it, so a row here is a message attempted rather than a
+ * message delivered. The (userId, date, kind) key is the idempotency guard: a
+ * second attempt on the same day for the same kind is refused by the unique
+ * index rather than by the sender remembering.
  */
 export interface NotificationLogEntry {
   id: string;
