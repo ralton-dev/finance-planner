@@ -5723,7 +5723,8 @@ describe("export / import", () => {
     expect(payment.scope).toBe("personal");
     expect(payment.notes).toBe("Majorca");
     expect(payment.contributions).toEqual([
-      { month: "2026-08-01", amountMinor: 20_000, note: "August" },
+      // Nobody's transfer wrote this one — the user recorded it themselves.
+      { month: "2026-08-01", amountMinor: 20_000, note: "August", confirmation: null },
     ]);
     // Cross-entity ids don't travel: no row id survives the document.
     expect(payment.bearerUserId).toBeUndefined();
@@ -6469,12 +6470,13 @@ describe("flow over any scope", () => {
     expect(names(mine)).toEqual(["current", "home-bills", null]);
     expect(names(theirs)).toEqual([null, null, "bob-current"]);
 
-    // Anonymised, never omitted: the same four nodes, the same figures, and
-    // every total either reader can check is the same total.
+    // Anonymised, never omitted: the same three nodes, the same figures, and
+    // every total either reader can check is the same total. Only the names
+    // moved.
+    const figures = (body: { accounts: Record<string, unknown>[] }) =>
+      body.accounts.map((a) => ({ ...a, name: "—" }));
     expect(mine.accounts.map((a: { accountId: string }) => a.accountId)).toEqual(roster);
-    expect(theirs.accounts.map(({ name, ...rest }: { name?: string }) => rest)).toEqual(
-      mine.accounts.map(({ name, ...rest }: { name?: string }) => rest),
-    );
+    expect(figures(theirs)).toEqual(figures(mine));
     expect(theirs.edges).toEqual(mine.edges);
     expect(theirs.totalInflowMinor).toBe(mine.totalInflowMinor);
 
