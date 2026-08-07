@@ -1888,6 +1888,53 @@ describe("api service", () => {
     expect(own.statusCode).toBe(201);
   });
 
+  /**
+   * The household's un-confirm keeps the rule its confirm has always had — a
+   * plain member their own, an owner or admin anybody's — and decision 28
+   * tightening the other two routes must not reach in here and take the admin
+   * arm with it. Both directions asserted, because a rule is only kept if it
+   * still lets through what it was written to let through.
+   */
+  it("keeps the household un-confirm on its own admin rule", async () => {
+    const h = await seedHousehold(store, app);
+    const confirm = (
+      headers: { authorization: string },
+      fromAccountId: string,
+      memberUserId: string,
+    ) =>
+      app.inject({
+        method: "POST",
+        url: `/api/households/${h.household.id}/transfers/confirm`,
+        headers,
+        payload: { fromAccountId, toAccountId: h.bills.id, memberUserId },
+      });
+    const alices = (await confirm(h.auth, h.aliceCur.id, h.alice.id)).json().confirmation;
+    const bobs = (await confirm(h.bobAuth, h.bobCur.id, h.bob.id)).json().confirmation;
+
+    const unconfirm = (headers: { authorization: string }, confId: string) =>
+      app.inject({
+        method: "DELETE",
+        url: `/api/households/${h.household.id}/transfers/confirmations/${confId}`,
+        headers,
+      });
+    // Bob is a plain member, and Alice's statement is not his to withdraw.
+    expect((await unconfirm(h.bobAuth, alices.id)).statusCode).toBe(403);
+    // Alice owns the household, so Bob's is hers to withdraw — the arm the
+    // roster exists to provide, and the one route that still has it.
+    expect((await unconfirm(h.auth, bobs.id)).statusCode).toBe(204);
+    // Nor can the household's confirmation be reached through the route that no
+    // longer has an admin arm: it carries a household, so that door is a 404.
+    expect(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: `/api/accounts/${h.bills.id}/transfers/confirmations/${alices.id}`,
+          headers: h.auth,
+        })
+      ).statusCode,
+    ).toBe(404);
+  });
+
   // --- an account inside a household is planned with what the household sends it
 
   /** Every transfer the household plan derives into the bills pot, confirmed. */
@@ -2306,6 +2353,55 @@ describe("api service", () => {
 
     // ...and it can be confirmed again afterwards.
     expect((await confirm()).statusCode).toBe(201);
+  });
+
+  /**
+   * The movement route's half of decision 28. Its confirm writes the caller onto
+   * the row and keys its idempotency guard on the inflow alone, so a movement
+   * confirmed by one person could never be re-confirmed by another — and yet
+   * anybody with `edit` on the receiving account could delete it. The verb that
+   * takes it back now costs what the verb that made it cost.
+   */
+  it("refuses a co-editor the movement un-confirm as well", async () => {
+    const { user, auth } = await seedUser(store);
+    const { user: bob, auth: bobAuth } = await seedUser(store, "bob@example.com");
+    const { pot, movement } = await seedMovement(auth);
+
+    // The only way to hand somebody `edit` on an account they do not own.
+    const household = await store.createHousehold("Home", user.id);
+    await store.addMembership(household.id, bob.id, "member");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/shares`,
+      headers: auth,
+      payload: { householdId: household.id, permission: "edit" },
+    });
+
+    const confirmation = (
+      await app.inject({
+        method: "POST",
+        url: `/api/inflows/${movement.id}/confirm`,
+        headers: auth,
+      })
+    ).json().confirmation;
+    expect(confirmation.memberUserId).toBe(user.id);
+
+    const unconfirm = (headers: { authorization: string }) =>
+      app.inject({
+        method: "DELETE",
+        url: `/api/inflows/${movement.id}/confirmations/${confirmation.id}`,
+        headers,
+      });
+    // Bob's `edit` is real — it is not access he is short of, it is standing.
+    expect(
+      (
+        await app.inject({ method: "GET", url: `/api/accounts/${pot.id}`, headers: bobAuth })
+      ).json(),
+    ).toMatchObject({ owner: false, permission: "edit" });
+    expect((await unconfirm(bobAuth)).statusCode).toBe(403);
+    expect((await unconfirm(bobAuth)).json().error.code).toBe("forbidden");
+    // The person who said it may still un-say it.
+    expect((await unconfirm(auth)).statusCode).toBe(204);
   });
 
   /**

@@ -2363,6 +2363,16 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * confirmation with no household and no inflow. The household route keeps its
    * own rule — a plain member may only un-confirm their own — and this must not
    * become a way around it.
+   *
+   * **Un-confirming takes exactly what confirming took** (decision 28): `edit`
+   * on the receiving account *and* being the member the row names. Deleting the
+   * row used to count as an edit to the account it lives in, so anybody who
+   * could edit the pot could withdraw somebody else's statement that they had
+   * moved their own money — a claim the confirm handler had refused to let them
+   * make in the first place (`:2292`). But the fact is the member's, not the
+   * pot's: un-saying it is not an edit to an account, it is contradicting a
+   * person. The stricter side wins, and a co-editor losing this is the intended
+   * cost of the rule rather than a casualty of it.
    */
   app.delete("/api/accounts/:id/transfers/confirmations/:confId", async (req, reply) => {
     const userId = await authenticate(req);
@@ -2377,6 +2387,11 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(404, "not_found", "Confirmation not found");
     }
     await requireAccess(userId, id, "edit");
+    // Access first, then whose claim it is — the order the confirm handler asks
+    // its two questions in, so the two halves refuse alike.
+    if (confirmation.memberUserId !== userId) {
+      throw new HttpError(403, "forbidden", "You may only un-confirm your own transfer");
+    }
     await store.deleteTransferConfirmation(confId);
     return reply.code(204).send();
   });
@@ -2388,6 +2403,12 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * inflow-scoped confirmation. A household one keeps its own route and its own
    * rule — a plain member may only un-confirm their own — and this must not
    * become a way around it.
+   *
+   * The same rule as the derived route above, for the same reason (decision 28).
+   * The confirm half writes `memberUserId: userId` and keys its idempotency
+   * guard on the inflow alone, so a movement confirmed by one person cannot be
+   * re-confirmed by another — there was no way to make this statement in
+   * somebody else's name, and there is now no way to withdraw one either.
    */
   app.delete("/api/inflows/:inflowId/confirmations/:confId", async (req, reply) => {
     const userId = await authenticate(req);
@@ -2397,6 +2418,9 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(404, "not_found", "Confirmation not found");
     }
     await requireAccess(userId, confirmation.toAccountId, "edit");
+    if (confirmation.memberUserId !== userId) {
+      throw new HttpError(403, "forbidden", "You may only un-confirm your own movement");
+    }
     await store.deleteTransferConfirmation(confId);
     return reply.code(204).send();
   });

@@ -5,7 +5,10 @@ import type { ApiEnv } from "../env.js";
 import { buildServer } from "../server.js";
 
 /**
- * **Red pin — issue #47. Flipped by WP-AO.**
+ * **Issue #47 — green since WP-AO.** Everything below describes the defect as it
+ * stood at `76ee2f2`; it is kept in the past tense it was written in, because a
+ * pin is the record of what went wrong and stays readable as one. The sibling
+ * site named further down was closed in the same change.
  *
  * > Un-confirming asks for less than confirming does.
  *
@@ -211,7 +214,7 @@ describe("un-confirming somebody else's transfer", () => {
   /**
    * **The pin.** The same person, the same claim, the opposite verb.
    */
-  it.fails("refuses to let a co-editor take it back", async () => {
+  it("refuses to let a co-editor take it back", async () => {
     const s = await seed(store, app);
     const confirmation = await aliceConfirms(s);
     expect(confirmation.memberUserId).toBe(s.alice.id);
