@@ -42,6 +42,25 @@ function plusDays(asOfDate: string, days: number): string {
 const dayLabel = (daysUntil: number): string =>
   daysUntil === 0 ? "today" : daysUntil === 1 ? "in 1 day" : `in ${daysUntil} days`;
 
+/**
+ * What an account is called in a digest line when the reader may not be told.
+ *
+ * Prose, not a wire field, so decision 41's "absence over placeholder" cannot
+ * apply here — a sentence has nowhere to put a missing word, and `/api/flow`'s
+ * client-side `UNNAMED_ACCOUNT` is a diagram label, not a phrase that reads in
+ * "from X to …". One spelling, in one place, so the two sections of a digest
+ * cannot disagree about how they name what they are not naming.
+ */
+const UNNAMED_ACCOUNT = "another account";
+
+/** Every account the reader may be told the name of, by id. */
+type VisibleAccounts = ReadonlyMap<string, Account>;
+
+/** An account's name, or the honest fallback when it is not this reader's to
+ *  learn. The one gate every name in a digest passes through. */
+const nameFor = (visible: VisibleAccounts, accountId: string): string =>
+  visible.get(accountId)?.name ?? UNNAMED_ACCOUNT;
+
 /** The ISO first-of-month a date falls in — how a confirmation is keyed. */
 const monthStart = (asOfDate: string): string => `${asOfDate.slice(0, 7)}-01`;
 
@@ -97,11 +116,10 @@ interface MovementSections {
 async function movementLines(
   store: Store,
   userId: string,
-  accounts: readonly Account[],
+  visible: VisibleAccounts,
   scopes: readonly PlannedScope[],
   asOfDate: string,
 ): Promise<MovementSections> {
-  const visible = new Map(accounts.map((a) => [a.id, a]));
   const month = monthStart(asOfDate);
 
   const sections: MovementSections = { own: [], outward: [] };
@@ -133,7 +151,7 @@ async function movementLines(
     const to = visible.get(movement.toAccountId);
     const line =
       `- ${formatMoney(movement.fundedMinor, from.currency)} from ${from.name} to ` +
-      `${to?.name ?? "another account"}`;
+      `${nameFor(visible, movement.toAccountId)}`;
     (to?.ownerUserId === userId ? sections.own : sections.outward).push(line);
   }
   return sections;
@@ -167,8 +185,17 @@ export async function buildDailyDigest(
   const accounts = await accessibleAccounts(store, userId);
   const scopes = await scopesFor(store, accounts, asOfDate, ctx);
 
+  // **The one name gate this whole file has.** Built from the accounts the
+  // reader can *see*, never from a scope: a scope closes over funding
+  // relationships and deliberately does not check access (`plan.ts`'s
+  // `closeScope`), because the money arriving in your account is a fact about
+  // your account whoever sent it. That is the right rule for the arithmetic and
+  // the wrong one for the labels, and reading it as both is what put a
+  // co-member's account name in somebody's inbox.
+  const visible: VisibleAccounts = new Map(accounts.map((a) => [a.id, a]));
+
   const due = await upcomingForUser(store, userId, asOfDate, DIGEST_WINDOW_DAYS, ctx);
-  const movements = await movementLines(store, userId, accounts, scopes, asOfDate);
+  const movements = await movementLines(store, userId, visible, scopes, asOfDate);
 
   // The transfers the pass derived for *this* user, whether or not a household
   // is involved: `splitTransfersByPayday` serves a solo user's derived feed into
@@ -180,9 +207,6 @@ export async function buildDailyDigest(
   );
   const transferLines: string[] = [];
   for (const scope of scopes) {
-    const accountName = new Map(
-      scope.input.accounts.map((a) => [a.accountId, a.name ?? "an account"]),
-    );
     const household = scope.input.householdId
       ? householdNames.get(scope.input.householdId)
       : undefined;
@@ -198,10 +222,17 @@ export async function buildDailyDigest(
       for (const event of mine?.events ?? []) {
         if (event.date < asOfDate || event.date > windowEnd) continue;
         for (const t of event.transfers) {
+          // **Both ends, through `visible`** (decision 41). This read the map
+          // the pass built from `scope.input.accounts` — the whole closed scope,
+          // access unchecked — and so named a co-member's assigned-but-unshared
+          // account at either end. Assignment is not a share and a roster is not
+          // access: `listAccessibleAccounts` is ownership plus explicit shares,
+          // and nothing else. `movementLines` fifty lines above always got this
+          // right; the two now ask one function the one question.
           transferLines.push(
             `- ${event.date} — ${formatMoney(t.amountMinor, currency)} from ` +
-              `${accountName.get(t.fromAccountId) ?? "an account"} to ` +
-              `${accountName.get(t.toAccountId) ?? "an account"}` +
+              `${nameFor(visible, t.fromAccountId)} to ` +
+              `${nameFor(visible, t.toAccountId)}` +
               `${household ? ` (${household})` : ""}`,
           );
         }

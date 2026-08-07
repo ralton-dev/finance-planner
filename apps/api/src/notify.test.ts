@@ -154,7 +154,24 @@ describe("buildDailyDigest", () => {
     expect(digest).toContain("- 2026-08-11 (in 7 days) — Phone bill: 10.00 GBP [Edge]");
   });
 
-  it("lists this member's transfers, and nobody else's", async () => {
+  /**
+   * **Both ends of a transfer are named through the access gate** (decision 41).
+   *
+   * This test used to end `expect(bobDigest).toContain("from Bob current to
+   * Bills")`, and that assertion *was* the leak, written down and passing.
+   * Nothing here shares Bills with Bob: Alice owns it, it is *assigned* to the
+   * household as `shared`, and assignment is not a share —
+   * `listAccessibleAccounts` is ownership plus explicit `AccountShare` rows and
+   * nothing else. The digest named it anyway, because it built its map from
+   * `scope.input.accounts`, which `closeScope` deliberately does not
+   * access-check.
+   *
+   * So the fixture already had the shape the rest of the tree avoids, and only
+   * the assertion had to change. Alice owns Bills and still reads it by name;
+   * Bob reads the honest fallback. Both directions, because the original
+   * complaint was an account somebody *could* see being anonymised.
+   */
+  it("names the far end of a transfer only for a reader who can see it", async () => {
     const alice = await seedUser(store, "alice@example.com");
     const bob = await seedUser(store, "bob@example.com");
     const household = await store.createHousehold("Home", alice.id);
@@ -221,10 +238,27 @@ describe("buildDailyDigest", () => {
     expect(digest).not.toContain("Bob current"); // bob's identical transfer is bob's business
     expect(digest).not.toContain("Due in the next 7 days");
 
-    // Bob gets his own, from his own account.
+    // Bob gets his own, from his own account — and Bills, which he cannot see,
+    // keeps its money and loses its name.
     const bobDigest = await buildDailyDigest(store, bob.id, AS_OF);
-    expect(bobDigest).toContain("from Bob current to Bills");
+    expect(bobDigest).toContain("- 2026-08-06 — 500.00 GBP from Bob current to another account");
+    expect(bobDigest).not.toContain("Bills");
     expect(bobDigest).not.toContain("Alice current");
+
+    // And the same, through the sender — the body an SMTP server would actually
+    // be handed. A digest is the one surface whose reader cannot re-check the
+    // gate, so the proof is a rendered message, not a map read in isolation.
+    const mailer = new FakeMailer();
+    await runNotifierOnce(store, mailer, new Date(`${AS_OF}T08:00:00.000Z`));
+    const posted = mailer.digests.find((d) => d.to === "bob@example.com");
+    expect(posted?.textBody).toContain("from Bob current to another account");
+    expect(posted?.textBody).not.toContain("Bills");
+
+    // Share it with him and the same line names it. The gate is `view`, not the
+    // roster: nothing else about this household changed.
+    await store.createAccountShare(bills.id, household.id, "view");
+    const shared = await buildDailyDigest(store, bob.id, AS_OF);
+    expect(shared).toContain("- 2026-08-06 — 500.00 GBP from Bob current to Bills (Home)");
   });
 
   /**
