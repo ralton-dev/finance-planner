@@ -172,10 +172,15 @@ describe("PlanTable", () => {
   });
 
   it("marks payments that already had money recorded this month", () => {
-    render(
+    const { container } = render(
       <PlanTable plan={{ ...plan, contributionsMTD: [{ paymentId: "p2", amountMinor: 6_400 }] }} />,
     );
-    expect(screen.getByText("✓ £64.00")).toBeInTheDocument();
+    const tick = container.querySelector(".mtd-tick")!;
+    expect(tick).toHaveTextContent("✓ £64.00");
+    // The figure is wrapped rather than interpolated, so privacy mode has an
+    // element to blur. This was the last unblurred amount on the account page,
+    // and the ledger beside it prints the same figure blurred.
+    expect(tick.querySelector(".amount")).toHaveTextContent("£64.00");
   });
 
   it("hides the record action for view-only callers", () => {

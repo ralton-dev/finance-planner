@@ -278,9 +278,16 @@ export function PlanTable({
                       {dueInDays === 0 ? "due today" : `due in ${dueInDays} d`}
                     </span>
                   )}
+                  {/* Wrapped, not interpolated. This was the one genuine
+                      unblurred figure left on the account page: a formatted
+                      amount inside a template literal is a number nothing can
+                      hide, and the ledger two inches away prints the same
+                      figure and blurs it. The tick keeps its own class for the
+                      layout; the money carries `.amount` so privacy mode can
+                      reach it. */}
                   {recordedMinor !== undefined && (
                     <span className="mtd-tick" title="recorded this month">
-                      ✓ {formatMinor(recordedMinor, plan.currency)}
+                      ✓ <Amount minor={recordedMinor} currency={plan.currency} />
                     </span>
                   )}
                   {recordable &&
