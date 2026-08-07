@@ -40,23 +40,17 @@ export function buildServer(): FastifyInstance {
     logger: { level: process.env.LOG_LEVEL ?? "info" },
   });
 
-  app.get(
-    "/healthz",
-    async (): Promise<HealthResponse> => ({
-      status: "ok",
-      service: SERVICE,
-      version: VERSION,
-      uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
-    }),
-  );
+  app.get("/healthz", async (): Promise<HealthResponse> => ({
+    status: "ok",
+    service: SERVICE,
+    version: VERSION,
+    uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+  }));
 
-  app.get(
-    "/readyz",
-    async (): Promise<ReadinessResponse> => ({
-      ready: true,
-      checks: {},
-    }),
-  );
+  app.get("/readyz", async (): Promise<ReadinessResponse> => ({
+    ready: true,
+    checks: {},
+  }));
 
   // Synchronous plan computation. Phase 1 adds validation + persistence.
   app.post<{ Body: AccountPlanBody }>("/internal/calc/account-plan", async (req) => {

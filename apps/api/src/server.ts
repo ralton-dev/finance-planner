@@ -944,15 +944,12 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   };
 
   // ---- health ----
-  app.get(
-    "/healthz",
-    async (): Promise<HealthResponse> => ({
-      status: "ok",
-      service: SERVICE,
-      version: VERSION,
-      uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
-    }),
-  );
+  app.get("/healthz", async (): Promise<HealthResponse> => ({
+    status: "ok",
+    service: SERVICE,
+    version: VERSION,
+    uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+  }));
   app.get("/readyz", async (): Promise<ReadinessResponse> => ({ ready: true, checks: {} }));
 
   /** What the SPA needs before anyone has signed in: which optional features
