@@ -533,6 +533,13 @@ function transferItems(entry: NeedsYouHouseholdInput, month: string): NeedsYouIt
 // --- derived transfers -----------------------------------------------------
 
 /**
+ * What a *person* is called when their name is withheld — `PlanTable`'s
+ * `senderName` again, restated for the same reason {@link UNNAMED_SENDER} is:
+ * this module is pure and knows nothing about components.
+ */
+const UNNAMED_MEMBER = "a household member";
+
+/**
  * A transfer the plan **derived** into an account nobody's household plan in
  * this input speaks for.
  *
@@ -552,8 +559,20 @@ function transferItems(entry: NeedsYouHouseholdInput, month: string): NeedsYouIt
  * Drawn only for accounts {@link standaloneAccounts} keeps, because a household
  * in the input already draws its own transfers off its plan and neither may draw
  * the other's.
+ *
+ * `userId` is here for the row's **wording**, the same way it is for a
+ * movement's (see {@link movementEnds}). Decision 42 stopped the server naming
+ * anybody no household in the scope rosters, and on a standalone pot that person
+ * is usually the reader — so the anonymous fallback started describing the one
+ * person it never had to. The client already knows who that is. Absent — the
+ * `/api/users/me` read still in flight — reads as "not me", so nobody else's
+ * anonymity depends on it having arrived.
  */
-function derivedTransferItems(entry: NeedsYouAccountInput, month: string): NeedsYouItem[] {
+function derivedTransferItems(
+  entry: NeedsYouAccountInput,
+  month: string,
+  userId: string | undefined,
+): NeedsYouItem[] {
   const { plan } = entry;
   const sources = (plan.inflowSources ?? []).filter(
     (s) => s.kind === "member" && s.amountMinor > 0,
@@ -563,7 +582,7 @@ function derivedTransferItems(entry: NeedsYouAccountInput, month: string): Needs
   return sources
     .filter((s) => s.confirmedMinor < s.amountMinor)
     .map((s) => {
-      const who = s.displayName ?? "a household member";
+      const who = s.displayName ?? (s.memberUserId === userId ? "you" : UNNAMED_MEMBER);
       return {
         key: `derived:${plan.accountId}:${s.memberUserId}`,
         kind: "transfer" as const,
@@ -855,7 +874,7 @@ export function deriveNeedsYou(input: NeedsYouInput): NeedsYouItem[] {
     if (fact) items.push(fact.item);
     // The household loop above draws these off `plan.transfers`; an account no
     // household in this input speaks for has to draw its own.
-    items.push(...derivedTransferItems(account, month));
+    items.push(...derivedTransferItems(account, month, input.userId));
   }
 
   for (const account of accounts) {

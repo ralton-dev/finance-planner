@@ -357,9 +357,23 @@ export function PlanTable({
  * and never an id: "a household member" if it is a person, "another account" if
  * it is an account — and deliberately not "another of *your* accounts", since a
  * caller who cannot see the sender has not been told whose it is.
+ *
+ * **Except about the reader.** Decision 42 added a second reason a member's name
+ * can be missing: the sender is nobody any household in the scope rosters, and
+ * `scopeMembers` will not publish a name for them. That sender is very often the
+ * person reading this — an account of theirs funds a pot they can see — and
+ * "a household member" is then a mildly wrong sentence about the reader, who is
+ * neither anonymous to themselves nor a member of that household. `viewerUserId`
+ * is `GET /api/users/me`'s id, which the client already holds; it names the one
+ * person the server does not have to. Absent (still in flight) reads as "not
+ * me", so the anonymised fallback is what a stranger keeps seeing.
  */
-export function senderName(source: PlanInflowSourceDto): string {
-  if (source.kind === "member") return source.displayName ?? "a household member";
+export function senderName(source: PlanInflowSourceDto, viewerUserId?: string): string {
+  if (source.kind === "member") {
+    return (
+      source.displayName ?? (source.memberUserId === viewerUserId ? "you" : "a household member")
+    );
+  }
   return source.accountName ?? "another account";
 }
 
@@ -382,12 +396,18 @@ function nameList(names: readonly string[]): string {
  * something. Money moves between two accounts one person owns with no household
  * anywhere, and saying otherwise would invent an arrangement that does not
  * exist.
+ *
+ * `viewerUserId` is only ever consulted for a sender whose name was withheld —
+ * see {@link senderName}. A member the caller may be told about is still called
+ * what they are called, reader or not.
  */
-export function inflowNote(plan: AccountPlanDto): Phrase | null {
+export function inflowNote(plan: AccountPlanDto, viewerUserId?: string): Phrase | null {
   const arriving = plan.allocatedInflowMinor ?? 0;
   if (arriving <= 0) return null;
 
-  const names = (plan.inflowSources ?? []).filter((s) => s.amountMinor > 0).map(senderName);
+  const names = (plan.inflowSources ?? [])
+    .filter((s) => s.amountMinor > 0)
+    .map((s) => senderName(s, viewerUserId));
   // No income of its own is a fact worth leading with: it is why the plan can
   // fund more than the account earns, and why LEFT OVER has nothing to report.
   const lead = plan.monthlyIncomeMinor === 0 ? "no income of its own · " : "";
@@ -479,10 +499,14 @@ function cycleNote(plan: AccountPlanDto): string | null {
 export function PlanSummary({
   plan,
   onEditBuffer,
+  viewerUserId,
 }: {
   plan: AccountPlanDto;
   /** When provided, the Buffer KPI becomes a clickable edit affordance. */
   onEditBuffer?: () => void;
+  /** Who is reading, for the one sender {@link senderName} can name without
+   *  being told: them. Absent reads as "not me". */
+  viewerUserId?: string;
 }) {
   const c = plan.currency;
   const arriving = plan.allocatedInflowMinor ?? 0;
@@ -492,7 +516,7 @@ export function PlanSummary({
   // SHORTFALL does not appear at all, because the plan covers these bills.
   const left = leftOverMinor(plan);
   const nothingOfItsOwn = plan.monthlyIncomeMinor === 0 && arriving > 0;
-  const note = inflowNote(plan);
+  const note = inflowNote(plan, viewerUserId);
   const moving = movedNote(plan);
   const loop = cycleNote(plan);
 

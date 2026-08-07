@@ -300,7 +300,9 @@ export function FlowPage() {
             <DownloadButton targetRef={chartRef} name="money-flow" />
           </div>
           <ChartFrame ref={chartRef}>
-            <FlowSankey flow={drawn} />
+            {/* The reader's own id, for the one ribbon the route can leave
+                unnamed and the client can still name: their own. */}
+            <FlowSankey flow={drawn} viewerUserId={me.data?.id} />
           </ChartFrame>
 
           <div className="section-head">

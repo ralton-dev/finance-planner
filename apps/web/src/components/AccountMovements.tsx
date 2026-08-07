@@ -27,6 +27,12 @@ const NO_ACCOUNTS = Object.freeze([]) as readonly AccountDto[];
  */
 const UNNAMED = "another account";
 
+/** And what a *person* whose name is withheld is called — the same words
+ *  `PlanTable`'s `senderName` prints, for the same reason, restated here rather
+ *  than imported because the two files each own their own copy of this absence
+ *  (`lib/needsYou.ts` keeps a third for the same reason). */
+const UNNAMED_MEMBER = "a household member";
+
 /** One end of a movement the plan derived: authored by nobody, so it has no id
  *  to edit, no priority to reorder and no row to remove. */
 export interface DerivedRow {
@@ -151,7 +157,7 @@ export function AccountMovements({
   const loop = loopNote(plan, known, account);
   // Every movement touching this account, whichever plan derives it: the rows
   // somebody authored, and the transfers the pass works out for the bills.
-  const arrivingDerived = derivedArrivals(plan);
+  const arrivingDerived = derivedArrivals(plan, me.data?.id);
   const settleOf = (row: DerivedRow): DerivedSettle | null => {
     // Yours only: `POST /accounts/:id/transfers/confirm` refuses anyone else's,
     // and a household's transfers are ticked on the household's own checklist,
@@ -540,15 +546,24 @@ export function duplicateFeedNote(
  * diagram draws, read off the account's own plan — one derivation, three
  * surfaces.
  */
-export function derivedArrivals(plan: AccountPlanDto | undefined): DerivedRow[] {
+export function derivedArrivals(
+  plan: AccountPlanDto | undefined,
+  viewerUserId?: string,
+): DerivedRow[] {
   return (plan?.inflowSources ?? [])
     .filter((s) => s.kind === "member" && s.amountMinor > 0)
     .map((s) => {
       const source = s as Extract<PlanInflowSourceDto, { kind: "member" }>;
       return {
         key: source.memberUserId,
-        // Access-gated on the wire; an absence is rendered as an absence.
-        name: source.displayName ?? "a household member",
+        // Access-gated on the wire; an absence is rendered as an absence —
+        // except when the absence is about the reader. Decision 42 stopped the
+        // server naming somebody no household in the scope rosters, which is
+        // most often the person looking at this page: their account funds a pot
+        // they can see, so they are in its scope and on nobody's roster. The
+        // client holds their name already, so "you" is said here rather than
+        // fetched there. Anyone else with a withheld name stays anonymous.
+        name: source.displayName ?? (source.memberUserId === viewerUserId ? "you" : UNNAMED_MEMBER),
         amountMinor: source.amountMinor,
         settled: source.confirmedMinor >= source.amountMinor,
         fromAccountId: source.fromAccountId,

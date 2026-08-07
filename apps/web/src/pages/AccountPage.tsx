@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { useAuth } from "../auth/AuthContext.js";
 import { AccountMovements } from "../components/AccountMovements.js";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { Amount } from "../components/Amount.js";
@@ -25,6 +26,12 @@ export function AccountPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const { openIncome, openPayment, openEditIncome, openEditPayment, lastCreated } = useQuickAdd();
+  // Read off the session rather than fetched: `RequireAuth` only renders this
+  // page once the session has a user, so this is the same fact `/api/users/me`
+  // would answer with, already in hand and costing no request. It is here for
+  // one sentence — the sender a withheld name leaves anonymous can be the
+  // reader, and `PlanSummary` should not call the reader "a household member".
+  const { user } = useAuth();
 
   const account = useAsync<AccountDto>(() => api.getAccount(id), [id]);
   const plan = useAsync<AccountPlanDto>(() => api.getPlan(id), [id]);
@@ -101,6 +108,7 @@ export function AccountPage() {
       {plan.data && (
         <PlanSummary
           plan={plan.data}
+          viewerUserId={user?.id}
           onEditBuffer={
             canEdit
               ? () => {

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes as RouterRoutes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthProvider } from "../auth/AuthContext.js";
 import { QuickAddProvider } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
 import type { AccountPlanDto, ContributionDto } from "../lib/types.js";
@@ -85,6 +86,14 @@ const contribution = (over: Partial<ContributionDto> = {}): ContributionDto => (
 
 function renderAccount(extra?: Routes): FetchStub {
   const stub = stubApiFetch({
+    // A real AuthProvider, because the page now reads the session for one
+    // sentence: a sender whose name the wire withheld can be the reader, and
+    // "a household member" is the wrong thing to call the person reading it.
+    // These two are what a restored session is.
+    "POST /api/auth/refresh": { body: { accessToken: "t" } },
+    "GET /api/auth/me": {
+      body: { id: "ben", email: "ben@example.com", displayName: "Ben" },
+    },
     "GET /api/accounts/pot": {
       body: { id: "pot", name: "Bills joint", currency: "GBP", owner: true },
     },
@@ -105,13 +114,15 @@ function renderAccount(extra?: Routes): FetchStub {
   });
 
   render(
-    <MemoryRouter initialEntries={["/accounts/pot"]}>
-      <QuickAddProvider>
-        <RouterRoutes>
-          <Route path="/accounts/:id" element={<AccountPage />} />
-        </RouterRoutes>
-      </QuickAddProvider>
-    </MemoryRouter>,
+    <AuthProvider>
+      <MemoryRouter initialEntries={["/accounts/pot"]}>
+        <QuickAddProvider>
+          <RouterRoutes>
+            <Route path="/accounts/:id" element={<AccountPage />} />
+          </RouterRoutes>
+        </QuickAddProvider>
+      </MemoryRouter>
+    </AuthProvider>,
   );
   return stub;
 }
@@ -166,6 +177,69 @@ describe("AccountPage — a pot with no income of its own", () => {
     expect(document.querySelector(".plan-notes")).toHaveTextContent(
       "no income of its own · £303.20 arriving from Ben this month",
     );
+  });
+
+  /**
+   * The one name the page can supply without asking for it.
+   *
+   * `scopeMembers` publishes no `displayName` for somebody no household in the
+   * scope rosters (decision 42), and an outsider whose current account funds
+   * this pot is exactly that — so the sentence read "arriving from a household
+   * member" over the reader's own money, about a household they are not in. The
+   * session already knows who they are, which is why nothing here fetches it.
+   */
+  it("calls the reader 'you' where the wire withheld their own name", async () => {
+    renderAccount({
+      "GET /api/auth/me": {
+        body: { id: "outsider", email: "o@example.com", displayName: "Olive" },
+      },
+      "GET /api/accounts/pot/plan": {
+        body: {
+          ...plan,
+          inflowSources: [
+            {
+              kind: "member",
+              memberUserId: "outsider",
+              fromAccountId: "current",
+              amountMinor: 30_320,
+              confirmedMinor: 0,
+            },
+          ],
+        },
+      },
+    });
+    await mounted();
+
+    expect(document.querySelector(".plan-notes")).toHaveTextContent(
+      "no income of its own · £303.20 arriving from you this month",
+    );
+  });
+
+  it("still anonymises that same sender for a different reader — decision 41", async () => {
+    renderAccount({
+      "GET /api/accounts/pot/plan": {
+        body: {
+          ...plan,
+          inflowSources: [
+            {
+              kind: "member",
+              memberUserId: "outsider",
+              fromAccountId: "current",
+              amountMinor: 30_320,
+              confirmedMinor: 0,
+            },
+          ],
+        },
+      },
+    });
+    await mounted();
+
+    // `/api/auth/me` is Ben here, and Ben is told nothing he was not sent.
+    const note = document.querySelector(".plan-notes");
+    expect(note).toHaveTextContent(
+      "no income of its own · £303.20 arriving from a household member this month",
+    );
+    expect(note).not.toHaveTextContent("outsider");
   });
 
   it("paints nothing red — every line is waiting on a transfer, not short", async () => {

@@ -188,9 +188,19 @@ interface SankeyLinkDatum {
  * The second line of an edge's tooltip: who is moving it, or — when the plan
  * could not do what the row asked — what it asked for. A member's name wins,
  * because a household transfer that got here is one the plan funded.
+ *
+ * A missing `memberName` has two causes on this route, unlike on the account
+ * plan: the reader cannot see the household the transfer belongs to, or — since
+ * decision 42 — nobody rosters the person at all. "member" is honest for the
+ * first and the reader's own name is right for the second, which is the one the
+ * client can settle by itself: `viewerUserId` is `GET /api/users/me`'s id, and
+ * `/api/flow` already lets a reader's own name through when it has one
+ * (`server.ts`'s `visible || id === userId`). Absent reads as "not me".
  */
-function edgeNote(edge: FlowEdgeDto, currency: string): string | undefined {
-  if (edge.memberUserId !== undefined) return edge.memberName ?? "member";
+function edgeNote(edge: FlowEdgeDto, currency: string, viewerUserId?: string): string | undefined {
+  if (edge.memberUserId !== undefined) {
+    return edge.memberName ?? (edge.memberUserId === viewerUserId ? "you" : "member");
+  }
   if (edge.status === "short" || edge.status === "unfunded") {
     return `asked for ${formatMinor(edge.requestedMinor, currency)}`;
   }
@@ -255,7 +265,11 @@ function loopClosingLinks(nodeCount: number, links: readonly SankeyLinkDatum[]):
   return closing;
 }
 
-export function buildGraph(flow: FlowDto): {
+export function buildGraph(
+  flow: FlowDto,
+  /** Who is reading, for the one name {@link edgeNote} can supply itself. */
+  viewerUserId?: string,
+): {
   nodes: SankeyNodeDatum[];
   links: SankeyLinkDatum[];
   /** Whether any ribbon had to be drawn in two halves — see `roundTripOut`. The
@@ -345,7 +359,7 @@ export function buildGraph(flow: FlowDto): {
     const to =
       e.toAccountId === null ? addNode(OFF_PICTURE, false) : (accountNode.get(e.toAccountId) ?? -1);
     if (from < 0 || to < 0) continue;
-    const note = edgeNote(e, flow.currency);
+    const note = edgeNote(e, flow.currency, viewerUserId);
     links.push({
       source: from,
       target: to,
@@ -549,7 +563,7 @@ function FlowTooltip({
   );
 }
 
-export function FlowSankey({ flow }: { flow: FlowDto }) {
+export function FlowSankey({ flow, viewerUserId }: { flow: FlowDto; viewerUserId?: string }) {
   const colors = useChartColors();
   const narrow = useNarrow();
   const chartRef = useRef<HTMLDivElement>(null);
@@ -557,7 +571,7 @@ export function FlowSankey({ flow }: { flow: FlowDto }) {
   // Local to the chart: which units to read it in is a way of looking at one
   // diagram, not a setting worth persisting or lifting into the page.
   const [units, setUnits] = useState<FlowUnits>("amount");
-  const data = buildGraph(flow);
+  const data = buildGraph(flow, viewerUserId);
   // A movement the ordered pass ignored to break a funding loop moves nothing,
   // so it has no ribbon — and would otherwise vanish silently, which is the one
   // thing a detected loop must not do.

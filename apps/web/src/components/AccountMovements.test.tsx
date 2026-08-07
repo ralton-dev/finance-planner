@@ -540,6 +540,64 @@ describe("AccountMovements — the movements nobody authored", () => {
   });
 
   /**
+   * The row that told the reader who they were, and got it wrong.
+   *
+   * Decision 42 stopped the server publishing a name for somebody no household
+   * in the scope rosters — and an outsider whose current account feeds a pot
+   * they can see is precisely that, so their *own* feed arrived here with no
+   * name on it and the fallback called them "a household member". The client
+   * has held their name since login; the row is compared against the same
+   * `/api/auth/me` the tick button is already keyed on.
+   */
+  describe("naming the reader to themselves", () => {
+    const unnamed = derivedPlan({
+      inflowSources: [
+        {
+          kind: "member",
+          memberUserId: "outsider",
+          fromAccountId: "current",
+          amountMinor: 30_320,
+          confirmedMinor: 0,
+        },
+      ],
+    });
+
+    it("says 'you' when the unnamed feed is the reader's own", async () => {
+      renderFor(
+        POT,
+        {
+          "GET /api/auth/me": {
+            body: { id: "outsider", email: "o@example.com", displayName: "Olive" },
+          },
+        },
+        { plan: unnamed },
+      );
+
+      await mounted();
+      const item = screen.getByText("derived transfer").closest("li")!;
+      expect(item).toHaveTextContent("you →");
+      expect(item).not.toHaveTextContent("a household member");
+    });
+
+    it("still anonymises that same feed for anybody else — decision 41", async () => {
+      renderFor(
+        POT,
+        {
+          "GET /api/auth/me": { body: { id: "me", email: "b@example.com", displayName: "Ben" } },
+        },
+        { plan: unnamed },
+      );
+
+      await mounted();
+      const item = screen.getByText("derived transfer").closest("li")!;
+      expect(item).toHaveTextContent("a household member →");
+      // Never the id, and never a name the server declined to send.
+      expect(item).not.toHaveTextContent("outsider");
+      expect(item).not.toHaveTextContent("Olive");
+    });
+  });
+
+  /**
    * Defect 1: the transfer with no client that could reach it.
    *
    * `POST /accounts/:id/transfers/confirm` is scoped by the two accounts, the

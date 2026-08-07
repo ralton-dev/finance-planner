@@ -1696,6 +1696,52 @@ describe("a solo pot fed by a transfer the plan derived", () => {
     expect(deriveNeedsYou(soloPot()).filter((i) => i.kind === "shortfall")).toEqual([]);
   });
 
+  /**
+   * The label that told the reader they were somebody.
+   *
+   * Decision 42 gave a missing `displayName` a second cause — the sender is on
+   * no roster in the scope — and on a pot like this one it is nearly always the
+   * cause, and nearly always the reader. So the row read "a household member →
+   * Rent pot" over the reader's own money, in a household they are not in.
+   * `input.userId` was already here for {@link movementEnds}; the wording of
+   * this row is the same kind of question.
+   */
+  const unnamedFeed = (userId?: string): NeedsYouInput => ({
+    ...soloPot({
+      inflowSources: [
+        {
+          kind: "member",
+          memberUserId: "outsider",
+          fromAccountId: "current",
+          amountMinor: 30_320,
+          confirmedMinor: 0,
+        },
+      ],
+    }),
+    ...(userId === undefined ? {} : { userId }),
+  });
+
+  it("labels an unnamed feed 'you' when it is the reader's own", () => {
+    expect(deriveNeedsYou(unnamedFeed("outsider"))[0]!.label).toBe("you → Rent pot");
+  });
+
+  it("keeps the same feed anonymous for anybody else — decision 41", () => {
+    // The half that is easy to break. A withheld name is withheld from everyone
+    // but the person it belongs to, and a reader who is not them learns nothing
+    // — not the name, and not the id either.
+    const item = deriveNeedsYou(unnamedFeed("somebody-else"))[0]!;
+    expect(item.label).toBe("a household member → Rent pot");
+    expect(item.label).not.toMatch(/outsider/);
+    // And with `/api/users/me` still in flight, no claim is made at all.
+    expect(deriveNeedsYou(unnamedFeed())[0]!.label).toBe("a household member → Rent pot");
+  });
+
+  it("leaves a name the server did send alone, reader or not", () => {
+    // The gate is the absence, never the id: a member the caller may be told
+    // about is called what they are called.
+    expect(deriveNeedsYou({ ...soloPot(), userId: "ben" })[0]!.label).toBe("Ben → Rent pot");
+  });
+
   it("asks for nothing to be recorded until the money has actually moved", () => {
     // The `record` rule, re-checked for the new producer: a line the plan funds
     // with money nobody has moved yet is not money you can set aside, and the

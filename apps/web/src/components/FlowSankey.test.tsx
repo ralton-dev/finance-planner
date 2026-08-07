@@ -171,6 +171,31 @@ describe("buildGraph", () => {
     expect(links[0]!.note).toBe("member");
   });
 
+  /**
+   * Two causes now leave a ribbon unnamed: the reader cannot see the household
+   * the transfer belongs to, or — since decision 42 — nobody rosters the person
+   * at all. `/api/flow` already lets a reader's own name through when it has
+   * one, so the second cause is the only one that reaches this fallback with
+   * the reader as its subject, and the client can settle it without asking.
+   */
+  const unnamedRibbon = (viewerUserId?: string): string | undefined =>
+    buildGraph(
+      flow({
+        accounts: [node("bills")],
+        edges: [edge({ toAccountId: "bills", amountMinor: 10, memberUserId: "bob" })],
+      }),
+      viewerUserId,
+    ).links[0]!.note;
+
+  it("says 'you' on the reader's own unnamed ribbon", () => {
+    expect(unnamedRibbon("bob")).toBe("you");
+  });
+
+  it("keeps that ribbon anonymous for anybody else — decision 41", () => {
+    expect(unnamedRibbon("alice")).toBe("member");
+    expect(unnamedRibbon()).toBe("member");
+  });
+
   it("draws no ribbon for a movement that moves nothing", () => {
     const { links } = buildGraph(
       flow({

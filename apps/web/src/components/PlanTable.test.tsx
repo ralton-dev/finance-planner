@@ -575,7 +575,8 @@ describe("inflowNote — the sentence, for each kind of sender", () => {
     over: Partial<AccountPlanDto> = {},
   ): AccountPlanDto => ({ ...billsPot, inflowSources: sources, ...over });
 
-  const text = (p: AccountPlanDto): string => phraseText(inflowNote(p) ?? []);
+  const text = (p: AccountPlanDto, viewerUserId?: string): string =>
+    phraseText(inflowNote(p, viewerUserId) ?? []);
 
   it("names a household member sending money", () => {
     expect(text(billsPot)).toBe("no income of its own · £303.20 arriving from Ben this month");
@@ -634,6 +635,49 @@ describe("inflowNote — the sentence, for each kind of sender", () => {
     );
     // Never an id, and never "your account" for one you have not been shown.
     expect(sentence).not.toMatch(/a9/);
+  });
+
+  /**
+   * Decision 42 gave the withheld name a second cause, and the second cause is
+   * usually the reader: `scopeMembers` publishes no name for somebody no
+   * household in the scope rosters, and an outsider whose current account feeds
+   * a household pot is exactly that. The sentence was telling them their own
+   * money arrived "from a household member".
+   */
+  describe("the reader is not anonymous to themselves", () => {
+    const withheld: PlanInflowSourceDto = {
+      kind: "member",
+      memberUserId: "u9",
+      fromAccountId: "a9",
+      amountMinor: 30_320,
+      confirmedMinor: 0,
+    };
+
+    it("says 'you' when the unnamed sender is the reader", () => {
+      expect(senderName(withheld, "u9")).toBe("you");
+      expect(text(withSources([withheld]), "u9")).toBe(
+        "no income of its own · £303.20 arriving from you this month",
+      );
+    });
+
+    it("still anonymises the same sender for anybody else — decision 41", () => {
+      expect(senderName(withheld, "someone-else")).toBe("a household member");
+      expect(text(withSources([withheld]), "someone-else")).toBe(
+        "no income of its own · £303.20 arriving from a household member this month",
+      );
+    });
+
+    it("anonymises while the session's own id is still absent", () => {
+      // No id yet is not "it must be me": an unknown reader claims nothing.
+      expect(senderName(withheld)).toBe("a household member");
+      expect(senderName(withheld, undefined)).toBe("a household member");
+    });
+
+    it("leaves a name the server did send alone, reader or not", () => {
+      // The gate is the *absence*, never the id — a member the caller may be
+      // told about is called what they are called on everyone's screen.
+      expect(senderName({ ...withheld, displayName: "Ben" }, "u9")).toBe("Ben");
+    });
   });
 
   it("lists two senders", () => {
