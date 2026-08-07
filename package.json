@@ -29,6 +29,18 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "undici@7": "^7.29.0",
+      "brace-expansion@1": "^1.1.16",
+      "brace-expansion@2": "^2.1.4",
+      "brace-expansion@5": "^5.0.7",
+      "fast-uri@3": "^3.1.5",
+      "find-my-way@9": "^9.7.0",
+      "postcss@8": "^8.5.23",
+      "js-yaml@4": "^4.3.0",
+      "protobufjs@7": "^7.6.5",
+      "esbuild@>=0.27.3 <0.28.1": "^0.28.1"
+    }
   }
 }
