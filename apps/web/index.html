@@ -5,7 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0c0c0c" />
-    <link rel="icon" type="image/png" href="/brand/finance-planner-favicon.png" />
+    <!--
+      Two favicons, not one downscale: inside a tile the mark only holds two
+      rows at 16px and three from 32px up, so each size gets the drawing that
+      actually resolves at it.
+    -->
+    <link rel="icon" type="image/png" sizes="16x16" href="/brand/finance-planner-favicon-16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/finance-planner-favicon-32.png" />
     <link rel="apple-touch-icon" href="/brand/finance-planner-apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <title>Finance Planner</title>

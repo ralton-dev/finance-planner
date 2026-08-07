@@ -75,6 +75,11 @@
  *   states     --funded (on track) / --needs-you (your move) / --alert (short).
  *   people     --member-1 / --member-2 / --member-shared.
  *   tags       --tag-1…--tag-6 + --tag-untagged, ranked biggest-first.
+ *   brand      --brand, the product mark's accent. Deliberately *not* a state:
+ *              the logo wears it whether the household is on track or short,
+ *              so it must not be confusable with --funded sitting beside it.
+ *              It is also the one colour with a single value in both themes —
+ *              see the note on it below.
  *
  * Translucent washes are `color-mix()` against a token, never a hand-mixed
  * `rgba()`: the second theme then needs no second set of them. Mixing with
@@ -135,6 +140,16 @@
   --alert-hover: #8c2c24;
   --link: #4c5fc4;
   --accent: #6d4ca8;
+
+  /* The product mark's accent. One value serves both themes: the mark's accent
+   * runs alongside its own ink bars, so it has four contrast relationships to
+   * clear, not one — ground and bars, light and dark. This green is the value
+   * that maximises the worst of the four, and clears 3:1 (the WCAG floor for a
+   * graphical object) on every surface in both themes:
+   *   light ground 4.24  light bars 3.49  dark ground 4.49  dark bars 3.49
+   * Because it is theme-independent it is declared once, here, and deliberately
+   * NOT repeated in the dark blocks — there is nothing to keep in sync. */
+  --brand: #1c8a56;
 
   --member-1: #4c5fc4;
   --member-2: #a0508b;
@@ -345,31 +360,19 @@ textarea:focus-visible {
   overflow-y: auto;
 }
 
+/* The mark is one inline SVG that takes its bars from `currentColor` and its
+ * accent from `--brand`, so it follows the theme with no second asset and no
+ * light/dark swap. `color` is set here rather than inherited: the mark must not
+ * depend on whichever container it happens to sit in. */
 .product-logo {
   display: grid;
+  color: var(--ink);
 }
-.product-logo-image {
+.product-logo-mark {
   grid-area: 1 / 1;
   width: 100%;
   height: 100%;
   object-fit: contain;
-}
-.product-logo-image-dark {
-  display: none;
-}
-:root[data-theme="dark"] .product-logo-image-light {
-  display: none;
-}
-:root[data-theme="dark"] .product-logo-image-dark {
-  display: block;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .product-logo-image-light {
-    display: none;
-  }
-  :root:not([data-theme]) .product-logo-image-dark {
-    display: block;
-  }
 }
 .brand-lockup {
   display: flex;

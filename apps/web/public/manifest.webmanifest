@@ -22,7 +22,7 @@
       "purpose": "any"
     },
     {
-      "src": "/brand/finance-planner-app-icon-512.png",
+      "src": "/brand/finance-planner-app-icon-maskable-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
