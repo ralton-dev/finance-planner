@@ -738,6 +738,56 @@ describe("HouseholdPlanView · money that is somebody else's", () => {
     expect(tables(container)[0]!.querySelector("tfoot")).toBeNull();
   });
 
+  /**
+   * Decision 40. The negative branch serves two causes and had one word for
+   * both. A column that *overshoots* the members' total by money sitting in a
+   * pot two rows above is not money held elsewhere.
+   *
+   * The overshoot is the savings arrivals the account rows count and the member
+   * rows do not, so `movementInMinor` measures it exactly: covered, the money is
+   * reserved; short, the remainder is a non-member's and keeps "elsewhere".
+   */
+  describe("HouseholdPlanView · the two causes of an overshooting column", () => {
+    /** heldHere is 280,000 across CROSS's three accounts. */
+    const overshooting = (
+      movementInMinor: number,
+      membersLeftoverMinor = 230_000,
+    ): HouseholdPlanDto => ({
+      ...CROSS,
+      membersLeftoverMinor,
+      accounts: CROSS.accounts.map((a) => (a.accountId === "pot" ? { ...a, movementInMinor } : a)),
+    });
+    const note = (plan: HouseholdPlanDto): string => {
+      const { container } = render(<HouseholdPlanView plan={plan} />);
+      return tables(container)[0]!.querySelector("tfoot .cell-note")!.textContent!;
+    };
+
+    it("says reserved when savings arrivals account for the whole overshoot", () => {
+      expect(note(overshooting(50_000))).toBe("less £500.00 reserved");
+    });
+
+    it("keeps elsewhere when nothing has arrived into a pot", () => {
+      // A roster account owned by somebody who is not a member: their money is
+      // genuinely here and genuinely not any member's.
+      expect(note(overshooting(0))).toBe("less £500.00 elsewhere");
+    });
+
+    it("keeps elsewhere when the pots explain only part of the overshoot", () => {
+      expect(note(overshooting(30_000))).toBe("less £500.00 elsewhere");
+    });
+
+    it("keeps elsewhere on a payload with no movementInMinor field at all", () => {
+      const old: HouseholdPlanDto = { ...CROSS, membersLeftoverMinor: 230_000 };
+      expect(note(old)).toBe("less £500.00 elsewhere");
+    });
+
+    it("leaves the money-held-elsewhere direction alone", () => {
+      // Members hold more than the roster does: they own an account this
+      // household does not, which is what the word has always meant.
+      expect(note(overshooting(50_000, 290_000))).toBe("plus £100.00 elsewhere");
+    });
+  });
+
   it("describes an owner it cannot name rather than printing their id", () => {
     // An owner the roster cannot name is described, never printed as an id.
     const stranger: HouseholdPlanDto = {

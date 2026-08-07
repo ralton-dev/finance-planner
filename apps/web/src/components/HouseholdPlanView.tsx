@@ -157,6 +157,11 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
   // on the screen — no third derivation, and nothing here changes either.
   const heldHere = plan.accounts.reduce((s, a) => s + freeMinor(a), 0);
   const heldElsewhere = left - heldHere;
+  // What the household's own accounts have *received* from authored savings
+  // movements — `movementInMinor`, the field the pass publishes as the mirror
+  // of `committedMinor`, added up. Decision 40's whole job, and no new
+  // arithmetic: it decides one word, and never the figure beside it.
+  const reservedHere = plan.accounts.reduce((s, a) => s + (a.movementInMinor ?? 0), 0);
 
   return (
     <>
@@ -306,7 +311,21 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
               £2,800 here under a headline of £2,900. Same word the member rows
               use for the same class of gap, and the footer appears only when
               there is one, exactly as their notes do. Nothing is recomputed:
-              this is the column added up beside the figure already printed. */}
+              this is the column added up beside the figure already printed.
+
+              **Two words, because the gap has two causes** (decision 40). A
+              column that *overshoots* the members' total is not money held
+              elsewhere — it is here, in a pot two rows above, and calling it
+              "elsewhere" pointed the reader off the screen they were looking
+              at. Which cause it is, is a question the published fields already
+              answer: an account row counts a savings arrival, a member's left
+              over does not, so `movementInMinor` is exactly the overshoot the
+              pots explain. When it covers the whole gap the money is
+              **reserved**; when it does not, the remainder belongs to somebody
+              this household's members do not include — a roster account owned
+              by a non-member, the cause this branch was written for — and that
+              keeps **elsewhere**. A payload too old to carry the field reads
+              nought and keeps the word it always had. */}
           {heldElsewhere !== 0 && (
             <tfoot>
               <tr>
@@ -320,7 +339,8 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
                   {formatMinor(heldHere, c)}
                   <span className="cell-note">
                     {heldElsewhere > 0 ? "plus " : "less "}
-                    {formatMinor(Math.abs(heldElsewhere), c)} elsewhere
+                    {formatMinor(Math.abs(heldElsewhere), c)}{" "}
+                    {heldElsewhere < 0 && -heldElsewhere <= reservedHere ? "reserved" : "elsewhere"}
                   </span>
                 </td>
                 <td className="num" />
