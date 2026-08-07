@@ -1776,6 +1776,89 @@ describe("api service", () => {
   });
 
   /**
+   * #26 wearing a calendar. A payment's already-saved is the **cumulative** sum
+   * of its contributions — `sumContributionsByPayment` takes no date and no
+   * reader bounds it — so a row dated next January counts toward what that
+   * payment has set aside today, and the reality figure built on it reads high
+   * from the moment the row is written.
+   *
+   * Recording was unbounded while correcting was not, which left a future-dated
+   * row that `PATCH` could rescue but could not have created. That asymmetry
+   * was coherent only while `POST` was open by default rather than by decision.
+   * Both ends state the same rule now, through the same helper and the same
+   * code, so a caller matching on the refusal need not know which door it came
+   * through.
+   */
+  it("refuses a contribution recorded for a month that has not started", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: "Holiday",
+          category: "fixed_point",
+          amountMinor: 120000,
+          dueDate: "2027-09-01",
+        },
+      })
+    ).json();
+    const record = (payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: `/api/payments/${payment.id}/contributions`,
+        headers: auth,
+        payload,
+      });
+
+    const future = await record({
+      amountMinor: 5000,
+      month: `${new Date().getUTCFullYear() + 1}-01`,
+    });
+    expect(future.statusCode).toBe(422);
+    expect(future.json().error.code).toBe("future_month");
+
+    // The boundary is "has not started", not "is not past". The month running
+    // right now is the one nearly every contribution is recorded for, so an
+    // off-by-one here would refuse the common case and permit only the odd one.
+    const current = await record({ amountMinor: 5000, month: thisMonth() });
+    expect(current.statusCode).toBe(201);
+    expect(current.json().month).toBe(`${thisMonth()}-01`);
+
+    // Naming no month at all still means this one.
+    const implied = await record({ amountMinor: 2500 });
+    expect(implied.statusCode).toBe(201);
+    expect(implied.json().month).toBe(`${thisMonth()}-01`);
+
+    // The refusal wrote nothing: two rows, both in the month that is running,
+    // and the payment's already-saved is the sum of exactly those two.
+    const ledger = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/contributions`,
+        headers: auth,
+      })
+    ).json();
+    expect(ledger.map((c: { month: string }) => c.month)).toEqual([
+      `${thisMonth()}-01`,
+      `${thisMonth()}-01`,
+    ]);
+    const plan = (
+      await app.inject({ method: "GET", url: `/api/accounts/${account.id}/plan`, headers: auth })
+    ).json();
+    expect(plan.lines[0].alreadySavedMinor).toBe(7500);
+  });
+
+  /**
    * #49. A contribution a confirmation wrote is one line of somebody's
    * statement that they moved money, not a fact of its own. Editing or removing
    * it on its own would leave the movement claiming an amount its ledger no
@@ -5919,6 +6002,40 @@ describe("export / import", () => {
     expect(contributions[0]!.transferConfirmationId).toBeNull();
     // …and the exporter still has theirs: import adds, it never moves.
     expect(await store.listAccountsForOwner(from.id)).toHaveLength(1);
+  });
+
+  /**
+   * A file written before recording was bounded still restores, future-dated
+   * contributions and all. The bound is a rule about somebody recording money
+   * now, not about the shape of a contribution, so it lives on the route and
+   * not on `exportContribution` — a backup that stops restoring is a worse
+   * defect than the one the bound fixes, and a restore that silently dropped
+   * the row would be worse still. Same answer decision 39 gave for a
+   * future-dated balance check-in, for the same reason.
+   */
+  it("still imports a file carrying a contribution dated into the future", async () => {
+    const { user: from, auth: fromAuth } = await seedUser(store, "old-file@example.com");
+    const { user: to, auth: toAuth } = await seedUser(store, "restorer@example.com");
+    await seedRichAccount(from.id);
+    const file = (
+      await app.inject({ method: "GET", url: "/api/export", headers: fromAuth })
+    ).json();
+    // Age the file: a month that had not started when the backup was written.
+    const ahead = `${new Date().getUTCFullYear() + 1}-01-01`;
+    file.accounts[0].payments[0].contributions[0].month = ahead;
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/import",
+      headers: toAuth,
+      payload: file,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().contributions).toBe(1);
+    const restored = await store.listContributionsForAccount(
+      (await store.listAccountsForOwner(to.id))[0]!.id,
+    );
+    expect(restored.map((c) => c.month)).toEqual([ahead]);
   });
 
   it("is additive: importing the same file twice gives two copies", async () => {

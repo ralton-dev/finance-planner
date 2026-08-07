@@ -1436,6 +1436,20 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * Record money set aside toward a payment. The plan derives each payment's
    * already-saved from its manual base plus these, so recording a contribution
    * moves the plan without editing the payment.
+   *
+   * **Not for a month that has not started** (decision 26). Already-saved is the
+   * *cumulative* sum of a payment's contributions — nothing bounds it by month —
+   * so a row dated next January is counted today, and the reality figure built
+   * on it reads high from the moment the row is written. Correcting one was
+   * bounded before recording one was, which left a future-dated row that could
+   * be rescued but never created; both ends state the rule now.
+   *
+   * In the handler rather than in `createContributionBody`, because the refusal
+   * carries a code of its own — a `ZodError` lands as `validation_error`, and
+   * `future_month` is what the ledger's sibling refusal already returns and what
+   * the client matches on to say "that month has not started". Nothing is bought
+   * by moving it: the schema has this one caller, and a restore validates
+   * against `exportContribution` and never passes here.
    */
   app.post("/api/payments/:paymentId/contributions", async (req, reply) => {
     const userId = await authenticate(req);
@@ -1443,6 +1457,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const accountId = await accountIdOf("payment", paymentId);
     await requireAccess(userId, accountId, "edit");
     const body = createContributionBody.parse(req.body);
+    if (body.month !== undefined) refuseFutureMonth(body.month, "record");
     const contribution = await store.createContribution({
       paymentId,
       accountId,
