@@ -685,7 +685,15 @@ export interface OverviewDto {
 
 export interface HouseholdAccountAssignmentDto {
   accountId: string;
-  accountName: string;
+  /**
+   * **Absent when the caller may not be told it** (decision 41). Being on a
+   * household's roster is what entitles a member to this row's figures; it is
+   * not permission to be told the account's name, which stays with `view`.
+   * Assigning an account to the plan and sharing it with the household are two
+   * separate controls on this very page. Also absent when the assignment
+   * outlived the account. Render `accountLabel`; never `undefined`.
+   */
+  accountName?: string;
   currency: string;
   role: AccountRole;
   memberUserId: string | null;

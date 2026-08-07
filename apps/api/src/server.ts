@@ -553,7 +553,7 @@ type PlanTransferDeparture = TransferDeparture & { toAccountName?: string };
  *
  * Optional for the reason `PlanInflowSource.accountName` is — it is absent both
  * when there is nothing to say and when the caller may not be told, and a client
- * renders the same honest fallback either way. See `withTransferSources`.
+ * renders the same honest fallback either way. See `householdPlanForCaller`.
  */
 type PlanTransfer = Transfer & { fromAccountName?: string };
 
@@ -723,6 +723,29 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       householdMemberIds,
     });
   };
+
+  /**
+   * Every account this caller may be told the name of, as a set of ids.
+   *
+   * **The one gate for "may this reader be told what this is called"**
+   * (decision 41). Ownership plus explicit shares, which is what
+   * `listAccessibleAccounts` is and all it is — a household roster is not on it,
+   * and neither is a membership. That separation is the point: a membership gate
+   * shares an aggregate picture and is not permission to name its parts.
+   *
+   * Deliberately not a `can("view")` over `abilityFor`, though today the two
+   * agree exactly: every access set `buildAbility` constructs contains `"view"`,
+   * so `hasAnyAccess` and `can("view")` are one question for an Account, and
+   * `getAccess` is this same query narrowed. One store read per response instead
+   * of one per row, and the same answer `planInflowSources` and
+   * `withTransferDestinations` already give a name they are asked for.
+   *
+   * Teaching `packages/policies` about rosters would be the wrong shape: it
+   * would widen `requireAccess` everywhere and hand every household member the
+   * account *detail* page, which is a great deal more than a name.
+   */
+  const visibleAccountIds = async (userId: string): Promise<ReadonlySet<string>> =>
+    new Set((await store.listAccessibleAccounts(userId)).map((a) => a.accountId));
 
   /**
    * Resolve access to an account at a specific action level. The policy
@@ -956,33 +979,50 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   };
 
   /**
-   * The household's transfers, carrying the source account's name wherever this
-   * caller is allowed it.
+   * The household plan as this caller may read it: every figure, and only the
+   * account names they are allowed.
    *
-   * A transfer belongs to the household its money **arrives** in (WP-X), so once
-   * `f3acef8` put a member's private accounts in the same scope, a private
-   * account funding the shared pot became a household transfer with a source the
-   * household does not hold. `householdPlanFromScope` reports only the roster's
-   * accounts — rightly — so the name was dropped at this boundary although the
-   * scope knew it, and the checklist fell through to a bare lowercase "account",
-   * which reads like a lookup that broke.
+   * **Two gates, one question** (decision 41). A transfer belongs to the
+   * household its money **arrives** in (WP-X), so once `f3acef8` put a member's
+   * private accounts in the same scope, a private account funding the shared pot
+   * became a household transfer with a source the household does not hold.
+   * `householdPlanFromScope` reports only the roster's accounts — rightly — so
+   * the name was dropped at this boundary although the scope knew it, and the
+   * checklist fell through to a bare lowercase "account", which reads like a
+   * lookup that broke. That half was always gated.
+   *
+   * The other half was not, and this function's own comment used to say so:
+   * *"an account the household holds is already named in `plan.accounts`, for
+   * every member"*. It is — and being on the roster is not permission to be
+   * named. `/api/households/:id/plan` gates on **membership**, deliberately
+   * ("it is the household's shared financial picture by design"), and that rule
+   * was written to share an aggregate picture, not to license its parts.
+   * Assigning an account to a household and sharing it are separate controls
+   * that `HouseholdDetailPage` offers separately, so an assigned-but-unshared
+   * account named every co-member's private pot to the whole roster.
    *
    * Gated exactly as `planInflowSources` gates a sender's name, and by the same
-   * mechanism rather than a second one: the id travels, the name is gated on
-   * `getAccess`. The person who has to move this money is the account's owner,
-   * and an owner can always see their own account's name — so the owner reads
-   * "Ben · Side account → Shared pot" and a co-member reads "Ben · other
+   * mechanism rather than a second one: the id and every figure travel, the name
+   * is gated on access. The person who has to move this money is the account's
+   * owner, and an owner can always see their own account's name — so the owner
+   * reads "Ben · Side account → Shared pot" and a co-member reads "Ben · other
    * account". Amounts are never gated and none is gated here.
    *
-   * Only sources off the roster are looked up: an account the household holds is
-   * already named in `plan.accounts`, for every member, and paying for a store
-   * round trip to say so again would be a second answer to a settled question.
+   * **Absence, not a stand-in**, matching `/api/flow`: `HouseholdAccountPlanDto`
+   * has always had an optional `name` and the client has always printed the
+   * honest fallback for it. A placeholder invented here would be
+   * indistinguishable from an account genuinely called that.
+   *
+   * One `listAccessibleAccounts` for the whole response rather than a `getAccess`
+   * per row — `getAccess` is that same query narrowed in both stores, and a
+   * roster has as many rows as the household has accounts.
    */
-  const withTransferSources = async (
+  const householdPlanForCaller = async (
     userId: string,
     plan: HouseholdPlanWithSchedule,
   ): Promise<HouseholdPlanResponse> => {
     const onRoster = new Set(plan.accounts.map((a) => a.accountId));
+    const visible = await visibleAccountIds(userId);
     /** id → name, or null for "not this caller's to see". Memoised because one
      *  source account funds one destination per member, not one row. */
     const seen = new Map<string, string | null>();
@@ -993,7 +1033,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         continue;
       }
       if (!seen.has(t.fromAccountId)) {
-        const source = (await store.getAccess(userId, t.fromAccountId))
+        const source = visible.has(t.fromAccountId)
           ? await store.getAccount(t.fromAccountId)
           : null;
         seen.set(t.fromAccountId, source?.name ?? null);
@@ -1001,7 +1041,13 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       const name = seen.get(t.fromAccountId);
       transfers.push(name == null ? t : { ...t, fromAccountName: name });
     }
-    return { ...plan, transfers };
+    return {
+      ...plan,
+      accounts: plan.accounts.map(({ name, ...row }) =>
+        visible.has(row.accountId) ? { ...row, name } : row,
+      ),
+      transfers,
+    };
   };
 
   const debugScopeResponse = async (
@@ -2132,13 +2178,18 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * priority funding, and derived transfers. Any member can view the joint
    * plan, regardless of per-account share grants — it is the household's
    * shared financial picture by design.
+   *
+   * **The picture, not the parts** (decision 41). That membership rule is about
+   * the money, and `householdPlanForCaller` is what keeps it to the money: every
+   * figure on this response is the whole household's, and an account name
+   * travels only to a caller who can see the account.
    */
   app.get("/api/households/:id/plan", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
     const { asOf } = req.query as { asOf?: string };
     await requireMembership(userId, id);
-    return withTransferSources(
+    return householdPlanForCaller(
       userId,
       await computeHouseholdPlanWithSchedule(store, id, asOf ?? today()),
     );
@@ -2166,18 +2217,34 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     );
   });
 
-  /** The roster of accounts in this household's plan, with their roles. */
+  /**
+   * The roster of accounts in this household's plan, with their roles.
+   *
+   * Membership-gated, and the roster is exactly the list of accounts membership
+   * entitles you to the *figures* of — so `accountName` is gated separately
+   * (decision 41). Assigning an account and sharing it are two controls on
+   * `HouseholdDetailPage`, and a member who has used only the first was naming
+   * their private account to the whole household here.
+   *
+   * Absent rather than a stand-in, as everywhere else. It replaces
+   * `"(unknown account)"` too — that placeholder stood for an assignment whose
+   * account has gone, and inventing a name for a thing you cannot see is the
+   * same mistake whichever reason you cannot see it for.
+   */
   app.get("/api/households/:id/accounts", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
     await requireMembership(userId, id);
-    const assignments = await store.listAccountAssignments(id);
+    const [assignments, visible] = await Promise.all([
+      store.listAccountAssignments(id),
+      visibleAccountIds(userId),
+    ]);
     return Promise.all(
       assignments.map(async (a) => {
         const account = await store.getAccount(a.accountId);
         return {
           accountId: a.accountId,
-          accountName: account?.name ?? "(unknown account)",
+          ...(visible.has(a.accountId) && account ? { accountName: account.name } : {}),
           currency: account?.currency ?? "",
           role: a.role,
           memberUserId: a.memberUserId,

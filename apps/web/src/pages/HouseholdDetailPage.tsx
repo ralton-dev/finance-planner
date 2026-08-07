@@ -3,6 +3,7 @@ import { type CSSProperties, type FormEvent, Fragment, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { Amount } from "../components/Amount.js";
 import { api, ApiError } from "../lib/api.js";
+import { accountLabel } from "../lib/flow.js";
 import { useAsync } from "../lib/useAsync.js";
 import { BalanceCell, ownershipPhrase } from "./AccountsPage.js";
 import type {
@@ -86,7 +87,12 @@ export function mergeAccountRows(
     return fresh;
   }
 
-  for (const r of roster) row(r.accountId, r.accountName, r.currency).assignment = r;
+  // A roster row's name is access-gated and a share row's is not: a share *is*
+  // the access, so `HouseholdShareDto` always carries one. `accountLabel` is the
+  // same absence the flow diagram prints, spelt once (decision 41).
+  for (const r of roster) {
+    row(r.accountId, accountLabel({ name: r.accountName }), r.currency).assignment = r;
+  }
   for (const s of shares) row(s.accountId, s.accountName, s.currency).share = s;
   return [...rows.values()];
 }

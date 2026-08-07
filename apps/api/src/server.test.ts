@@ -6453,7 +6453,19 @@ describe("flow over any scope", () => {
       })
     ).json();
 
-    return { auth, alice, bobAuth, bob, current, homeBills, bobCurrent, savings, isa, movement };
+    return {
+      auth,
+      alice,
+      bobAuth,
+      bob,
+      home,
+      current,
+      homeBills,
+      bobCurrent,
+      savings,
+      isa,
+      movement,
+    };
   }
 
   it("draws a scope spanning a household and a standalone pot", async () => {
@@ -6634,6 +6646,96 @@ describe("flow over any scope", () => {
     expect(theirs.payload).not.toContain('"name":"current"');
     expect(theirs.payload).not.toContain('"name":"home-bills"');
     expect(theirs.payload).toContain('"name":"bob-current"');
+  });
+
+  /**
+   * Decision 41: the same question, asked by the two membership-gated household
+   * routes, which named every assigned account to every member.
+   *
+   * The same fixture answers it, because it is the same shape — `bob-current` is
+   * on Home's roster and shared with nobody. Membership is what entitles Alice
+   * to its **figures**; `view` is what entitles her to its name, and the two are
+   * separate controls on the household page. Both directions, in both routes:
+   * neither member here can see the other's account, so the pair of responses is
+   * the same body with the names swapped.
+   */
+  it("names an assigned account on the household routes only to a reader who can see it", async () => {
+    const { auth, bobAuth, home, current, homeBills, bobCurrent } = await seedHouseholdAndAPot();
+
+    const as = (who: { authorization: string }, path: string) =>
+      app.inject({ method: "GET", url: `/api/households/${home.id}/${path}`, headers: who });
+
+    // --- the roster -------------------------------------------------------
+    const roster = (body: { accountId: string; accountName?: string }[]) =>
+      Object.fromEntries(body.map((r) => [r.accountId, r.accountName ?? null]));
+
+    const mineRoster = await as(auth, "accounts");
+    expect(mineRoster.statusCode).toBe(200);
+    expect(roster(mineRoster.json())).toEqual({
+      [current.id]: "current",
+      [homeBills.id]: "home-bills",
+      [bobCurrent.id]: null,
+    });
+
+    const theirRoster = await as(bobAuth, "accounts");
+    expect(roster(theirRoster.json())).toEqual({
+      [current.id]: null,
+      [homeBills.id]: null,
+      [bobCurrent.id]: "bob-current",
+    });
+
+    // On the wire, and matched on the encoded field: "bob-current" contains
+    // "current", and each of them may of course be told their own.
+    expect(mineRoster.payload).not.toContain('"accountName":"bob-current"');
+    expect(mineRoster.payload).toContain('"accountName":"home-bills"');
+    expect(theirRoster.payload).not.toContain('"accountName":"current"');
+    expect(theirRoster.payload).not.toContain('"accountName":"home-bills"');
+    expect(theirRoster.payload).toContain('"accountName":"bob-current"');
+
+    // Every row still travels, with its role and its currency: the roster is
+    // what membership entitles a member to, and only the name was ever the
+    // question.
+    expect(theirRoster.json()).toHaveLength(3);
+    expect(theirRoster.json().map((r: { currency: string }) => r.currency)).toEqual([
+      "GBP",
+      "GBP",
+      "GBP",
+    ]);
+
+    // --- the plan ---------------------------------------------------------
+    const minePlan = await as(auth, "plan");
+    const theirPlan = await as(bobAuth, "plan");
+    expect(minePlan.statusCode).toBe(200);
+
+    const named = (body: { accounts: { accountId: string; name?: string }[] }) =>
+      Object.fromEntries(body.accounts.map((a) => [a.accountId, a.name ?? null]));
+    expect(named(minePlan.json())).toEqual({
+      [current.id]: "current",
+      [homeBills.id]: "home-bills",
+      [bobCurrent.id]: null,
+    });
+    expect(named(theirPlan.json())).toEqual({
+      [current.id]: null,
+      [homeBills.id]: null,
+      [bobCurrent.id]: "bob-current",
+    });
+
+    expect(minePlan.payload).not.toContain('"name":"bob-current"');
+    expect(theirPlan.payload).not.toContain('"name":"current"');
+    expect(theirPlan.payload).not.toContain('"name":"home-bills"');
+    expect(theirPlan.payload).toContain('"name":"bob-current"');
+
+    // The aggregate picture is untouched — which is the whole reason membership
+    // opens this route. Every figure is identical for both readers; only the
+    // names moved.
+    const figures = (body: {
+      accounts: Record<string, unknown>[];
+      [k: string]: unknown;
+    }): unknown => ({
+      ...body,
+      accounts: body.accounts.map((a) => ({ ...a, name: "—" })),
+    });
+    expect(figures(theirPlan.json())).toEqual(figures(minePlan.json()));
   });
 
   /**

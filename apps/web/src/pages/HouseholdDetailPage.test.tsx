@@ -289,6 +289,33 @@ describe("HouseholdDetailPage — one account table", () => {
     expect(within(pot).getByText("£3,184.50")).toBeInTheDocument();
   });
 
+  /**
+   * Decision 41. Assigning an account to the plan and sharing it with the
+   * household are two controls on this page, and a member who has used only the
+   * first gets a roster row with figures and **no `accountName`** — the same
+   * absence `/api/flow` sends for a node it may not name. The row still has to
+   * be there: it is on the roster, it carries a role, and it is what the plan's
+   * arithmetic is over.
+   */
+  it("prints the diagram's word for a roster account it was sent no name for", async () => {
+    renderPage({
+      "GET /api/households/h1/accounts": {
+        body: [
+          ROSTER[0],
+          ROSTER[1],
+          // Alex's account: assigned, never shared, so the wire carries no name.
+          { accountId: "a3", currency: "GBP", role: "personal", memberUserId: "u2" },
+        ],
+      },
+    });
+
+    const theirs = await rowFor("other account");
+    expect(within(theirs).getByText("personal · Alex")).toBeInTheDocument();
+    // Nothing invented, and nothing else lost: the named rows are untouched.
+    expect(screen.queryByText("Alex current")).toBeNull();
+    expect(await rowFor("Bills joint")).toBeInTheDocument();
+  });
+
   it("drops both old chip vocabularies", async () => {
     const { container } = renderPage();
     await rowFor("Bills joint");
