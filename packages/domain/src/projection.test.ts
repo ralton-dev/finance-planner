@@ -644,6 +644,142 @@ describe("computeScopeProjection — projected balance", () => {
   });
 });
 
+// --- money recorded as saved that the balance cannot account for --------------
+
+/**
+ * Issue #45's other half, and the shape no fixture in this repository had:
+ * **money already recorded as saved, against a goal that is paid out in the
+ * projected month.** `projection.test.ts:261` pairs them, but with an opening
+ * balance that exactly covers the record — the one arrangement in which reading
+ * the record as money in the account happens to be true.
+ *
+ * Ben's account, as it stood on `3253596`:
+ *
+ * | figure                                    | minor    |            |
+ * | ----------------------------------------- | -------- | ---------- |
+ * | balance checked in (`startingBalanceMinor`)| 1_170    | **£11.70** |
+ * | recorded as saved across both goals        | 23_464   | **£234.64**|
+ * | funded into them this month                | 46_536   | **£465.36**|
+ * | falling due this month                     | 70_000   | **£700.00**|
+ * | what the chart drew                        | -22_294  | **−£222.94**|
+ *
+ *     1_170 + 46_536 − 70_000 = −22_294
+ *
+ * — the issue's own figure with the sign flipped, on an account with £2,000 a
+ * month of income and no overdraft. The walk paid £700 out of the balance while
+ * only ever having put £465.36 into it: the £234.64 difference came out of a pot
+ * the walk never credited, because it predates the walk.
+ *
+ * **What the fix asserts, and what it deliberately does not.** Of the £234.64
+ * recorded, the opening balance can account for £11.70 and no more — the other
+ * £222.94 is exactly the residue `RealityStrip.tsx`'s banner names, and the walk
+ * declines to spend money the account was never shown to hold. It does *not*
+ * credit the record into the balance: that would assert the money is there,
+ * which the banner explicitly denies (decision 26). The balance falls by the
+ * £11.70 that could have been there and stops at zero.
+ */
+describe("computeScopeProjection — a pot the opening balance cannot account for", () => {
+  /** £400 due now, £134.64 of it recorded as saved. */
+  const service: PaymentInput = {
+    id: "service",
+    name: "Car service",
+    category: "fixed_point",
+    amountMinor: 40_000,
+    dueDate: "2026-08-14",
+    alreadySavedMinor: 13_464,
+  };
+  /** £300 due now, £100 of it recorded as saved. */
+  const insure: PaymentInput = {
+    id: "insure",
+    name: "Car insurance",
+    category: "fixed_point",
+    amountMinor: 30_000,
+    dueDate: "2026-08-20",
+    alreadySavedMinor: 10_000,
+  };
+
+  const ben = project(account([service, insure]), { months: 3, startingBalanceMinor: 1_170 });
+
+  it("reproduces Ben's month exactly, to the penny, before it decides anything", () => {
+    const first = ben.months[0]!;
+    expect(first.totalFundedMinor).toBe(46_536);
+    expect(first.lines.map((l) => l.dueAmountMinor)).toEqual([40_000, 30_000]);
+    expect(first.reservedEndMinor).toBe(0);
+  });
+
+  it("does not draw £222.94 the account was never shown to hold", () => {
+    expect(ben.months.map((m) => m.projectedBalanceMinor)).toEqual([0, 0, 0]);
+  });
+
+  it("still falls by the part of the record the balance can account for", () => {
+    // The same two goals against an account holding every penny of the record:
+    // nothing is unaccounted for, so the whole £234.64 leaves as it always did.
+    const held = project(account([service, insure]), { months: 2, startingBalanceMinor: 23_464 });
+    expect(held.months.map((m) => m.projectedBalanceMinor)).toEqual([0, 0]);
+  });
+
+  it("holds nothing back for an account already overdrawn", () => {
+    const red = project(account([service, insure]), { months: 2, startingBalanceMinor: -5_000 });
+    expect(red.months.map((m) => m.projectedBalanceMinor)).toEqual([-5_000, -5_000]);
+  });
+
+  it("leaves the record out of the balance entirely until the goal is paid", () => {
+    // Not due for three months: the balance rises by what this walk sets aside
+    // and by nothing else. Crediting the £234.64 here would put money on the
+    // chart that the check-in says is not in the account.
+    const later = project(
+      account([{ ...service, dueDate: "2026-11-11", alreadySavedMinor: 23_464 }]),
+      { months: 3, startingBalanceMinor: 1_170 },
+    );
+    expect(later.months.map((m) => m.reservedEndMinor)).toEqual([28_976, 34_488, 40_000]);
+    expect(later.months.map((m) => m.projectedBalanceMinor)).toEqual([6_682, 12_194, 17_706]);
+  });
+
+  it("shields one payment's record and not another payment's payout", () => {
+    // `service` carries the whole £234.64; `boiler` carries nothing and falls due
+    // in the same month. Only the first is held back — a walk that pooled the two
+    // would swallow £222.94 of a bill nobody ever claimed to have saved for.
+    const mixed = project(
+      account([
+        { ...service, alreadySavedMinor: 23_464 },
+        {
+          id: "boiler",
+          name: "Boiler service",
+          category: "fixed_point",
+          amountMinor: 30_000,
+          dueDate: "2026-08-20",
+        },
+      ]),
+      { months: 2, startingBalanceMinor: 1_170 },
+    );
+    // 1_170 + 46_536 funded − 70_000 due + 22_294 unheld = −22_294 + 22_294… the
+    // boiler's £300 is paid in full from money the walk itself put by, so the
+    // balance ends £300 lower than the goals-only case above.
+    expect(mixed.months.map((m) => m.projectedBalanceMinor)).toEqual([0, 0]);
+  });
+
+  it("keeps a monthly bill's stale saved figure out of the balance", () => {
+    // A contribution recorded against a monthly bill: the plan never draws on it
+    // (a monthly bill is paid from income), so it can neither move the balance
+    // nor stand as cover for a goal that does draw.
+    const stale = project(
+      account([
+        service,
+        insure,
+        {
+          id: "phone",
+          name: "Phone",
+          category: "monthly_recurring",
+          amountMinor: 4_500,
+          alreadySavedMinor: 50_000,
+        },
+      ]),
+      { months: 2, startingBalanceMinor: 1_170 },
+    );
+    expect(stale.months.map((m) => m.projectedBalanceMinor)).toEqual([0, 0]);
+  });
+});
+
 // --- income over time --------------------------------------------------------
 
 describe("computeScopeProjection — income", () => {

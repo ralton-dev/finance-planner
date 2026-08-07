@@ -225,6 +225,15 @@ export interface HouseholdProjection {
 /** Evolving state of one payment across the simulation. */
 interface PaymentState {
   alreadySavedMinor: number;
+  /**
+   * Of `alreadySavedMinor`, how much was recorded **before** the walk began and
+   * has not been drawn on yet. Spent first when a bill takes from the pot —
+   * oldest money goes first — and tracked apart from the rest because it is the
+   * only part of the pot this walk did not put there itself, and therefore the
+   * only part whose presence in the account is a claim rather than a step the
+   * simulation took. See {@link advance}.
+   */
+  openingSavedMinor: number;
   active: boolean;
 }
 
@@ -290,6 +299,9 @@ function dueOccurrences(p: PaymentInput, ref: Date, monthKey: string): number {
 interface DueResult {
   dueThisMonth: boolean;
   dueAmountMinor: number;
+  /** Of what the pot gave up this month, how much came from money recorded as
+   *  saved before the walk began rather than from a contribution it made. */
+  paidFromOpeningMinor: number;
 }
 
 /**
@@ -313,8 +325,14 @@ function evolvePayment(
 ): DueResult {
   const occurrences = dueOccurrences(p, ref, monthKey);
   const dueAmountMinor = occurrences > 0 ? p.amountMinor * occurrences : 0;
+  let paidFromOpeningMinor = 0;
   if (p.category !== "monthly_recurring") {
-    state.alreadySavedMinor = Math.max(0, state.alreadySavedMinor + fundedMinor - dueAmountMinor);
+    const potMinor = state.alreadySavedMinor + fundedMinor;
+    state.alreadySavedMinor = Math.max(0, potMinor - dueAmountMinor);
+    // Oldest money first: whatever the bill took, it took the opening record's
+    // share of it before this walk's own contributions.
+    paidFromOpeningMinor = Math.min(state.openingSavedMinor, potMinor - state.alreadySavedMinor);
+    state.openingSavedMinor -= paidFromOpeningMinor;
     if (p.category === "fixed_point") {
       if (occurrences > 0) state.active = false;
       else if (isDatelessCappedGoal(p) && state.alreadySavedMinor >= p.amountMinor) {
@@ -322,11 +340,19 @@ function evolvePayment(
       }
     }
   }
-  return { dueThisMonth: occurrences > 0, dueAmountMinor };
+  return { dueThisMonth: occurrences > 0, dueAmountMinor, paidFromOpeningMinor };
 }
 
 function initialState(p: PaymentInput): PaymentState {
-  return { alreadySavedMinor: p.alreadySavedMinor ?? 0, active: p.active !== false };
+  const saved = p.alreadySavedMinor ?? 0;
+  return {
+    alreadySavedMinor: saved,
+    // A monthly bill is paid straight from income and never draws on a pot, so
+    // a figure recorded against one can neither move the balance nor stand as
+    // cover for a goal that does draw.
+    openingSavedMinor: p.category === "monthly_recurring" ? 0 : saved,
+    active: p.active !== false,
+  };
 }
 
 /** Overlay the simulated state onto a payment without touching the original. */
@@ -369,16 +395,40 @@ interface AccountSim {
   byId: Map<string, PaymentInput>;
   states: Map<string, PaymentState>;
   balance: number | null;
+  /** How much of what the payments record as already saved the opening balance
+   *  cannot account for, and has not yet been spent. See {@link advance}. */
+  unheldSavedMinor: number;
   months: MonthProjection[];
 }
 
+/**
+ * Of everything recorded as saved before the walk began, the part the opening
+ * balance cannot account for.
+ *
+ * The opening balance is one observation of what the account holds; the saved
+ * figures are a running total of what somebody recorded putting aside, which is
+ * a different kind of fact. Where the record exceeds the observation, the excess
+ * is money the account has never been shown to hold — the same residue
+ * `RealityStrip.tsx`'s banner names in words. Nothing here decides where it
+ * went; it only stops the walk spending it.
+ */
+function unheldSaved(states: Iterable<PaymentState>, startingBalanceMinor: number | null): number {
+  let recorded = 0;
+  for (const s of states) recorded += s.openingSavedMinor;
+  // An overdrawn account holds none of it, so the balance covers nothing.
+  const held = Math.max(0, Math.min(recorded, startingBalanceMinor ?? 0));
+  return recorded - held;
+}
+
 function newSim(account: ProjectedAccount, startingBalanceMinor: number | null): AccountSim {
+  const states = new Map(account.payments.map((p) => [p.id, initialState(p)] as const));
   return {
     accountId: account.accountId,
     currency: account.currency,
     byId: new Map(account.payments.map((p) => [p.id, p] as const)),
-    states: new Map(account.payments.map((p) => [p.id, initialState(p)] as const)),
+    states,
     balance: startingBalanceMinor,
+    unheldSavedMinor: unheldSaved(states.values(), startingBalanceMinor),
     months: [],
   };
 }
@@ -391,10 +441,42 @@ function newSim(account: ProjectedAccount, startingBalanceMinor: number | null):
  * Arriving inflow is spent on the same month's obligations exactly as income is,
  * and money sent on to another account leaves like any other spending — both are
  * balance-neutral here for the same reason a monthly bill is.
+ *
+ * ## Why a payout does not always cost the balance the whole bill
+ *
+ * `setAside − paidOut` alone is a one-sided entry, and it drew issue #45's own
+ * figure on a chart. A goal that opens the walk with money already recorded
+ * against it pays that money out in its due month — but the walk never put it
+ * there, so the walk never credited it. Ben's account balanced £11.70 against
+ * £234.64 recorded as saved and £700 falling due, and the line went to
+ * **−£222.94**: it spent £222.94 the account had never been shown to hold.
+ *
+ * The mirror of this is the error `RealityStrip.tsx` was fixed for on the same
+ * screen. That banner treated the record as money that *ought to be* in the
+ * account; this treated it as money that had been there and left. Both read a
+ * record as the event it records, and the two surfaces disagreed by the sign.
+ *
+ * So the opening record is spent from the balance only as far as the opening
+ * balance can account for it — {@link unheldSaved}. The rest is not credited
+ * either: crediting it would assert the money *is* there, which is exactly what
+ * the banner denies (decision 26 — the residue is real and is never clamped
+ * away). The walk simply declines to adjudicate, and the balance falls by what
+ * could have been there and no more.
+ *
+ * The arriving inflow is deliberately not counted as cover, though decision 27
+ * lets the banner count it. It is already spent inside `setAside` — it funds
+ * this month's contributions like any other income — and counting it twice
+ * would let a pot leave the balance on the strength of money the same month has
+ * already used.
+ *
+ * Where a month draws on both, the unaccounted-for part goes first: the choice
+ * only moves *when* the balance falls, never by how much over the whole walk,
+ * and this way the walk never draws a fall it may have to take back.
  */
 function advance(sim: AccountSim, plan: AccountPlan, refDate: Date, monthKey: string): void {
   let setAside = 0;
   let paidOut = 0;
+  let fromOpening = 0;
   const lines: ProjectionLine[] = plan.lines.map((line) => {
     const payment = sim.byId.get(line.paymentId)!;
     const state = sim.states.get(line.paymentId)!;
@@ -402,6 +484,7 @@ function advance(sim: AccountSim, plan: AccountPlan, refDate: Date, monthKey: st
     if (payment.category !== "monthly_recurring") {
       setAside += line.fundedMonthlyMinor;
       paidOut += due.dueAmountMinor;
+      fromOpening += due.paidFromOpeningMinor;
     }
     return {
       paymentId: line.paymentId,
@@ -415,7 +498,9 @@ function advance(sim: AccountSim, plan: AccountPlan, refDate: Date, monthKey: st
     };
   });
 
-  if (sim.balance !== null) sim.balance += setAside - paidOut;
+  const unheldSpent = Math.min(fromOpening, sim.unheldSavedMinor);
+  sim.unheldSavedMinor -= unheldSpent;
+  if (sim.balance !== null) sim.balance += setAside - paidOut + unheldSpent;
 
   sim.months.push({
     month: monthKey,
