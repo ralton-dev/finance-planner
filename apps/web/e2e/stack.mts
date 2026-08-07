@@ -70,12 +70,18 @@ const MIME: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
 };
 
-/** Read the whole request body. Every API call the SPA makes is small JSON. */
-function readBody(req: IncomingMessage): Promise<Buffer> {
+/**
+ * Read the whole request body. Every API call the SPA makes is small JSON.
+ *
+ * A plain `Uint8Array`, not a `Buffer`: this package compiles with the DOM lib,
+ * where `fetch`'s `BodyInit` is `BufferSource` and a `Buffer<ArrayBufferLike>`
+ * does not satisfy it.
+ */
+function readBody(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))));
     req.on("error", reject);
   });
 }
