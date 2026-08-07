@@ -1,5 +1,10 @@
 {{- if .Values.autoscaling.enabled }}
 {{- range $name, $svc := .Values.services }}
+{{- /* A service opts out with `autoscaling: false` on its entry in values.yaml,
+       so which services are excluded — and why — is readable there rather than
+       spelled as a name test in here. `dig` rather than `default true` because
+       `default` treats an intentional false as unset and would re-enable it. */}}
+{{- if dig "autoscaling" true $svc }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -24,6 +29,7 @@ spec:
           averageUtilization: {{ $.Values.autoscaling.targetCPUUtilizationPercentage }}
 {{- end }}
 {{- end }}
+{{- end }}
 ---
 {{- range $name, $svc := .Values.services }}
 apiVersion: policy/v1
@@ -33,7 +39,9 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ $name }}
 spec:
-  minAvailable: 1
+  # maxUnavailable, not minAvailable: on a single-replica service (auth)
+  # `minAvailable: 1` permits zero disruptions and a node drain hangs forever.
+  maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}

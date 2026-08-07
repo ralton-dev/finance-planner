@@ -17,6 +17,12 @@ services:
   # refresh can land on the pod that knows nothing about the rotation, which
   # revokes every session for that user and logs them out everywhere. Raise this
   # only once that state lives on the session row (see BACKLOG).
+  #
+  # This number is only worth writing down because auth carries
+  # `autoscaling: false` in values.yaml. Without that it would be dead text: an
+  # autoscaled service renders no `replicas` at all, and the HPA would have run
+  # auth at two to six pods regardless of what this said. CI asserts no auth HPA
+  # is rendered, from either values file.
   auth:
     replicas: 1
   calc:

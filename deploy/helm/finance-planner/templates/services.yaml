@@ -14,7 +14,9 @@ metadata:
     app.kubernetes.io/name: {{ $name }}
     {{- include "fp.labels" $ | nindent 4 }}
 spec:
-  {{- if not $.Values.autoscaling.enabled }}
+  {{- /* Omit replicas only where an HPA actually owns the count, or the number
+         declared in values.yaml is never rendered and nothing honours it. */}}
+  {{- if not (and $.Values.autoscaling.enabled (dig "autoscaling" true $svc)) }}
   replicas: {{ $svc.replicas | default 1 }}
   {{- end }}
   selector:

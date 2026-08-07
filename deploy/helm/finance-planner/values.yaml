@@ -18,6 +18,12 @@ services:
     port: 4001
     replicas: 1
     health: /healthz
+    # auth is the one service that is not stateless, so it is the one service
+    # the autoscaler must not touch: it holds refresh-token rotation state in
+    # process. A second replica turns a retried refresh into an apparent token
+    # theft and logs the user out everywhere — see the note in values-prod.yaml.
+    # Leave this false until that state lives on the session row (see BACKLOG).
+    autoscaling: false
   calc:
     port: 4002
     replicas: 1
@@ -74,7 +80,11 @@ migrations:
   enabled: true
   image: postgres:17-alpine
 
-# Horizontal Pod Autoscaling for the stateless services.
+# Horizontal Pod Autoscaling. Applies to every entry in `services` except those
+# carrying `autoscaling: false` — today that is auth, for the reason recorded on
+# its entry above. A service the autoscaler owns renders no `replicas` on its
+# Deployment, so its `replicas` here applies only when this is disabled; a
+# service that has opted out keeps its declared `replicas`.
 autoscaling:
   enabled: true
   minReplicas: 2
