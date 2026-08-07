@@ -6216,6 +6216,80 @@ describe("plan debug", () => {
     expect(scope.report).not.toContain("carol private");
   });
 
+  /**
+   * The half of that trace WP-BF left open: it withheld the outsider's
+   * **account** name and went on naming the outsider.
+   *
+   * `labels.users` is `scope.input.members`, and that set is the *scope*'s — one
+   * funding edge wide of the roster. It is closed here at the source rather than
+   * on this route: `scopeMembers` no longer loads a name it may not publish, so
+   * the label map, the rendered report and `trace.members` all lose it together,
+   * and none of the three needed a gate of its own.
+   *
+   * The fallback is the route's existing one — `?? "user"`, already there for a
+   * member with no display name at all — and not a second phrase for the same
+   * idea.
+   */
+  it("does not name a non-member the scope pulled in, on the trace", async () => {
+    const { auth, household, bills } = await seedHousehold(store, app);
+    const carol = await store.createUser({
+      email: "carol@example.com",
+      passwordHash: "x",
+      displayName: "Carol Outsider",
+    });
+    const carolAccount = await store.createAccount({
+      ownerUserId: carol.id,
+      name: "carol private",
+      currency: "GBP",
+    });
+    await store.createIncome({
+      accountId: carolAccount.id,
+      name: "Pay",
+      amountMinor: 500_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+    await store.createInflow({
+      accountId: bills.id,
+      name: "Carol's contribution",
+      source: "account",
+      sourceAccountId: carolAccount.id,
+      amountMinor: 10_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 50,
+      active: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&household=${household.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).not.toContain("Carol Outsider");
+    const scope = res.json().scopes[0];
+    expect(scope.labels.users[carol.id]).toBe("user");
+
+    // She is still wholly in the calculation — the trace exists to explain a
+    // number, and hers is one of its terms.
+    const members = scope.trace.plan.partitions[0].members as {
+      userId: string;
+      displayName?: string;
+      monthlyIncomeMinor: number;
+    }[];
+    const hers = members.find((m) => m.userId === carol.id)!;
+    expect(hers.monthlyIncomeMinor).toBe(500_000);
+    expect(hers).not.toHaveProperty("displayName");
+
+    // And the roster is named, on all three surfaces that say a name here.
+    expect(Object.values(scope.labels.users)).toContain("Owner");
+    expect(members.filter((m) => m.displayName === "Owner")).toHaveLength(2);
+  });
+
   /** Membership is what admits; a scope with no household behind it is refused
    *  exactly as before. */
   it("still refuses a scope the caller cannot wholly see with no household in it", async () => {
@@ -6920,6 +6994,177 @@ describe("flow over any scope", () => {
     expect(members.map((m) => m.userId)).toContain(carol.id);
     expect(named.has(carol.id)).toBe(false);
     expect(named.size).toBe(members.length - 1);
+  });
+
+  /**
+   * The same fact one level down, where the previous test's fix stopped.
+   *
+   * `householdPlanFromScope` filters its own output against the roster, which
+   * fixes the household plan and nothing else. The name is published by
+   * `scopeMembers`, whose set is the *scope*'s and is deliberately wider than any
+   * roster — and the three surfaces reading it (`/api/flow`, `planInflowSources`,
+   * `inflowSourcesFor`) gate on **household visibility**, never on membership. So
+   * a name no household here may publish travelled to every member of it.
+   *
+   * The lodger below is in the diagram because a household bill is recorded as
+   * **borne by her** — `scope: "personal"` with a `bearerUserId`, which is how
+   * this product says "Carol pays the water". The pass funds it out of her
+   * account, and the ribbon is drawn into a pot Alice is looking at.
+   */
+  async function aLodgerWhoPaysABill(homeBillsId: string) {
+    const carol = await store.createUser({
+      email: "carol@example.com",
+      passwordHash: "x",
+      displayName: "Carol Outsider",
+    });
+    const carolCur = await store.createAccount({
+      ownerUserId: carol.id,
+      name: "carol private",
+      currency: "GBP",
+    });
+    await store.createIncome({
+      accountId: carolCur.id,
+      name: "Pay",
+      amountMinor: 500_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+    // The funding edge that puts her in the household's scope: one authored
+    // inflow out of an account no household has ever heard of.
+    await store.createInflow({
+      accountId: homeBillsId,
+      name: "Carol's contribution",
+      source: "account",
+      sourceAccountId: carolCur.id,
+      amountMinor: 10_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 50,
+      active: true,
+    });
+    return { carol, carolCur };
+  }
+
+  it("draws a non-member's ribbon without their name, and keeps the roster's", async () => {
+    const { auth, alice, bob, current, homeBills } = await seedHouseholdAndAPot();
+    const { carol } = await aLodgerWhoPaysABill(homeBills.id);
+    // Her share of a household bill, recorded on the household's own pot. The
+    // author needs her user id, which this API publishes ungated by design —
+    // `planInflowSources` sends a sending account's *owner* and gates only its
+    // name.
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${homeBills.id}/payments`,
+      headers: auth,
+      payload: {
+        name: "Water",
+        category: "monthly_recurring",
+        amountMinor: 15_000,
+        scope: "personal",
+        bearerUserId: carol.id,
+      },
+    });
+
+    const body = (await flow(auth, [current.id, homeBills.id])).json();
+    const edges = body.edges as {
+      memberUserId?: string;
+      memberName?: string;
+      amountMinor: number;
+    }[];
+
+    // Her money is drawn, in full, arriving across the edge of the picture from
+    // an account Alice may not name and may not include.
+    const hers = edges.filter((e) => e.memberUserId === carol.id);
+    expect(hers.map((e) => e.amountMinor)).toEqual([15_000]);
+    expect(hers[0]).not.toHaveProperty("memberName");
+    expect((await flow(auth, [current.id, homeBills.id])).payload).not.toContain(
+      '"memberName":"Carol Outsider"',
+    );
+
+    // And the mirror, which is the half easiest to break: the roster's own
+    // ribbons are named exactly as before.
+    const rostered = edges.filter((e) => e.memberUserId === alice.id || e.memberUserId === bob.id);
+    expect(rostered.length).toBeGreaterThan(0);
+    expect(rostered.every((e) => e.memberName === "Owner")).toBe(true);
+
+    // Every node still balances with her ribbon in it — the name went, the
+    // money did not.
+    for (const node of body.accounts as {
+      accountId: string;
+      incomeMinor: number;
+      spendingMinor: number;
+      leftoverMinor: number;
+    }[]) {
+      const into = (body.edges as { toAccountId: string; amountMinor: number }[])
+        .filter((e) => e.toAccountId === node.accountId)
+        .reduce((sum, e) => sum + e.amountMinor, 0);
+      const outOf = (body.edges as { fromAccountId: string; amountMinor: number }[])
+        .filter((e) => e.fromAccountId === node.accountId)
+        .reduce((sum, e) => sum + e.amountMinor, 0);
+      expect(node.incomeMinor + into).toBe(node.spendingMinor + outOf + node.leftoverMinor);
+    }
+  });
+
+  /**
+   * **Decision 13, asserted directly.** Every figure below was read off the
+   * parent commit, with the name still on the wire.
+   *
+   * The withholding is a name and nothing else. `leftoverMinor` and
+   * `membersLeftoverMinor` are sums over the member rows the outsider is in, and
+   * `/api/households/:id/projection` sums the strip over `scope.input.members`
+   * **deliberately** — including her — so that the strip and the headline above
+   * it cannot be summed over different sets. Dropping her row would move both
+   * published figures; that is a different decision and this is the test that
+   * says this package did not take it.
+   */
+  it("moves no figure on either household route", async () => {
+    const { auth, home, homeBills } = await seedHouseholdAndAPot();
+    const { carol } = await aLodgerWhoPaysABill(homeBills.id);
+
+    const plan = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${home.id}/plan?asOf=2026-08-04`,
+        headers: auth,
+      })
+    ).json();
+    // Her row, unfiltered and unmoved, inside both sums above.
+    const row = (plan.members as { userId: string; personalLeftoverMinor: number }[]).find(
+      (m) => m.userId === carol.id,
+    )!;
+    expect({
+      leftoverMinor: plan.leftoverMinor,
+      membersLeftoverMinor: plan.membersLeftoverMinor,
+      monthlyIncomeMinor: plan.monthlyIncomeMinor,
+      totalRequiredMinor: plan.totalRequiredMinor,
+      hers: row.personalLeftoverMinor,
+    }).toEqual({
+      leftoverMinor: 1_150_000,
+      membersLeftoverMinor: 1_080_000,
+      monthlyIncomeMinor: 600_000,
+      totalRequiredMinor: 100_000,
+      // £4,900 of it is the lodger's, inside a household headline, exactly as it
+      // was before — WP-BF reported that and deliberately did not change it.
+      hers: 490_000,
+    });
+
+    const projection = (
+      await app.inject({
+        method: "GET",
+        url: `/api/households/${home.id}/projection?asOf=2026-08-04&months=3`,
+        headers: auth,
+      })
+    ).json();
+    // Summed over `scope.input.members`, the lodger included — which is what
+    // makes it the same figure the plan summed. The strip and the headline above
+    // it agree to the penny, and they can only do that over the same set.
+    expect(
+      (projection.months as { membersLeftoverMinor: number }[]).map((m) => m.membersLeftoverMinor),
+    ).toEqual([1_080_000, 1_080_000, 1_080_000]);
+    expect(projection.months[0].membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
   });
 
   /**
