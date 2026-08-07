@@ -329,12 +329,30 @@ export class ApiClient {
   ) {
     return this.request<ContributionDto>("POST", `/api/payments/${paymentId}/contributions`, body);
   }
+  /** The ledger behind the plan's already-saved. `month` is "YYYY-MM"; omit it
+   *  for the account's whole history. */
   listContributions(accountId: string, month?: string) {
     return this.request<ContributionDto[]>(
       "GET",
-      `/api/accounts/${accountId}/contributions${month ? `?month=${month}` : ""}`,
+      `/api/accounts/${accountId}/contributions${query({ month })}`,
     );
   }
+  /**
+   * Correct one that was recorded (decision 30) — a mistyped amount is an edit,
+   * not a delete and a re-record, which is how a ledger loses the note and the
+   * month that said what the money was for. Every field optional; `note: null`
+   * clears it. The month may not be moved forward past the calendar (422
+   * `future_month`).
+   */
+  patchContribution(
+    contributionId: string,
+    body: { amountMinor?: number; month?: string; note?: string | null },
+  ) {
+    return this.request<ContributionDto>("PATCH", `/api/contributions/${contributionId}`, body);
+  }
+  /** A row a transfer confirmation wrote is refused here with 409
+   *  `confirmation_generated` — un-confirm the transfer instead. Same for
+   *  `patchContribution`. */
   deleteContribution(contributionId: string) {
     return this.request<void>("DELETE", `/api/contributions/${contributionId}`);
   }

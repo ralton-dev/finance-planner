@@ -3,16 +3,19 @@ import { Link, useNavigate, useParams } from "react-router";
 import { AccountMovements } from "../components/AccountMovements.js";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { Amount } from "../components/Amount.js";
+import { ContributionLedger } from "../components/ContributionLedger.js";
 import { PlanSummary, PlanTable } from "../components/PlanTable.js";
 import { ProjectionView } from "../components/ProjectionView.js";
 import { RealityStrip } from "../components/RealityStrip.js";
 import { TagBreakdown } from "../components/TagBreakdown.js";
 import { api } from "../lib/api.js";
+import { currentMonth, monthOf } from "../lib/months.js";
 import { useAsync } from "../lib/useAsync.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import type {
   AccountDto,
   AccountPlanDto,
+  ContributionDto,
   IncomeDto,
   PaymentDto,
   ProjectDto,
@@ -29,6 +32,9 @@ export function AccountPage() {
   const payments = useAsync<PaymentDto[]>(() => api.listPayments(id), [id]);
   // Project labels for the chips next to payment names. Cheap call; no per-account scope.
   const projects = useAsync<ProjectDto[]>(() => api.listProjects(), []);
+  // The whole ledger, not just this month's: a row moved back to the month it
+  // belongs in must stay visible, or a correction reads as a deletion.
+  const contributions = useAsync<ContributionDto[]>(() => api.listContributions(id), [id]);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerFocus, setDrawerFocus] = useState<"monthlyBuffer" | undefined>(undefined);
@@ -37,6 +43,7 @@ export function AccountPage() {
     plan.refetch();
     incomes.refetch();
     payments.refetch();
+    contributions.refetch();
   };
 
   // When the quick-add drawer creates an income or payment for THIS account,
@@ -120,9 +127,25 @@ export function AccountPage() {
           onRecord={async (paymentId, amountMinor) => {
             await api.recordContribution(paymentId, { amountMinor });
             plan.refetch();
+            contributions.refetch();
           }}
         />
       )}
+
+      {/* Directly under the box that records them: the list belongs where the
+          recording happens, so a mistyped figure is seen where it was typed. */}
+      <ContributionLedger
+        contributions={contributions.data}
+        failed={!!contributions.error}
+        payments={payments.data ?? []}
+        currency={currency}
+        month={plan.data ? monthOf(plan.data.asOfDate) : currentMonth()}
+        canEdit={canEdit}
+        onChanged={() => {
+          contributions.refetch();
+          plan.refetch();
+        }}
+      />
 
       {plan.data && <TagBreakdown lines={plan.data.lines} currency={currency} />}
 
@@ -141,8 +164,16 @@ export function AccountPage() {
           <div className="section-head">
             <h2>income</h2>
             {/* External inflows only. Money out of another account you own is
-                not income, and has its own section below. */}
-            <span className="meta">[{incomes.data?.length ?? 0} active · from outside]</span>
+                not income, and has its own section below.
+
+                "…" while the read is in flight, never "0": a count that reads
+                the same before the answer arrives as it does when the answer is
+                none tells the reader an account has no income when nobody has
+                asked yet — and it left a test asserting the loading state and
+                calling it the empty one. */}
+            <span className="meta">
+              [{incomes.data ? incomes.data.length : "…"} active · from outside]
+            </span>
             <span className="spacer" />
             {canEdit && (
               <button type="button" className="action" onClick={() => openIncome(id)}>
@@ -203,7 +234,7 @@ export function AccountPage() {
         <div>
           <div className="section-head">
             <h2>payments</h2>
-            <span className="meta">[{payments.data?.length ?? 0} active]</span>
+            <span className="meta">[{payments.data ? payments.data.length : "…"} active]</span>
             <span className="spacer" />
             {canEdit && (
               <button type="button" className="action" onClick={() => openPayment(id)}>
