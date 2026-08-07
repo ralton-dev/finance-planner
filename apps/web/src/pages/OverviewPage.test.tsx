@@ -151,6 +151,36 @@ describe("OverviewPage — demo seed", () => {
   });
 });
 
+// --- a failed read is not an empty account list ------------------------------
+// Both directions, together, because the two halves break in opposite ways: a
+// page that shows the first run after a failed read is lying about the money,
+// and a page that shows an error to somebody who genuinely has no accounts has
+// taken the front door away from every new user.
+
+describe("OverviewPage — a failed account list", () => {
+  it("says the list could not be read rather than that it is empty", async () => {
+    renderOverview({
+      "GET /api/accounts": { status: 500, body: { error: { code: "internal" } } },
+      "GET /api/meta": { body: { demoSeedEnabled: true } },
+    });
+
+    expect(await screen.findByText(/could not read your accounts/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no accounts yet/i)).toBeNull();
+    // The one that matters: no offer to plant a worked example over a profile
+    // whose real contents we did not manage to read.
+    expect(screen.queryByRole("button", { name: /load demo data/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /\+ create account/i })).toBeNull();
+  });
+
+  it("still greets a genuinely empty profile with the first run", async () => {
+    renderOverview({ "GET /api/meta": { body: { demoSeedEnabled: true } } });
+
+    expect(await screen.findByText(/no accounts yet/i)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /load demo data/i })).toBeInTheDocument();
+    expect(screen.queryByText(/could not read your accounts/i)).toBeNull();
+  });
+});
+
 // --- the doorways ------------------------------------------------------------
 // One household (two accounts) plus one account planned alone, which is the
 // arrangement every rule on this page has an opinion about.

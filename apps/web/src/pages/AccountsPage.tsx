@@ -248,8 +248,20 @@ export function AccountsPage() {
     overview.refetch();
   }, [lastCreated]);
 
-  const total = accounts.data?.length ?? 0;
-  const owned = accounts.data?.filter((a) => a.owner).length ?? 0;
+  // This page is the account list and its head is a count of it, so a read that
+  // failed leaves nothing here to render honestly. It used to fall through to
+  // `total === 0` and print the first-run welcome — "no accounts yet", with a
+  // create button — about a list it had never seen, under a heading claiming
+  // "accounts / 0". The overview is decoration on this page and its failure is
+  // survivable; this one is not. Narrowing on `data` rather than on a count
+  // keeps the empty array where it belongs: an account list that really is
+  // empty is still a first run.
+  if (accounts.loading) return <p className="muted">loading…</p>;
+  if (accounts.error || !accounts.data)
+    return <p className="error">could not read your accounts.</p>;
+
+  const total = accounts.data.length;
+  const owned = accounts.data.filter((a) => a.owner).length;
   const shared = total - owned;
   const asOfDate = overview.data?.asOfDate;
   const state = new Map(
@@ -275,9 +287,7 @@ export function AccountsPage() {
         </div>
       </div>
 
-      {accounts.loading ? (
-        <p className="muted">loading…</p>
-      ) : total === 0 ? (
+      {total === 0 ? (
         <div className="empty-state">
           <h3>no accounts yet</h3>
           <p>create one to start planning. each account holds its own incomes and payments.</p>
@@ -303,7 +313,7 @@ export function AccountsPage() {
               </tr>
             </thead>
             <tbody>
-              {accounts.data?.map((a) => {
+              {accounts.data.map((a) => {
                 const s = state.get(a.id);
                 return (
                   <tr

@@ -315,3 +315,31 @@ describe("AccountsPage — the table", () => {
     expect(table?.querySelectorAll(".wide-only")).toHaveLength(0);
   });
 });
+
+// Both directions, together, because the two halves break in opposite ways: a
+// page that shows the first run after a failed read is lying about the money,
+// and a page that shows an error to somebody who genuinely has no accounts has
+// taken the front door away from every new user.
+describe("AccountsPage — a failed account list", () => {
+  it("says the list could not be read rather than that it is empty", async () => {
+    renderAccounts([], [], {
+      "GET /api/accounts": { status: 500, body: { error: { code: "internal" } } },
+    });
+
+    expect(await screen.findByText(/could not read your accounts/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no accounts yet/i)).toBeNull();
+    // Nothing to act on either: a create flow offered under a count of zero we
+    // never read is the same claim in button form.
+    expect(screen.queryByRole("button", { name: /new account/i })).toBeNull();
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+  });
+
+  it("still greets a genuinely empty profile with the first run", async () => {
+    renderAccounts([], []);
+
+    expect(await screen.findByText(/no accounts yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("accounts / 0");
+    expect(screen.getAllByRole("button", { name: /new account/i }).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/could not read your accounts/i)).toBeNull();
+  });
+});

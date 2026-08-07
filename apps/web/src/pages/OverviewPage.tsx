@@ -163,11 +163,27 @@ export function OverviewPage() {
 
   if (me.loading || overview.loading || accounts.loading) return <p className="muted">loading…</p>;
   if (overview.error || !overview.data) return <p className="error">failed to load overview.</p>;
+  // The account list is not optional to this page — the guard above already
+  // waits for it — but only its *success* used to be assumed. `accounts.data?.
+  // length ?? 0` turned a failed read into a count of zero, and zero is the
+  // first run: "no accounts yet", under a subhead counting none, offering to
+  // seed a worked example over a profile whose real contents we had not
+  // managed to read. The same empty map silently emptied every currency table
+  // below, which filters its rows through it.
+  //
+  // "We could not find out" and "there is nothing there" are different
+  // sentences. A strip would have left both of those still speaking, so this
+  // refuses the page instead — the house answer for a read a page is built on
+  // (`AccountPage.tsx`, `HouseholdPlanPage.tsx`, `SettingsPage.tsx`). Note the
+  // narrowing: an empty array is data, so a genuine first run walks straight
+  // past and gets its welcome.
+  if (accounts.error || !accounts.data)
+    return <p className="error">could not read your accounts.</p>;
 
   const { asOfDate, perCurrency: buckets } = overview.data;
-  const byId = new Map((accounts.data ?? []).map((a) => [a.id, a]));
+  const byId = new Map(accounts.data.map((a) => [a.id, a]));
   const householdPlans = plans.data ?? [];
-  const totalAccounts = accounts.data?.length ?? 0;
+  const totalAccounts = accounts.data.length;
 
   // Accounts planned inside a household are that household's story; the table
   // below lists only the ones planned alone. The overview DTO says which is

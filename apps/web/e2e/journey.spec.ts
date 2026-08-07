@@ -6,8 +6,12 @@
  * stayed green through it, because the only e2e test in the repo loaded the
  * login screen and the pages themselves *rendered* — a `useAsync` that fails
  * paints an error strip inside an otherwise perfectly good page, and two of the
- * call sites (`OverviewPage.tsx:126`, `HouseholdPlanPage.tsx:50`) swallow the
- * failure entirely with `.catch(() => null)`.
+ * call sites, on the overview and the household plan, swallowed the failure
+ * entirely with `.catch(() => null)`, leaving no mark on screen at all.
+ *
+ * Those two are gone (`4e56de7`, `a2acd76`) and both pages now say what they
+ * could not read. It changes nothing here: a strip a person has to notice is
+ * still not a failing build, and this suite is what makes a 404 into one.
  *
  * So this suite does not assert on text. It signs in, walks the pages, and
  * **fails the run on any response the browser received with a status of 400 or
@@ -132,9 +136,10 @@ test.describe("a signed-in session fetches nothing broken", () => {
       {
         label: "overview",
         path: "/",
-        // Five reads of its own, plus householdPlan per household — and that
-        // last one is `.catch(() => null)`, so a 404 there is invisible on
-        // screen and visible only here.
+        // Five reads of its own, plus householdPlan per household. That last
+        // one used to be `.catch(() => null)`, so a 404 there was invisible on
+        // screen and visible only here; it now paints a strip above the fold,
+        // which somebody still has to be looking at. Here it fails the run.
         expect: ["/api/auth/me", "/api/overview", "/api/accounts", "/api/upcoming"],
         floor: 5,
       },
