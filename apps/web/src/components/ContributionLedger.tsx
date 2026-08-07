@@ -108,7 +108,7 @@ export function ContributionLedger({
     }
   }
 
-  const note_ = ledgerNote(contributions, currency, month);
+  const summary = ledgerNote(contributions, currency, month);
 
   return (
     <div className="ledger-section">
@@ -119,9 +119,9 @@ export function ContributionLedger({
         </span>
       </div>
 
-      {note_ && (
+      {summary && (
         <p className="muted" style={{ fontSize: "12px", margin: "0 0 0.5rem" }}>
-          <Sentence phrase={note_} />
+          <Sentence phrase={summary} />
         </p>
       )}
 
@@ -204,8 +204,7 @@ export function ContributionLedger({
                 <span>
                   <span className="name">{name}</span>
                   <em>
-                    — <Amount minor={c.amountMinor} currency={currency} /> ·{" "}
-                    {formatMonth(c.month)}
+                    — <Amount minor={c.amountMinor} currency={currency} /> · {formatMonth(c.month)}
                   </em>
                   {c.note && <span className="shared">{c.note}</span>}
                   {fromConfirmation && (

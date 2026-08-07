@@ -1,9 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes as RouterRoutes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickAddProvider } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";
-import type { AccountPlanDto } from "../lib/types.js";
+import type { AccountPlanDto, ContributionDto } from "../lib/types.js";
 import { stubApiFetch, type FetchStub, type Routes } from "../test/apiMock.js";
 import { AccountPage } from "./AccountPage.js";
 
@@ -22,10 +22,13 @@ const line = (
   paymentId: string,
   name: string,
   amountMinor: number,
+  // Only a non-monthly line is offered a record box: a monthly bill is paid,
+  // not saved toward (`PlanTable.tsx`).
+  category: AccountPlanDto["lines"][0]["category"] = "monthly_recurring",
 ): AccountPlanDto["lines"][0] => ({
   paymentId,
   name,
-  category: "monthly_recurring",
+  category,
   amountMinor,
   dueDate: "2026-08-01",
   targetDate: "2026-08-01",
@@ -67,6 +70,19 @@ const plan: AccountPlanDto = {
   lines: [line("b1", "Council tax", 15_320), line("b2", "Broadband", 15_000)],
 };
 
+const contribution = (over: Partial<ContributionDto> = {}): ContributionDto => ({
+  id: "c1",
+  paymentId: "b1",
+  accountId: "pot",
+  userId: "u1",
+  month: "2026-08-01",
+  amountMinor: 5_000,
+  note: null,
+  transferConfirmationId: null,
+  createdAt: `${AS_OF}T09:00:00.000Z`,
+  ...over,
+});
+
 function renderAccount(extra?: Routes): FetchStub {
   const stub = stubApiFetch({
     "GET /api/accounts/pot": {
@@ -75,6 +91,7 @@ function renderAccount(extra?: Routes): FetchStub {
     "GET /api/accounts/pot/plan": { body: plan },
     "GET /api/accounts/pot/incomes": { body: [] },
     "GET /api/accounts/pot/payments": { body: [] },
+    "GET /api/accounts/pot/contributions": { body: [] },
     "GET /api/accounts/pot/inflows": { body: [] },
     "GET /api/accounts/pot/inflows/outbound": { body: [] },
     "GET /api/accounts": {
@@ -99,6 +116,26 @@ function renderAccount(extra?: Routes): FetchStub {
   return stub;
 }
 
+/**
+ * Everything the page fetches on mount, arrived and rendered.
+ *
+ * Six reads go out — the account, its plan, its incomes, its payments, its
+ * ledger, and the project labels — and the sections underneath fetch more of
+ * their own. Every test here used to anchor on `findByText` instead, and one
+ * of them anchored on "movements", a heading `AccountMovements` always draws
+ * whatever it knows; the assertion under it then read `[0 active · from
+ * outside]`, which was the loading state's own words. WP-AU proved it by
+ * withholding the incomes route entirely and watching the test still pass.
+ *
+ * So the anchors are gone and the drain is the anchor. A timer rather than a
+ * microtask: each read is a fetch, then a body read, then a set-state, so
+ * there is a chain to drain and not a tick.
+ */
+const mounted = (): Promise<void> =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
 beforeEach(() => {
   api.setToken(null);
 });
@@ -110,7 +147,7 @@ afterEach(() => {
 describe("AccountPage — a pot with no income of its own", () => {
   it("reads honestly across the KPI row", async () => {
     renderAccount();
-    await screen.findByText("arriving");
+    await mounted();
 
     // No income, said as no income rather than as a zero one.
     expect(screen.getByText("monthly income").parentElement).toHaveTextContent("—");
@@ -124,7 +161,7 @@ describe("AccountPage — a pot with no income of its own", () => {
 
   it("says where the money is coming from, in words", async () => {
     renderAccount();
-    await screen.findByText("arriving");
+    await mounted();
 
     expect(document.querySelector(".plan-notes")).toHaveTextContent(
       "no income of its own · £303.20 arriving from Ben this month",
@@ -133,7 +170,7 @@ describe("AccountPage — a pot with no income of its own", () => {
 
   it("paints nothing red — every line is waiting on a transfer, not short", async () => {
     renderAccount();
-    await screen.findByText("arriving");
+    await mounted();
 
     expect(document.querySelectorAll(".tag-status.warn")).toHaveLength(0);
     expect(document.querySelectorAll(".kpi.warn")).toHaveLength(0);
@@ -150,7 +187,7 @@ describe("AccountPage — a pot with no income of its own", () => {
    */
   it("offers a way to author a movement, from both ends of one", async () => {
     renderAccount();
-    await screen.findByText("movements");
+    await mounted();
 
     expect(screen.getByText("arriving here")).toBeInTheDocument();
     expect(screen.getByText("leaving here")).toBeInTheDocument();
@@ -170,7 +207,7 @@ describe("AccountPage — a pot with no income of its own", () => {
    */
   it("neither offers a close nor asks anything about one", async () => {
     const stub = renderAccount();
-    await screen.findByText("movements");
+    await mounted();
 
     expect(screen.queryByRole("button", { name: /close/i })).toBeNull();
     expect(screen.queryByRole("button", { name: "reopen" })).toBeNull();
@@ -182,8 +219,128 @@ describe("AccountPage — a pot with no income of its own", () => {
 
   it("keeps the check-in where it is — a balance really is a fact about a place", async () => {
     renderAccount();
-    await screen.findByText("arriving");
+    await mounted();
 
     expect(document.querySelector(".reality-strip")).not.toBeNull();
+  });
+
+  /**
+   * The defect WP-AU found here, fixed at the source rather than in the test.
+   *
+   * `[{incomes.data?.length ?? 0} active]` printed the same sentence before the
+   * answer arrived as it printed when the answer was none, so a section nobody
+   * could read told the reader the account had no income. Withholding the route
+   * is the cheapest way to hold the page in that state for as long as an
+   * assertion needs.
+   */
+  it("does not answer 'none' for a count it could not read", async () => {
+    renderAccount({
+      "GET /api/accounts/pot/incomes": {
+        status: 500,
+        body: { error: { code: "boom", message: "no" } },
+      },
+    });
+    await mounted();
+
+    expect(screen.queryByText("[0 active · from outside]")).toBeNull();
+    expect(screen.getByText("[… active · from outside]")).toBeInTheDocument();
+  });
+});
+
+/**
+ * The ledger the page grew: what was recorded, where it was recorded.
+ *
+ * The page-level half of it — that the section is wired to the real route, that
+ * correcting a row asks the plan again, and that recording one from the plan
+ * table asks the ledger again. The component's own rules live in
+ * `ContributionLedger.test.tsx`.
+ */
+describe("AccountPage — the contribution ledger", () => {
+  it("lists what was recorded, with its amount and its month", async () => {
+    renderAccount({
+      "GET /api/accounts/pot/payments": {
+        body: [
+          {
+            id: "b1",
+            name: "Council tax",
+            amountMinor: 15_320,
+            priority: 1,
+            category: "monthly_recurring",
+          },
+        ],
+      },
+      "GET /api/accounts/pot/contributions": {
+        body: [contribution({ amountMinor: 12_500, note: "from the rebate" })],
+      },
+    });
+    await mounted();
+
+    const ledger = document.querySelector(".ledger-section")!;
+    expect(within(ledger as HTMLElement).getByText("Council tax")).toBeInTheDocument();
+    expect(ledger).toHaveTextContent("£125.00");
+    expect(ledger).toHaveTextContent("aug 2026");
+    expect(ledger).toHaveTextContent("from the rebate");
+  });
+
+  it("asks the plan again when a row is corrected, so the screen moves with it", async () => {
+    const stub = renderAccount({
+      "GET /api/accounts/pot/payments": {
+        body: [
+          {
+            id: "b1",
+            name: "Council tax",
+            amountMinor: 15_320,
+            priority: 1,
+            category: "monthly_recurring",
+          },
+        ],
+      },
+      "GET /api/accounts/pot/contributions": { body: [contribution({ amountMinor: 12_500 })] },
+      "PATCH /api/contributions/c1": { body: contribution({ amountMinor: 22_500 }) },
+    });
+    await mounted();
+
+    // Scoped: the payments column offers an "edit" of its own, and this is not
+    // that one.
+    const ledger = within(document.querySelector(".ledger-section") as HTMLElement);
+    fireEvent.click(ledger.getByTitle("edit"));
+    fireEvent.change(screen.getByLabelText("amount recorded for Council tax"), {
+      target: { value: "225.00" },
+    });
+    fireEvent.click(ledger.getByRole("button", { name: "save" }));
+    await mounted();
+
+    expect(stub.bodyOf("PATCH /api/contributions/c1")).toEqual({
+      amountMinor: 22_500,
+      month: "2026-08",
+      note: null,
+    });
+    // Both reads, because a corrected figure changes what the plan says as well
+    // as what the ledger says — the acceptance is "see the plan move".
+    expect(stub.calls("GET /api/accounts/pot/plan")).toBe(2);
+    expect(stub.calls("GET /api/accounts/pot/contributions")).toBe(2);
+  });
+
+  it("re-reads the ledger when the plan table records into it", async () => {
+    const stub = renderAccount({
+      // A savings goal rather than a monthly bill, because only a goal is
+      // offered somewhere to record money set aside toward it.
+      "GET /api/accounts/pot/plan": {
+        body: { ...plan, lines: [line("b1", "Council tax", 15_320, "fixed_point")] },
+      },
+      "POST /api/payments/b1/contributions": { status: 201, body: contribution() },
+    });
+    await mounted();
+
+    // The plan table's own record box — the surface the ledger sits under.
+    fireEvent.click(screen.getByRole("button", { name: "record" }));
+    fireEvent.change(screen.getByLabelText("amount to record for Council tax"), {
+      target: { value: "50.00" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "save" }));
+    await mounted();
+
+    expect(stub.calls("POST /api/payments/b1/contributions")).toBe(1);
+    expect(stub.calls("GET /api/accounts/pot/contributions")).toBe(2);
   });
 });
