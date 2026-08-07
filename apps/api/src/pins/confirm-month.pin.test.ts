@@ -230,12 +230,14 @@ describe("a confirmation for a past month", () => {
   }
 
   /**
-   * The fixture's own precondition, and **a plain `it` on purpose**.
+   * The fixture's own precondition, and **a separate test on purpose**.
    *
-   * If the two months ever agree, the pin below passes on the broken code and
-   * proves nothing. Kept out of the `it.fails` so that a collapsed fixture
-   * turns the build red rather than joining the expected failures — which is
-   * precisely the failure mode a pin is most likely to die of.
+   * If the two months ever agree, the pin below asserts nothing: it would pass
+   * on a handler that had gone back to planning today. It was kept out of the
+   * `it.fails` while the pin was red, so that a collapsed fixture turned the
+   * build red rather than joining the expected failures; it stays a test of its
+   * own now for the same reason, because a green pin over a fixture whose two
+   * months have converged is the failure mode a pin is most likely to die of.
    */
   it("plans a different amount last month than it plans this month", async () => {
     const h = await seedHousehold(store, app);
