@@ -1,9 +1,29 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import { householdFlow } from "../lib/flow.js";
-import type { HouseholdAccountPlanDto, HouseholdPlanDto, TransferDto } from "../lib/types.js";
-import { buildGraph } from "./FlowSankey.js";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api } from "../lib/api.js";
+import { stubApiFetch } from "../test/apiMock.js";
+import type { FlowDto, HouseholdAccountPlanDto, HouseholdPlanDto } from "../lib/types.js";
 import { HouseholdSankey } from "./HouseholdSankey.js";
+
+/**
+ * The household plan page's chart, which is the flow endpoint's answer for the
+ * plan's own roster.
+ *
+ * This file used to be mostly `buildGraph(householdFlow(plan))`: a browser-side
+ * reshaping of a `HouseholdPlanDto` into a `FlowDto`, asserted ribbon by ribbon.
+ * Decision 31 deleted the reshaping — it had no row for an authored movement and
+ * drew both of its ends leaving the picture (issue #43) — so what is left to
+ * test here is what this component now is: the request it makes, and the four
+ * things it can show while making it.
+ *
+ * The ribbons themselves are `FlowSankey`'s, tested in `FlowSankey.test.tsx`
+ * over a `FlowDto` it is handed directly. A Sankey is SVG inside a
+ * `ResponsiveContainer`, which measures zero in jsdom, so no ribbon is readable
+ * in the DOM at all — which is why the assertions below reach for the units
+ * toggle and the empty state rather than for a path.
+ */
+
+const AS_OF = "2026-06-01";
 
 function account(
   over: Partial<HouseholdAccountPlanDto> & { accountId: string },
@@ -24,10 +44,10 @@ function account(
   };
 }
 
-function makePlan(accounts: HouseholdAccountPlanDto[], transfers: TransferDto[]): HouseholdPlanDto {
+function makePlan(accounts: HouseholdAccountPlanDto[]): HouseholdPlanDto {
   return {
     householdId: "hh",
-    asOfDate: "2026-06-01",
+    asOfDate: AS_OF,
     currency: "GBP",
     monthlyIncomeMinor: 0,
     totalRequiredMinor: 0,
@@ -37,319 +57,81 @@ function makePlan(accounts: HouseholdAccountPlanDto[], transfers: TransferDto[])
     members: [],
     accounts,
     lines: [],
-    transfers,
+    transfers: [],
   };
 }
 
-describe("the household preset", () => {
-  /**
-   * The pin, **deliberately re-pinned once** — ONE-ENGINE.md, WP-T.
-   *
-   * What it held before: the literal output of the household-only
-   * `buildGraph(plan: HouseholdPlanDto)` as it stood before the diagram was
-   * generalised, captured verbatim, so that drawing a household through the
-   * scope-shaped component produced the same picture node for node.
-   *
-   * What changed, and why it had to: a household plan had never heard of a
-   * movement leaving one of its own accounts, so `leftoverMinor` was the whole
-   * residual and drawing it straight was right. One pass funds savings too, and
-   * that field now means the residual *before* them (decision 13). Drawn
-   * unchanged it would over-draw every sending node by its `committedMinor` and
-   * put the household page back to disagreeing with the account page by exactly
-   * one movement — which is the defect the whole plan exists to end. So the
-   * picture gains the movements, and this capture is taken again on a fixture
-   * that has one: Alice sweeps £500 a month into the household's holiday pot.
-   *
-   * The committed money leaves for `elsewhere` and the same £500 arrives from
-   * `elsewhere`, because a household reports its movements as one bucket and
-   * never itemises them — the flow page draws them movement by movement. Both
-   * halves are true and every node's ribbons meet, which is the property a
-   * diagram lives or dies by.
-   */
-  it("draws the household's committed movements, and every node's ribbons meet", () => {
-    const plan: HouseholdPlanDto = {
-      householdId: "hh",
-      asOfDate: "2026-08-04",
-      currency: "GBP",
-      monthlyIncomeMinor: 500_000,
-      totalRequiredMinor: 220_000,
-      totalFundedMinor: 220_000,
-      leftoverMinor: 280_000,
-      committedMinor: 50_000,
+const PLAN = makePlan([
+  account({ accountId: "alice-cur", monthlyIncomeMinor: 300_000, leftoverMinor: 180_000 }),
+  account({ accountId: "holiday", leftoverMinor: 120_000 }),
+]);
+
+/** The picture the server draws for that roster: a movement with both ends
+ *  named, which is the whole reason this component asks rather than reshapes. */
+const FLOW: FlowDto = {
+  asOfDate: AS_OF,
+  currency: "GBP",
+  accounts: [
+    {
+      accountId: "alice-cur",
+      name: "alice-cur",
+      incomeMinor: 300_000,
+      spendingMinor: 0,
+      leftoverMinor: 180_000,
       shortfallMinor: 0,
-      members: [
-        {
-          userId: "alice",
-          displayName: "Alice",
-          shareBp: 6000,
-          monthlyIncomeMinor: 300_000,
-          obligationMinor: 132_000,
-          fundedMinor: 132_000,
-          leftoverMinor: 168_000,
-          committedMinor: 50_000,
-          shortfallMinor: 0,
-        },
-        {
-          userId: "bob",
-          displayName: "Bob",
-          shareBp: 4000,
-          monthlyIncomeMinor: 200_000,
-          obligationMinor: 88_000,
-          fundedMinor: 88_000,
-          leftoverMinor: 112_000,
-          shortfallMinor: 0,
-        },
-      ],
-      accounts: [
-        account({
-          accountId: "alice-cur",
-          name: "alice current",
-          role: "personal",
-          memberUserId: "alice",
-          monthlyIncomeMinor: 300_000,
-          transferOutMinor: 132_000,
-          // Keeps its meaning to the penny (decision 13): income − transfers
-          // out, before the savings movement below.
-          leftoverMinor: 168_000,
-          committedMinor: 50_000,
-        }),
-        account({
-          accountId: "bob-cur",
-          name: "bob current",
-          role: "personal",
-          memberUserId: "bob",
-          monthlyIncomeMinor: 200_000,
-          transferOutMinor: 88_000,
-          leftoverMinor: 112_000,
-        }),
-        account({
-          accountId: "bills",
-          name: "bills",
-          requiredOutflowMinor: 220_000,
-          fundedOutflowMinor: 220_000,
-          transferInMinor: 220_000,
-        }),
-        // Where the £500 lands. The household plan still has no *row* for a
-        // movement — itemising is the flow endpoint's job — but it reports the
-        // total that arrived, and the picture reads that rather than inferring
-        // it from the left-over being larger than anything else explains.
-        account({
-          accountId: "holiday",
-          name: "holiday",
-          movementInMinor: 50_000,
-          leftoverMinor: 50_000,
-        }),
-      ],
-      lines: [],
-      transfers: [
-        {
-          fromAccountId: "alice-cur",
-          toAccountId: "bills",
-          memberUserId: "alice",
-          amountMinor: 132_000,
-        },
-        {
-          fromAccountId: "bob-cur",
-          toAccountId: "bills",
-          memberUserId: "bob",
-          amountMinor: 88_000,
-        },
-      ],
-    };
+    },
+    {
+      accountId: "holiday",
+      name: "holiday",
+      incomeMinor: 0,
+      spendingMinor: 0,
+      leftoverMinor: 120_000,
+      shortfallMinor: 0,
+    },
+  ],
+  edges: [
+    {
+      fromAccountId: "alice-cur",
+      toAccountId: "holiday",
+      amountMinor: 120_000,
+      requestedMinor: 120_000,
+      status: "funded",
+      inflowId: "sweep",
+    },
+  ],
+  totalInflowMinor: 300_000,
+};
 
-    expect(buildGraph(householdFlow(plan))).toEqual({
-      nodes: [
-        { name: "alice current", isAccount: true },
-        { name: "bob current", isAccount: true },
-        { name: "bills", isAccount: true },
-        { name: "holiday", isAccount: true },
-        { name: "income", isAccount: false },
-        { name: "left over", isAccount: false },
-        { name: "income", isAccount: false },
-        { name: "left over", isAccount: false },
-        { name: "spending", isAccount: false },
-        { name: "left over", isAccount: false },
-        // One node per off-picture end, never shared: two of them here, and
-        // merging them would make the graph circular and stop it laying out.
-        { name: "elsewhere", isAccount: false },
-        { name: "elsewhere", isAccount: false },
-      ],
-      links: [
-        {
-          source: 4,
-          target: 0,
-          value: 300_000,
-          kind: "income",
-          fromName: "income",
-          toName: "alice current",
-        },
-        {
-          // £1,680 left over, less the £500 committed: what actually stays put,
-          // and the figure Alice's account page prints as its residual.
-          source: 0,
-          target: 5,
-          value: 118_000,
-          kind: "leftover",
-          fromName: "alice current",
-          toName: "left over",
-        },
-        {
-          source: 6,
-          target: 1,
-          value: 200_000,
-          kind: "income",
-          fromName: "income",
-          toName: "bob current",
-        },
-        {
-          source: 1,
-          target: 7,
-          value: 112_000,
-          kind: "leftover",
-          fromName: "bob current",
-          toName: "left over",
-        },
-        {
-          source: 2,
-          target: 8,
-          value: 220_000,
-          kind: "spending",
-          fromName: "bills",
-          toName: "spending",
-        },
-        {
-          source: 3,
-          target: 9,
-          value: 50_000,
-          kind: "leftover",
-          fromName: "holiday",
-          toName: "left over",
-        },
-        {
-          source: 0,
-          target: 2,
-          value: 132_000,
-          kind: "transfer",
-          fromName: "alice current",
-          toName: "bills",
-          note: "Alice",
-        },
-        {
-          source: 1,
-          target: 2,
-          value: 88_000,
-          kind: "transfer",
-          fromName: "bob current",
-          toName: "bills",
-          note: "Bob",
-        },
-        {
-          // The committed bucket, leaving. Not itemised: the household plan has
-          // no row saying where it went, and the flow page is where that
-          // question is answered.
-          source: 0,
-          target: 10,
-          value: 50_000,
-          kind: "transfer",
-          fromName: "alice current",
-          toName: "elsewhere",
-        },
-        {
-          source: 11,
-          target: 3,
-          value: 50_000,
-          kind: "transfer",
-          fromName: "elsewhere",
-          toName: "holiday",
-        },
-      ],
-      // Nothing here funds anything that funds it back, so no ribbon is cut.
-      splitLoop: false,
-    });
-
-    // Every node's ribbons meet, which is the property the picture lives on.
-    const { nodes, links } = buildGraph(householdFlow(plan));
-    for (const [index, node] of nodes.entries()) {
-      if (!node.isAccount) continue;
-      const inMinor = links.filter((l) => l.target === index).reduce((s, l) => s + l.value, 0);
-      const outMinor = links.filter((l) => l.source === index).reduce((s, l) => s + l.value, 0);
-      expect([node.name, inMinor]).toEqual([node.name, outMinor]);
-    }
-
-    // ...and the household's own denominator is unchanged: total income.
-    expect(householdFlow(plan).totalInflowMinor).toBe(500_000);
-  });
-
-  it("derives income, transfer, spending and leftover links", () => {
-    const plan = makePlan(
-      [
-        account({
-          accountId: "alice-cur",
-          role: "personal",
-          monthlyIncomeMinor: 300_000,
-          transferOutMinor: 105_600,
-          leftoverMinor: 194_400,
-        }),
-        account({
-          accountId: "bills",
-          role: "shared",
-          transferInMinor: 120_000,
-          fundedOutflowMinor: 120_000,
-          leftoverMinor: 0,
-        }),
-      ],
-      [
-        {
-          fromAccountId: "alice-cur",
-          toAccountId: "bills",
-          memberUserId: "alice",
-          amountMinor: 120_000,
-        },
-      ],
-    );
-    const { nodes, links } = buildGraph(householdFlow(plan));
-
-    const aliceIdx = nodes.findIndex((n) => n.name === "alice-cur");
-    const billsIdx = nodes.findIndex((n) => n.name === "bills");
-    expect(aliceIdx).toBeGreaterThanOrEqual(0);
-    expect(billsIdx).toBeGreaterThanOrEqual(0);
-
-    const income = links.find((l) => l.kind === "income" && l.target === aliceIdx);
-    expect(income?.value).toBe(300_000);
-
-    const transfer = links.find((l) => l.kind === "transfer");
-    expect(transfer).toMatchObject({ source: aliceIdx, target: billsIdx, value: 120_000 });
-
-    const spending = links.find((l) => l.kind === "spending" && l.source === billsIdx);
-    expect(spending?.value).toBe(120_000);
-
-    const leftover = links.find((l) => l.kind === "leftover" && l.source === aliceIdx);
-    expect(leftover?.value).toBe(194_400);
-  });
-
-  it("omits zero-value flows and reports an empty graph when nothing moves", () => {
-    const { links } = buildGraph(householdFlow(makePlan([account({ accountId: "empty" })], [])));
-    expect(links).toHaveLength(0);
-  });
-});
+const ROSTER_KEY = `GET /api/flow?accounts=alice-cur,holiday&asOf=${AS_OF}`;
 
 describe("HouseholdSankey", () => {
-  const plan = makePlan(
-    [
-      account({
-        accountId: "alice-cur",
-        monthlyIncomeMinor: 300_000,
-        fundedOutflowMinor: 120_000,
-        leftoverMinor: 180_000,
-      }),
-    ],
-    [],
-  );
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
-  it("reads in pounds by default and flips to shares on demand", () => {
-    render(<HouseholdSankey plan={{ ...plan, monthlyIncomeMinor: 300_000 }} />);
+  /**
+   * The request, which is the substance of decision 31.
+   *
+   * The plan's **own** roster and the plan's **own** date: a chart under a plan
+   * that reads a different set of accounts, or the same set on a different day,
+   * is a second answer to the question the table above it already answered.
+   */
+  it("asks the flow endpoint for the plan's roster, on the plan's date", async () => {
+    const stub = stubApiFetch({ [ROSTER_KEY]: { body: FLOW } });
+    api.setToken("t");
+    render(<HouseholdSankey plan={PLAN} />);
 
-    const pounds = screen.getByRole("button", { name: "£" });
+    await waitFor(() => expect(stub.calls(ROSTER_KEY)).toBe(1));
+    // ...and never the plan endpoint it used to reshape.
+    expect(stub.mock.mock.calls.some(([url]) => String(url).includes("/plan"))).toBe(false);
+  });
+
+  it("reads in pounds by default and flips to shares on demand", async () => {
+    stubApiFetch({ [ROSTER_KEY]: { body: FLOW } });
+    api.setToken("t");
+    render(<HouseholdSankey plan={PLAN} />);
+
+    const pounds = await screen.findByRole("button", { name: "£" });
     const percent = screen.getByRole("button", { name: "%" });
     expect(pounds).toHaveAttribute("aria-pressed", "true");
     expect(percent).toHaveAttribute("aria-pressed", "false");
@@ -362,9 +144,70 @@ describe("HouseholdSankey", () => {
     expect(pounds).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("offers no units toggle when there is no flow to chart", () => {
-    render(<HouseholdSankey plan={makePlan([account({ accountId: "empty" })], [])} />);
+  it("offers no units toggle when there is no flow to chart", async () => {
+    const empty = makePlan([account({ accountId: "empty" })]);
+    stubApiFetch({
+      [`GET /api/flow?accounts=empty&asOf=${AS_OF}`]: {
+        body: {
+          asOfDate: AS_OF,
+          currency: "GBP",
+          accounts: [
+            {
+              accountId: "empty",
+              name: "empty",
+              incomeMinor: 0,
+              spendingMinor: 0,
+              leftoverMinor: 0,
+              shortfallMinor: 0,
+            },
+          ],
+          edges: [],
+          totalInflowMinor: 0,
+        } satisfies FlowDto,
+      },
+    });
+    api.setToken("t");
+    render(<HouseholdSankey plan={empty} />);
+
+    expect(await screen.findByText(/no money flow to chart yet/i)).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "flow units" })).toBeNull();
-    expect(screen.getByText(/no money flow to chart yet/i)).toBeInTheDocument();
+  });
+
+  /**
+   * A household with nothing assigned to it asks nothing at all — the endpoint
+   * refuses an empty set, and a refusal is not what "you have not put any
+   * accounts in this household yet" should look like.
+   */
+  it("asks nothing for a household with no accounts, and says the picture is empty", async () => {
+    const stub = stubApiFetch({});
+    api.setToken("t");
+    render(<HouseholdSankey plan={makePlan([])} />);
+
+    expect(await screen.findByText(/no money flow to chart yet/i)).toBeInTheDocument();
+    expect(stub.mock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The two refusals a household can provoke — a roster longer than one diagram
+   * covers, and one spanning two currencies — are facts about *this* household,
+   * so the reader is told which one it was. The rules themselves live on the
+   * server and are not restated here.
+   */
+  it("says which refusal it was, in the server's words", async () => {
+    stubApiFetch({
+      [ROSTER_KEY]: {
+        status: 422,
+        body: {
+          error: {
+            code: "validation_error",
+            message: "a diagram cannot span currencies: EUR, GBP",
+          },
+        },
+      },
+    });
+    api.setToken("t");
+    render(<HouseholdSankey plan={PLAN} />);
+
+    expect(await screen.findByText(/cannot span currencies: EUR, GBP/)).toBeInTheDocument();
   });
 });

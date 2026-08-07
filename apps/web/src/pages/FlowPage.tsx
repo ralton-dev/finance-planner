@@ -4,8 +4,8 @@ import { Amount } from "../components/Amount.js";
 import { ChartFrame } from "../components/ChartFrame.js";
 import { DownloadButton } from "../components/DownloadButton.js";
 import { FlowSankey } from "../components/FlowSankey.js";
-import { api } from "../lib/api.js";
-import { householdFlow, parseAccountIds, visibleFlow } from "../lib/flow.js";
+import { ApiError, api } from "../lib/api.js";
+import { parseAccountIds, visibleFlow } from "../lib/flow.js";
 import { formatMinor } from "../lib/money.js";
 import { deleteScope, readScopes, type SavedScope, saveScope } from "../lib/scopes.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -28,9 +28,11 @@ import type { AccountDto, FlowDto, HouseholdDto, UserDto } from "../lib/types.js
  *                 scope instead would take the hidden account's money out of
  *                 every other account's plan, which is exactly the bug this
  *                 separation exists to prevent.
- *   `?household=` a preset: that household's plan, read as a flow. Same
- *                 diagram, same component; the household plan carries who moves
- *                 what, which no set of account plans can recover.
+ *   `?household=` a preset: that household's roster, asked as an ordinary
+ *                 scope. Same request, same diagram, same figures — a household
+ *                 is a set of accounts somebody else chose. The endpoint names
+ *                 the member behind a derived transfer, so nothing is lost by
+ *                 not asking for the household plan.
  *
  * So every picture is a URL — bookmarkable, shareable, reopenable. Names on top
  * of that are a local convenience; see `lib/scopes.ts`.
@@ -53,8 +55,25 @@ export function FlowPage() {
   // visibility is deliberately absent from these deps: hiding an account must
   // not re-ask the server anything, because the answer would be a different
   // plan and that is the whole thing being avoided.
+  //
+  // A household is resolved to its roster and then asked as an ordinary scope.
+  // It used to be answered by reshaping `api.householdPlan()` in the browser,
+  // which is a second derivation of money crossing an account boundary and drew
+  // a worse picture than the one already on the server: a household plan carries
+  // authored movements as one bucket at each end, so both ends of every one of
+  // them left for `elsewhere` while the accounts they ran between sat on the
+  // screen (issue #43). Decision 31 settles it — one engine, and this page asks
+  // it the same question for a household as for any other set of accounts.
+  //
+  // The roster comes from `/accounts` rather than from the plan because a roster
+  // is all that is wanted: the plan endpoint would run the whole household
+  // funding pass to hand back a list of ids the assignment rows already hold.
   const source = useAsync<FlowDto | null>(() => {
-    if (householdId) return api.householdPlan(householdId).then(householdFlow);
+    if (householdId) {
+      return api
+        .listHouseholdAccounts(householdId)
+        .then((roster) => (roster.length > 0 ? api.flow(roster.map((a) => a.accountId)) : null));
+    }
     if (scopeKey) return api.flow(scopeKey.split(","));
     return Promise.resolve(null);
   }, [householdId, scopeKey]);
@@ -254,7 +273,22 @@ export function FlowPage() {
         )}
       </div>
 
-      {source.error && <p className="error">could not draw this scope.</p>}
+      {/* What the server refused, in the server's own words, because the two
+          refusals this page can provoke are both facts about the chosen scope
+          that a reader can act on: more accounts than one diagram covers, and a
+          scope spanning two currencies, which has no honest ribbon width in a
+          system that holds no rates. Neither rule is restated here — restating
+          it is how a client and a server come to disagree — and neither is
+          worked around by quietly drawing a subset, which would answer a
+          question nobody asked. A transport failure has no such sentence, so it
+          gets the bare one. */}
+      {source.error && (
+        <p className="error">
+          {source.error instanceof ApiError
+            ? `could not draw this scope — ${source.error.message}.`
+            : "could not draw this scope."}
+        </p>
+      )}
       {source.loading && <p className="muted">loading…</p>}
 
       {drawn && (

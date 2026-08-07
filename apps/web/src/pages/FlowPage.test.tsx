@@ -212,65 +212,59 @@ describe("FlowPage", () => {
     );
   });
 
+  /**
+   * A household is a set of accounts somebody else chose, and is drawn by the
+   * same request as a set the user chose by hand.
+   *
+   * This used to assert the opposite — that the page asked for the household
+   * *plan* and reshaped it, `expect(stub.calls("GET /api/flow"))` deliberately
+   * false. That reshaping had no row for an authored movement and drew both of
+   * its ends leaving the picture (issue #43, `flow-elsewhere.pin.test.tsx`), so
+   * decision 31 deleted it. The roster resolves the preset; the flow endpoint
+   * draws it.
+   */
   it("draws a household as one preset over the same picture", async () => {
     const stub = stubApiFetch({
       ...routes(),
-      "GET /api/households/home/plan": {
+      "GET /api/households/home/accounts": {
+        body: [
+          {
+            accountId: "current",
+            accountName: "current",
+            currency: "GBP",
+            role: "personal",
+            memberUserId: "alice",
+          },
+          {
+            accountId: "home-bills",
+            accountName: "home bills",
+            currency: "GBP",
+            role: "shared",
+            memberUserId: null,
+          },
+        ],
+      },
+      "GET /api/flow?accounts=current,home-bills": {
         body: {
-          householdId: "home",
-          asOfDate: AS_OF,
-          currency: "GBP",
-          monthlyIncomeMinor: 400_000,
-          totalRequiredMinor: 100_000,
-          totalFundedMinor: 100_000,
-          leftoverMinor: 300_000,
-          shortfallMinor: 0,
-          members: [
-            {
-              userId: "alice",
-              displayName: "Alice",
-              shareBp: 10_000,
-              monthlyIncomeMinor: 400_000,
-              obligationMinor: 100_000,
-              fundedMinor: 100_000,
-              leftoverMinor: 300_000,
-              shortfallMinor: 0,
-            },
-          ],
-          accounts: [
-            {
-              accountId: "current",
-              name: "current",
-              role: "personal",
-              memberUserId: "alice",
-              currency: "GBP",
-              monthlyIncomeMinor: 400_000,
-              requiredOutflowMinor: 0,
-              fundedOutflowMinor: 0,
-              transferInMinor: 0,
-              transferOutMinor: 100_000,
-              leftoverMinor: 300_000,
-              shortfallMinor: 0,
-            },
-          ],
-          lines: [],
-          transfers: [
-            {
-              fromAccountId: "current",
-              toAccountId: "home-bills",
-              memberUserId: "alice",
-              amountMinor: 100_000,
-            },
-          ],
-        },
+          ...FLOW,
+          accounts: FLOW.accounts.filter((a) => ["current", "home-bills"].includes(a.accountId)),
+          edges: FLOW.edges.filter(
+            (e) => e.fromAccountId === "current" && e.toAccountId === "home-bills",
+          ),
+        } satisfies FlowDto,
       },
     });
     renderAt("?household=home");
 
-    expect(await screen.findByText(/1 of 1 drawn/)).toBeInTheDocument();
-    // The household plan is the flow — no second question is asked of the
-    // estate, because only this plan knows which member moves what.
-    expect(stub.calls("GET /api/households/home/plan")).toBe(1);
+    expect(await screen.findByText(/2 of 2 drawn/)).toBeInTheDocument();
+    // The roster names the set; the one funding pass draws it. The household
+    // plan is never asked for, because a second derivation of the same money is
+    // the thing ONE-ENGINE.md exists to end.
+    expect(stub.calls("GET /api/households/home/accounts")).toBe(1);
+    expect(stub.calls("GET /api/flow?accounts=current,home-bills")).toBe(1);
+    expect(
+      stub.mock.mock.calls.some(([url]) => String(url).includes("/households/home/plan")),
+    ).toBe(false);
     expect(screen.getByRole("heading", { name: /money flow \/ Home/ })).toBeInTheDocument();
   });
 

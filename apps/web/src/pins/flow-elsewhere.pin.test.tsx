@@ -3,38 +3,45 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrivacyProvider } from "../contexts/PrivacyContext.js";
 import { api } from "../lib/api.js";
-import type { AccountDto, FlowDto, HouseholdPlanDto, UserDto } from "../lib/types.js";
+import type {
+  AccountDto,
+  FlowDto,
+  HouseholdAccountAssignmentDto,
+  HouseholdPlanDto,
+  UserDto,
+} from "../lib/types.js";
 import { FlowPage } from "../pages/FlowPage.js";
 
 /**
- * **Red pin — issue #43. Flipped by WP-AS.**
+ * **Green pin — issue #43. Flipped by WP-AS.**
  *
  * > The household diagram draws money leaving one of its own accounts for
  * > nowhere, and the same money arriving at another of them from nowhere.
  *
- * `FlowPage.tsx:57` answers `?household=` with
- * `api.householdPlan(householdId).then(householdFlow)` — the page reshapes a
- * plan it already has instead of asking the server the question the server
- * already answers movement by movement. `householdFlow`
- * (`apps/web/src/lib/flow.ts:68`) has no row for an authored movement, only the
- * per-account `committedMinor` and `movementInMinor` buckets, so it puts both
- * ends into `elsewhere`: the leaving half at `flow.ts:104-114` and the arriving
- * half at `flow.ts:117-127`. `FlowSankey` names that end `OFF_PICTURE =
- * "elsewhere"`.
+ * `FlowPage.tsx` answered `?household=` with
+ * `api.householdPlan(householdId).then(householdFlow)` — the page reshaped a
+ * plan it already had instead of asking the server the question the server
+ * already answers movement by movement. `householdFlow` had no row for an
+ * authored movement, only the per-account `committedMinor` and
+ * `movementInMinor` buckets, so it put both ends into `elsewhere`: a leaving
+ * half and an arriving half, one at each end of the same £500. `FlowSankey`
+ * names that end `OFF_PICTURE = "elsewhere"`.
  *
- * The module comment says so on purpose (`flow.ts:35-44`):
+ * The module comment said so on purpose:
  *
  * > *"So the money committed to savings leaves for `elsewhere`, and the money
  * > authored movements delivered arrives from `elsewhere`, both with no far end
  * > named. […] both halves are true and the node balances, which is the
  * > property that matters."*
  *
- * Both halves are true and the picture is still wrong. The reader is looking at
- * a household whose two accounts are both on the screen, and being told the
- * money went somewhere else. Decision 31 settles it: `householdFlow` is
+ * Both halves were true and the picture was still wrong. The reader was looking
+ * at a household whose two accounts were both on the screen, and being told the
+ * money went somewhere else. Decision 31 settled it: `householdFlow` is
  * **deleted**, not patched — the two-engine split is what `ONE-ENGINE.md` exists
  * to end, and a second derivation documented as deliberate is still a second
- * derivation.
+ * derivation. The page now resolves the household to its roster
+ * (`GET /api/households/:id/accounts`) and draws it as an ordinary scope
+ * (`GET /api/flow`), which itemises the sweep and names both its ends.
  *
  * The plan's standing assumption, drawn:
  *
@@ -52,11 +59,11 @@ import { FlowPage } from "../pages/FlowPage.js";
  * the units toggle and nothing else for exactly that reason. So the picture is
  * captured where it is handed over: the `FlowDto` the page gives `FlowSankey`.
  *
- * That is deliberately **not** `householdFlow`, which WP-AS deletes. This pin
- * has to survive the change that flips it, so it asks the page for a household
+ * That is deliberately **not** `householdFlow`, which WP-AS deleted. This pin
+ * had to survive the change that flipped it, so it asks the page for a household
  * and reads what the page decided to draw — true before the refactor and after
  * it. The fetch stub below is prefix-matched rather than keyed on exact URLs,
- * so whichever endpoint WP-AS decides the page should ask, it is answered from
+ * so whichever endpoint WP-AS chose for the page to ask, it is answered from
  * this one household and the assertion is untouched.
  *
  * ## The shape this fixture refuses to avoid
@@ -276,18 +283,46 @@ const FLOW: FlowDto = {
 };
 
 /**
+ * The household's roster of accounts, which is what `?household=` resolves to.
+ *
+ * The same three accounts, in the same order, as every other fixture here: a
+ * household is a set of accounts somebody else chose, and the page draws that
+ * set exactly as it draws one the user picked by hand.
+ */
+const ROSTER: HouseholdAccountAssignmentDto[] = [
+  {
+    accountId: ALICE_CUR,
+    accountName: "alice current",
+    role: "personal" as const,
+    memberUserId: "alice",
+  },
+  {
+    accountId: BOB_CUR,
+    accountName: "bob current",
+    role: "personal" as const,
+    memberUserId: "bob",
+  },
+  { accountId: HOLIDAY, accountName: "holiday", role: "shared" as const, memberUserId: null },
+].map((a) => ({ ...a, currency: "GBP" }));
+
+/**
  * A prefix-matched fetch stub, on purpose.
  *
  * `src/test/apiMock.ts` keys on the exact `"METHOD /path?query"`, which would
- * pin this file to the endpoint the page asks *today* — and the package that
- * flips it changes exactly that. Matching on prefix means the same household
- * answers whichever question the page decides to ask, so WP-AS can flip the
- * assertion without rewriting the fixture under it.
+ * have pinned this file to the endpoint the page asked *before* WP-AS — and
+ * WP-AS changed exactly that. Matching on prefix means the same household
+ * answers whichever question the page decides to ask, so the assertion below is
+ * the one that was written against the broken code, unedited.
+ *
+ * The household plan stays stubbed although nothing asks for it any more: it is
+ * the fixture the defect was found in, and a request for it arriving here again
+ * would mean the second derivation had come back.
  */
 function stubFetch(): void {
   const routes: [string, unknown][] = [
     ["/api/auth/me", ME],
     ["/api/accounts", ACCOUNTS],
+    [`/api/households/${HOUSEHOLD}/accounts`, ROSTER],
     [`/api/households/${HOUSEHOLD}/plan`, HOUSEHOLD_PLAN],
     ["/api/flow", FLOW],
   ];
@@ -360,7 +395,7 @@ describe("a household's own movement, drawn", () => {
    * **The pin.** Both ends of the sweep are on the screen, so the ribbon has to
    * join them.
    */
-  it.fails("runs the sweep from the account it left, not from elsewhere", async () => {
+  it("runs the sweep from the account it left, not from elsewhere", async () => {
     await renderHousehold();
     const edges = ribbons();
 
