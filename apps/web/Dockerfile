@@ -1,5 +1,5 @@
 # Build context is the repo root: docker build -f apps/web/Dockerfile .
-FROM node:24-alpine AS build
+FROM node:25-alpine AS build
 # Node 25 dropped bundled corepack; install it explicitly so bumping the base
 # image cannot take pnpm away. The version it provisions comes from
 # "packageManager" in the root package.json.
