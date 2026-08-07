@@ -134,6 +134,38 @@ function useMeasuredWidth(ref: RefObject<HTMLElement | null>): number {
  *  see at all, and the amount is the part that is theirs to know. */
 const OFF_PICTURE = "elsewhere";
 
+/**
+ * Where a ribbon goes when drawing it directly would close a loop.
+ *
+ * A Sankey has no way to draw one. Recharts fixes each node's depth by walking
+ * forward along links from every node with nothing arriving at it, and that walk
+ * follows targets with no record of where it has been — so a graph that can
+ * reach itself does not terminate, and the page dies with
+ * `Maximum call stack size exceeded` before React commits a single element.
+ * A blank screen is the one outcome a detected loop must not produce.
+ *
+ * **The loop is not a fault, which is why it cannot be dropped.** A household of
+ * two reaches it by being ordinary: a shared bill paid out of Alice's current
+ * account and another out of Bob's means Bob owes a share of hers and Alice owes
+ * a share of his, so the pass derives a funded transfer each way between the same
+ * two accounts. `packages/domain/src/scope.ts` says so in as many words and is
+ * right that it costs the funding pass nothing — neither transfer waits on the
+ * other. Both are real money, and neither is `broken_cycle`; there is no funding
+ * loop here to break.
+ *
+ * So the money is drawn, and only the *ribbon* is broken — the closing edge is
+ * cut into its two halves, leaving and arriving, each against a node named for
+ * the account at the other end. `apps/web/src/lib/flow.ts` already draws the
+ * savings a household cannot itemise this way: "the picture says so twice rather
+ * than drawing a direct ribbon it has no row for; both halves are true and the
+ * node balances, which is the property that matters." Every penny stays on the
+ * diagram, both accounts still balance, and the depth walk terminates because
+ * each half-node is fresh — the same reasoning that gives every `OFF_PICTURE` end
+ * a node of its own.
+ */
+const roundTripOut = (name: string): string => `to ${name}`;
+const roundTripIn = (name: string): string => `from ${name}`;
+
 interface SankeyNodeDatum {
   name: string;
   isAccount: boolean;
@@ -165,9 +197,70 @@ function edgeNote(edge: FlowEdgeDto, currency: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Which links close a loop — the ones a depth walk would come back along.
+ *
+ * An iterative depth-first pass, colouring each node white / on-the-stack / done,
+ * so a link whose target is still on the stack is a way back to somewhere the
+ * walk has not finished leaving. Iterative rather than recursive for the reason
+ * this function exists at all: the graph it is handed may be the one that
+ * overflows the stack.
+ *
+ * Deterministic — roots in node order, out-edges in the order `buildGraph` built
+ * them — so the same flow always breaks the same ribbon and the diagram does not
+ * rearrange itself between renders. A link already chosen is skipped rather than
+ * followed, which is what keeps one broken ribbon per loop rather than one per
+ * path through it.
+ */
+function loopClosingLinks(nodeCount: number, links: readonly SankeyLinkDatum[]): Set<number> {
+  const outgoing = new Map<number, number[]>();
+  links.forEach((link, index) => {
+    const list = outgoing.get(link.source);
+    if (list) list.push(index);
+    else outgoing.set(link.source, [index]);
+  });
+
+  const OPEN = 1;
+  const DONE = 2;
+  const state = new Uint8Array(nodeCount);
+  const closing = new Set<number>();
+
+  for (let root = 0; root < nodeCount; root++) {
+    if (state[root] !== 0) continue;
+    state[root] = OPEN;
+    const stack: { node: number; edges: readonly number[]; next: number }[] = [
+      { node: root, edges: outgoing.get(root) ?? [], next: 0 },
+    ];
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      if (frame.next >= frame.edges.length) {
+        state[frame.node] = DONE;
+        stack.pop();
+        continue;
+      }
+      const index = frame.edges[frame.next++]!;
+      if (closing.has(index)) continue;
+      const target = links[index]!.target;
+      if (state[target] === OPEN) {
+        // Still on the stack, so following this link is going back on itself.
+        closing.add(index);
+        continue;
+      }
+      if (state[target] === DONE) continue;
+      state[target] = OPEN;
+      stack.push({ node: target, edges: outgoing.get(target) ?? [], next: 0 });
+    }
+  }
+  return closing;
+}
+
 export function buildGraph(flow: FlowDto): {
   nodes: SankeyNodeDatum[];
   links: SankeyLinkDatum[];
+  /** Whether any ribbon had to be drawn in two halves — see `roundTripOut`. The
+   *  page says so, rather than leaving a diagram that quietly reads as if the
+   *  money went somewhere it did not. */
+  splitLoop: boolean;
 } {
   const nodes: SankeyNodeDatum[] = [];
   const links: SankeyLinkDatum[] = [];
@@ -258,7 +351,32 @@ export function buildGraph(flow: FlowDto): {
     });
   }
 
-  return { nodes, links };
+  // Every node above is either an account or freshly allocated for one ribbon,
+  // so a loop can only run between accounts — but the pass is over the whole link
+  // list regardless, because "which nodes could possibly cycle" is exactly the
+  // kind of reasoning this defect was made of.
+  const closing = loopClosingLinks(nodes.length, links);
+  if (closing.size === 0) return { nodes, links, splitLoop: false };
+
+  const drawn: SankeyLinkDatum[] = [];
+  for (const [index, link] of links.entries()) {
+    if (!closing.has(index)) {
+      drawn.push(link);
+      continue;
+    }
+    // The money still leaves, and still arrives. Only the ribbon is cut.
+    drawn.push({
+      ...link,
+      target: addNode(roundTripOut(link.toName), false),
+      toName: roundTripOut(link.toName),
+    });
+    drawn.push({
+      ...link,
+      source: addNode(roundTripIn(link.fromName), false),
+      fromName: roundTripIn(link.fromName),
+    });
+  }
+  return { nodes, links: drawn, splitLoop: true };
 }
 
 // Recharts injects geometry props at render time, so they're optional here.
@@ -506,6 +624,13 @@ export function FlowSankey({ flow }: { flow: FlowDto }) {
         <p className="muted" style={{ fontSize: "12px" }}>
           one movement is not drawn: it closes a funding loop, so the plan ignores it and it moves
           nothing.
+        </p>
+      )}
+      {data.splitLoop && (
+        <p className="muted" style={{ fontSize: "12px" }}>
+          two of these accounts each fund a share of the other&apos;s bills. Money really does move
+          both ways, and a flow diagram cannot draw a circle — so one of those ribbons is drawn in
+          two halves, leaving and arriving, rather than as one line back on itself.
         </p>
       )}
     </>

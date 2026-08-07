@@ -263,6 +263,8 @@ describe("the household preset", () => {
           toName: "holiday",
         },
       ],
+      // Nothing here funds anything that funds it back, so no ribbon is cut.
+      splitLoop: false,
     });
 
     // Every node's ribbons meet, which is the property the picture lives on.
