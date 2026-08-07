@@ -254,3 +254,123 @@ describe("one account, planned once", () => {
     ]);
   });
 });
+
+/**
+ * The **receiving** end, which this file had never asked about.
+ *
+ * Everything above is the sending account, and the ISA it sends to is
+ * deliberately outside the household — so no surface here has ever reported an
+ * account that an authored movement *arrives* at. Every household fixture in the
+ * package has the same hole from the other side: each feeds its pot with a
+ * **derived transfer**, which is the one case the code got right.
+ *
+ * The gap that leaves is the defect Ben read off one screen: the household plan
+ * page drew `holiday · £500.00` arriving into the pot and printed **LEFT OVER
+ * £0.00** for the same account on the same date, because `HouseholdSankey` asks
+ * `/api/flow` and the table beside it reads the plan. A node the chart shows
+ * holding £500 and the table beside it shows holding nothing is the same class
+ * of defect WP-O caught at the sender: one account, two surfaces, two numbers.
+ *
+ * `householdPlanFromScope` had a term for the arrival — it publishes
+ * `movementInMinor: 50_000` — and no term for it in the residual it published
+ * beside it. **The record existed and the event never landed.**
+ */
+describe("the account an authored movement arrives at", () => {
+  /** The pot on the real screen, and its amount. */
+  const POT = "holiday";
+  const ARRIVED_MINOR = 50_000;
+
+  /**
+   * What every surface owes the user for the pot.
+   *
+   * Nothing else reaches it and nothing leaves it: £500 arrived, £500 is there.
+   * A surface reporting anything else is reporting a month in which the money
+   * left one account and reached none.
+   */
+  const IN_THE_POT_MINOR = ARRIVED_MINOR;
+
+  /**
+   * The pot is **on the roster**, which is the shape nothing in this repository
+   * has. `parity.test.ts`'s ISA is off it by design and every household fixture
+   * feeds its pot by a derived transfer, so no test in the tree has ever had a
+   * household account whose money arrived by a movement somebody authored.
+   */
+  const ROSTER = [ACCOUNT, "bob-current", POT];
+  const POT_SCOPE: FlowScopeAccount[] = [
+    { accountId: ACCOUNT, name: "current" },
+    { accountId: POT, name: "holiday" },
+  ];
+
+  function potScope(): ScopeInput {
+    const base = scope();
+    return {
+      ...base,
+      accounts: base.accounts.map((a): ScopeAccountInput => {
+        if (a.accountId === ACCOUNT) {
+          return { ...a, outboundInflows: [leaving("alex-holiday", ARRIVED_MINOR, POT, 10)] };
+        }
+        if (a.accountId === "isa") {
+          return { ...a, accountId: POT, name: "holiday", role: "shared", memberUserId: null };
+        }
+        return a;
+      }),
+    };
+  }
+
+  it("agrees, to the penny, on what is in it", () => {
+    const input = potScope();
+    const pass = computeScopePlan(input, ASOF);
+    const household = householdPlanFromScope(pass, "h-parity", ROSTER, "GBP");
+    const flow = flowFromScope(pass, POT_SCOPE, "GBP");
+    const plan = accountPlanFromScope(input, pass, POT);
+
+    // 1. The household page's LEFT OVER cell — `freeMinor` in
+    //    `HouseholdPlanView.tsx`, which is `leftoverMinor − committedMinor` and
+    //    is documented there as "the number the account page and the flow
+    //    diagram print for the same account".
+    const potRow = household.accounts.find((a) => a.accountId === POT)!;
+    const householdPage = potRow.leftoverMinor - potRow.committedMinor;
+
+    // 2. The flow diagram — the figure `/api/flow` returns and the Sankey draws
+    //    beside that very table on the household plan page.
+    const flowDiagram = flow.accounts.find((a) => a.accountId === POT)!.leftoverMinor;
+
+    // 3. The account page. `AccountPlan.leftoverMinor` is the account's *own*
+    //    income after its own obligations and is £0 here, correctly — the pot
+    //    earns nothing. `residualMinor` is the figure for "what is in it", and
+    //    is the one to compare.
+    const accountPage = plan.residualMinor;
+
+    expect({ householdPage, flowDiagram, accountPage }).toEqual({
+      householdPage: IN_THE_POT_MINOR,
+      flowDiagram: IN_THE_POT_MINOR,
+      accountPage: IN_THE_POT_MINOR,
+    });
+  });
+
+  it("records the arrival on the very row that has to apply it", () => {
+    const pass = computeScopePlan(potScope(), ASOF);
+    const household = householdPlanFromScope(pass, "h-parity", ROSTER, "GBP");
+    const potRow = household.accounts.find((a) => a.accountId === POT)!;
+
+    // The movement really is funded — a fixture whose standing order moved
+    // nothing would agree on £0 everywhere and prove nothing at all.
+    expect(pass.movements.map((m) => [m.inflowId, m.fundedMinor, m.status])).toEqual([
+      ["alex-holiday", ARRIVED_MINOR, "funded"],
+    ]);
+    // The record, and the residual that has to contain it. These two sat on one
+    // object, disagreeing, and the household page printed both.
+    expect(potRow.movementInMinor).toBe(ARRIVED_MINOR);
+    expect(potRow.leftoverMinor).toBe(ARRIVED_MINOR);
+
+    // And the household's own published identity, which names `movementInMinor`
+    // as a term (`household.ts`'s `householdLeftoverMinor` comment). It held
+    // over every fixture in the package only because none of them put a
+    // movement's destination on the roster.
+    const ribbons =
+      household.monthlyIncomeMinor +
+      household.accounts.reduce((s, a) => s + a.transferInMinor + a.movementInMinor, 0) -
+      household.accounts.reduce((s, a) => s + a.fundedOutflowMinor + a.transferOutMinor, 0);
+    expect(household.householdLeftoverMinor).toBe(ribbons);
+  });
+});

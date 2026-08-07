@@ -222,10 +222,11 @@ describe("mine, and ours — a co-member's money parked in your account", () => 
   });
 
   it("is the fixture the estate cannot be: the two bases disagree here", () => {
-    // The pre-commit household row still includes Bob's £400 on his sending row.
-    // Subtracting `committedMinor` gives the same £2,500 member-free total.
-    expect(household.householdLeftoverMinor).toBe(290_000);
-    expect(household.householdLeftoverMinor - household.membersLeftoverMinor).toBe(40_000);
+    // The pre-commit household rows count Bob's £400 twice — added back on his
+    // sending row, and again in the pot it arrived at — so the roster basis is
+    // £800 clear of the ownership one. That gap is what this fixture is for.
+    expect(household.householdLeftoverMinor).toBe(330_000);
+    expect(household.householdLeftoverMinor - household.membersLeftoverMinor).toBe(80_000);
     // And the per-person figures diverge with it, which is what an
     // implementation wired to the roster gets wrong while passing every estate
     // figure: Bob's roster row reads £1,200 where his left over is £800.

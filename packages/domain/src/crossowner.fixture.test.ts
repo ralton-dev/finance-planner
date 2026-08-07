@@ -95,16 +95,21 @@ describe("the cross-owner fixture: a co-member's money parked in your account", 
       CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
       "GBP",
     );
-    // The household rows are pre-commit: Bob's current account still shows the
-    // £400 that is promised to the pot. The free figure subtracts it back out.
-    expect(household.householdLeftoverMinor).toBe(290_000);
-    expect(household.householdLeftoverMinor - household.committedMinor).toBe(250_000);
+    // The household rows are pre-commit *and* they apply what arrived, so Bob's
+    // £400 is on his sending row — added back — and again in the pot it reached.
+    // That double count is the roster basis, and it is the whole reason this
+    // fixture exists; `membersLeftoverMinor` is the basis without it.
+    expect(household.householdLeftoverMinor).toBe(330_000);
+    expect(household.householdLeftoverMinor - household.committedMinor).toBe(290_000);
     // The ownership basis: Σ available money over the accounts each member owns.
     const owned = (userId: string) =>
       gbp.accounts
         .filter((a) => a.ownerUserId === userId)
         .reduce((s, a) => s + a.availableLeftoverMinor, 0);
     expect(owned("u-alice") + owned("u-bob")).toBe(250_000);
-    expect(household.householdLeftoverMinor - (owned("u-alice") + owned("u-bob"))).toBe(40_000);
+    // £800 apart: Bob's £400, counted at both ends. Subtracting `committedMinor`
+    // removes one of the two and still leaves the other, which is exactly why a
+    // household headline reads the ownership basis instead.
+    expect(household.householdLeftoverMinor - (owned("u-alice") + owned("u-bob"))).toBe(80_000);
   });
 });

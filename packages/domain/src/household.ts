@@ -203,14 +203,24 @@ export interface HouseholdAccountPlan {
   movementInMinor: number;
   /**
    * What remains in the account after the month's flows (includes any buffer
-   * reserve, and the pennies members rounded their shares up by) — **before**
-   * the savings movements leaving it.
+   * reserve, the pennies members rounded their shares up by, and everything an
+   * authored movement delivered) — **before** the savings movements leaving it.
+   *
+   *     income + transferInMinor + movementInMinor − fundedOutflow − transferOut
    *
    * Keeps its meaning to the penny (decision 13): for a household with no
    * authored movement anywhere it is the same `income + in − out − spending` it
    * always was. `committedMinor` sits alongside, and free-after-committed is the
-   * difference — which is the figure that now agrees with the flow diagram and
-   * the account page (`packages/domain/src/parity.test.ts`).
+   * difference — which is the figure that agrees with the flow diagram and the
+   * account page, at **both** ends of a movement
+   * (`packages/domain/src/parity.test.ts`).
+   *
+   * `movementInMinor` is a term here and not merely a field beside it. It was
+   * once dropped from this residual on the grounds that arrived savings are
+   * reserved rather than free — true of a *person*, whose figure is
+   * `personalLeftoverMinor`, and false of an *account*, which holds what reached
+   * it. The row published the arrival and did not apply it, and the page printed
+   * both figures side by side.
    */
   leftoverMinor: number;
   /** What funded savings movements take out of this account (decision 13). */
@@ -376,10 +386,19 @@ export function householdPlanFromScope(
       transferInMinor: a.transferInMinor,
       transferOutMinor: a.transferOutMinor,
       movementInMinor: a.movementInMinor,
-      // Keep the wire's historical pre-commit shape for account rows, but base
-      // it on available money: authored savings that arrived here are reserved,
-      // not left over.
-      leftoverMinor: a.availableLeftoverMinor + a.committedMinor,
+      // The pass's residual is already net of the savings leaving; adding the
+      // committed total back gives the field its historical meaning, and the two
+      // are published side by side rather than one being derived from the other
+      // by whoever reads them.
+      //
+      // Based on `leftoverMinor` and **not** on `availableLeftoverMinor`. The
+      // latter is right for a *person* — money saved into a pot is reserved, not
+      // spendable, which is what `personalLeftoverMinor` reports — and wrong for
+      // an *account*, which simply holds what reached it. Basing the row on it
+      // dropped `movementInMinor` out of the residual entirely: the row went on
+      // publishing the arrival and stopped applying it, so a pot the chart drew
+      // holding £500 was printed with LEFT OVER £0 in the table beside it.
+      leftoverMinor: a.leftoverMinor + a.committedMinor,
       committedMinor: a.committedMinor,
       shortfallMinor: a.shortfallMinor,
     }));

@@ -1646,7 +1646,9 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
     );
 
     expect(plan.membersLeftoverMinor).toBe(250_000);
-    expect(plan.householdLeftoverMinor).toBe(290_000);
+    // The roster basis, £800 clear of it: Bob's £400 is on his sending row and
+    // again in the pot it reached.
+    expect(plan.householdLeftoverMinor).toBe(330_000);
     // Nothing here is tuned to a date, so every simulated month reads the same.
     expect(walk.months.map((m) => m.membersLeftoverMinor)).toEqual([250_000, 250_000, 250_000]);
     expect(walk.months[0]?.membersLeftoverMinor).toBe(plan.membersLeftoverMinor);
