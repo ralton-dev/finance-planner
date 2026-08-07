@@ -1687,6 +1687,193 @@ describe("api service", () => {
     expect(missing.statusCode).toBe(404);
   });
 
+  /**
+   * Decision 30: a mistyped amount is an edit, not a delete and a re-record.
+   * The interesting assertion is not that the row changed — it is that the plan
+   * under it changed, since a contribution's whole purpose is to move a
+   * payment's already-saved without editing the payment.
+   */
+  it("corrects a recorded contribution, and the account plan moves with it", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-25",
+      },
+    });
+    const payment = (
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${account.id}/payments`,
+        headers: auth,
+        payload: {
+          name: "Holiday",
+          category: "fixed_point",
+          amountMinor: 120000,
+          dueDate: "2026-09-01",
+        },
+      })
+    ).json();
+    const recorded = (
+      await app.inject({
+        method: "POST",
+        url: `/api/payments/${payment.id}/contributions`,
+        headers: auth,
+        payload: { amountMinor: 40000, month: "2026-01", note: "January transfer" },
+      })
+    ).json();
+
+    const patch = (payload: Record<string, unknown>, id = recorded.id) =>
+      app.inject({ method: "PATCH", url: `/api/contributions/${id}`, headers: auth, payload });
+
+    const amended = await patch({ amountMinor: 60000 });
+    expect(amended.statusCode).toBe(200);
+    expect(amended.json().amountMinor).toBe(60000);
+    // A patch says only what changed; the rest is left where it was.
+    expect(amended.json().month).toBe("2026-01-01");
+    expect(amended.json().note).toBe("January transfer");
+
+    const after = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan?asOf=2026-01-01`,
+        headers: auth,
+      })
+    ).json();
+    expect(after.lines[0].alreadySavedMinor).toBe(60000);
+    expect(after.lines[0].requiredMonthlyMinor).toBe(7500); // (120000 - 60000) over 8
+    expect(after.reservedMinor).toBe(60000);
+
+    // The month moves too, and an explicit null clears the note rather than
+    // leaving it — which is what tells "clear this" apart from "say nothing".
+    const moved = await patch({ month: "2026-02", note: null });
+    expect(moved.json().month).toBe("2026-02-01");
+    expect(moved.json().note).toBeNull();
+    expect(moved.json().amountMinor).toBe(60000);
+
+    // Money cannot have been set aside in a month that has not started, and a
+    // contribution counts toward already-saved the moment it is written. Same
+    // refusal, same code, as closing and confirming.
+    const future = await patch({ month: "2099-01" });
+    expect(future.statusCode).toBe(422);
+    expect(future.json().error.code).toBe("future_month");
+
+    const missing = await patch({ amountMinor: 1 }, "00000000-0000-0000-0000-000000000000");
+    expect(missing.statusCode).toBe(404);
+  });
+
+  /**
+   * #49. A contribution a confirmation wrote is one line of somebody's
+   * statement that they moved money, not a fact of its own. Editing or removing
+   * it on its own would leave the movement claiming an amount its ledger no
+   * longer accounts for — and, because this route asks only for `edit` on the
+   * account, would also be a way past decision 28's rule that only the member
+   * who confirmed may un-confirm. One way to undo one fact, and it is unconfirm.
+   */
+  it("refuses to edit or remove a contribution a confirmation wrote", async () => {
+    const { user, auth } = await seedUser(store);
+    const make = async (name: string) =>
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency: "GBP" },
+        })
+      ).json();
+    const current = await make("current");
+    const pot = await make("pot");
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${current.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-01",
+      },
+    });
+    // Two bills, so that removing one row would leave the other and the
+    // half-standing ledger this is about would be visible if it happened.
+    for (const [name, amountMinor] of [
+      ["Rent", 10000],
+      ["Insurance", 12000],
+    ] as const) {
+      await app.inject({
+        method: "POST",
+        url: `/api/accounts/${pot.id}/payments`,
+        headers: auth,
+        payload: { name, category: "monthly_recurring", amountMinor },
+      });
+    }
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/transfers/confirm`,
+      headers: auth,
+      payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
+    });
+    expect(res.statusCode).toBe(201);
+    const { confirmation, contributions } = res.json();
+    expect(confirmation.amountMinor).toBe(22000);
+    expect(contributions).toHaveLength(2);
+    const rent = contributions.find((c: { amountMinor: number }) => c.amountMinor === 10000);
+    expect(rent.transferConfirmationId).toBe(confirmation.id);
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/contributions/${rent.id}`,
+      headers: auth,
+    });
+    expect(removed.statusCode).toBe(409);
+    expect(removed.json().error.code).toBe("confirmation_generated");
+
+    const edited = await app.inject({
+      method: "PATCH",
+      url: `/api/contributions/${rent.id}`,
+      headers: auth,
+      payload: { amountMinor: 1 },
+    });
+    expect(edited.statusCode).toBe(409);
+    expect(edited.json().error.code).toBe("confirmation_generated");
+
+    // Both halves are still there — refusing means everything survives.
+    const ledger = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${pot.id}/contributions`,
+      headers: auth,
+    });
+    expect(ledger.json()).toHaveLength(2);
+
+    // And the one door that does undo it takes both halves, as it always has.
+    const unconfirmed = await app.inject({
+      method: "DELETE",
+      url: `/api/accounts/${pot.id}/transfers/confirmations/${confirmation.id}`,
+      headers: auth,
+    });
+    expect(unconfirmed.statusCode).toBe(204);
+    const emptied = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${pot.id}/contributions`,
+      headers: auth,
+    });
+    expect(emptied.json()).toEqual([]);
+  });
+
   it("refuses contributions from a view-only member (403) but lets them read the ledger", async () => {
     const { user, auth } = await seedUser(store, "owner@example.com");
     const { user: partner, auth: partnerAuth } = await seedUser(store, "partner@example.com");

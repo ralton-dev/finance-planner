@@ -69,6 +69,18 @@ import { buildServer } from "../server.js";
  *
  * £220.00 confirmed, £120.00 accounted for, and nothing on any screen that
  * would say so.
+ *
+ * ## How WP-AP flipped it
+ *
+ * **Refused**, with `409 confirmation_generated` pointing at unconfirm — the
+ * branch this test calls `intact`. Un-confirming already unwinds both halves
+ * and already asks what confirming asked, that the caller is the member who
+ * made it; `DELETE /api/contributions/:id` asks only for `edit` on the account,
+ * so cascading from here would have been a second way to undo one fact **and**
+ * a way around decision 28. `PATCH` is refused on the same rows for the same
+ * reason. The write side was half the defect and is fixed with it: both confirm
+ * handlers now write the confirmation and its rows through one compound store
+ * method, so a failure part-way can no longer leave the state this pin names.
  */
 
 const env: ApiEnv = {
@@ -228,7 +240,7 @@ describe("a confirmation and the ledger rows it wrote", () => {
    * whole answers, and both satisfy the assertion. What is refused is the third
    * outcome — half the fact standing.
    */
-  it.fails("cannot be half deleted", async () => {
+  it("cannot be half deleted", async () => {
     const s = await seed(store, app);
     const { confirmation, contributions } = await confirm(s);
     const rent = contributions.find((c) => c.amountMinor === RENT_MINOR)!;

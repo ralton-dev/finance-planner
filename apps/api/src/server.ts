@@ -17,6 +17,7 @@ import {
   updateAccountBody,
   updateIncomeBody,
   updateInflowBody,
+  updateContributionBody,
   updatePaymentBody,
   updateProjectBody,
   upsertBalanceBody,
@@ -164,12 +165,16 @@ const monthQuery = (month: string | undefined): string => {
  * either way, because it is the same refusal for the same reason, and a caller
  * matching on it should not have to know which door it came through.
  */
+function refuseFutureMonth(month: string, verb: "close" | "confirm" | "record"): void {
+  if (month > monthOf(today())) {
+    throw new HttpError(422, "future_month", `Cannot ${verb} a future month`);
+  }
+}
+
 function asOfDateForMonth(month: string, verb: "close" | "confirm"): string {
   const now = today();
   const current = monthOf(now);
-  if (month > current) {
-    throw new HttpError(422, "future_month", `Cannot ${verb} a future month`);
-  }
+  refuseFutureMonth(month, verb);
   if (month === current) return now;
   const [year, mon] = month.split("-").map(Number);
   return toISODate(new Date(Date.UTC(year!, mon!, 0))); // day 0 of the next month
@@ -213,6 +218,27 @@ function fundedSlices(
     });
   }
   return slices;
+}
+
+/**
+ * Refuse to edit or remove a ledger row a transfer confirmation wrote.
+ *
+ * Such a row is not a fact of its own. It is one line of somebody's statement
+ * that they moved money, and the statement is the confirmation above it: change
+ * or drop a line on its own and the movement goes on claiming an amount its
+ * ledger no longer accounts for. Un-confirming already unwinds both halves
+ * correctly, and already asks what confirming asked — that the caller is the
+ * member who made it (decision 28) — where this route asks only for `edit` on
+ * the account. Two ways to undo one fact is how this defect started, so there
+ * stays one, and it is the one that is right.
+ */
+function refuseConfirmationRow(contribution: Contribution, verb: "change" | "remove"): void {
+  if (contribution.transferConfirmationId === null) return;
+  throw new HttpError(
+    409,
+    "confirmation_generated",
+    `Cannot ${verb} a contribution a transfer confirmation created; un-confirm the transfer instead`,
+  );
 }
 
 /** Per-payment money set aside during the current month. */
@@ -1304,12 +1330,38 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return store.listContributionsForAccount(id, month ? monthToFirstDay(month) : undefined);
   });
 
+  /**
+   * Correct a recorded contribution (decision 30). A mistyped amount is an edit
+   * rather than a delete and a re-record, which is how a ledger loses the note
+   * and the month that said what the money was for.
+   */
+  app.patch("/api/contributions/:contributionId", async (req) => {
+    const userId = await authenticate(req);
+    const { contributionId } = req.params as { contributionId: string };
+    const contribution = await store.getContribution(contributionId);
+    if (!contribution) throw new HttpError(404, "not_found", "Contribution not found");
+    await requireAccess(userId, contribution.accountId, "edit");
+    refuseConfirmationRow(contribution, "change");
+    const body = updateContributionBody.parse(req.body);
+    // Money cannot have been set aside in a month that has not started, and a
+    // contribution counts toward its payment's already-saved the moment it is
+    // written — so a row may be moved back to the month it belongs in, never
+    // forward past the calendar. The same refusal closing and confirming use.
+    if (body.month !== undefined) refuseFutureMonth(body.month, "record");
+    return store.updateContribution(contributionId, {
+      ...(body.amountMinor !== undefined && { amountMinor: body.amountMinor }),
+      ...(body.month !== undefined && { month: monthToFirstDay(body.month) }),
+      ...(body.note !== undefined && { note: body.note ?? null }),
+    });
+  });
+
   app.delete("/api/contributions/:contributionId", async (req, reply) => {
     const userId = await authenticate(req);
     const { contributionId } = req.params as { contributionId: string };
     const contribution = await store.getContribution(contributionId);
     if (!contribution) throw new HttpError(404, "not_found", "Contribution not found");
     await requireAccess(userId, contribution.accountId, "edit");
+    refuseConfirmationRow(contribution, "remove");
     await store.deleteContribution(contributionId);
     return reply.code(204).send();
   });

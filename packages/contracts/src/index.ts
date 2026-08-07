@@ -384,6 +384,29 @@ export const createContributionBody = z.object({
 });
 export type CreateContributionBody = z.infer<typeof createContributionBody>;
 
+/**
+ * Correcting one that was recorded (decision 30). A mistyped amount is an edit,
+ * not a delete and a re-record: deleting one is how a ledger loses the note and
+ * the month that said what it was for.
+ *
+ * Every field optional, because a patch says only what changed — and `note:
+ * null` clears the note rather than leaving it. Unlike recording, the month may
+ * not be moved into the future: money cannot have been set aside in a month
+ * that has not started, and a contribution counts toward what a payment has
+ * already saved the moment it is written.
+ *
+ * A contribution a transfer confirmation wrote is not patchable at all. It is
+ * one line of somebody's statement that they moved money, not a fact of its
+ * own, and the API refuses rather than letting the statement disagree with its
+ * own ledger.
+ */
+export const updateContributionBody = z.object({
+  amountMinor: z.number().int().positive().optional(),
+  month: monthString.optional(),
+  note: z.string().nullish(),
+});
+export type UpdateContributionBody = z.infer<typeof updateContributionBody>;
+
 /** A manual balance check-in. Negative balances are allowed (overdraft). One
  *  per account per day; re-stating a day overwrites it. Defaults to today. */
 export const upsertBalanceBody = z.object({
