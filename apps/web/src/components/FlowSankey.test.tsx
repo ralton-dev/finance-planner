@@ -64,6 +64,41 @@ describe("buildGraph", () => {
   });
 
   /**
+   * A node the reader may not name is still a node (decision 36). The endpoint
+   * sends an account on the caller's household roster that they cannot see with
+   * its figures and without its `name`, and the diagram draws it — labelled, at
+   * both ends of every ribbon it touches, and never merged with `elsewhere`,
+   * which is a different fact: money leaving the *picture*, not a name withheld.
+   */
+  it("draws an account it may not name, at both ends of its ribbons", () => {
+    const { nodes, links } = buildGraph(
+      flow({
+        accounts: [
+          node("current", { incomeMinor: 300_000, leftoverMinor: 200_000 }),
+          { ...node("private"), name: undefined, leftoverMinor: 100_000 },
+        ],
+        edges: [
+          edge({ fromAccountId: "current", toAccountId: "private", amountMinor: 100_000 }),
+          edge({ fromAccountId: "private", toAccountId: null, amountMinor: 0 }),
+        ],
+        totalInflowMinor: 300_000,
+      }),
+    );
+    expect(nodes.filter((n) => n.isAccount).map((n) => n.name)).toEqual([
+      "current",
+      "other account",
+    ]);
+    const ribbon = links.find((l) => l.kind === "transfer");
+    expect(ribbon).toMatchObject({ fromName: "current", toName: "other account", value: 100_000 });
+    // Its own leftover ribbon is labelled the same way, so one node is not two
+    // different things depending on which ribbon you are reading.
+    expect(links.find((l) => l.kind === "leftover" && l.value === 100_000)).toMatchObject({
+      fromName: "other account",
+    });
+    expect(nodes.some((n) => n.name === "elsewhere")).toBe(false);
+  });
+
+  /**
    * The scope has an edge and money crosses it. Dropping either direction would
    * make the picture balance by hiding the very thing it exists to show.
    */
