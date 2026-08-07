@@ -249,6 +249,54 @@ nobody reads their absence as an oversight and rebuilds them.
   account and opens a household would have caught it, and is the smallest
   version of this entry worth doing first.
 
+- **The api → auth proxy is exercised by no test in the repository.** Every case
+  in `apps/api/src/server.test.ts` builds the gateway with
+  `registerAuthProxy: false`, and the `e2e` job is the single smoke test above,
+  so the one piece of the system that carries a session cookie across a process
+  boundary is covered by nothing. `apps/api/src/server.ts:533-539` registers
+  `@fastify/http-proxy` on bare defaults — `upstream`, `prefix`,
+  `rewritePrefix`, no `rewriteHeaders` — which means header forwarding is
+  entirely the library's behaviour rather than the repository's, and a change in
+  it is invisible here. That is not hypothetical: `@fastify/http-proxy` 11.6.0
+  was itself a security release whose headline fix was _"sanitize invalid
+  characters in proxied response headers"_ (GHSA-7hrw-592w-9wh2,
+  GHSA-mx7v-qhg9-2mvv), and the same refresh moved `undici` and `find-my-way`
+  underneath it. Verified by hand on **2026-08-07** against the versions the
+  dependency refresh brings — fastify 5.11.2, `@fastify/http-proxy` 11.6.0,
+  `@fastify/cookie` 11.1.2, `undici` 7.29.0, `find-my-way` 9.7.0 — rather than
+  the ones on `main` when this was written (5.8.5, 11.4.4, 7.26.0, 9.6.0),
+  booting auth and api in one process over a shared `MemoryStore`: login through
+  the proxy returns `set-cookie` whose name and
+  every attribute match the response taken directly from auth
+  (`fp_refresh; Max-Age=2592000; Path=/api/auth; HttpOnly; SameSite=Strict`);
+  the proxied cookie then drives `POST /api/auth/refresh` to a 200 that rotates
+  it; and logout returns the clearing cookie with `Max-Age=0` and an epoch
+  `Expires`. A real test would assert those three things — that the attributes
+  survive, that the cookie the client receives is _usable_ against the next
+  proxied request, and that the clear comes back through the proxy too — because
+  a proxy that drops `set-cookie` does not fail loudly. It 401s every
+  navigation, which reads as an auth bug anywhere but here.
+- **`createRemoteJWKSet` is reached only through a path whose tests replace
+  it.** `packages/security/src/jwks.ts:24` builds the remote key set that
+  verifies a third-party `id_token`, and its only caller is
+  `apps/auth/src/oidc.ts:103`. Every auth test that touches SSO injects
+  `deps.oidcClient`, so no test in the repository ever fetches a JWKS or
+  verifies a real signature — the one place the product trusts a key it did not
+  mint. `packages/security/src/security.test.ts` covers `tokens.ts` well
+  (round-trip, wrong secret, expiry, and access-versus-pending separation) and
+  stops at the symmetric case. The gap became worth writing down on
+  **2026-08-07**, when the dependency refresh took `jose` **5.10.0 → 6.2.8** — a
+  major that drops the Node crypto build for a single WebCrypto one — and
+  typecheck and the whole suite passed without touching the untested path.
+  (`main` is still on 5.10.0 as this is written.) Verified by hand at 6.2.8
+  against a real RS256 key pair and a JWKS served over HTTP: the happy path
+  returns the expected claims, the per-URI cache in `jwks.ts:9` holds so two
+  verifications cost one fetch, a wrong `audience` and a wrong `issuer` each
+  raise `JWTClaimValidationFailed`, and a token signed by a different key
+  carrying a matching `kid` raises `JWSSignatureVerificationFailed`. A real test
+  would assert those five, and the last is the one that matters — it is the
+  difference between checking a token's shape and checking that it was signed by
+  the provider.
 - **`TransferChecklist` is household-shaped in three independent ways.**
   `apps/web/src/components/TransferChecklist.tsx:117` renders a **who** column
   keyed on household members, detects orphan confirmations with a
