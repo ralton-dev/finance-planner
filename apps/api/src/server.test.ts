@@ -6327,7 +6327,7 @@ describe("flow over any scope", () => {
       })
     ).json();
 
-    return { auth, alice, current, homeBills, bobCurrent, savings, isa, movement };
+    return { auth, alice, bobAuth, bob, current, homeBills, bobCurrent, savings, isa, movement };
   }
 
   it("draws a scope spanning a household and a standalone pot", async () => {
@@ -6414,7 +6414,7 @@ describe("flow over any scope", () => {
     expect(sender.accounts[0].incomeMinor).toBe(150_000);
   });
 
-  it("is exactly as visible as the least visible account in the set", async () => {
+  it("refuses an account the caller has no relationship to at all", async () => {
     const { auth, current } = await seedHouseholdAndAPot();
     const { auth: strangerAuth } = await seedUser(store, "stranger@example.com");
     const theirs = (
@@ -6426,9 +6426,117 @@ describe("flow over any scope", () => {
       })
     ).json();
 
+    // Not "as visible as its least visible member", which is what this rule used
+    // to be: an account on a household the caller belongs to is drawn unnamed
+    // below. This one is on no household of theirs and shared with nobody, so
+    // the answer is the leak rule's — the same 404 an id that does not exist
+    // gets, because the account's existence is not the caller's to learn.
     const res = await flow(auth, [current.id, theirs.id]);
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe("not_found");
+    expect(res.payload).not.toContain("not-yours");
+
+    const nothing = await flow(auth, [current.id, "no-such-account"]);
+    expect(nothing.statusCode).toBe(404);
+    expect(nothing.json()).toEqual(res.json());
+  });
+
+  /**
+   * Decision 36, and the two halves of it that only make sense together.
+   *
+   * `bob-current` is assigned to the household by Bob and shared with nobody —
+   * share and assign being two separate controls on the household page, so this
+   * is a configuration the product invites. Alice is in that household: she is
+   * shown the same money in aggregate by `/api/households/:id/plan`, by design
+   * and by comment, so refusing her the whole diagram withheld nothing and cost
+   * her the one drawing that balances. She gets the node, with its figures, and
+   * without its name.
+   *
+   * The mirror is the half that matters just as much (#43): the same household
+   * asked by somebody who **can** see an account still draws it by name. Neither
+   * member here can see the other's, so one fixture answers both — and the two
+   * responses are identical but for which names are in them.
+   */
+  it("draws an account on the caller's household that they cannot see, unnamed", async () => {
+    const { auth, bobAuth, current, homeBills, bobCurrent } = await seedHouseholdAndAPot();
+    const roster = [current.id, homeBills.id, bobCurrent.id];
+
+    const mine = (await flow(auth, roster)).json();
+    const theirs = (await flow(bobAuth, roster)).json();
+
+    const names = (body: { accounts: { accountId: string; name?: string }[] }) =>
+      body.accounts.map((a) => a.name ?? null);
+    expect(names(mine)).toEqual(["current", "home-bills", null]);
+    expect(names(theirs)).toEqual([null, null, "bob-current"]);
+
+    // Anonymised, never omitted: the same four nodes, the same figures, and
+    // every total either reader can check is the same total.
+    expect(mine.accounts.map((a: { accountId: string }) => a.accountId)).toEqual(roster);
+    expect(theirs.accounts.map(({ name, ...rest }: { name?: string }) => rest)).toEqual(
+      mine.accounts.map(({ name, ...rest }: { name?: string }) => rest),
+    );
+    expect(theirs.edges).toEqual(mine.edges);
+    expect(theirs.totalInflowMinor).toBe(mine.totalInflowMinor);
+
+    // ...and it balances with the unnamed node in it, which is the whole reason
+    // the node is drawn rather than dropped.
+    for (const node of theirs.accounts) {
+      const into = theirs.edges
+        .filter((e: { toAccountId: string }) => e.toAccountId === node.accountId)
+        .reduce((sum: number, e: { amountMinor: number }) => sum + e.amountMinor, 0);
+      const outOf = theirs.edges
+        .filter((e: { fromAccountId: string }) => e.fromAccountId === node.accountId)
+        .reduce((sum: number, e: { amountMinor: number }) => sum + e.amountMinor, 0);
+      expect(node.incomeMinor + into).toBe(node.spendingMinor + outOf + node.leftoverMinor);
+    }
+  });
+
+  /** On the wire, not on the screen: a name a client never receives is one no
+   *  amount of UI can leak. */
+  it("sends no name for an account the caller may not see", async () => {
+    const { auth, bobAuth, current, homeBills, bobCurrent } = await seedHouseholdAndAPot();
+    const roster = [current.id, homeBills.id, bobCurrent.id];
+
+    const mine = await flow(auth, roster);
+    expect(mine.payload).not.toContain("bob-current");
+    expect(mine.payload).toContain('"name":"home-bills"');
+
+    // Matched against the encoded field rather than the bare word, because
+    // "bob-current" contains "current" and Bob may of course be told his own.
+    const theirs = await flow(bobAuth, roster);
+    expect(theirs.payload).not.toContain('"name":"current"');
+    expect(theirs.payload).not.toContain('"name":"home-bills"');
+    expect(theirs.payload).toContain('"name":"bob-current"');
+  });
+
+  /**
+   * The refusal that is not about names. A scope spanning two currencies has no
+   * honest ribbon width whoever asks, and an account the caller cannot see is
+   * still an account in it — so anonymising must not quietly turn a refusal into
+   * a picture, and the caller cannot learn what they may not see by watching
+   * which of the two answers they get either.
+   */
+  it("still refuses a cross-currency scope when one account is unnamed", async () => {
+    const { auth, bobAuth, bob, current, bobCurrent } = await seedHouseholdAndAPot();
+    const euros = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: bobAuth,
+        payload: { name: "bob-euros", currency: "EUR" },
+      })
+    ).json();
+    await app.inject({
+      method: "PUT",
+      url: `/api/households/${(await store.listHouseholdsForUser(bob.id))[0]!.id}/accounts/${euros.id}`,
+      headers: bobAuth,
+      payload: { role: "personal", memberUserId: bob.id },
+    });
+
+    const res = await flow(auth, [current.id, bobCurrent.id, euros.id]);
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.message).toMatch(/cannot span currencies: EUR, GBP/);
+    expect(res.payload).not.toContain("bob-euros");
   });
 
   it("refuses an empty scope, an oversized one, and one spanning currencies", async () => {

@@ -329,10 +329,11 @@ export function FlowPage() {
                           may not see arrives with its figures and without its
                           name, and the row prints the absence rather than
                           leaving a blank cell or dropping a row the totals
-                          above are counted over. See `accountLabel`. */}
-                      <span className={a.name === undefined ? "muted" : undefined}>
-                        {accountLabel(a)}
-                      </span>
+                          above are counted over. In the same voice as a name,
+                          undimmed, exactly as `PlanTable` prints a sender it
+                          may not name — and as the node beside it must, since
+                          a Sankey label has no second colour to say it in. */}
+                      <span>{accountLabel(a)}</span>
                       {a.shortfallMinor > 0 && (
                         <span className="row-sub">
                           {"short "}
