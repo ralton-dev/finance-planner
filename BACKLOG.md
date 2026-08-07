@@ -75,26 +75,16 @@ gets fixed first.
   — was deliberately not built: the scope already survives in the URL, so this
   buys cross-device sync and nothing else. The honest consequence today is that
   a scope you want to keep is one to bookmark.
-- **Imported confirmations lose the tie to their contributions.**
-  `apps/api/src/portability.ts` imports a transfer confirmation, and the
-  contributions it once created arrive separately under the payments they were
-  booked against with `transferConfirmationId: null`, as every imported
-  contribution does. Both facts survive the trip; the link between them does
-  not, so un-confirming an imported movement leaves its imported contributions
-  where they are rather than taking them with it. The import site says so in a
-  comment. Relinking needs the import to match contributions back to the
-  confirmation that produced them, and nothing in the file identifies that
-  today.
-- **A derived transfer you confirmed does not survive an export.**
-  `apps/api/src/portability.ts:95-99` skips every confirmation without an
-  `inflowId`, and the export schema hangs confirmations off
-  `exportAccountInflow` (`packages/contracts/src/index.ts:462-481`) — an
-  authored movement. A confirmation of a transfer the _pass_ derived has no
-  authored row to hang on, so "I moved the money" for a pot fed automatically is
-  dropped on the way out and the restore reads `awaiting_transfer` for a month
-  that was settled. Carrying it needs a new top-level field on the export
-  schema, keyed the way the confirmation itself is: two accounts, a month and a
-  member.
+- **An estate whose accounts share a name can be backed up and not restored.**
+  A name is the export file's only way of saying which account, so an import
+  carrying a repeated one is refused outright (decision 29,
+  `packages/contracts/src/index.ts`, `importBody`). The export stays permissive
+  — two accounts really can be called "Savings", and the record of that is
+  honest — so the pair is coherent but the user meets it at the worst moment:
+  the refusal arrives at the restore, months later, naming a duplicate they must
+  now fix in a file rather than in the product. Saying it at the export, where
+  renaming is still easy, needs a warning on `GET /api/export` and somewhere on
+  Settings to show it.
 - **Household plan — effective-dated contribution shares.** A member's share is
   a single current value (`household_memberships.contribution_share_bp`). The
   planner is forward-looking, so changing 60/40 → 66/34 just updates the split

@@ -508,11 +508,39 @@ export type DeleteMeBody = z.infer<typeof deleteMeBody>;
  *     used to be named here too, as a household's; they are one person's now
  *     (`MONTH-CLOSE.md` decision 14), so they travel.
  */
+/**
+ * The confirmation that wrote a ledger row, named rather than referenced.
+ *
+ * A contribution a confirmation created is not a fact of its own: it is one line
+ * of somebody's statement that they moved money, which is why the API refuses to
+ * change or drop one on its own and un-confirming is what unwinds both halves
+ * together. A restore that dropped the tie handed back an estate where that
+ * refusal could not see the rows — so an imported confirmation could still be
+ * taken apart line by line, through the one door the guard does not watch.
+ *
+ * Keyed the way the confirmation itself is — two accounts, a month, a member —
+ * rather than by an id, which is minted fresh on import and would arrive as a
+ * dangling reference. Two of those four are implicit here and no less reliable
+ * for it: the receiving account is the account this contribution is nested
+ * under, and the member is the importing user, who every imported row belongs
+ * to. What is left to write down is the sender and the month.
+ */
+const exportContributionConfirmation = z.object({
+  /** The exported account the money left. */
+  fromAccountName: z.string().min(1),
+  /** The month it was confirmed for, as its first day ("2026-08-01"). */
+  month: isoDate,
+});
+
 const exportContribution = z.object({
   /** The month this belongs to, as its first day ("2026-08-01"). */
   month: isoDate,
   amountMinor: z.number().int().positive(),
   note: z.string().nullable().default(null),
+  /** The confirmation that wrote this row, if one did. Null for a contribution
+   *  somebody recorded themselves — most of them — and defaulted, so a file
+   *  written before this field existed still reads. */
+  confirmation: exportContributionConfirmation.nullable().default(null),
 });
 
 const exportPayment = z.object({

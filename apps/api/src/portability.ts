@@ -5,6 +5,20 @@ import type { Account, Store } from "@finance-planner/data";
 /** The ISO first-of-month a date falls in — how a confirmation is keyed. */
 const monthStart = (isoDate: string): string => `${isoDate.slice(0, 7)}-01`;
 
+/**
+ * How a contribution names the confirmation that wrote it, and how the import
+ * looks that name back up: the sender and the month, which is the whole of the
+ * key once the receiving account and the member are read off the row's own
+ * position in the file.
+ *
+ * A JSON array rather than a joined string because one half of it is a name a
+ * user chose. Any separator character is one somebody can type into an account
+ * name, and a key two different pairs can collide on is the defect above this
+ * one wearing a different hat.
+ */
+const confirmationKey = (fromAccountName: string, month: string): string =>
+  JSON.stringify([fromAccountName, month]);
+
 /** What an import created, so the caller can show "imported N accounts, …". */
 export interface ImportCounts {
   accounts: number;
@@ -112,6 +126,18 @@ export async function buildExport(
     for (const c of contributions) months.add(c.month);
     const confirmedByInflow = new Map<string, { month: string; amountMinor: number }[]>();
     const derivedConfirmations: ExportAccount["derivedTransferConfirmations"] = [];
+    // How each confirmation this account carries will be named by the ledger
+    // rows it wrote. Both shapes go in one map: a contribution neither knows nor
+    // cares whether an authored movement or a derived feed booked it, and the
+    // account and the member are the same either way.
+    const namedById = new Map<string, { fromAccountName: string; month: string }>();
+    const nameConfirmation = (id: string, fromAccountId: string, month: string): void => {
+      const fromAccountName = nameById.get(fromAccountId);
+      // A sender this file does not carry cannot be named, so a row it wrote
+      // travels untied — the confirmation itself is not in the file either.
+      if (fromAccountName === undefined) return;
+      namedById.set(id, { fromAccountName, month });
+    };
     for (const month of [...months].sort()) {
       // Skipped entirely for an account with no movements, which is every
       // account until the user authors one.
@@ -124,6 +150,7 @@ export async function buildExport(
           const list = confirmedByInflow.get(c.inflowId) ?? [];
           list.push({ month: c.month, amountMinor: c.amountMinor });
           confirmedByInflow.set(c.inflowId, list);
+          nameConfirmation(c.id, c.fromAccountId, c.month);
         }
       }
       // The other kind, which has no movement to hang off and so no `movements`
@@ -148,6 +175,7 @@ export async function buildExport(
           month: c.month,
           amountMinor: c.amountMinor,
         });
+        nameConfirmation(c.id, c.fromAccountId, c.month);
       }
     }
 
@@ -200,6 +228,15 @@ export async function buildExport(
           month: c.month,
           amountMinor: c.amountMinor,
           note: c.note,
+          // The confirmation that wrote this row, named rather than referenced.
+          // Null for a row somebody recorded themselves, and null when the
+          // confirmation that wrote it is not in this file — a household's,
+          // which never travels, or one in a month the export does not look in.
+          // A tie to something absent would be worse than no tie at all.
+          confirmation:
+            c.transferConfirmationId === null
+              ? null
+              : (namedById.get(c.transferConfirmationId) ?? null),
         })),
       })),
       balanceSnapshots: balances.map((b) => ({
@@ -253,9 +290,14 @@ export async function buildExport(
  * delete their accounts first — a destructive import would be a much sharper
  * tool than a restore button needs to be.
  *
- * Imported contributions are attributed to the importing user. One that a
- * confirmation in the same file wrote comes back tied to it; see the
- * `confirmationKey` comments below for which ties can travel and which cannot.
+ * Imported contributions are attributed to the importing user, and one a
+ * confirmation in the same file wrote comes back **tied to it**. That tie is not
+ * a fidelity nicety: a ledger row a confirmation created may not be edited or
+ * deleted on its own, and a restore that dropped the tie handed back an estate
+ * where that refusal could not see the rows — the confirmation and its ledger
+ * could be taken apart separately, which is the whole thing the refusal exists
+ * to prevent. A tie is resolved or left absent, never guessed; see
+ * `confirmationIdByKey` for the three ways it can be absent.
  *
  * Accounts are all created first, before anything inside them, because a
  * movement names the account it comes from and that account may appear later in
@@ -310,6 +352,24 @@ export async function importExport(
   }
 
   for (const { input: a, account } of accounts) {
+    // Which restored confirmation a restored contribution should point at, held
+    // under the name the file gave it. Per account, because the account a
+    // contribution lands in is the account its confirmation arrived at — the
+    // rest of the key, along with the member, who is `userId` for everything
+    // imported. Confirmations are created before payments in this same pass, so
+    // by the time a contribution asks, the answer is here.
+    //
+    // A key two confirmations claim resolves to neither. An authored movement
+    // and a derived feed between the same two accounts in the same month are two
+    // different movements, and nothing in the file tells them apart; the rows
+    // come back untied rather than tied to whichever was created first, which is
+    // the same guess this package refused at the account name.
+    const confirmationIdByKey = new Map<string, string | null>();
+    const claim = (fromAccountName: string, month: string, id: string): void => {
+      const key = confirmationKey(fromAccountName, month);
+      confirmationIdByKey.set(key, confirmationIdByKey.has(key) ? null : id);
+    };
+
     for (const m of a.accountInflows) {
       const sourceAccountId = created.get(m.fromAccountName);
       // A movement out of an account this file does not carry, or out of the
@@ -336,17 +396,14 @@ export async function importExport(
       // repeating a month keeps its first entry — the same treatment a repeated
       // month close gets.
       //
-      // The contributions a confirmation once created are imported separately,
-      // under the payments they were booked against, and arrive unlinked
-      // (`transferConfirmationId: null`, as every imported contribution does).
-      // Both facts survive the trip; what does not is the tie between them, so
-      // un-confirming an imported movement leaves its imported contributions
-      // where they are rather than taking them with it.
+      // The contributions it once wrote are imported separately, under the
+      // payments they were booked against, and are tied back to it there by the
+      // name claimed here.
       const seenMonths = new Set<string>();
       for (const c of m.confirmations) {
         if (seenMonths.has(c.month)) continue;
         seenMonths.add(c.month);
-        await store.createTransferConfirmation({
+        const written = await store.createTransferConfirmation({
           householdId: null,
           inflowId: inflow.id,
           month: c.month,
@@ -356,15 +413,14 @@ export async function importExport(
           amountMinor: c.amountMinor,
         });
         counts.accountInflowConfirmations += 1;
+        claim(m.fromAccountName, c.month, written.id);
       }
     }
 
     // The confirmations with no movement to hang off, restored the same way:
     // household-free, member is the importing user, one per (sender, month)
-    // because that is what the store keys them by. The contributions such a
-    // confirmation once booked come back under their payments and arrive
-    // unlinked, exactly as an authored movement's do — the limitation above,
-    // unchanged and not widened: what is lost is the tie, never the row.
+    // because that is what the store keys them by. The contributions such a one
+    // booked are tied back to it exactly as an authored movement's are.
     const seenDerived = new Set<string>();
     for (const c of a.derivedTransferConfirmations) {
       const fromAccountId = created.get(c.fromAccountName);
@@ -372,7 +428,7 @@ export async function importExport(
       const key = `${fromAccountId}|${c.month}`;
       if (seenDerived.has(key)) continue;
       seenDerived.add(key);
-      await store.createTransferConfirmation({
+      const written = await store.createTransferConfirmation({
         householdId: null,
         inflowId: null,
         month: c.month,
@@ -382,6 +438,7 @@ export async function importExport(
         amountMinor: c.amountMinor,
       });
       counts.derivedTransferConfirmations += 1;
+      claim(c.fromAccountName, c.month, written.id);
     }
 
     for (const i of a.incomes) {
@@ -427,7 +484,18 @@ export async function importExport(
           month: c.month,
           amountMinor: c.amountMinor,
           note: c.note,
-          transferConfirmationId: null,
+          // Tied back to the confirmation that wrote it, so a restored pair
+          // unwinds together the way a natively-recorded pair does — and so the
+          // guard that refuses to edit or delete such a row can see it. Null
+          // when the file names no confirmation, when the one it names is not in
+          // this file, and when the name turned out to be ambiguous: a tie is
+          // never guessed, only resolved or left absent.
+          transferConfirmationId:
+            c.confirmation === null
+              ? null
+              : (confirmationIdByKey.get(
+                  confirmationKey(c.confirmation.fromAccountName, c.confirmation.month),
+                ) ?? null),
         });
         counts.contributions += 1;
       }

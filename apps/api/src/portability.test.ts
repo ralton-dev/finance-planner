@@ -588,6 +588,414 @@ describe("importExport — a file whose names are not identities is refused", ()
 });
 
 /**
+ * A confirmation and the ledger rows it wrote are one statement, and a restore
+ * that separates them is a restore of something else.
+ *
+ * The API refuses to edit or delete a contribution a confirmation created —
+ * un-confirming is the one way to undo the pair — but the refusal keys on
+ * `transferConfirmationId`, and every imported contribution used to arrive with
+ * that null. So an estate that had been through an export could still be taken
+ * apart row by row: the defect closed at the front door, reachable through this
+ * one. These pin it shut.
+ *
+ * The estate is a household of two, because a lone user cannot tell "carried the
+ * exporter's tie" apart from "carried every tie there was".
+ */
+describe("round trip — a confirmation's contributions come back tied to it", () => {
+  /** Alice's own money moving between two of her own accounts, and the ledger
+   *  rows that movement wrote — created the way the confirm handler creates
+   *  them, as one fact, so the tie under test is a real one. */
+  async function estate() {
+    const aliceId = await seedUser("alice@example.com");
+    const bobId = await seedUser("bob@example.com");
+    const household = await store.createHousehold("Home", aliceId);
+    await store.addMembership(household.id, bobId, "member");
+
+    const current = await account(aliceId, "Alice current");
+    const pot = await account(aliceId, "Bills pot");
+    await salary(current, 301_17);
+    const councilTax = await store.createPayment({
+      accountId: pot.id,
+      name: "Council tax",
+      category: "monthly_recurring",
+      amountMinor: 18_942,
+      dueDate: null,
+      recurrence: null,
+      targetDate: null,
+      priority: 1,
+      alreadySavedMinor: 0,
+      autoRenew: true,
+      active: true,
+      notes: null,
+      projectId: null,
+      scope: "shared",
+      bearerUserId: null,
+      fixedMonthlyMinor: null,
+      tag: null,
+    });
+
+    // The pot has no income of its own, so the transfer feeding it is one the
+    // plan derived: no authored movement anywhere, which is exactly the case
+    // that has no inflow row to hang a confirmation on.
+    const { confirmation } = await store.createTransferConfirmationWithContributions(
+      {
+        householdId: null,
+        inflowId: null,
+        month: "2026-08-01",
+        fromAccountId: current.id,
+        toAccountId: pot.id,
+        memberUserId: aliceId,
+        amountMinor: 18_942,
+      },
+      [
+        {
+          paymentId: councilTax.id,
+          accountId: pot.id,
+          userId: aliceId,
+          month: "2026-08-01",
+          amountMinor: 18_942,
+          note: null,
+        },
+      ],
+    );
+
+    // And one Alice typed in herself, months earlier. It answers to nobody, and
+    // must still answer to nobody after the round trip.
+    await store.createContribution({
+      paymentId: councilTax.id,
+      accountId: pot.id,
+      userId: aliceId,
+      month: "2026-06-01",
+      amountMinor: 4_09,
+      note: "topped it up by hand",
+      transferConfirmationId: null,
+    });
+
+    return { aliceId, current, pot, confirmation };
+  }
+
+  it("names the confirmation that wrote a contribution, by sender and month", async () => {
+    const { aliceId } = await estate();
+
+    const file = await buildExport(store, aliceId, ASOF);
+    const contributions = file.accounts.find((a) => a.name === "Bills pot")!.payments[0]!
+      .contributions;
+
+    expect(contributions).toEqual([
+      {
+        month: "2026-08-01",
+        amountMinor: 18_942,
+        note: null,
+        // Not an id: ids are minted fresh on import. The receiving account is
+        // the account this row is nested under and the member is the importer,
+        // so the sender and the month are the whole of what must be written.
+        confirmation: { fromAccountName: "Alice current", month: "2026-08-01" },
+      },
+      {
+        month: "2026-06-01",
+        amountMinor: 4_09,
+        note: "topped it up by hand",
+        confirmation: null,
+      },
+    ]);
+  });
+
+  it("restores the tie through export, wipe and import, so un-confirming takes the rows with it", async () => {
+    const { aliceId, current, pot } = await estate();
+
+    const file = await buildExport(store, aliceId, ASOF);
+
+    // Wipe: the real thing, not a restore under a second user. Same person,
+    // same account names, nothing left to accidentally assert against.
+    await store.deleteAccount(current.id);
+    await store.deleteAccount(pot.id);
+    expect(await store.listAccountsForOwner(aliceId)).toEqual([]);
+
+    expect(await importExport(store, aliceId, file)).toMatchObject({
+      accounts: 2,
+      derivedTransferConfirmations: 1,
+      contributions: 2,
+    });
+
+    const restoredPot = (await store.listAccountsForOwner(aliceId)).find(
+      (a) => a.name === "Bills pot",
+    )!;
+    const [restoredConfirmation] = await store.listDerivedTransferConfirmationsForAccount(
+      restoredPot.id,
+      "2026-08-01",
+    );
+    const before = await store.listContributionsForAccount(restoredPot.id);
+    const tied = before.find((c) => c.month === "2026-08-01")!;
+    const own = before.find((c) => c.month === "2026-06-01")!;
+
+    // The tie itself, restored — and this is also the guard's whole test: the
+    // API's `refuseConfirmationRow` refuses to change or delete any row whose
+    // `transferConfirmationId` is not null, so a restored row is now as
+    // protected from being picked apart as a natively-recorded one.
+    expect(tied.transferConfirmationId).toBe(restoredConfirmation!.id);
+    expect(own.transferConfirmationId).toBeNull();
+
+    // Un-confirm — what both un-confirm routes call — and the statement goes
+    // with its ledger, which is what "one fact" means.
+    await store.deleteTransferConfirmation(restoredConfirmation!.id);
+
+    const after = await store.listContributionsForAccount(restoredPot.id);
+    expect(after.map((c) => c.month)).toEqual(["2026-06-01"]);
+    expect(after[0]!.amountMinor).toBe(4_09);
+  });
+
+  /** A tie is resolved or absent, never guessed. The confirmations a household
+   *  records stay out of the file for the reason the file header gives, so the
+   *  rows they wrote come back answering to nobody rather than to whatever
+   *  confirmation happened to be nearby. */
+  it("leaves a contribution untied when the confirmation that wrote it does not travel", async () => {
+    const aliceId = await seedUser("alice@example.com");
+    const bobId = await seedUser("bob@example.com");
+    const household = await store.createHousehold("Home", aliceId);
+    await store.addMembership(household.id, bobId, "member");
+    const current = await account(aliceId, "Alice current");
+    const pot = await account(aliceId, "Bills pot");
+    const payment = await store.createPayment({
+      accountId: pot.id,
+      name: "Council tax",
+      category: "monthly_recurring",
+      amountMinor: 18_942,
+      dueDate: null,
+      recurrence: null,
+      targetDate: null,
+      priority: 1,
+      alreadySavedMinor: 0,
+      autoRenew: true,
+      active: true,
+      notes: null,
+      projectId: null,
+      scope: "shared",
+      bearerUserId: null,
+      fixedMonthlyMinor: null,
+      tag: null,
+    });
+    await store.createTransferConfirmationWithContributions(
+      {
+        householdId: household.id,
+        inflowId: null,
+        month: "2026-08-01",
+        fromAccountId: current.id,
+        toAccountId: pot.id,
+        memberUserId: aliceId,
+        amountMinor: 7_36,
+      },
+      [
+        {
+          paymentId: payment.id,
+          accountId: pot.id,
+          userId: aliceId,
+          month: "2026-08-01",
+          amountMinor: 7_36,
+          note: null,
+        },
+      ],
+    );
+
+    const file = await buildExport(store, aliceId, ASOF);
+    const exported = file.accounts.find((a) => a.name === "Bills pot")!;
+    expect(exported.derivedTransferConfirmations).toEqual([]);
+    expect(exported.payments[0]!.contributions[0]!.confirmation).toBeNull();
+
+    const targetId = await seedUser("restore@example.com");
+    await importExport(store, targetId, file);
+    const restoredPot = (await store.listAccountsForOwner(targetId)).find(
+      (a) => a.name === "Bills pot",
+    )!;
+    const [restored] = await store.listContributionsForAccount(restoredPot.id);
+    expect(restored!.amountMinor).toBe(7_36);
+    expect(restored!.transferConfirmationId).toBeNull();
+  });
+});
+
+/**
+ * `confirmation` is additive, so a file written before it existed must still
+ * restore in full. Two proofs, because they fail differently: a payload frozen
+ * as it was actually written, and today's exporter's output with the new field
+ * mechanically removed.
+ */
+describe("importExport — a file written before the tie existed still imports", () => {
+  /** An export as it came off `buildExport` before this change: every field it
+   *  emitted then, and no `confirmation` anywhere. */
+  const PRE_CHANGE_EXPORT = {
+    version: 1,
+    exportedAt: "2026-08-04T09:12:44.108Z",
+    accounts: [
+      {
+        name: "Alice current",
+        description: null,
+        currency: "GBP",
+        openingBalanceMinor: 122_37,
+        monthlyBufferMinor: 0,
+        incomes: [
+          {
+            name: "Salary",
+            amountMinor: 301_17,
+            frequency: "monthly",
+            recurrence: null,
+            anchorDate: "2026-08-25",
+            active: true,
+          },
+        ],
+        accountInflows: [],
+        derivedTransferConfirmations: [],
+        payments: [],
+        balanceSnapshots: [{ asOfDate: "2026-08-01", balanceMinor: 118_04 }],
+      },
+      {
+        name: "Bills pot",
+        description: null,
+        currency: "GBP",
+        openingBalanceMinor: 0,
+        monthlyBufferMinor: 0,
+        incomes: [],
+        accountInflows: [],
+        derivedTransferConfirmations: [
+          { fromAccountName: "Alice current", month: "2026-08-01", amountMinor: 189_42 },
+        ],
+        payments: [
+          {
+            name: "Council tax",
+            category: "monthly_recurring",
+            amountMinor: 189_42,
+            dueDate: null,
+            recurrence: null,
+            targetDate: null,
+            priority: 1,
+            alreadySavedMinor: 0,
+            autoRenew: true,
+            active: true,
+            notes: null,
+            scope: "shared",
+            fixedMonthlyMinor: null,
+            tag: null,
+            // The whole point: no `confirmation` key on either of them.
+            contributions: [
+              { month: "2026-08-01", amountMinor: 189_42, note: null },
+              { month: "2026-06-01", amountMinor: 4_09, note: "topped it up by hand" },
+            ],
+          },
+        ],
+        balanceSnapshots: [],
+      },
+    ],
+    projects: [{ name: "Kitchen", description: null, color: null, targetDate: "2026-12-01" }],
+    closes: [
+      {
+        month: "2026-07-01",
+        currency: "GBP",
+        incomeMinor: 301_17,
+        plannedMinor: 88_43,
+        contributedMinor: 88_43,
+      },
+    ],
+  };
+
+  it("restores an actual pre-change payload in full, with its contributions untied", async () => {
+    // The payload really is from before the field: nothing in it says so but
+    // this, so this is asserted rather than trusted.
+    expect(
+      PRE_CHANGE_EXPORT.accounts.flatMap((a) =>
+        a.payments.flatMap((p) => p.contributions.map((c) => "confirmation" in c)),
+      ),
+    ).toEqual([false, false]);
+
+    const userId = await seedUser();
+    expect(await importExport(store, userId, exportFileSchema.parse(PRE_CHANGE_EXPORT))).toEqual({
+      accounts: 2,
+      incomes: 1,
+      accountInflows: 0,
+      accountInflowConfirmations: 0,
+      derivedTransferConfirmations: 1,
+      payments: 1,
+      contributions: 2,
+      balanceSnapshots: 1,
+      closes: 1,
+      projects: 1,
+    });
+
+    const pot = (await store.listAccountsForOwner(userId)).find((a) => a.name === "Bills pot")!;
+    const restored = await store.listContributionsForAccount(pot.id);
+    expect(restored.map((c) => c.amountMinor).sort((x, y) => x - y)).toEqual([4_09, 189_42]);
+    // Untied, because the file it came from could not say otherwise. The old
+    // behaviour for old files, exactly.
+    expect(restored.every((c) => c.transferConfirmationId === null)).toBe(true);
+  });
+
+  it("restores today's export with every confirmation key stripped back out of it", async () => {
+    const userId = await seedUser();
+    const current = await account(userId, "Current");
+    const pot = await account(userId, "Pot");
+    await salary(current, 301_17);
+    const moved = await movement(current, pot, 189_42);
+    const payment = await store.createPayment({
+      accountId: pot.id,
+      name: "Council tax",
+      category: "monthly_recurring",
+      amountMinor: 189_42,
+      dueDate: null,
+      recurrence: null,
+      targetDate: null,
+      priority: 1,
+      alreadySavedMinor: 0,
+      autoRenew: true,
+      active: true,
+      notes: null,
+      projectId: null,
+      scope: "shared",
+      bearerUserId: null,
+      fixedMonthlyMinor: null,
+      tag: null,
+    });
+    await store.createTransferConfirmationWithContributions(
+      {
+        householdId: null,
+        inflowId: moved.id,
+        month: "2026-08-01",
+        fromAccountId: current.id,
+        toAccountId: pot.id,
+        memberUserId: userId,
+        amountMinor: 189_42,
+      },
+      [
+        {
+          paymentId: payment.id,
+          accountId: pot.id,
+          userId,
+          month: "2026-08-01",
+          amountMinor: 189_42,
+          note: null,
+        },
+      ],
+    );
+
+    const file = await buildExport(store, userId, ASOF);
+    // What the same estate's backup looked like the day before yesterday.
+    const asItWasWritten = JSON.parse(
+      JSON.stringify(file, (key, value: unknown) => (key === "confirmation" ? undefined : value)),
+    ) as unknown;
+
+    const targetId = await seedUser("restore@example.com");
+    expect(
+      await importExport(store, targetId, exportFileSchema.parse(asItWasWritten)),
+    ).toMatchObject({
+      accounts: 2,
+      accountInflows: 1,
+      accountInflowConfirmations: 1,
+      contributions: 1,
+    });
+    const restoredPot = (await store.listAccountsForOwner(targetId)).find((a) => a.name === "Pot")!;
+    const [restored] = await store.listContributionsForAccount(restoredPot.id);
+    expect(restored!.amountMinor).toBe(189_42);
+    expect(restored!.transferConfirmationId).toBeNull();
+  });
+});
+
+/**
  * A backup is of *your* things, and `visibility` is deliberately not one of
  * them (Ben, 2026-08-05, at review).
  *
