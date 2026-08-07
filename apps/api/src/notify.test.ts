@@ -1,7 +1,13 @@
 import { MemoryStore, type Store, type User } from "@finance-planner/data";
 import type { Mailer } from "@finance-planner/mailer";
 import { beforeEach, describe, expect, it } from "vitest";
-import { buildDailyDigest, DAILY_DIGEST_KIND, formatMoney, runNotifierOnce } from "./notify.js";
+import {
+  buildDailyDigest,
+  DAILY_DIGEST_KIND,
+  type DigestAttempts,
+  formatMoney,
+  runNotifierOnce,
+} from "./notify.js";
 import { accessibleAccounts, scopesFor } from "./plan.js";
 
 /** Captures what would have been sent. No transport, no timers. */
@@ -11,6 +17,52 @@ class FakeMailer implements Mailer {
   async sendPasswordReset(): Promise<void> {}
   async sendDigest(to: string, subject: string, textBody: string): Promise<void> {
     this.digests.push({ to, subject, textBody });
+  }
+}
+
+/**
+ * A mailer whose first `failures` sends throw and whose later ones deliver.
+ *
+ * `attempts` and `digests` are counted separately on purpose: an attempt is not
+ * a delivery, and reading one as the other is the whole defect these tests
+ * exist for. Every other mailer in this file has always worked.
+ */
+class FlakyMailer implements Mailer {
+  public readonly digests: { to: string; subject: string; textBody: string }[] = [];
+  public attempts = 0;
+  constructor(private readonly failures: number) {}
+  async sendVerificationEmail(): Promise<void> {}
+  async sendPasswordReset(): Promise<void> {}
+  async sendDigest(to: string, subject: string, textBody: string): Promise<void> {
+    this.attempts += 1;
+    if (this.attempts <= this.failures) throw new Error("smtp: connection reset by peer");
+    this.digests.push({ to, subject, textBody });
+  }
+}
+
+/** A mailer that never delivers, however often it is asked. */
+class DeadMailer implements Mailer {
+  public readonly digests: { to: string; subject: string; textBody: string }[] = [];
+  public attempts = 0;
+  async sendVerificationEmail(): Promise<void> {}
+  async sendPasswordReset(): Promise<void> {}
+  async sendDigest(): Promise<void> {
+    this.attempts += 1;
+    throw new Error("smtp: 550 mailbox unavailable");
+  }
+}
+
+/** A store whose first `failures` household reads throw, to fail the builder
+ *  rather than the mailer — the other half of the claimed-but-not-sent window. */
+class FlakyStore extends MemoryStore {
+  public reads = 0;
+  constructor(private readonly failures: number) {
+    super();
+  }
+  override async listHouseholdsForUser(userId: string) {
+    this.reads += 1;
+    if (this.reads <= this.failures) throw new Error("db: connection lost");
+    return super.listHouseholdsForUser(userId);
   }
 }
 
@@ -660,5 +712,188 @@ describe("runNotifierOnce", () => {
     await seedUser(store, "silent@example.com", false);
     expect(await runNotifierOnce(store, mailer, new Date(`${AS_OF}T08:00:00.000Z`))).toBe(0);
     expect(mailer.digests).toEqual([]);
+  });
+});
+
+/**
+ * What happens when the send does not work. Nothing in this repository had ever
+ * exercised a failing mailer, so the log could say a digest had gone out when
+ * the throw meant it never had — and the day was then unrecoverable.
+ */
+describe("runNotifierOnce when delivery fails", () => {
+  let store: MemoryStore;
+  /** One replica's memory of what it claimed and failed to deliver. */
+  let replica: DigestAttempts;
+  beforeEach(() => {
+    store = new MemoryStore();
+    replica = new Map();
+  });
+
+  const at = (time: string, date = AS_OF): Date => new Date(`${date}T${time}:00.000Z`);
+
+  it("delivers on the retry, the same day, when the first send throws", async () => {
+    const user = await seedUser(store, "flaky@example.com");
+    await seedAccountWithBill(store, user.id, "Everyday", "2026-08-06");
+    const mailer = new FlakyMailer(1);
+
+    // The claim is taken and the send throws: nothing sent, nothing delivered.
+    expect(await runNotifierOnce(store, mailer, at("08:00"), { attempts: replica })).toBe(0);
+    expect(mailer.digests).toEqual([]);
+
+    // The next tick, still the same date. The day was claimed by this pass, so
+    // it is this pass's to finish — and it does.
+    expect(await runNotifierOnce(store, mailer, at("08:15"), { attempts: replica })).toBe(1);
+    expect(mailer.attempts).toBe(2);
+    expect(mailer.digests).toHaveLength(1);
+    expect(mailer.digests[0]!.to).toBe("flaky@example.com");
+    expect(mailer.digests[0]!.subject).toContain(AS_OF);
+    expect(mailer.digests[0]!.textBody).toContain("Phone bill");
+
+    // And having delivered, it stops: the day is finished, not owed.
+    expect(await runNotifierOnce(store, mailer, at("08:30"), { attempts: replica })).toBe(0);
+    expect(mailer.attempts).toBe(2);
+  });
+
+  it("retries the day when building the digest throws, not only the send", async () => {
+    const flaky = new FlakyStore(1);
+    const user = await seedUser(flaky, "builder@example.com");
+    await seedAccountWithBill(flaky, user.id, "Everyday", "2026-08-06");
+    const mailer = new FakeMailer();
+
+    expect(await runNotifierOnce(flaky, mailer, at("08:00"), { attempts: replica })).toBe(0);
+    expect(mailer.digests).toEqual([]);
+    expect(await runNotifierOnce(flaky, mailer, at("08:15"), { attempts: replica })).toBe(1);
+    expect(mailer.digests).toHaveLength(1);
+  });
+
+  it("does not send twice when the pass runs twice against a mailer that always throws", async () => {
+    const user = await seedUser(store, "dead@example.com");
+    await seedAccountWithBill(store, user.id, "Everyday", "2026-08-06");
+    const mailer = new DeadMailer();
+
+    expect(await runNotifierOnce(store, mailer, at("08:00"), { attempts: replica })).toBe(0);
+    expect(await runNotifierOnce(store, mailer, at("08:15"), { attempts: replica })).toBe(0);
+    expect(mailer.digests).toEqual([]);
+
+    // Two attempts for the two passes, and then the day is given up rather than
+    // retried every quarter of an hour until midnight.
+    expect(mailer.attempts).toBe(2);
+    for (const time of ["08:30", "08:45", "09:00"]) {
+      expect(await runNotifierOnce(store, mailer, at(time), { attempts: replica })).toBe(0);
+    }
+    expect(mailer.attempts).toBe(2);
+  });
+
+  it("does not let a second replica take over a failed pass's day", async () => {
+    const user = await seedUser(store, "shared@example.com");
+    await seedAccountWithBill(store, user.id, "Everyday", "2026-08-06");
+    const mailer = new FlakyMailer(1);
+    const other: DigestAttempts = new Map();
+
+    // Replica one claims the day and its send throws.
+    expect(await runNotifierOnce(store, mailer, at("08:00"), { attempts: replica })).toBe(0);
+
+    // Replica two runs a full pass against the same store. It lost the claim,
+    // owes no retry, and asks the log for nothing else — so it sends nothing.
+    expect(await runNotifierOnce(store, mailer, at("08:05"), { attempts: other })).toBe(0);
+    expect(mailer.attempts).toBe(1);
+
+    // The retry belongs to the replica that failed, and exactly one digest
+    // reaches the user across both.
+    expect(await runNotifierOnce(store, mailer, at("08:15"), { attempts: replica })).toBe(1);
+    expect(mailer.digests).toHaveLength(1);
+  });
+
+  it("keeps two replicas from both sending while the first is still mid-send", async () => {
+    const user = await seedUser(store, "race@example.com");
+    await seedAccountWithBill(store, user.id, "Everyday", "2026-08-06");
+
+    // A mailer that parks its first send, so a second replica's whole pass runs
+    // inside the window between replica one's claim and its delivery — the
+    // window a retry token in the notification log would have opened.
+    let releaseSend!: () => void;
+    let sendEntered!: () => void;
+    const parked = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      sendEntered = resolve;
+    });
+    const digests: string[] = [];
+    let attempts = 0;
+    const mailer: Mailer = {
+      async sendVerificationEmail() {},
+      async sendPasswordReset() {},
+      async sendDigest(to: string) {
+        attempts += 1;
+        if (attempts === 1) {
+          sendEntered();
+          await parked;
+        }
+        digests.push(to);
+      },
+    };
+
+    const first = runNotifierOnce(store, mailer, at("08:00"), { attempts: replica });
+    // Not a yield count: the first pass has genuinely reached the send, holding
+    // the claim, before the second replica starts its own pass.
+    await entered;
+    const second = await runNotifierOnce(store, mailer, at("08:00"), { attempts: new Map() });
+    expect(second).toBe(0);
+    expect(digests).toEqual([]);
+
+    releaseSend();
+    expect(await first).toBe(1);
+    expect(digests).toEqual(["race@example.com"]);
+    expect(attempts).toBe(1);
+  });
+
+  it("keeps one user's failure from costing everybody after them their digest", async () => {
+    // Alphabetical by nothing in particular — the point is that the pass used to
+    // throw out of the loop, so whoever the store listed next got nothing.
+    const first = await seedUser(store, "first@example.com");
+    const second = await seedUser(store, "second@example.com");
+    await seedAccountWithBill(store, first.id, "Everyday", "2026-08-06");
+    await seedAccountWithBill(store, second.id, "Everyday", "2026-08-06");
+    const mailer = new FlakyMailer(1);
+
+    expect(await runNotifierOnce(store, mailer, at("08:00"), { attempts: replica })).toBe(1);
+    expect(mailer.digests.map((d) => d.to)).toEqual(["second@example.com"]);
+
+    // And the one that failed is still owed its day.
+    expect(await runNotifierOnce(store, mailer, at("08:15"), { attempts: replica })).toBe(1);
+    expect(mailer.digests.map((d) => d.to)).toEqual(["second@example.com", "first@example.com"]);
+  });
+
+  it("reports a failed attempt rather than swallowing it", async () => {
+    const user = await seedUser(store, "logged@example.com");
+    await seedAccountWithBill(store, user.id, "Everyday", "2026-08-06");
+    const lines: string[] = [];
+    const mailer = new DeadMailer();
+
+    await runNotifierOnce(store, mailer, at("08:00"), {
+      attempts: replica,
+      log: (msg) => lines.push(msg),
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(user.id);
+    expect(lines[0]).toContain(AS_OF);
+    expect(lines[0]).toContain("550 mailbox unavailable");
+  });
+
+  it("does not carry a failed day into the next one", async () => {
+    const user = await seedUser(store, "yesterday@example.com");
+    await seedAccountWithBill(store, user.id, "Everyday", "2026-08-06");
+    const mailer = new FlakyMailer(1);
+
+    expect(await runNotifierOnce(store, mailer, at("08:00"), { attempts: replica })).toBe(0);
+    // A new day claims a new slot and sends its own digest — one attempt, not a
+    // second go at yesterday's.
+    expect(
+      await runNotifierOnce(store, mailer, at("08:00", "2026-08-05"), { attempts: replica }),
+    ).toBe(1);
+    expect(mailer.digests).toHaveLength(1);
+    expect(mailer.digests[0]!.subject).toContain("2026-08-05");
+    expect(replica.size).toBe(0);
   });
 });

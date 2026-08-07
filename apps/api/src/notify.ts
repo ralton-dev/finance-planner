@@ -17,6 +17,15 @@ export const DAILY_DIGEST_KIND = "daily_digest";
 /** How often the scheduler wakes up to check whether it is time to send. */
 const TICK_MS = 15 * 60 * 1000;
 const MS_PER_DAY = 86_400_000;
+/**
+ * How many times one day's digest may be attempted before the day is given up.
+ *
+ * Two, not one, because a claim is not a send and the old code treated them as
+ * the same fact. Two, not "until it works", because every attempt after a send
+ * that delivered and *then* threw is a duplicate in somebody's inbox, and a
+ * dead address would otherwise be retried every fifteen minutes until midnight.
+ */
+const MAX_DIGEST_ATTEMPTS = 2;
 
 /** Minor units to a readable amount with its currency: 4500 → "45.00 GBP". */
 export function formatMoney(minor: number, currency: string): string {
@@ -251,24 +260,103 @@ export async function buildDailyDigest(
 }
 
 /**
+ * Digests this process claimed and did not manage to deliver, as
+ * `${userId}|${date}` → attempts already made.
+ *
+ * Deliberately *not* in the notification log, and deliberately not module
+ * state. See `runNotifierOnce` for why the log is the wrong place; it is a
+ * parameter rather than a global so that two notifiers in one process, and
+ * every test, get their own, and so the only thing shared between passes is a
+ * value somebody chose to share.
+ */
+export type DigestAttempts = Map<string, number>;
+
+export interface NotifierPassOptions {
+  /** Carried across passes by `startNotifier`. Omit for a one-shot pass. */
+  attempts?: DigestAttempts;
+  /** Where a failed attempt is reported. Silent by default. */
+  log?: (msg: string) => void;
+}
+
+/**
  * One pass of the notifier: every opted-in user gets at most one digest for
  * `now`'s date. `tryLogNotification` is the gate — it claims the (user, date,
  * kind) slot before any mail goes out, so a retry, a restart, or a second
  * replica cannot send the same digest twice.
  *
+ * The claim stays exactly one claim, taken exactly where it was taken before.
+ * What changed is who is responsible for the rest of the day. Claiming the slot
+ * and *sending* the mail were being read as the same fact: a throw out of the
+ * builder or the mailer left the slot claimed, and the day was gone for good —
+ * the log said a digest had been sent when nothing had. So the pass that holds
+ * the claim now owns delivery, and remembers a failure well enough to try again
+ * on its next tick, **under the claim it already holds**.
+ *
+ * That is why the retry lives in `attempts` and not in the log. The log's
+ * primitive is insert-on-conflict-do-nothing: a one-way claim with no read and
+ * no release. Making the day retryable *through* the log would mean either
+ * un-claiming it (a release the store does not offer) or writing a second row
+ * some later pass could claim as a retry token — and that token is exactly what
+ * a second replica would race for while the first is still mid-send, which
+ * trades the load-bearing property away for the one being fixed. Keeping the
+ * retry in the process that failed keeps the atomic claim the only arbitration
+ * point there has ever been: a replica that loses the claim asks for nothing
+ * else and sends nothing.
+ *
+ * What that leaves open, honestly: this process's memory is the retry's only
+ * record, so a restart between the failure and the retry loses the day, and a
+ * send that delivered and then threw is attempted a second time. Both are the
+ * at-least-once boundary and neither is closable here — a durable, releasable
+ * claim is a store-level primitive.
+ *
  * Returns how many messages were actually sent, which is what the tests assert
  * on. Exported (and timer-free) precisely so it can be driven with explicit
  * dates rather than by waiting on a clock.
  */
-export async function runNotifierOnce(store: Store, mailer: Mailer, now: Date): Promise<number> {
+export async function runNotifierOnce(
+  store: Store,
+  mailer: Mailer,
+  now: Date,
+  options: NotifierPassOptions = {},
+): Promise<number> {
   const date = toISODate(now);
+  const { attempts = new Map<string, number>(), log } = options;
+  // Yesterday's unfinished business is not today's: the digest that failed was
+  // for that date, and that date is over.
+  for (const key of attempts.keys()) if (!key.endsWith(`|${date}`)) attempts.delete(key);
+
   let sent = 0;
   for (const user of await store.listUsersWithNotifications()) {
-    if (!(await store.tryLogNotification(user.id, date, DAILY_DIGEST_KIND))) continue;
-    const body = await buildDailyDigest(store, user.id, date);
-    if (!body) continue;
-    await mailer.sendDigest(user.email, `Finance Planner: your ${date} digest`, body);
-    sent += 1;
+    const key = `${user.id}|${date}`;
+    const made = attempts.get(key) ?? 0;
+    // The gate, unmoved. It is asked once per day per user: a pass already
+    // holding the day — because an earlier pass in this process claimed it and
+    // then failed — carries on under that claim rather than asking for another.
+    if (made === 0 && !(await store.tryLogNotification(user.id, date, DAILY_DIGEST_KIND))) continue;
+
+    try {
+      const body = await buildDailyDigest(store, user.id, date);
+      // An empty digest is a finished day, not a failure. The claim covers
+      // "looked, nothing to say" on purpose, so a user with a quiet estate is
+      // not re-examined every fifteen minutes for the rest of the day.
+      if (!body) {
+        attempts.delete(key);
+        continue;
+      }
+      await mailer.sendDigest(user.email, `Finance Planner: your ${date} digest`, body);
+      attempts.delete(key);
+      sent += 1;
+    } catch (err) {
+      // Per user, because one unreachable address used to abort the pass and
+      // cost everybody after it in the list their digest too.
+      const next = made + 1;
+      if (next < MAX_DIGEST_ATTEMPTS) attempts.set(key, next);
+      else attempts.delete(key);
+      log?.(
+        `[notify] digest for ${user.id} on ${date} failed (attempt ${next} of ` +
+          `${MAX_DIGEST_ATTEMPTS}): ${String(err)}`,
+      );
+    }
   }
   return sent;
 }
@@ -289,6 +377,10 @@ export interface NotifierEnv {
  * on one replica only — though the (user, date, kind) unique key would keep a
  * double-send harmless anyway.
  *
+ * The tick is also the retry interval: a pass that claimed a day and failed to
+ * deliver it holds that failure in `attempts` and tries once more fifteen
+ * minutes later, which is why the map is created here rather than per pass.
+ *
  * Returns a stop function; the caller wires it to shutdown.
  */
 export function startNotifier(
@@ -299,12 +391,13 @@ export function startNotifier(
 ): () => void {
   if (!env.notifyEnabled) return () => {};
   let running = false;
+  const attempts: DigestAttempts = new Map();
   const tick = async (): Promise<void> => {
     if (running) return; // a slow pass must not overlap the next tick
     if (new Date().getHours() < env.notifyHour) return;
     running = true;
     try {
-      const sent = await runNotifierOnce(store, mailer, new Date());
+      const sent = await runNotifierOnce(store, mailer, new Date(), { attempts, log });
       if (sent > 0) log(`[notify] sent ${sent} digest(s)`);
     } catch (err) {
       log(`[notify] digest run failed: ${String(err)}`);
