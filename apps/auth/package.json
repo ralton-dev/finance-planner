@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
-    "@fastify/rate-limit": "^10.1.1",
+    "@fastify/rate-limit": "^11.2.0",
     "@finance-planner/contracts": "workspace:*",
     "@finance-planner/data": "workspace:*",
     "@finance-planner/mailer": "workspace:*",
