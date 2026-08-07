@@ -2165,6 +2165,66 @@ describe("api service", () => {
     ).toBe(403);
   });
 
+  /**
+   * All three confirm handlers now measure a confirmation against the month it
+   * names rather than against today (#50) — which means all three inherit the
+   * one thing that arithmetic cannot do. A month that has not started has no
+   * plan to derive an amount from, so there is nothing to confirm, and the
+   * refusal is the same one closing a future month has always given:
+   * `422 future_month`, from the same helper.
+   */
+  it("refuses to confirm a month that has not started, whichever handler is asked", async () => {
+    const nextYear = `${new Date().getUTCFullYear() + 1}-01`;
+    const { user, auth } = await seedUser(store);
+    const { current, pot, movement } = await seedMovement(auth);
+
+    // The authored movement, keyed on its inflow.
+    const inflow = await app.inject({
+      method: "POST",
+      url: `/api/inflows/${movement.id}/confirm?month=${nextYear}`,
+      headers: auth,
+    });
+    expect(inflow.statusCode).toBe(422);
+    expect(inflow.json().error.code).toBe("future_month");
+
+    // The derived transfer, keyed on its two accounts.
+    const derived = await app.inject({
+      method: "POST",
+      url: `/api/accounts/${pot.id}/transfers/confirm?month=${nextYear}`,
+      headers: auth,
+      payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
+    });
+    expect(derived.statusCode).toBe(422);
+    expect(derived.json().error.code).toBe("future_month");
+
+    // And the household's, which takes its month in the body rather than the
+    // query and reaches the same refusal by the same route.
+    const h = await seedHousehold(store, app);
+    const household = await app.inject({
+      method: "POST",
+      url: `/api/households/${h.household.id}/transfers/confirm`,
+      headers: h.auth,
+      payload: {
+        fromAccountId: h.aliceCur.id,
+        toAccountId: h.bills.id,
+        memberUserId: h.alice.id,
+        month: nextYear,
+      },
+    });
+    expect(household.statusCode).toBe(422);
+    expect(household.json().error.code).toBe("future_month");
+    // Nothing was written on the way to any of those refusals.
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: `/api/accounts/${pot.id}/transfers/confirmations?month=${nextYear}`,
+          headers: auth,
+        })
+      ).json(),
+    ).toEqual([]);
+  });
+
   it("keeps the derived un-confirm route away from the other two shapes", async () => {
     const { user, auth } = await seedUser(store);
     const { current, pot, movement } = await seedMovement(auth);

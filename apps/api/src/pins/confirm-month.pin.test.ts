@@ -5,7 +5,9 @@ import type { ApiEnv } from "../env.js";
 import { buildServer } from "../server.js";
 
 /**
- * **Red pin — issue #50. Flipped by WP-AO.**
+ * **Issue #50 — green since WP-AO.** Everything below describes the defect as it
+ * stood at `76ee2f2`; it is kept in the past tense it was written in, because a
+ * pin is the record of what went wrong and stays readable as one.
  *
  * > A confirmation names a month. The handler plans **today**.
  *
@@ -25,7 +27,8 @@ import { buildServer } from "../server.js";
  *
  * ## The repository already knows the rule
  *
- * `closeAsOfDate` (`apps/api/src/server.ts:150-161`) says it in a comment:
+ * `closeAsOfDate` said it in a comment, and only closing obeyed it — which is
+ * why WP-AO renamed it `asOfDateForMonth` and gave both verbs the same rule:
  *
  * > *"As-of date for closing a month: today when closing the month still
  * > running, otherwise that month's last day, so a past month is scored on the
@@ -254,7 +257,7 @@ describe("a confirmation for a past month", () => {
    * Nothing here says *how* the handler should learn the month's plan; it says
    * the amount on a June confirmation has to be June's.
    */
-  it.fails("books the amount that month's plan derived, not today's", async () => {
+  it("books the amount that month's plan derived, not today's", async () => {
     const h = await seedHousehold(store, app);
     const month = lastMonth();
     const { last } = boundsOf(month);

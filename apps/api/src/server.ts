@@ -147,14 +147,28 @@ const monthQuery = (month: string | undefined): string => {
 };
 
 /**
- * As-of date for closing a month: today when closing the month still running,
- * otherwise that month's last day, so a past month is scored on the plan it
- * actually had. Months that haven't started can't be closed.
+ * As-of date for acting on a named month: today when that month is the one
+ * still running, otherwise its last day, so a past month is scored on the plan
+ * it actually had. Months that haven't started can't be acted on at all.
+ *
+ * A close obeyed this from the beginning. A **confirmation** did not: all three
+ * confirm handlers took a month, wrote it onto the row, and then derived the
+ * amount from `today()` — so confirming June's transfer in August booked
+ * August's figure and filed it under June. That is the plan's standing
+ * assumption wearing a calendar (#50): the month is written down, the month is
+ * not asked about. Both verbs share this arithmetic now, which is why the
+ * function no longer belongs to closing.
+ *
+ * The `verb` only names the act in the refusal. The code is `future_month`
+ * either way, because it is the same refusal for the same reason, and a caller
+ * matching on it should not have to know which door it came through.
  */
-function closeAsOfDate(month: string): string {
+function asOfDateForMonth(month: string, verb: "close" | "confirm"): string {
   const now = today();
   const current = monthOf(now);
-  if (month > current) throw new HttpError(422, "future_month", "Cannot close a future month");
+  if (month > current) {
+    throw new HttpError(422, "future_month", `Cannot ${verb} a future month`);
+  }
   if (month === current) return now;
   const [year, mon] = month.split("-").map(Number);
   return toISODate(new Date(Date.UTC(year!, mon!, 0))); // day 0 of the next month
@@ -1307,7 +1321,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   app.post("/api/me/closes", async (req, reply) => {
     const userId = await authenticate(req);
     const body = closeMonthBody.parse(req.body);
-    const asOfDate = closeAsOfDate(body.month);
+    const asOfDate = asOfDateForMonth(body.month, "close");
     const month = monthToFirstDay(body.month);
     // Named without a currency, this asks about the month rather than about one
     // partition of it — which is the question, since closing takes them all.
@@ -2032,7 +2046,13 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     if (body.memberUserId !== userId) {
       await requireMembership(userId, id, ["owner", "admin"]);
     }
-    const month = monthToFirstDay(body.month ?? monthOf(today()));
+    const monthKey = body.month ?? monthOf(today());
+    const month = monthToFirstDay(monthKey);
+    // The month this confirmation is *for* decides which plan it is measured
+    // against — a June confirmation is June's figure, not today's (#50). Refused
+    // here rather than after the idempotency guard because a month that has not
+    // started is a malformed request, not a plan that moved on.
+    const asOfDate = asOfDateForMonth(monthKey, "confirm");
 
     // Idempotency guard first: once confirmed, stay confirmed even if the plan
     // has since moved on and no longer derives that transfer.
@@ -2047,7 +2067,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(409, "already_confirmed", "Transfer already confirmed this month");
     }
 
-    const { scope, accountIds, currency } = await scopeForHousehold(store, id, today());
+    const { scope, accountIds, currency } = await scopeForHousehold(store, id, asOfDate);
     const plan = householdPlanFromScope(scope.plan, id, accountIds, currency);
     const transfer = plan.transfers.find(
       (t) =>
@@ -2143,7 +2163,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     const { account } = await requireAccess(userId, inflow.accountId, "edit");
     await requireAccess(userId, inflow.sourceAccountId, "view");
     const month = monthQuery(monthParam);
-    const asOfDate = today();
+    // The month the movement is being confirmed *for*, not the month we are
+    // standing in (#50): `monthQuery` already keyed the row by it, and the
+    // figure written on that row has to come from the same month's plan.
+    const asOfDate = asOfDateForMonth(monthOf(month), "confirm");
 
     // Idempotency guard first, exactly as the household handler does it: once
     // confirmed, stay confirmed even if the plan has since moved on. The
@@ -2270,7 +2293,9 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
     await requireAccess(userId, body.fromAccountId, "view");
     const month = monthQuery(monthParam);
-    const asOfDate = today();
+    // The month asked for, as the other two handlers now read it (#50): the row
+    // is keyed by this month, so the amount on it is this month's.
+    const asOfDate = asOfDateForMonth(monthOf(month), "confirm");
 
     // Idempotency guard first, exactly as the other two handlers do it: once
     // confirmed, stay confirmed even if the plan has since moved on. The
