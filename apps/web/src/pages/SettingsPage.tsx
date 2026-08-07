@@ -1,5 +1,5 @@
 import { type ChangeEvent, type FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.js";
 import { api, ApiError } from "../lib/api.js";
 import { filenameFromDisposition, readTextFile, saveBlob } from "../lib/files.js";

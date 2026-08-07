@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { Amount } from "../components/Amount.js";
 import { Fold } from "../components/Fold.js";
 import { LeftOverCell } from "../components/PlanTable.js";

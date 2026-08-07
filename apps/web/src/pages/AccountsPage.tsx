@@ -1,5 +1,5 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { Amount } from "../components/Amount.js";
 import { LeftOverCell } from "../components/PlanTable.js";

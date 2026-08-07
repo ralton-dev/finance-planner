@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -56,7 +56,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -77,7 +77,7 @@ jobs:
         run: corepack enable
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -128,7 +128,7 @@ jobs:
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload digest
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digest-${{ matrix.service }}-${{ steps.prep.outputs.pair }}
           path: /tmp/digests/*
@@ -177,7 +177,7 @@ jobs:
         service: [web, api, auth, calc]
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digest-${{ matrix.service }}-*
@@ -186,7 +186,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -194,7 +194,7 @@ jobs:
 
       - name: Compute image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/finance-planner/${{ matrix.service }}
           tags: |

@@ -1139,7 +1139,7 @@ function planCurrency(
       ];
     }),
   );
-  for (let i = 0; i < orderedObligations.length; ) {
+  for (let i = 0; i < orderedObligations.length;) {
     const head = orderedObligations[i]!.o;
     let end = i;
     while (

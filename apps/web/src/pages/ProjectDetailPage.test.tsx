@@ -1,5 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes as RouterRoutes } from "react-router-dom";
+import { MemoryRouter, Route, Routes as RouterRoutes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../auth/AuthContext.js";
 import { api } from "../lib/api.js";

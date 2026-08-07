@@ -12,21 +12,21 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@fastify/cookie": "^11.0.2",
-    "@fastify/rate-limit": "^10.1.1",
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/rate-limit": "^11.2.0",
     "@finance-planner/contracts": "workspace:*",
     "@finance-planner/data": "workspace:*",
     "@finance-planner/mailer": "workspace:*",
     "@finance-planner/policies": "workspace:*",
     "@finance-planner/security": "workspace:*",
-    "fastify": "^5.2.1",
-    "pg": "^8.13.1"
+    "fastify": "^5.11.0",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.1.2",
     "tsup": "^8.3.5",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.3",
-    "vitest": "^4.1.8"
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }

@@ -549,8 +549,8 @@ export const ESTATE_CONFIRMATION_SHAPES: {
  */
 export const estateWithoutSharedIncome: ScopeInput = {
   ...estate.scope,
-  accounts: estate.scope.accounts.map(
-    (a): ScopeAccountInput => (a.role === "shared" ? { ...a, incomes: [] } : a),
+  accounts: estate.scope.accounts.map((a): ScopeAccountInput =>
+    a.role === "shared" ? { ...a, incomes: [] } : a,
   ),
   confirmedTransfers: [
     {

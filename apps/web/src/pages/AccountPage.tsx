@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router";
 import { AccountMovements } from "../components/AccountMovements.js";
 import { AccountSettingsDrawer } from "../components/AccountSettingsDrawer.js";
 import { Amount } from "../components/Amount.js";

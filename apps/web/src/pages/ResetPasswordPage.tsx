@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router";
 import { api, ApiError } from "../lib/api.js";
 
 const MIN_PASSWORD_LENGTH = 8;

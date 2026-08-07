@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider } from "./auth/AuthContext.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { Layout, RequireAuth } from "./components/Layout.js";

@@ -92,12 +92,10 @@ describe("decision 15 — an estate where no shared account earns", () => {
     const NOBODY = "u-nobody";
     const byRole: ScopeInput = {
       ...estateWithoutSharedIncome,
-      accounts: estateWithoutSharedIncome.accounts.map(
-        (a): ScopeAccountInput => ({
-          ...a,
-          ownerUserId: a.role === "personal" && a.memberUserId ? a.memberUserId : NOBODY,
-        }),
-      ),
+      accounts: estateWithoutSharedIncome.accounts.map((a): ScopeAccountInput => ({
+        ...a,
+        ownerUserId: a.role === "personal" && a.memberUserId ? a.memberUserId : NOBODY,
+      })),
     };
     expect(bytesWithoutOwners(byRole)).toBe(bytesWithoutOwners(estateWithoutSharedIncome));
   });
