@@ -547,6 +547,112 @@ export const ESTATE_CONFIRMATION_SHAPES: {
  * £924, so it stays the part-moved figure it was. Inheriting `estate.scope`'s
  * would mean holding the old tree's answer against a question nobody asked it.
  */
+/**
+ * **The same estate, with each member's own account holding a shared bill.**
+ *
+ * The shape every fixture here still avoided, and it is not an exotic one. Every
+ * payment in `estate` sits on a *pot* — the house pot, alice's bills pot, the
+ * euro account — and every member's source is a *current* account with no
+ * payments of its own. So the derived transfers can only ever run current → pot:
+ * two stars that never meet, a graph that cannot contain a loop **by the
+ * fixture's construction rather than by anything the domain promises**. Nothing
+ * was testing what happens when they do meet, because nothing could.
+ *
+ * A household reaches it by being ordinary. The broadband comes out of alice's
+ * current account and the council tax out of bob's; each owes the other a share
+ * of the bill the other pays. The pass then derives
+ * `acc-alice-current → acc-bob-current` **and**
+ * `acc-bob-current → acc-alice-current`, both funded, both non-zero, and
+ * correctly reports **no cycle at all** — see the module comment on `scope.ts`,
+ * which predicts exactly this and is right that it costs the funding pass
+ * nothing, because neither transfer waits on the other. Phase 4's `broken_cycle`
+ * machinery is about authored movements, which chain; a derived transfer never
+ * funds another one, so none of this is a funding loop.
+ *
+ * It is, however, a loop **in the drawn graph**, and that is what issue #62 was:
+ * `apps/web/src/components/FlowSankey.tsx` handed it to a Sankey whose depth walk
+ * follows targets with no record of where it has been, and
+ * `/households/:id/plan` rendered nothing whatsoever. The fix is in the drawing,
+ * where the defect is — nothing below is a figure the domain should change, and
+ * zeroing either transfer would be a lie about money that genuinely moves.
+ *
+ * Its confirmations are emptied rather than inherited: a confirmation is a
+ * relationship to a *derived figure* (see `ESTATE_CONFIRMATION_SHAPES`), and this
+ * input derives a different set of transfers from the one those figures were
+ * hand-set against.
+ */
+export const estateThatFundsBothWays: ScopeInput = {
+  ...estate.scope,
+  accounts: estate.scope.accounts.map((a): ScopeAccountInput => {
+    if (a.accountId === "acc-alice-current") {
+      return {
+        ...a,
+        payments: [
+          {
+            id: "pay-broadband",
+            name: "Broadband",
+            category: "monthly_recurring",
+            amountMinor: 6_000,
+            scope: "shared",
+            priority: 30,
+          },
+        ],
+      };
+    }
+    if (a.accountId === "acc-bob-current") {
+      return {
+        ...a,
+        payments: [
+          {
+            id: "pay-bob-council",
+            name: "Council tax (bob's)",
+            category: "monthly_recurring",
+            amountMinor: 20_000,
+            scope: "shared",
+            priority: 30,
+          },
+        ],
+      };
+    }
+    return a;
+  }),
+  confirmedTransfers: [],
+};
+
+/**
+ * The two directions that must both come out of `estateThatFundsBothWays`, and
+ * the fact about them that matters.
+ *
+ * In the tradition of `ESTATE_CONFIRMATION_SHAPES`: the intent a figure cannot
+ * state for itself. A fixture built to carry a loop is worth nothing the day the
+ * pass stops deriving one — self-funding netting could absorb a share, a
+ * priority could reorder, a member's source could move — and the failure mode is
+ * silent, because a graph with no loop in it passes every test that a graph with
+ * one is supposed to. So the loop is asserted, not assumed.
+ */
+export const ESTATE_MUTUAL_FUNDING: readonly {
+  fromAccountId: string;
+  toAccountId: string;
+  memberUserId: string;
+  /** What must move, once each member's own income has covered its own share. */
+  amountMinor: number;
+}[] = [
+  // Alice's 66% of the £200 council tax that leaves bob's account.
+  {
+    fromAccountId: "acc-alice-current",
+    toAccountId: "acc-bob-current",
+    memberUserId: "u-alice",
+    amountMinor: 13_200,
+  },
+  // Bob's 34% of the £60 broadband that leaves alice's.
+  {
+    fromAccountId: "acc-bob-current",
+    toAccountId: "acc-alice-current",
+    memberUserId: "u-bob",
+    amountMinor: 2_040,
+  },
+];
+
 export const estateWithoutSharedIncome: ScopeInput = {
   ...estate.scope,
   accounts: estate.scope.accounts.map(

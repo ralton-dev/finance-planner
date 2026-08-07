@@ -3,8 +3,11 @@ import {
   estate,
   ESTATE_ASOF,
   ESTATE_CONFIRMATION_SHAPES,
+  ESTATE_MUTUAL_FUNDING,
+  estateThatFundsBothWays,
   type ConfirmationShape,
 } from "./estate.fixture.js";
+import { flowFromScope } from "./flow.js";
 import { computeScopePlan } from "./scope.js";
 
 /**
@@ -130,5 +133,57 @@ describe("the estate's confirmations stand where the fixture says they stand", (
         new Set<ConfirmationShape>(["whole", "partial", "none"]),
       );
     }
+  });
+});
+
+/**
+ * **The estate that funds both ways, held to the loop it exists to carry.**
+ *
+ * Issue #62's shape. The assertions below are deliberately about the *pass*, not
+ * about the diagram: the domain is correct here and this file's job is to stop
+ * the fixture drifting into an acyclic shape again without anybody noticing —
+ * which is what the last four years of fixtures did by never putting a payment
+ * on an account a transfer leaves from.
+ */
+describe("the estate where each member funds a share of the other's bills", () => {
+  const bothWays = computeScopePlan(estateThatFundsBothWays, ESTATE_ASOF);
+
+  it("derives a funded transfer in each direction between the two current accounts", () => {
+    const derived = ESTATE_MUTUAL_FUNDING.map((declared) => {
+      const found = bothWays.transfers.find((t) => transferKey(t) === transferKey(declared));
+      return [transferKey(declared), found?.amountMinor];
+    });
+    expect(derived).toEqual(ESTATE_MUTUAL_FUNDING.map((d) => [transferKey(d), d.amountMinor]));
+  });
+
+  /**
+   * The pass is right to report none. A derived transfer is paid for out of a
+   * member's own budget and never out of another transfer, so nothing here waits
+   * on anything — see `scope.ts`. This asserts that correctness rather than
+   * lamenting it: the loop the diagram has to cope with is one the domain will
+   * never label, so no consumer may wait to be told about it.
+   */
+  it("reports no funding cycle and marks nothing broken, because neither transfer waits", () => {
+    expect(bothWays.cycles).toEqual([]);
+    expect(bothWays.movements.filter((m) => m.status === "broken_cycle")).toEqual([]);
+  });
+
+  it("puts a loop in the drawn flow, which is the graph issue #62 could not lay out", () => {
+    const flow = flowFromScope(
+      bothWays,
+      [
+        { accountId: "acc-alice-current", name: "Alice current" },
+        { accountId: "acc-bob-current", name: "Bob current" },
+      ],
+      "GBP",
+    );
+    const between = flow.edges.filter((e) => e.fromAccountId !== null && e.toAccountId !== null);
+    expect(between.map((e) => `${e.fromAccountId} → ${e.toAccountId}`)).toEqual([
+      "acc-alice-current → acc-bob-current",
+      "acc-bob-current → acc-alice-current",
+    ]);
+    // Every one of them real money, and none of them flagged: an edge the
+    // drawing may not skip on `amountMinor <= 0` or on its status.
+    expect(between.every((e) => e.amountMinor > 0 && e.status === "funded")).toBe(true);
   });
 });
