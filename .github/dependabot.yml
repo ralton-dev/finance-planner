@@ -16,12 +16,6 @@ updates:
       # Group minor + patch bumps to reduce noise; majors stay individual.
       minor-and-patch:
         update-types: ["minor", "patch"]
-    ignore:
-      # @vitejs/plugin-react 6 requires vite ^8; this workspace is on vite 6, so
-      # every major Dependabot proposes here fails to load the vite config and
-      # cannot be merged. Lift this once vite reaches 8 — see the tracking issue.
-      - dependency-name: "@vitejs/plugin-react"
-        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
