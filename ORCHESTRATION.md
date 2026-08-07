@@ -178,6 +178,50 @@ A related consequence worth stating: **a wave's commits are not a reliable recor
 of which package did what** unless this rule is followed. Verify by file, not by
 commit message, when it matters.
 
+**A file-disjoint freeze is not always a safe freeze: assertions have altitudes.**
+In the said-and-done plan, one agent changed a figure in `packages/domain` and the
+_same two figures_ were asserted again at API altitude in `apps/api/src/server.test.ts`
+— a file frozen to the concurrent agent. The freeze was correctly disjoint by file and
+still made the breakage unreachable by the package that caused it, so `main` went red
+on two tests belonging to neither. The other agent found it and reconciled it, which is
+luck rather than design.
+
+Two fixes, and use both:
+
+- when a package changes a published figure, **tell it to grep the other altitudes for
+  that figure before it finishes** — `apps/api/src/server.test.ts` is where domain
+  figures reappear — and to **report** what it finds rather than editing a frozen file;
+- as orchestrator, **unfreeze the twin explicitly the moment its owner lands**, scoped
+  to "assertion reconciliation only, and report every figure you touch". A figure that
+  moves at one altitude and not the other is sometimes a real disagreement rather than
+  a stale number, and you want to see the list.
+
+## Booting the app — there is now a harness in the repo; read this first
+
+**Do not write a fourth boot harness from scratch. `apps/web/e2e/fixture.ts` is one,
+it is committed, and it works.** WP-AZ built it in the said-and-done plan: auth and api
+in one process over a shared injected `MemoryStore`, `dist` served statically,
+`getSetCookie()` forwarded, a seeded estate, and a signed-in session. `journey.spec.ts`
+beside it walks Overview → accounts → an account → a household → the household plan →
+the flow, and **fails on any response ≥400 the pages fetch** — with one allowlisted
+exception, `401 POST /api/auth/refresh` before login, gated on a `loggedIn` flag so a
+401 after sign-in still fails.
+
+Run it with `pnpm --filter @finance-planner/web test:e2e`; it takes about eight
+seconds. **It prints what it inspected** — `inspected 107 responses, 63 of them /api`,
+with a per-page breakdown — so "it passed" is distinguishable from "it looked at
+nothing". That printing is the point: a request listener that never fires is this
+project's signature failure, and a spec that inspected zero requests and passed is the
+defect rather than the fix.
+
+Two consequences for future plans. A package needing a browser should **reuse the
+fixture** rather than rebuild it — WP-BA was briefed to, and the rebuild cost was
+already paid. And **a package that makes a page 4xx will now be caught locally**, in
+eight seconds, instead of in CI.
+
+The section below remains true and is what you need if you are booting something the
+fixture does not cover.
+
 ## Booting the app
 
 In DB-less dev mode the api and auth services each create **private** `MemoryStore`s,
@@ -203,7 +247,12 @@ exist — one per service:
 ./apps/api/node_modules/.bin/tsx  harness.mts
 ./apps/auth/node_modules/.bin/tsx harness.mts
 ./apps/calc/node_modules/.bin/tsx harness.mts
+./apps/web/node_modules/.bin/tsx  harness.mts
 ```
+
+**The `web` line was missing from this list and two separate agents reported it** — it
+is the one that makes a Playwright pass reachable without leaving the web package, and
+both of them found it only after working around its supposed absence.
 
 Use one of those. **Do not write down a `node --import .../.pnpm/tsx@<version>/...`
 loader path**, which is what this section used to recommend. That path carries the
@@ -218,6 +267,12 @@ Ports already spent, so the next run picks elsewhere: **4310–4312, 4410–4412
 4510–4512** across three harnesses in the mine-and-ours work, and **4610–4611, 4620,
 4630–4631** across the dependency-refresh harnesses. Three ports per harness, because
 auth, api and the static server each need one.
+
+The said-and-done plan spent **4720–4722, 4760–4762, 4870–4872, 4917–4919, 4930–4932,
+4940–4942, 4950–4952** across seven browser passes, and **4980–4982** are now
+**permanently** the committed e2e fixture's. Nine packages needed a browser in that
+plan and every one of them found something the unit tests had not, so budget for this
+rather than treating it as exceptional.
 
 **Name the harness `.mts`, not `.ts`.** The scratchpad has no `package.json`, so a
 `.ts` file there is treated as CommonJS and every top-level `await` fails at transform
@@ -279,7 +334,22 @@ needs asking.
 ## What agents are good at, and where they need pushing
 
 They are reliable and they will tell you when a brief is wrong. **The count is now
-well past thirty across four plans, and every one of them was right.** The
+past forty across five plans, and every one of them was right.**
+
+The said-and-done work added a dozen or so, and two are worth naming because of the
+_kind_ of error they caught. **One proved the orchestrator's proposed fix would
+contradict a decision another package had landed the same morning** — the brief said
+to credit already-saved money into the projection, and doing so would have asserted on
+a chart that an account holds money the reality banner had just been rewritten to say
+it does not. The agent closed the same one-sided entry from the other side instead.
+**Another corrected a previous agent's finding in the safe-sounding direction**: a leak
+had been filed as "medium confidence, reachable only via legacy data", and it was
+reachable with one ordinary inflow, while the legacy path was the impossible one.
+
+The lesson under both: agents are good at _"is this premise true"_ in a way that
+survives the orchestrator being confident, a decision being recent, and a previous
+agent having already looked. **Ask every brief to check its own premises, including the
+ones another agent supplied.** The
 mine-and-ours work alone contributed nine — including two corrections to the
 orchestrator's own description of a field it had written the brief about, and one that
 stopped `PATCH` and `DELETE` on a shared project being granted to every co-member of
