@@ -50,6 +50,7 @@ services:
       NOTIFY_ENABLED: ${NOTIFY_ENABLED:-false}
       NOTIFY_HOUR: ${NOTIFY_HOUR:-8}
       ENABLE_DEMO_SEED: ${ENABLE_DEMO_SEED:-false}
+      ENABLE_PLAN_DEBUG: ${ENABLE_PLAN_DEBUG:-false}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "4000:4000"

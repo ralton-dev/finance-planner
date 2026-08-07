@@ -40,9 +40,10 @@ of being sent. That is the intended local-dev behaviour — the reset link is in
 
 ### Demo seed (api)
 
-| Var                | Default | Notes                                                                                                                         |
-| ------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `ENABLE_DEMO_SEED` | `false` | Exposes `POST /api/demo/seed`. The route 404s while this is false; `GET /api/meta` reports `{"demoSeedEnabled": …}` publicly. |
+| Var                 | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ENABLE_DEMO_SEED`  | `false` | Exposes `POST /api/demo/seed`. The route 404s while this is false; `GET /api/meta` reports `{"demoSeedEnabled": …}` publicly.                                                                                                                                                                                                                                                                                                                                                               |
+| `ENABLE_PLAN_DEBUG` | `false` | Exposes `GET /api/debug/plan` and its page. The route 404s while this is false; `GET /api/meta` reports `{"planDebugEnabled": …}` publicly and the app hides the link. **A household member who opens it reads the household's whole calculation** — co-members' personal accounts, incomes, bills and balances included — because the engine plans over the whole funding scope. That is the trace doing its job, not a hole in it, which is why turning it on is the operator's decision. |
 
 ### OIDC single sign-on (auth)
 

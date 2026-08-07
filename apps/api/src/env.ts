@@ -20,6 +20,8 @@ export interface ApiEnv {
   notifyHour: number;
   /** Expose POST /api/demo/seed. Off by default; see the route comment. */
   enableDemoSeed: boolean;
+  /** Expose GET /api/debug/plan. Off by default; see the route comment. */
+  enablePlanDebug: boolean;
 }
 
 /** Parse an hour-of-day env var, falling back on anything unusable. */
@@ -45,5 +47,6 @@ export function loadEnv(): ApiEnv {
     notifyEnabled: process.env.NOTIFY_ENABLED === "true",
     notifyHour: hour(process.env.NOTIFY_HOUR, 8),
     enableDemoSeed: process.env.ENABLE_DEMO_SEED === "true",
+    enablePlanDebug: process.env.ENABLE_PLAN_DEBUG === "true",
   };
 }

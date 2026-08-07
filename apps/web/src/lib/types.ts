@@ -31,6 +31,8 @@ export interface UserDto {
 /** What this deployment has switched on. Public: asked before logging in. */
 export interface MetaDto {
   demoSeedEnabled: boolean;
+  /** Whether GET /api/debug/plan exists here. Off, the route 404s. */
+  planDebugEnabled: boolean;
 }
 
 // --- auth: second factor, password reset, SSO --------------------------------

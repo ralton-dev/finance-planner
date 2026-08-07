@@ -52,6 +52,9 @@ serviceEnv:
     NOTIFY_HOUR: "8"
     # Exposes POST /api/demo/seed. Leave off outside demo installs.
     ENABLE_DEMO_SEED: "false"
+    # Exposes GET /api/debug/plan. On, a household member can read the whole
+    # household's calculation — see OPERATIONS.md §2.
+    ENABLE_PLAN_DEBUG: "false"
   auth:
     # From: header for verification + password-reset mail.
     MAIL_FROM: ""

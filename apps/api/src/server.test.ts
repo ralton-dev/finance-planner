@@ -29,6 +29,7 @@ const env: ApiEnv = {
   notifyEnabled: false,
   notifyHour: 8,
   enableDemoSeed: false,
+  enablePlanDebug: false,
 };
 
 async function seedUser(store: Store, email = "owner@example.com") {
@@ -229,138 +230,6 @@ describe("api service", () => {
     expect(plan.monthlyIncomeMinor).toBe(300000);
     expect(plan.lines[0].requiredMonthlyMinor).toBe(15000);
     expect(plan.leftoverMinor).toBe(285000);
-  });
-
-  it("serves the engine debug report only when explicitly enabled", async () => {
-    const { auth } = await seedUser(store);
-    const account = (
-      await app.inject({
-        method: "POST",
-        url: "/api/accounts",
-        headers: auth,
-        payload: { name: "A", currency: "GBP" },
-      })
-    ).json();
-
-    await app.inject({
-      method: "POST",
-      url: `/api/accounts/${account.id}/incomes`,
-      headers: auth,
-      payload: {
-        name: "Salary",
-        amountMinor: 300000,
-        frequency: "monthly",
-        anchorDate: "2026-01-25",
-      },
-    });
-    await app.inject({
-      method: "POST",
-      url: `/api/accounts/${account.id}/payments`,
-      headers: auth,
-      payload: {
-        name: "Holiday",
-        category: "fixed_point",
-        amountMinor: 120000,
-        dueDate: "2026-09-01",
-      },
-    });
-
-    const off = await app.inject({
-      method: "GET",
-      url: `/api/debug/plan?account=${account.id}&asOf=2026-01-01`,
-      headers: auth,
-    });
-    expect(off.statusCode).toBe(404);
-
-    const on = await app.inject({
-      method: "GET",
-      url: `/api/debug/plan?debug=engine&ack=full-household-finance&account=${account.id}&asOf=2026-01-01`,
-      headers: auth,
-    });
-    expect(on.statusCode).toBe(200);
-    const body = on.json();
-    expect(body.subject).toEqual({ kind: "account", accountId: account.id });
-    expect(body.scopes).toHaveLength(1);
-    expect(body.scopes[0].labels.accounts[account.id]).toBe("A");
-    expect(body.scopes[0].labels.users).toBeTruthy();
-    expect(body.scopes[0].report).toContain("Phase 2 - global funding queue by rank");
-    expect(body.scopes[0].report).toContain("Per account final breakdown");
-    expect(body.scopes[0].trace.plan.lines[0].paymentId).toBeDefined();
-  });
-
-  it("requires acknowledgement before returning any full engine debug trace", async () => {
-    const { user, auth } = await seedUser(store);
-    const account = await store.createAccount({
-      ownerUserId: user.id,
-      name: "A",
-      currency: "GBP",
-    });
-
-    const res = await app.inject({
-      method: "GET",
-      url: `/api/debug/plan?debug=engine&account=${account.id}&asOf=2026-01-01`,
-      headers: auth,
-    });
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error.code).toBe("debug_ack_required");
-  });
-
-  it("refuses acknowledged engine debug when the planned scope contains an inaccessible non-household account", async () => {
-    const { user: alice, auth } = await seedUser(store, "alice@example.com");
-    const { user: bob } = await seedUser(store, "bob@example.com");
-    const aliceCurrent = await store.createAccount({
-      ownerUserId: alice.id,
-      name: "Alice current",
-      currency: "GBP",
-    });
-    const bobPot = await store.createAccount({
-      ownerUserId: bob.id,
-      name: "Bob pot",
-      currency: "GBP",
-    });
-    await store.createInflow({
-      accountId: bobPot.id,
-      name: "hidden sweep",
-      source: "account",
-      sourceAccountId: aliceCurrent.id,
-      amountMinor: 10_000,
-      frequency: "monthly",
-      recurrence: null,
-      anchorDate: "2026-01-01",
-      priority: 100,
-      active: true,
-    });
-
-    const res = await app.inject({
-      method: "GET",
-      url: `/api/debug/plan?debug=engine&ack=full-household-finance&account=${aliceCurrent.id}&asOf=2026-01-01`,
-      headers: auth,
-    });
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error.code).toBe("debug_scope_not_visible");
-  });
-
-  it("allows acknowledged household debug over member personal accounts that are not shared", async () => {
-    const { auth, household, bobCur } = await seedHousehold(store, app);
-
-    const unacknowledged = await app.inject({
-      method: "GET",
-      url: `/api/debug/plan?debug=engine&household=${household.id}&asOf=2026-01-01`,
-      headers: auth,
-    });
-    expect(unacknowledged.statusCode).toBe(403);
-    expect(unacknowledged.json().error.code).toBe("debug_ack_required");
-
-    const acknowledged = await app.inject({
-      method: "GET",
-      url: `/api/debug/plan?debug=engine&ack=full-household-finance&household=${household.id}&asOf=2026-01-01`,
-      headers: auth,
-    });
-    expect(acknowledged.statusCode).toBe(200);
-    const body = acknowledged.json();
-    expect(body.subject).toEqual({ kind: "household", householdId: household.id });
-    expect(body.scopes[0].labels.accounts[bobCur.id]).toBe("bob-cur");
-    expect(body.scopes[0].report).toContain("bob-cur");
   });
 
   it("rejects fixed_point payments without a due date (422)", async () => {
@@ -5630,8 +5499,177 @@ describe("export / import", () => {
   });
 });
 
+/**
+ * The engine trace. Off unless the deployment turns it on, because of what a
+ * scope necessarily contains — see the route comment in `server.ts`.
+ */
+describe("plan debug", () => {
+  const debugEnv: ApiEnv = { ...env, enablePlanDebug: true };
+  let store: MemoryStore;
+  let app: ReturnType<typeof buildServer>;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    app = buildServer({ store, env: debugEnv, registerAuthProxy: false });
+  });
+
+  it("404s the route entirely, and says so in meta, when the deployment has it off", async () => {
+    const off = buildServer({ store, env, registerAuthProxy: false });
+    const { auth } = await seedUser(store);
+
+    expect((await off.inject({ method: "GET", url: "/api/meta" })).json()).toEqual({
+      demoSeedEnabled: false,
+      planDebugEnabled: false,
+    });
+    // Off means gone: not a 403 that confirms there is something here to ask for.
+    const res = await off.inject({
+      method: "GET",
+      url: "/api/debug/plan?debug=engine&ack=full-household-finance",
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/api/meta" })).json()).toMatchObject({
+      planDebugEnabled: true,
+    });
+  });
+
+  it("serves the engine debug report only when explicitly enabled", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/incomes`,
+      headers: auth,
+      payload: {
+        name: "Salary",
+        amountMinor: 300000,
+        frequency: "monthly",
+        anchorDate: "2026-01-25",
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/accounts/${account.id}/payments`,
+      headers: auth,
+      payload: {
+        name: "Holiday",
+        category: "fixed_point",
+        amountMinor: 120000,
+        dueDate: "2026-09-01",
+      },
+    });
+
+    const off = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?account=${account.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(off.statusCode).toBe(404);
+
+    const on = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&account=${account.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(on.statusCode).toBe(200);
+    const body = on.json();
+    expect(body.subject).toEqual({ kind: "account", accountId: account.id });
+    expect(body.scopes).toHaveLength(1);
+    expect(body.scopes[0].labels.accounts[account.id]).toBe("A");
+    expect(body.scopes[0].labels.users).toBeTruthy();
+    expect(body.scopes[0].report).toContain("Phase 2 - global funding queue by rank");
+    expect(body.scopes[0].report).toContain("Per account final breakdown");
+    expect(body.scopes[0].trace.plan.lines[0].paymentId).toBeDefined();
+  });
+
+  it("requires acknowledgement before returning any full engine debug trace", async () => {
+    const { user, auth } = await seedUser(store);
+    const account = await store.createAccount({
+      ownerUserId: user.id,
+      name: "A",
+      currency: "GBP",
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&account=${account.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("debug_ack_required");
+  });
+
+  it("refuses acknowledged engine debug when the planned scope contains an inaccessible non-household account", async () => {
+    const { user: alice, auth } = await seedUser(store, "alice@example.com");
+    const { user: bob } = await seedUser(store, "bob@example.com");
+    const aliceCurrent = await store.createAccount({
+      ownerUserId: alice.id,
+      name: "Alice current",
+      currency: "GBP",
+    });
+    const bobPot = await store.createAccount({
+      ownerUserId: bob.id,
+      name: "Bob pot",
+      currency: "GBP",
+    });
+    await store.createInflow({
+      accountId: bobPot.id,
+      name: "hidden sweep",
+      source: "account",
+      sourceAccountId: aliceCurrent.id,
+      amountMinor: 10_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 100,
+      active: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&account=${aliceCurrent.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("debug_scope_not_visible");
+  });
+
+  it("allows acknowledged household debug over member personal accounts that are not shared", async () => {
+    const { auth, household, bobCur } = await seedHousehold(store, app);
+
+    const unacknowledged = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&household=${household.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(unacknowledged.statusCode).toBe(403);
+    expect(unacknowledged.json().error.code).toBe("debug_ack_required");
+
+    const acknowledged = await app.inject({
+      method: "GET",
+      url: `/api/debug/plan?debug=engine&ack=full-household-finance&household=${household.id}&asOf=2026-01-01`,
+      headers: auth,
+    });
+    expect(acknowledged.statusCode).toBe(200);
+    const body = acknowledged.json();
+    expect(body.subject).toEqual({ kind: "household", householdId: household.id });
+    expect(body.scopes[0].labels.accounts[bobCur.id]).toBe("bob-cur");
+    expect(body.scopes[0].report).toContain("bob-cur");
+  });
+});
+
 describe("meta + demo seed", () => {
-  const demoEnv: ApiEnv = { ...env, enableDemoSeed: true };
+  // Plan debug is on here too: the seed exists to give the engine something
+  // worth tracing, so one of these tests reads the trace over the seeded data.
+  const demoEnv: ApiEnv = { ...env, enableDemoSeed: true, enablePlanDebug: true };
   let store: MemoryStore;
 
   beforeEach(() => {
@@ -5642,7 +5680,7 @@ describe("meta + demo seed", () => {
     const app = buildServer({ store, env, registerAuthProxy: false });
     const meta = await app.inject({ method: "GET", url: "/api/meta" });
     expect(meta.statusCode).toBe(200); // public: no token needed
-    expect(meta.json()).toEqual({ demoSeedEnabled: false });
+    expect(meta.json()).toEqual({ demoSeedEnabled: false, planDebugEnabled: false });
 
     const { auth } = await seedUser(store, "nodemo@example.com");
     const seed = await app.inject({ method: "POST", url: "/api/demo/seed", headers: auth });
@@ -5653,6 +5691,7 @@ describe("meta + demo seed", () => {
     const app = buildServer({ store, env: demoEnv, registerAuthProxy: false });
     expect((await app.inject({ method: "GET", url: "/api/meta" })).json()).toEqual({
       demoSeedEnabled: true,
+      planDebugEnabled: true,
     });
 
     const { user, auth } = await seedUser(store, "demo@example.com");

@@ -14,6 +14,7 @@ import {
   type NeedsYouInput,
 } from "../lib/needsYou.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useMeta } from "../lib/useMeta.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { AccountCell, AttentionCell, BalanceCell } from "./AccountsPage.js";
 import type {
@@ -513,7 +514,7 @@ function StandaloneAccounts({
  * real thing, on the deployments that have it switched on.
  */
 function NoAccounts({ onSeeded }: { onSeeded: () => void }) {
-  const demoSeedEnabled = useDemoSeedEnabled();
+  const { demoSeedEnabled } = useMeta();
   const [seeding, setSeeding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -564,26 +565,4 @@ function NoAccounts({ onSeeded }: { onSeeded: () => void }) {
       )}
     </div>
   );
-}
-
-/** Asks the API once whether this deployment offers demo data. A failed probe
- *  reads as "off": the button stays hidden rather than dead-ending the user,
- *  the same way the login screen probes for SSO. */
-function useDemoSeedEnabled(): boolean {
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .meta()
-      .then((meta) => {
-        if (!cancelled) setEnabled(meta.demoSeedEnabled);
-      })
-      .catch(() => {
-        /* no meta — leave the button hidden */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return enabled;
 }

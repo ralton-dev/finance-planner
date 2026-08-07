@@ -57,6 +57,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { seedDemoData } from "./demo.js";
 import { type ApiEnv, loadEnv } from "./env.js";
 import { startNotifier } from "./notify.js";
+import { renderScopeDebugReport } from "./plan-debug-report.js";
 import {
   accessibleAccounts,
   computeHouseholdPlanWithSchedule,
@@ -918,6 +919,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       }
     }
     const trace = explainScopePlan(scope.input, asOfDate);
+    const report = renderScopeDebugReport(scope.input, trace.plan, trace.currencies);
     const households: Record<string, string> = {};
     if (scope.plan.householdId) {
       const household = await store.getHousehold(scope.plan.householdId);
@@ -936,7 +938,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         ),
         households,
       },
-      report: trace.report,
+      report,
       trace,
     };
   };
@@ -955,19 +957,34 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
 
   /** What the SPA needs before anyone has signed in: which optional features
    *  this deployment has turned on. Public, and deliberately tiny. */
-  app.get("/api/meta", async () => ({ demoSeedEnabled: env.enableDemoSeed }));
+  app.get("/api/meta", async () => ({
+    demoSeedEnabled: env.enableDemoSeed,
+    planDebugEnabled: env.enablePlanDebug,
+  }));
 
   /**
-   * Hidden calculation trace. This is kept out of primary navigation and it is
-   * inert unless the caller explicitly passes `debug=engine` and acknowledges
-   * the household-finance disclosure.
+   * The calculation trace, in full.
    *
-   * The report prints account inputs, payments and movement rows. With the
-   * acknowledgement, a household member may read the full household calculation,
-   * including member-owned personal accounts that are not otherwise shared with
-   * them. Inaccessible accounts outside that household are still refused.
+   * **Off unless `ENABLE_PLAN_DEBUG=true`**, and 404 rather than 403 when it is
+   * off, so a deployment without it does not advertise that it exists — the
+   * demo seed's reasoning, for a route that matters more.
+   *
+   * It has to be a deployment decision rather than a per-user one, because of
+   * what it necessarily shows. The engine plans a *scope*: every account in a
+   * funding relationship with the one you asked about, because that is what the
+   * arithmetic is over. So a household member reading this sees the whole
+   * household's calculation — including co-members' personal accounts that were
+   * never shared with them, and their incomes, bills and balances with it.
+   * `debugScopeResponse` still refuses inaccessible accounts *outside* the
+   * household, but inside it there is no narrower honest answer: a trace that
+   * hid half its terms would not explain the number it is there to explain.
+   *
+   * `ack` is a disclosure, not a control — the flag above is the control. It is
+   * here so that nobody reaches the trace without having been told, in the URL
+   * as well as in the UI, what it is about to print.
    */
   app.get("/api/debug/plan", async (req): Promise<PlanDebugResponse> => {
+    if (!env.enablePlanDebug) throw new HttpError(404, "not_found", "Not found");
     const userId = await authenticate(req);
     const { debug, account, household, asOf, ack } = req.query as {
       debug?: string;

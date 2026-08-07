@@ -5,6 +5,7 @@ import { api, ApiError } from "../lib/api.js";
 import { filenameFromDisposition, readTextFile, saveBlob } from "../lib/files.js";
 import type { ImportCountsDto, TotpSetupDto, UserDto } from "../lib/types.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useMeta } from "../lib/useMeta.js";
 
 /** Used when the server's content-disposition is missing or unreadable. */
 const EXPORT_FALLBACK_NAME = "finance-planner-export.json";
@@ -262,9 +263,15 @@ function DataSection() {
   );
 }
 
-/** Low-traffic support tools. Kept in settings so it is discoverable when
- *  needed without becoming part of the day-to-day planning flow. */
+/**
+ * Low-traffic support tools. Kept in settings so it is discoverable when needed
+ * without becoming part of the day-to-day planning flow — and absent entirely
+ * unless the deployment turned the trace on, because a link to a route that
+ * 404s is worse than no link.
+ */
 function DiagnosticsSection() {
+  const { planDebugEnabled } = useMeta();
+  if (!planDebugEnabled) return null;
   return (
     <>
       <div className="section-head">
@@ -276,7 +283,10 @@ function DiagnosticsSection() {
             plan debug
           </Link>
         </div>
-        <p className="auth-hint">calculation trace for every visible planning scope.</p>
+        <p className="auth-hint">
+          calculation trace for every visible planning scope. shows the whole household's figures,
+          including co-members' accounts.
+        </p>
       </div>
     </>
   );
