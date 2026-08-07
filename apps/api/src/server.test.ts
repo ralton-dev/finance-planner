@@ -7106,6 +7106,35 @@ describe("flow over any scope", () => {
         .reduce((sum, e) => sum + e.amountMinor, 0);
       expect(node.incomeMinor + into).toBe(node.spendingMinor + outOf + node.leftoverMinor);
     }
+
+    // The third reader of the same map, on the wire: the account plan's
+    // `inflowSources`. Alice is a member of the household that plans this pot,
+    // so `planInflowSources` sends her every member row — and the row for
+    // somebody the household does not roster arrives with its amount, its
+    // sender's account and no name, which is exactly what
+    // `PlanTable.senderName` already prints a fallback for.
+    const planRes = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${homeBills.id}/plan?asOf=2026-08-04`,
+      headers: auth,
+    });
+    expect(planRes.statusCode).toBe(200);
+    expect(planRes.payload).not.toContain("Carol Outsider");
+    const sources = planRes.json().inflowSources as {
+      kind: string;
+      memberUserId?: string;
+      displayName?: string;
+      amountMinor: number;
+    }[];
+    const herRow = sources.find((s) => s.kind === "member" && s.memberUserId === carol.id)!;
+    expect(herRow.amountMinor).toBe(15_000);
+    expect(herRow.displayName).toBeUndefined();
+    expect(
+      sources.filter((s) => s.kind === "member" && s.memberUserId !== carol.id),
+    ).not.toHaveLength(0);
+    for (const row of sources.filter((s) => s.kind === "member" && s.memberUserId !== carol.id)) {
+      expect(row.displayName).toBe("Owner");
+    }
   });
 
   /**
