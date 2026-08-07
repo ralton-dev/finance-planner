@@ -59,6 +59,11 @@ function format(seen: Seen): string {
 }
 
 test.describe("a signed-in session fetches nothing broken", () => {
+  // Seven navigations, each waiting for the page's own fetches to settle. Five
+  // seconds locally; the default 30s per test leaves no room on a cold shared
+  // runner, and a timeout here would be a red that says nothing about the app.
+  test.describe.configure({ timeout: 120_000 });
+
   // One test, one login. Auth throttles login at 5/min per IP and a Playwright
   // run is a single IP; the harness builds auth with `rateLimit: false` so this
   // cannot bite, but a suite that signed in per test would be one config change
