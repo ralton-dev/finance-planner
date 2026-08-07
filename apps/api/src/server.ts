@@ -1137,6 +1137,13 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         accounts: Object.fromEntries(
           input.accounts.flatMap((a) => (a.name === undefined ? [] : [[a.accountId, a.name]])),
         ),
+        // `scope.input.members` is the **scope**'s set, which a funding edge can
+        // widen past this household's roster — so this map used to name people
+        // the household has never heard of. It no longer can: `scopeMembers`
+        // withholds the name at the source (decision 41), and the fallback this
+        // line already carried for a member with no display name at all is what
+        // they read as. The rendered `report` falls back the same way, from the
+        // same absence, which is why neither needed a gate of its own.
         users: Object.fromEntries(
           scope.input.members.map((m) => [m.userId, m.displayName ?? "user"]),
         ),
@@ -2158,6 +2165,13 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     // whose money it is, and an account can be drawn by somebody outside the
     // household that funds it — so a name travels only when the caller can see
     // the household it belongs to, or when it is their own.
+    //
+    // The gate below is *household* visibility, and `p.memberNames` is a
+    // **scope**'s — a set one funding edge wider than any roster (decision 41).
+    // Membership is not a question this map can answer, so it is answered where
+    // the map is built: `scopeMembers` publishes no name for somebody no
+    // household in the scope rosters, and this gate is left saying what it has
+    // always said about the names that remain.
     const memberNames = new Map<string, string>();
     for (const p of planned) {
       const householdId = p.input.householdId;
