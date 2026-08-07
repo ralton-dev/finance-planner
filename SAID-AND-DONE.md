@@ -146,6 +146,21 @@ rebuilt; a project is personal or shared).
     existed. Same assumption, opposite sign. The plan's "surfaces that disagree"
     table named only `RealityStrip.tsx:28` for #45, which is why this half was
     missed. WP-BD.
+39. **A balance is bound to the date it is read for** (Ben, 2026-08-07, on
+    WP-AO's finding). `accountReality` takes an `asOfDate`, uses it correctly for
+    contributions, then takes `balances.at(-1)` with **no bound against it** — so
+    a past month's plan is served today's balance. And `upsertBalanceBody`'s
+    `asOfDate` is an unbounded `isoDate`, so a **future-dated check-in becomes
+    "the current balance" the moment it is written.** This sits directly under
+    WP-AT's new stale-balance banner, which reasons about balance age and can
+    therefore be made to reason about the wrong one. WP-BE.
+40. **The household plan footer says "reserved", not "elsewhere"** (Ben,
+    2026-08-07). WP-BC's fix exposed `HouseholdPlanView.tsx:158-159` printing
+    "£5,000.00 · less £500.00 elsewhere" when that £500 is in a savings pot
+    listed two rows above. The negative branch **pre-existed for a different
+    cause** — a roster account owned by a non-member, where "elsewhere" is
+    correct — so this wants **two words, not a swap**: the savings case reads
+    _reserved_, the non-member case keeps _elsewhere_. Granted to WP-BE.
 
 **Also found stale, and worth deleting from `BACKLOG.md`:** the entry "A derived
 transfer you confirmed does not survive an export" is no longer true.
@@ -683,6 +698,38 @@ but **not started without Ben's sign-off**; it is scope this plan did not carry.
 
 ---
 
+## WP-BE · A balance is bound to the date it is read for
+
+**Goal:** decisions 39 and 40. A plan asked for a past month is served that
+month's balance, and a check-in cannot be dated into the future.
+
+- `accountReality` (`apps/api/src/server.ts`, reality region) uses its
+  `asOfDate` for contributions and then ignores it for balances. **Both halves
+  are in scope**: bound the read to the as-of date, and refuse a future-dated
+  check-in in `upsertBalanceBody`.
+- **The banner reads what you return.** WP-AT decided how this codebase talks
+  about balance age — read `RealityStrip.tsx`'s `realityNote` doc comment before
+  changing what `asOfDate` means to it, and do not make its stale-balance
+  sentence unreachable or permanent.
+- **A future-dated check-in may already exist in someone's data.** Refusing new
+  ones is additive; deciding what the reader does with an existing one is not.
+  Say what you chose.
+- Decision 40 is a **granted extra**: the footer copy at
+  `HouseholdPlanView.tsx:158-159`. Two words, not a swap.
+
+**Acceptance:** a test that fails before the fix, demonstrated. A past month's
+plan reports that month's balance. A future-dated check-in is refused. The
+footer says "reserved" for the savings case and keeps "elsewhere" for the
+non-member case. Verified **in a real browser**.
+
+Owns: `apps/api/src/server.ts` (reality region), `apps/api/src/server.test.ts`,
+`packages/contracts/src/index.ts` (`upsertBalanceBody` only),
+`apps/web/src/components/HouseholdPlanView.tsx` (+ test).
+Size **M**. Depends: WP-BB and WP-AV (both free `server.ts` and `contracts`).
+**Choke points: `apps/api/src/server.ts` and `packages/contracts/src/index.ts`.**
+
+---
+
 ## Waves
 
 | Wave | Packages                                      | Notes                                                                                                    |
@@ -692,7 +739,7 @@ but **not started without Ben's sign-off**; it is scope this plan did not carry.
 | 3    | WP-AO + WP-BC                                 | AO **alone** on `apps/api/src/server.ts`; BC entirely inside `packages/domain` — disjoint                |
 | 4    | WP-AP + WP-BD                                 | AP owns `server.ts` **and** `packages/contracts` **and** all four data files; BD is `projection.ts` only |
 | 5    | WP-AV + WP-AR + WP-BB                         | portability+contracts · web account page+`lib/api.ts` · `server.ts` flow region+`lib/flow.ts`            |
-| 6    | WP-AZ                                         | alone; needs AR and AS on screen, and AY's `ci.yml` edit already in                                      |
+| 6    | WP-AZ + WP-BE                                 | AZ owns `apps/web/e2e/` + `ci.yml`; BE owns `server.ts` reality region + `contracts` — disjoint          |
 | 7    | WP-BA                                         | **alone** — owns `apps/web/src/lib/api.ts`, and needs AZ's harness to measure with                       |
 
 Waves 1 and 2 have landed — `main` at `97e6a19`, five pins written and the two
