@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAccountIds, totalInflowMinor, visibleFlow } from "./flow.js";
+import { accountLabel, parseAccountIds, totalInflowMinor, visibleFlow } from "./flow.js";
 import type { FlowDto } from "./types.js";
 
 /** current ─▶ pot ─▶ isa, plus a household's rent arriving from off-scope. */
@@ -122,6 +122,41 @@ describe("visibleFlow", () => {
 describe("totalInflowMinor", () => {
   it("counts own income and everything crossing the edge, and nothing else", () => {
     expect(totalInflowMinor(flow.accounts, flow.edges)).toBe(480_000);
+  });
+});
+
+describe("accountLabel", () => {
+  it("names an account the caller can see and says 'other account' for one they cannot", () => {
+    expect(accountLabel({ name: "current" })).toBe("current");
+    // The endpoint sends no `name` at all for an account on the household's
+    // roster that this reader may not see (decision 36); the absence is what is
+    // read, never a placeholder the server invented.
+    expect(accountLabel({})).toBe("other account");
+    expect(accountLabel({ name: undefined })).toBe("other account");
+  });
+
+  it("leaves an account genuinely called that alone", () => {
+    // Which is the reason the wire carries an absence rather than the phrase: a
+    // name that happens to read like the fallback is still the caller's to see.
+    expect(accountLabel({ name: "other account" })).toBe("other account");
+  });
+});
+
+describe("visibleFlow with an unnamed node", () => {
+  it("keeps the money of an account it cannot name, and its ribbons", () => {
+    // Anonymised, never omitted — hiding is the user's act and has its own
+    // parameter; not being allowed the name is not a reason to drop the node,
+    // because dropping it unbalances every account it sends money to.
+    const anonymous: FlowDto = {
+      ...flow,
+      accounts: flow.accounts.map((a) => (a.accountId === "pot" ? { ...a, name: undefined } : a)),
+    };
+    const drawn = visibleFlow(anonymous, new Set(["isa"]));
+    expect(drawn.accounts.map((a) => a.name)).toEqual(["current", undefined]);
+    expect(drawn.accounts.map((a) => a.leftoverMinor)).toEqual(
+      visibleFlow(flow, new Set(["isa"])).accounts.map((a) => a.leftoverMinor),
+    );
+    expect(drawn.totalInflowMinor).toBe(visibleFlow(flow, new Set(["isa"])).totalInflowMinor);
   });
 });
 

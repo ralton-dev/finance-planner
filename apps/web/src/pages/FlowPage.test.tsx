@@ -157,6 +157,39 @@ describe("FlowPage", () => {
   });
 
   /**
+   * Decision 36 on the page. A member of a household holding an account shared
+   * with nobody is sent that account's figures and not its name, and the row
+   * prints the absence — it is not left blank, and the row is certainly not
+   * dropped, because the totals above it are counted over it.
+   */
+  it("draws an account it may not name, with its money", async () => {
+    const anonymous: FlowDto = {
+      ...FLOW,
+      accounts: FLOW.accounts.map((a) =>
+        a.accountId === "flat-bills" ? { ...a, name: undefined } : a,
+      ),
+    };
+    stubApiFetch({
+      ...routes(),
+      // A reader who cannot see the account is not offered it as a chip either:
+      // `/api/accounts` lists what they can see, and the diagram is drawn over
+      // what the household holds. The two lists differ, and that is the case.
+      "GET /api/accounts": { body: ACCOUNTS.filter((a) => a.id !== "flat-bills") },
+      [`GET /api/flow?accounts=${SCOPE}`]: { body: anonymous },
+    });
+    renderAt(`?accounts=${SCOPE}`);
+
+    expect(await screen.findByText(/4 of 4 drawn/)).toBeInTheDocument();
+    expect(screen.getAllByText("other account").length).toBeGreaterThan(0);
+    expect(screen.queryByText("flat bills")).not.toBeInTheDocument();
+    // Same denominator as the named picture: nothing was dropped to hide a name.
+    expect(screen.getByText(/£4,400.00 in from outside/)).toBeInTheDocument();
+    // And the row is a row like any other — it can be taken out of the picture,
+    // by the label the reader can actually see.
+    expect(screen.getByRole("button", { name: "hide other account" })).toBeInTheDocument();
+  });
+
+  /**
    * The excludability proof the acceptance asks for. Hiding an account is a way
    * of looking at the diagram: the request that produced these figures is never
    * re-issued, and the flow the page holds is byte-for-byte what it was.
