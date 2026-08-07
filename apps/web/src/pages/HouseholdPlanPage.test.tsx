@@ -253,3 +253,76 @@ describe("HouseholdPlanPage · the fold", () => {
     expect(asked.filter((url) => url.includes("close"))).toEqual([]);
   });
 });
+
+/**
+ * The failures this page used to eat.
+ *
+ * Every one of these reads feeds the fold, and the fold's contract is that
+ * every row on it is something waiting on a human. A read that fails and is
+ * read back as an empty list therefore does not produce a gap — it produces a
+ * checklist that says *you have nothing to do about this*, which is a different
+ * sentence from "we could not find out" and the more dangerous one.
+ *
+ * The account plans were the loudest case: `.catch(() => null)` dropped the
+ * account and nothing anywhere on the page said so.
+ */
+describe("HouseholdPlanPage · a read that fails", () => {
+  it("names the account whose plan it could not read", async () => {
+    renderPage({
+      "GET /api/accounts/bills/plan": {
+        status: 404,
+        body: { error: { code: "not_found", message: "gone" } },
+      },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /could not read the plan for Bills joint/,
+    );
+  });
+
+  /**
+   * The half that separates this page from the Overview's fix (WP-BA). There
+   * the loop is over households and a user has at most one (WP-W), so letting
+   * one failure reject the batch costs nothing. Here the loop is over the
+   * accounts *inside* one household — the demo seeds four — and a batch that
+   * rejects takes every healthy account's check-in and record rows off the
+   * checklist because one 404d. The failure has to be visible, not fatal.
+   */
+  it("keeps the rows of the accounts it could read", async () => {
+    renderPage({
+      "GET /api/accounts/bills/plan": {
+        status: 404,
+        body: { error: { code: "not_found", message: "gone" } },
+      },
+    });
+
+    // Alex's account read fine, and its unrecorded save-up is still listed.
+    expect(await screen.findByText("record Rainy day")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+
+  it("says nothing when every account reads", async () => {
+    renderPage();
+    await screen.findByText("cost breakdown");
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  /**
+   * Quieter and worse: the transfer checklist renders either way, and a
+   * confirmation list read back as empty is the page stating that nobody has
+   * moved this money yet — about money that may well have moved.
+   */
+  it("says so when it could not read which transfers have been made", async () => {
+    renderPage({
+      [`GET /api/households/hh/transfers/confirmations?month=${currentMonth()}`]: {
+        status: 500,
+        body: { error: { code: "server_error", message: "boom" } },
+      },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /could not read which transfers have already been made/,
+    );
+  });
+});
