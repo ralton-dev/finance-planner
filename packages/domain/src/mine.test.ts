@@ -82,6 +82,7 @@ describe("mine, and ours — one derivation at three altitudes", () => {
     estate.householdId,
     estate.assignedAccountIds,
     "GBP",
+    estate.scope.members.map((m) => m.userId),
   );
 
   it("a person's left over is the sum over the accounts they own", () => {
@@ -193,6 +194,7 @@ describe("mine, and ours — a co-member's money parked in your account", () => 
     CROSS_OWNER_HOUSEHOLD_ID,
     CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
     "GBP",
+    crossOwnerScope.members.map((m) => m.userId),
   );
 
   it("counts the money where it is, and says so", () => {

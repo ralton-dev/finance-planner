@@ -618,7 +618,12 @@ export async function scopeForHousehold(
   householdId: string,
   asOfDate: string,
   ctx: PlanContext = createPlanContext(),
-): Promise<{ scope: PlannedScope; accountIds: string[]; currency: string }> {
+): Promise<{
+  scope: PlannedScope;
+  accountIds: string[];
+  memberUserIds: string[];
+  currency: string;
+}> {
   const household = await loadHousehold(store, ctx, householdId);
   const accounts = (
     await Promise.all(household.accountIds.map((id) => getAccount(store, ctx, id)))
@@ -629,6 +634,10 @@ export async function scopeForHousehold(
   return {
     scope,
     accountIds: accounts.map((a) => a.id),
+    // The roster's **people**, beside the roster's accounts, and for the same
+    // reason: `scope.input.members` is who the scope is about, which a funding
+    // edge can widen to somebody this household has never heard of.
+    memberUserIds: household.members.map((m) => m.userId),
     // A household is single-currency by assumption (see BACKLOG); the roster's
     // first account is what the plan is denominated in.
     currency: accounts[0]?.currency ?? "GBP",
@@ -1044,13 +1053,13 @@ export async function computeHouseholdPlanWithSchedule(
   asOfDate: string,
   ctx: PlanContext = createPlanContext(),
 ): Promise<HouseholdPlanWithSchedule> {
-  const { scope, accountIds, currency } = await scopeForHousehold(
+  const { scope, accountIds, memberUserIds, currency } = await scopeForHousehold(
     store,
     householdId,
     asOfDate,
     ctx,
   );
-  const plan = householdPlanFromScope(scope.plan, householdId, accountIds, currency);
+  const plan = householdPlanFromScope(scope.plan, householdId, accountIds, currency, memberUserIds);
   // Whose money is in whose accounts, annotated onto the rows that report it.
   // Nothing here changes a figure: `personalLeftoverMinor` is what it was, and
   // this only says what part of it arrived from somebody else (decision 25).

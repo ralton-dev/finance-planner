@@ -6860,6 +6860,69 @@ describe("flow over any scope", () => {
   });
 
   /**
+   * Decision 41's fourth site, on the wire. `householdPlanFromScope` filtered
+   * `accounts`, `lines` and `transfers` to the roster and left `members`
+   * unfiltered — and `members` is not the roster, it is whoever the *scope* is
+   * about.
+   *
+   * Reachable with nothing legacy in it: `closeScope` walks funding edges, so
+   * one inflow out of an outside account puts its owner in the household's
+   * scope, and this membership-gated route published their display name to the
+   * whole roster.
+   */
+  it("does not name a non-member the scope pulled in, on the household plan", async () => {
+    const { auth, home, homeBills } = await seedHouseholdAndAPot();
+    const carol = await store.createUser({
+      email: "carol@example.com",
+      passwordHash: "x",
+      displayName: "Carol Outsider",
+    });
+    const carolAccount = await store.createAccount({
+      ownerUserId: carol.id,
+      name: "carol private",
+      currency: "GBP",
+    });
+    await store.createIncome({
+      accountId: carolAccount.id,
+      name: "Pay",
+      amountMinor: 500_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      active: true,
+    });
+    await store.createInflow({
+      accountId: homeBills.id,
+      name: "Carol's contribution",
+      source: "account",
+      sourceAccountId: carolAccount.id,
+      amountMinor: 10_000,
+      frequency: "monthly",
+      recurrence: null,
+      anchorDate: "2026-01-01",
+      priority: 50,
+      active: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/households/${home.id}/plan`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).not.toContain('"displayName":"Carol Outsider"');
+
+    // Her row is still there with its figures — dropping it would move
+    // `leftoverMinor` and `membersLeftoverMinor`, which decision 13 fixes to the
+    // penny — and only the name is missing. The roster's own names are not.
+    const members = res.json().members as { userId: string; displayName?: string }[];
+    const named = new Set(members.filter((m) => m.displayName !== undefined).map((m) => m.userId));
+    expect(members.map((m) => m.userId)).toContain(carol.id);
+    expect(named.has(carol.id)).toBe(false);
+    expect(named.size).toBe(members.length - 1);
+  });
+
+  /**
    * The refusal that is not about names. A scope spanning two currencies has no
    * honest ribbon width whoever asks, and an account the caller cannot see is
    * still an account in it — so anonymising must not quietly turn a refusal into

@@ -2254,6 +2254,13 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       // and not the roster's — the same set `householdPlanFromScope` reads off
       // the partition for `membersLeftoverMinor`, so the strip and the headline
       // above it cannot be summed over different accounts.
+      //
+      // **The scope's members, deliberately, and not `scopeForHousehold`'s
+      // `memberUserIds`.** They are not the same set — a funding edge can put an
+      // outsider in the first and never in the second — and this one has to
+      // match what the plan summed, or the strip and the headline over it stop
+      // agreeing. That the two differ at all is a figure question (decision 13),
+      // not the naming one WP-BF settled; see `householdPlanFromScope`.
       scope.input.members.map((m) => m.userId),
     );
   });
@@ -2361,8 +2368,12 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(409, "already_confirmed", "Transfer already confirmed this month");
     }
 
-    const { scope, accountIds, currency } = await scopeForHousehold(store, id, asOfDate);
-    const plan = householdPlanFromScope(scope.plan, id, accountIds, currency);
+    const { scope, accountIds, memberUserIds, currency } = await scopeForHousehold(
+      store,
+      id,
+      asOfDate,
+    );
+    const plan = householdPlanFromScope(scope.plan, id, accountIds, currency, memberUserIds);
     const transfer = plan.transfers.find(
       (t) =>
         t.fromAccountId === body.fromAccountId &&

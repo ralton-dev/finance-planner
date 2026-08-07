@@ -355,6 +355,7 @@ export function householdPlanFromScope(
   householdId: string,
   accountIds: readonly string[],
   currency: string,
+  memberUserIds: readonly string[],
 ): HouseholdPlan {
   const partition: Pick<ScopeCurrencyPlan, "members" | "accounts" | "lines" | "transfers"> =
     plan.partitions.find((p) => p.currency === currency) ?? {
@@ -365,6 +366,23 @@ export function householdPlanFromScope(
     };
   const inHousehold = new Set(accountIds);
   const memberIds = new Set(partition.members.map((m) => m.userId));
+  /**
+   * Who is actually on this household's roster.
+   *
+   * **Not the same set as `partition.members`**, which is who the *scope* is
+   * about — and a scope closes over funding relationships, so it collects the
+   * owner of any account feeding one of these that no household has assigned
+   * (`scopeMembers`' outsider branch). One inflow from an outside account is
+   * enough: no legacy dual-membership data is needed, and a household of two
+   * was publishing a third person's `displayName` on a membership-gated page.
+   *
+   * The name is what is withheld, and only the name (decision 41). Their row
+   * stays and every figure in it stays, because `leftoverMinor` and
+   * `membersLeftoverMinor` below are sums over these rows and decision 13 fixes
+   * their meaning to the penny — dropping a row would change two published
+   * headline figures, which is a different decision from this one.
+   */
+  const onRoster = new Set(memberUserIds);
   // Whose each account is, off the pass. Income is attributed by ownership
   // (decision 15) and `HouseholdAccountPlan` deliberately does not republish it:
   // whose account a shared pot is belongs on the accounts page, not among a
@@ -457,7 +475,10 @@ export function householdPlanFromScope(
     }
     return {
       userId: m.userId,
-      displayName: m.displayName,
+      // Absent for somebody the scope pulled in who is not on this roster —
+      // the same absence `/api/flow` sends for a node it may not name, and one
+      // `HouseholdMemberPlanDto.displayName` has always been optional for.
+      ...(onRoster.has(m.userId) ? { displayName: m.displayName } : {}),
       shareBp: m.shareBp,
       monthlyIncomeMinor: m.monthlyIncomeMinor,
       householdIncomeMinor,

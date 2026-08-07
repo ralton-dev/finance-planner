@@ -92,7 +92,13 @@ function household(over: Partial<ScopeInput> = {}): ScopeInput {
 const HOUSEHOLD_ACCOUNTS = ["alice-cur", "bob-cur", "bills"];
 
 function view(input: ScopeInput, accountIds: readonly string[] = HOUSEHOLD_ACCOUNTS) {
-  return householdPlanFromScope(computeScopePlan(input, ASOF), "hh", accountIds, "GBP");
+  return householdPlanFromScope(
+    computeScopePlan(input, ASOF),
+    "hh",
+    accountIds,
+    "GBP",
+    input.members.map((m) => m.userId),
+  );
 }
 
 describe("householdPlanFromScope", () => {
@@ -527,6 +533,7 @@ describe("householdPlanFromScope — a member's costs the household's lines do n
       "hh",
       ["bills"],
       "GBP",
+      withOwnPot.members.map((m) => m.userId),
     );
     expect(potOnly.accounts.map((a) => a.accountId)).toEqual(["bills"]);
     expect(potOnly.transfers.map((t) => [t.fromAccountId, t.toAccountId])).toEqual([
@@ -672,6 +679,7 @@ describe("householdPlanFromScope — what is left in the household's accounts", 
       "hh",
       ["alice-cur", "bills"],
       "GBP",
+      split.members.map((m) => m.userId),
     );
     expect(plan.householdLeftoverMinor).toBe(-5_000);
     expect(plan.householdLeftoverMinor).toBe(ribbons(plan));
@@ -717,6 +725,7 @@ describe("householdPlanFromScope — the edges", () => {
       "hh",
       [],
       "GBP",
+      [],
     );
     expect(plan).toMatchObject({
       monthlyIncomeMinor: 0,
@@ -730,11 +739,70 @@ describe("householdPlanFromScope — the edges", () => {
     });
   });
 
+  /**
+   * Decision 41. `accounts`, `lines` and `transfers` were all filtered to the
+   * roster and `members` never was — and `members` is not the roster, it is
+   * whoever the *scope* is about.
+   *
+   * That difference is reachable without any legacy dual-membership data:
+   * `closeScope` walks funding edges, so one inflow from an outside account puts
+   * its owner in the scope (`scopeMembers`' outsider branch, at a zero share),
+   * and a membership-gated page then published a stranger's `displayName`.
+   *
+   * The name goes and the row stays, because `leftoverMinor` and
+   * `membersLeftoverMinor` are sums over these rows and decision 13 fixes their
+   * meaning to the penny. Dropping the row would move two published headline
+   * figures, which is a different decision from this one.
+   */
+  it("does not name a member of the scope who is not on the household's roster", () => {
+    const withOutsider = household({
+      members: [
+        { userId: "alice", displayName: "Alice", shareBp: 6_000 },
+        { userId: "bob", displayName: "Bob", shareBp: 4_000 },
+        // Carol funds the pot from an account no household has assigned. She is
+        // in the scope's arithmetic and on nobody's roster.
+        { userId: "carol", displayName: "Carol", shareBp: 0 },
+      ],
+    });
+    const plan = householdPlanFromScope(
+      computeScopePlan(withOutsider, ASOF),
+      "hh",
+      HOUSEHOLD_ACCOUNTS,
+      "GBP",
+      ["alice", "bob"],
+    );
+
+    expect(plan.members.map((m) => [m.userId, m.displayName])).toEqual([
+      ["alice", "Alice"],
+      ["bob", "Bob"],
+      ["carol", undefined],
+    ]);
+    // Absence, not a stand-in: the key is gone, so a client renders the same
+    // honest fallback it already renders for a name it was never sent.
+    const carol = plan.members.find((m) => m.userId === "carol")!;
+    expect(Object.keys(carol)).not.toContain("displayName");
+    expect(JSON.stringify(plan)).not.toContain('"displayName":"Carol"');
+
+    // Her row is untouched otherwise, and so are the two figures summed over it.
+    const named = view(withOutsider);
+    expect(plan.members.map((m) => ({ ...m, displayName: "—" }))).toEqual(
+      named.members.map((m) => ({ ...m, displayName: "—" })),
+    );
+    expect(plan.leftoverMinor).toBe(named.leftoverMinor);
+    expect(plan.membersLeftoverMinor).toBe(named.membersLeftoverMinor);
+  });
+
   it("answers with nothing for a currency the scope never planned", () => {
     // Defensive rather than expected: a household is one currency by
     // assumption, and asking for another must not throw at the view layer.
     expect(
-      householdPlanFromScope(computeScopePlan(household(), ASOF), "hh", HOUSEHOLD_ACCOUNTS, "USD"),
+      householdPlanFromScope(
+        computeScopePlan(household(), ASOF),
+        "hh",
+        HOUSEHOLD_ACCOUNTS,
+        "USD",
+        household().members.map((m) => m.userId),
+      ),
     ).toMatchObject({ currency: "USD", accounts: [], members: [], monthlyIncomeMinor: 0 });
   });
 });
@@ -762,6 +830,7 @@ describe("householdPlanFromScope — a household's left over is its members'", (
       estate.householdId,
       estate.assignedAccountIds,
       "GBP",
+      estate.scope.members.map((m) => m.userId),
     );
     expect(plan.members.map((m) => [m.userId, m.personalLeftoverMinor])).toEqual([
       ["u-alice", 205_100],
@@ -780,6 +849,7 @@ describe("householdPlanFromScope — a household's left over is its members'", (
       CROSS_OWNER_HOUSEHOLD_ID,
       CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
       "GBP",
+      crossOwnerScope.members.map((m) => m.userId),
     );
     expect(plan.members.map((m) => [m.userId, m.personalLeftoverMinor])).toEqual([
       ["u-alice", 170_000],
@@ -795,8 +865,13 @@ describe("householdPlanFromScope — a household's left over is its members'", (
 
   it("gives a household with nobody in it no members to add up", () => {
     expect(
-      householdPlanFromScope(computeScopePlan(household(), ASOF), "hh", HOUSEHOLD_ACCOUNTS, "USD")
-        .membersLeftoverMinor,
+      householdPlanFromScope(
+        computeScopePlan(household(), ASOF),
+        "hh",
+        HOUSEHOLD_ACCOUNTS,
+        "USD",
+        household().members.map((m) => m.userId),
+      ).membersLeftoverMinor,
     ).toBe(0);
   });
 });

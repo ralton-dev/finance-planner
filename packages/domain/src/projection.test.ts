@@ -1638,7 +1638,13 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
   }
 
   const planFor = (input: ScopeInput) =>
-    householdPlanFromScope(computeScopePlan(input, AS_OF), "hh", HOUSEHOLD_ACCOUNTS, "GBP");
+    householdPlanFromScope(
+      computeScopePlan(input, AS_OF),
+      "hh",
+      HOUSEHOLD_ACCOUNTS,
+      "GBP",
+      input.members.map((m) => m.userId),
+    );
 
   it("reports the same money to move as the plan does, to the penny", () => {
     const input = withOutsidePot();
@@ -1696,7 +1702,13 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       "GBP",
       input.members.map((m) => m.userId),
     );
-    const plan = householdPlanFromScope(computeScopePlan(input, AS_OF), "hh", roster, "GBP");
+    const plan = householdPlanFromScope(
+      computeScopePlan(input, AS_OF),
+      "hh",
+      roster,
+      "GBP",
+      input.members.map((m) => m.userId),
+    );
 
     expect(computeScopePlan(input, AS_OF).transfers.some((t) => t.currency === "EUR")).toBe(true);
     expect(walk.months[0]?.transfersTotalMinor).toBe(
@@ -1748,6 +1760,7 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       "hh-estate",
       estate.assignedAccountIds,
       "GBP",
+      estate.scope.members.map((m) => m.userId),
     );
 
     expect(walk.months[0]?.membersLeftoverMinor).toBe(357_500);
@@ -1779,6 +1792,7 @@ describe("householdProjectionFromScope — month 0 is the household plan", () =>
       CROSS_OWNER_HOUSEHOLD_ID,
       CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
       "GBP",
+      crossOwnerScope.members.map((m) => m.userId),
     );
 
     expect(plan.membersLeftoverMinor).toBe(250_000);

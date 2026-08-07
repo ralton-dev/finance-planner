@@ -94,6 +94,7 @@ describe("the cross-owner fixture: a co-member's money parked in your account", 
       CROSS_OWNER_HOUSEHOLD_ID,
       CROSS_OWNER_ASSIGNED_ACCOUNT_IDS,
       "GBP",
+      crossOwnerScope.members.map((m) => m.userId),
     );
     // The household rows are pre-commit *and* they apply what arrived, so Bob's
     // £400 is on his sending row — added back — and again in the pot it reached.

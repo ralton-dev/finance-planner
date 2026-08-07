@@ -192,7 +192,13 @@ describe("one account, planned once", () => {
   it("agrees, to the penny, on what it has left", () => {
     const input = scope();
     const pass = computeScopePlan(input, ASOF);
-    const household = householdPlanFromScope(pass, "h-parity", HOUSEHOLD_ACCOUNTS, "GBP");
+    const household = householdPlanFromScope(
+      pass,
+      "h-parity",
+      HOUSEHOLD_ACCOUNTS,
+      "GBP",
+      input.members.map((m) => m.userId),
+    );
     const flow = flowFromScope(pass, SCOPE, "GBP");
     const plan = accountPlanFromScope(input, pass, ACCOUNT);
 
@@ -320,7 +326,13 @@ describe("the account an authored movement arrives at", () => {
   it("agrees, to the penny, on what is in it", () => {
     const input = potScope();
     const pass = computeScopePlan(input, ASOF);
-    const household = householdPlanFromScope(pass, "h-parity", ROSTER, "GBP");
+    const household = householdPlanFromScope(
+      pass,
+      "h-parity",
+      ROSTER,
+      "GBP",
+      input.members.map((m) => m.userId),
+    );
     const flow = flowFromScope(pass, POT_SCOPE, "GBP");
     const plan = accountPlanFromScope(input, pass, POT);
 
@@ -349,8 +361,15 @@ describe("the account an authored movement arrives at", () => {
   });
 
   it("records the arrival on the very row that has to apply it", () => {
-    const pass = computeScopePlan(potScope(), ASOF);
-    const household = householdPlanFromScope(pass, "h-parity", ROSTER, "GBP");
+    const scope = potScope();
+    const pass = computeScopePlan(scope, ASOF);
+    const household = householdPlanFromScope(
+      pass,
+      "h-parity",
+      ROSTER,
+      "GBP",
+      scope.members.map((m) => m.userId),
+    );
     const potRow = household.accounts.find((a) => a.accountId === POT)!;
 
     // The movement really is funded — a fixture whose standing order moved

@@ -244,6 +244,7 @@ describe("householdPlanFromScope — the elsewhere identities under ownership", 
     estate.householdId,
     estate.assignedAccountIds,
     "GBP",
+    estate.scope.members.map((m) => m.userId),
   );
 
   it("lands a pot's income in the household income of the member who owns it", () => {
