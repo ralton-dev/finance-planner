@@ -155,20 +155,42 @@ export function buildServer(deps: AuthDeps = {}): FastifyInstance {
   app.decorate("mailer", mailer);
   app.addHook("onClose", async () => handle.close());
 
-  app.setErrorHandler((err: Error & { validation?: unknown; issues?: ZodIssue[] }, _req, reply) => {
-    if (err instanceof HttpError) {
-      return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
-    }
-    // Both Fastify's own schema validation and a rejected zod body schema mean
-    // the same thing to a caller: you sent something we can't use.
-    if (err.validation || err.name === "ZodError") {
-      return reply
-        .code(422)
-        .send({ error: { code: "validation_error", message: validationMessage(err) } });
-    }
-    app.log.error(err);
-    return reply.code(500).send({ error: { code: "internal", message: "Internal error" } });
-  });
+  app.setErrorHandler(
+    (
+      err: Error & {
+        validation?: unknown;
+        issues?: ZodIssue[];
+        statusCode?: number;
+        code?: string;
+      },
+      _req,
+      reply,
+    ) => {
+      if (err instanceof HttpError) {
+        return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
+      }
+      // Both Fastify's own schema validation and a rejected zod body schema mean
+      // the same thing to a caller: you sent something we can't use.
+      if (err.validation || err.name === "ZodError") {
+        return reply
+          .code(422)
+          .send({ error: { code: "validation_error", message: validationMessage(err) } });
+      }
+      // Fastify's own errors — and any plugin's — carry the status they mean on
+      // the error itself. Honour a client error rather than flattening it: a
+      // malformed body answered with 500 tells the caller their bad request was
+      // our fault, and any plugin that refuses a request by throwing (the rate
+      // limiter's 429, say) would have its refusal turned into a server fault.
+      if (typeof err.statusCode === "number" && err.statusCode >= 400 && err.statusCode < 500) {
+        app.log.info({ err }, "client error");
+        return reply
+          .code(err.statusCode)
+          .send({ error: { code: "bad_request", message: err.message } });
+      }
+      app.log.error(err);
+      return reply.code(500).send({ error: { code: "internal", message: "Internal error" } });
+    },
+  );
 
   const authenticate = async (req: FastifyRequest): Promise<string> => {
     const header = req.headers.authorization;

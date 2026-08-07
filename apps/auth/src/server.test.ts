@@ -1449,6 +1449,23 @@ describe("rate limiting", () => {
     await app.close();
   });
 
+  it("answers a malformed body with the status it means, not a 500", async () => {
+    // The same defect the throttle had, one layer down: the limiter refuses by
+    // throwing an error that carries `statusCode`, and an error handler that
+    // reads only its own HttpError turns every such refusal into a server
+    // fault. Malformed JSON is the cheapest way to hold that behaviour still.
+    const { app } = makeApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { "content-type": "application/json" },
+      payload: "{not json",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("bad_request");
+    await app.close();
+  });
+
   it("leaves the throttle off when a caller opts out", async () => {
     // What the rest of the suite relies on: back-to-back logins must not trip it.
     const { app } = makeApp();
