@@ -1231,9 +1231,13 @@ export class PgStore implements Store {
 
   async deleteTransferConfirmation(id: string): Promise<void> {
     // Linked contributions cascade via FK; stay explicit for parity with
-    // MemoryStore semantics.
-    await this.db.delete(s.contributions).where(eq(s.contributions.transferConfirmationId, id));
-    await this.db.delete(s.transferConfirmations).where(eq(s.transferConfirmations.id, id));
+    // MemoryStore semantics. In one transaction for the same reason writing
+    // them is: two statements meant a window where the ledger was gone and the
+    // movement still stood over it — the half-standing state read backwards.
+    await this.db.transaction(async (tx) => {
+      await tx.delete(s.contributions).where(eq(s.contributions.transferConfirmationId, id));
+      await tx.delete(s.transferConfirmations).where(eq(s.transferConfirmations.id, id));
+    });
   }
 
   async createMonthClose(input: NewMonthClose): Promise<MonthClose> {
