@@ -407,11 +407,35 @@ export const updateContributionBody = z.object({
 });
 export type UpdateContributionBody = z.infer<typeof updateContributionBody>;
 
-/** A manual balance check-in. Negative balances are allowed (overdraft). One
- *  per account per day; re-stating a day overwrites it. Defaults to today. */
+/**
+ * A manual balance check-in. Negative balances are allowed (overdraft). One
+ * per account per day; re-stating a day overwrites it. Defaults to today.
+ *
+ * **The date cannot be one that has not happened** (decision 39). A check-in is
+ * an observation — somebody looked at an account and wrote down what was in it
+ * — and there is nothing to have observed about tomorrow. Left unbounded, a
+ * future date was not merely wrong but load-bearing: readers took the newest
+ * snapshot as the current balance, so a row dated next month became the balance
+ * immediately, and the stale-balance banner — which reasons about how old the
+ * balance is — measured a negative age and fell silent. The one screen built to
+ * notice an unconfirmed balance was the screen a bad date switched off.
+ *
+ * Bounded here rather than in the route because it is a fact about the shape of
+ * a check-in, not about who is writing one. Today is allowed; the comparison is
+ * lexicographic on UTC ISO dates, which is what every other date in this
+ * product is measured in.
+ *
+ * This refuses new ones and deletes nothing. A restore carries whatever rows an
+ * older export holds, and a reader bound to the date it is reading for does not
+ * need them gone — see `accountReality` in `apps/api/src/server.ts`.
+ */
 export const upsertBalanceBody = z.object({
   balanceMinor: z.number().int(),
-  asOfDate: isoDate.optional(),
+  asOfDate: isoDate
+    .refine((d) => d <= new Date().toISOString().slice(0, 10), {
+      message: "a balance cannot be checked in for a day that has not happened",
+    })
+    .optional(),
 });
 export type UpsertBalanceBody = z.infer<typeof upsertBalanceBody>;
 

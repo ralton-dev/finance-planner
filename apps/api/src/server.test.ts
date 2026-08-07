@@ -1957,6 +1957,131 @@ describe("api service", () => {
     expect(plan.json().latestBalance).toEqual({ asOfDate: "2026-01-15", balanceMinor: 130000 });
   });
 
+  /**
+   * Decision 39. A check-in records what was true on the day it was taken, and
+   * every reader used to treat it as what is true now: the plan used its as-of
+   * date for contributions and then took the newest snapshot there was.
+   */
+  it("reports the balance the account had on the date the plan is asked for", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    const put = (asOfDate: string, balanceMinor: number) =>
+      app.inject({
+        method: "PUT",
+        url: `/api/accounts/${account.id}/balance`,
+        headers: auth,
+        payload: { asOfDate, balanceMinor },
+      });
+    await put("2026-01-10", 100000);
+    await put("2026-02-10", 400000);
+
+    const at = async (asOf: string) =>
+      (
+        await app.inject({
+          method: "GET",
+          url: `/api/accounts/${account.id}/plan?asOf=${asOf}`,
+          headers: auth,
+        })
+      ).json().latestBalance;
+
+    // February's plan gets February's balance; January's gets January's.
+    expect(await at("2026-02-20")).toEqual({ asOfDate: "2026-02-10", balanceMinor: 400000 });
+    expect(await at("2026-01-20")).toEqual({ asOfDate: "2026-01-10", balanceMinor: 100000 });
+    // The day itself counts; the day before the first check-in has none.
+    expect(await at("2026-01-10")).toEqual({ asOfDate: "2026-01-10", balanceMinor: 100000 });
+    expect(await at("2026-01-09")).toBeNull();
+
+    // The projection opens on the same balance, for the same reason: a walk
+    // from January that opened on February's figure is not a walk from January.
+    const projection = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/projection?months=1&asOf=2026-01-20`,
+        headers: auth,
+      })
+    ).json();
+    expect(projection.months[0].projectedBalanceMinor).toBe(100000);
+  });
+
+  /**
+   * Decision 39's second half. A check-in dated ahead used to become "the
+   * current balance" the moment it was written — which, because the
+   * stale-balance banner reasons about how old the balance is, gave that banner
+   * a negative age and switched it off.
+   */
+  it("refuses a balance check-in dated into the future, and ignores one already stored", async () => {
+    const { auth } = await seedUser(store);
+    const account = (
+      await app.inject({
+        method: "POST",
+        url: "/api/accounts",
+        headers: auth,
+        payload: { name: "A", currency: "GBP" },
+      })
+    ).json();
+    const day = (offset: number): string =>
+      new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+
+    const ahead = await app.inject({
+      method: "PUT",
+      url: `/api/accounts/${account.id}/balance`,
+      headers: auth,
+      payload: { asOfDate: day(1), balanceMinor: 999900 },
+    });
+    expect(ahead.statusCode).toBe(422);
+    expect(ahead.json().error.code).toBe("validation_error");
+
+    // Today and the past stay writable — the refusal is a bound, not a ban.
+    for (const offset of [0, -1]) {
+      const ok = await app.inject({
+        method: "PUT",
+        url: `/api/accounts/${account.id}/balance`,
+        headers: auth,
+        payload: { asOfDate: day(offset), balanceMinor: 1170 },
+      });
+      expect(ok.statusCode).toBe(200);
+    }
+
+    // A future-dated row already in somebody's data is left where it is and
+    // simply is not yet the balance: the reader is bound to the date it is
+    // reading for, so the row starts counting on the day it is dated for.
+    await store.upsertBalanceSnapshot({
+      accountId: account.id,
+      asOfDate: day(30),
+      balanceMinor: 555500,
+    });
+    const now = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan`,
+        headers: auth,
+      })
+    ).json();
+    expect(now.latestBalance).toEqual({ asOfDate: day(0), balanceMinor: 1170 });
+    const later = (
+      await app.inject({
+        method: "GET",
+        url: `/api/accounts/${account.id}/plan?asOf=${day(31)}`,
+        headers: auth,
+      })
+    ).json();
+    expect(later.latestBalance).toEqual({ asOfDate: day(30), balanceMinor: 555500 });
+    // And it is still on the history, which is a record of what somebody wrote.
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/accounts/${account.id}/balances`,
+      headers: auth,
+    });
+    expect(list.json().map((b: { asOfDate: string }) => b.asOfDate)).toContain(day(30));
+  });
+
   it("confirms a planned transfer, books its contributions, and un-confirms them", async () => {
     const h = await seedHousehold(store, app);
     const planUrl = `/api/households/${h.household.id}/plan`;

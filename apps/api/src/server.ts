@@ -256,13 +256,49 @@ interface AccountReality {
 }
 
 /**
+ * The check-in that was the account's balance **on** `asOfDate` — the newest
+ * snapshot not dated after it, or `undefined` when none had been taken yet
+ * (decision 39).
+ *
+ * A check-in records what was true on the day it was taken; every reader used
+ * to treat it as what is true now. `balances.at(-1)` answers "the newest row
+ * there is", which is a different question from "the row for this date" and
+ * gave the same answer only by accident — when the caller happened to be asking
+ * about today and nobody had dated a check-in ahead. Both accidents are real:
+ * a past month's plan was served today's balance, and a check-in dated into the
+ * future became the current balance the moment it was written.
+ *
+ * Snapshots arrive one-per-day in ascending date order from both stores, so the
+ * scan stops at the first row past the date rather than sorting again.
+ */
+function balanceAsOf<T extends { asOfDate: string }>(
+  balances: readonly T[],
+  asOfDate: string,
+): T | undefined {
+  let current: T | undefined;
+  for (const snapshot of balances) {
+    if (snapshot.asOfDate > asOfDate) break;
+    current = snapshot;
+  }
+  return current;
+}
+
+/**
  * Read the reality that sits alongside a computed plan.
  *
  * The account page and the accounts index both come through here — the detail
  * strip reads it off GET /accounts/:id/plan, the index off the overview — so
  * the two screens cannot end up quoting different balances for one account.
- * Balance snapshots are stored one-per-day in ascending date order, so the last
- * one is the current balance.
+ *
+ * The balance is bound to `asOfDate`, exactly as the contributions above it are
+ * (decision 39). See {@link balanceAsOf}. A plan asked for July reports July's
+ * balance; a plan asked for today ignores a check-in somebody dated for next
+ * month. This matters most to the stale-balance banner, which reasons about how
+ * old `latestBalance.asOfDate` is: unbound, a future-dated row gave it a
+ * *negative* age and silenced it outright, so the one screen built to notice a
+ * balance nobody has confirmed lately was the screen a bad date could switch
+ * off. Bound, the age it measures is never negative and never somebody else's
+ * day.
  */
 async function accountReality(
   store: Store,
@@ -278,7 +314,7 @@ async function accountReality(
   for (const c of monthContributions) {
     mtd.set(c.paymentId, (mtd.get(c.paymentId) ?? 0) + c.amountMinor);
   }
-  const latest = balances.at(-1);
+  const latest = balanceAsOf(balances, asOfDate);
 
   return {
     contributionsMTD: [...mtd.entries()].map(([paymentId, amountMinor]) => ({
@@ -1263,8 +1299,11 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
   /**
    * Month-by-month simulation of the account's plan, so the UI can show where
    * the money lands rather than just this month's slice. The balance trajectory
-   * starts from the latest real balance check-in; with no check-in there is no
-   * honest opening figure, so every month reports a null balance.
+   * starts from the balance the account had on the as-of date the walk starts
+   * from — `balanceAsOf`, the same bind the plan's reality gets and for the same
+   * reason (decision 39). A walk from July that opened on today's balance was
+   * not a simulation of July. With no check-in by then there is no honest
+   * opening figure, so every month reports a null balance.
    *
    * Simulated as part of its scope, not on its own. What arrives in month seven
    * is another account's month-seven surplus — after month-seven's bills, out of
@@ -1286,7 +1325,7 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       scopeForAccount(store, account, asOfDate),
       store.listBalanceSnapshots(id),
     ]);
-    const latest = balances.at(-1);
+    const latest = balanceAsOf(balances, asOfDate);
     const walk = computeScopeProjection(scope.input, asOfDate, {
       months: intParam(months),
       // Only this account's opening balance is known here, and only this
