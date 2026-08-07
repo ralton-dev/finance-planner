@@ -1,6 +1,9 @@
 # Build context is the repo root: docker build -f apps/web/Dockerfile .
-FROM node:22-alpine AS build
-RUN corepack enable
+FROM node:24-alpine AS build
+# Node 25 dropped bundled corepack; install it explicitly so bumping the base
+# image cannot take pnpm away. The version it provisions comes from
+# "packageManager" in the root package.json.
+RUN npm i -g corepack@latest && corepack enable
 WORKDIR /repo
 COPY . .
 RUN pnpm install --frozen-lockfile
