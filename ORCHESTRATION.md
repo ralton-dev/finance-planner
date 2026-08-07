@@ -163,6 +163,17 @@ the provenance, which is most of what a commit is for.
 agent's staged work. It costs nothing and removes the whole class. The agent that
 diagnosed it put it best: _never `git add`; use `git commit -- <paths>`._
 
+**Mind the argument order — `--` swallows everything after it as a pathspec**, so
+the message has to come first. Written the wrong way round it fails with
+`error: pathspec '-m' did not match any file(s)`, which reads like a git problem
+rather than an ordering one. This orchestrator wrote the rule above and then got
+it wrong in the very next command:
+
+```
+git commit -m "…" -- path/one.ts path/two.ts    # correct
+git commit -- path/one.ts path/two.ts -m "…"    # fails, confusingly
+```
+
 A related consequence worth stating: **a wave's commits are not a reliable record
 of which package did what** unless this rule is followed. Verify by file, not by
 commit message, when it matters.
