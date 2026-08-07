@@ -181,6 +181,20 @@ rebuilt; a project is personal or shared).
     surfaces already print a fallback for its absence — the server simply never
     withholds it.
 
+42. **A scope is not a roster, and the fix belongs at the root.** WP-BF closed
+    decision 41's four sites and then reported a fifth it deliberately did **not**
+    touch, because the clean fix changes a package that had shipped that morning
+    and deserved a decision rather than a late edit after its gate had passed.
+    `scopeMembers` produces a **scope**-shaped set — deliberately
+    un-access-checked and deliberately **wider than any roster**, which is correct
+    for arithmetic and wrong for labels — and several call sites read it as a
+    roster. That is the pattern under every leak in WP-BF's package, and
+    `plan.ts:666` is where it starts. WP-BG.
+
+    **Names only: decision 13 forbids moving the figures.** The member rows are
+    summed into `leftoverMinor` and `membersLeftoverMinor`, so dropping one is a
+    different decision entirely.
+
 **Also found stale, and worth deleting from `BACKLOG.md`:** the entry "A derived
 transfer you confirmed does not survive an export" is no longer true.
 `derivedTransferConfirmations` is carried end to end —
@@ -786,6 +800,38 @@ the fallback. Size **L**. Depends: WP-BE (frees `server.ts`).
 
 ---
 
+## WP-BG · A scope is not a roster, at the root
+
+**Goal:** decision 42. `scopeMembers` stops publishing a `displayName` for
+somebody who is not on the roster, so three surfaces are fixed at the root
+rather than three times over.
+
+- `apps/api/src/plan.ts:666-667` builds `memberNames` from `scopeMembers`'
+  output, **outsiders included** — a roster of two produced a map of three. Three
+  call sites read it gated on **household visibility**, never membership:
+  `server.ts:2168`, `planInflowSources`, and `plan.ts:778`. It reaches the client
+  as `memberName?` on the flow edge DTO, so **the diagram WP-BB shipped can label
+  a ribbon with a non-member's name.**
+- **Reachable with one inflow from an outside account** — not exotic, and not the
+  legacy dual-membership path, which `addMembership` refuses outright. WP-BF
+  corrected WP-BB on that, in the other direction from the usual.
+- **Names only. Do not move a figure.** `leftoverMinor` and
+  `membersLeftoverMinor` are sums over these rows and **decision 13** fixes their
+  meaning to the penny. Two figure-level cousins are reported and deliberately
+  unfixed; `/api/households/:id/projection` sums over `scope.input.members`
+  **on purpose**, and WP-BF left a comment saying so precisely so the next reader
+  would not "fix" it.
+
+**Acceptance:** a test that fails against the parent commit, demonstrated. Every
+figure identical before and after — asserted directly. The solo case still names
+the user. `labels.users` on the debug route stops naming non-members, or you say
+why not.
+
+Owns: `packages/domain/src/scope.ts`, `apps/api/src/plan.ts`,
+`apps/api/src/server.ts` (+ tests). Size **M**. Depends: WP-BF.
+
+---
+
 ## Waves
 
 | Wave | Packages                                      | Notes                                                                                                    |
@@ -797,7 +843,7 @@ the fallback. Size **L**. Depends: WP-BE (frees `server.ts`).
 | 5    | WP-AV + WP-AR + WP-BB                         | portability+contracts · web account page+`lib/api.ts` · `server.ts` flow region+`lib/flow.ts`            |
 | 6    | WP-AZ + WP-BE                                 | AZ owns `apps/web/e2e/` + `ci.yml`; BE owns `server.ts` reality region + `contracts` — disjoint          |
 | 7    | WP-BF                                         | **alone** — owns `apps/api/src/server.ts`, `notify.ts` and `packages/domain/src/household.ts`            |
-| 8    | WP-BA                                         | **alone** — owns `apps/web/src/lib/api.ts`, and needs AZ's harness to measure with                       |
+| 8    | WP-BA + WP-BG                                 | BA owns `apps/web/src/lib/**`; BG owns `packages/domain/src/scope.ts` + `apps/api` — disjoint            |
 
 WP-BA is deliberately **last**, after WP-BF: it counts the requests a real
 session makes, and WP-BF changes what several of those requests return. Measuring
