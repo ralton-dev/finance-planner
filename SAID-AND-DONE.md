@@ -108,6 +108,45 @@ rebuilt; a project is personal or shared).
     asks anything about one", and `MonthScorecard` sits on the Overview
     (`OverviewPage.tsx:283`). Its durable replacement is WP-AZ.
 
+### Added mid-flight, 2026-08-07, after wave 2 landed
+
+36. **A flow diagram draws an account the viewer cannot see as an anonymous
+    node — it does not refuse** (Ben, 2026-08-07). WP-AS routed the household
+    flow page to `/api/flow` per decision 31, and `/api/flow`
+    (`apps/api/src/server.ts:1856`) gates **per account**: it throws
+    `404 Account not found` if the caller lacks `view` on any one of them.
+    `/api/households/:id/plan` (`:1936`) gates only on **membership**, and says
+    so deliberately — _"Any member can view the joint plan, regardless of
+    per-account share grants — it is the household's shared financial picture by
+    design."_ So a member of a household holding an **assigned-but-unshared**
+    account — a configuration `HouseholdDetailPage` offers directly, share
+    (`:776`) and assign (`:682`) being separate controls — lost the diagram
+    entirely. The answer is neither the refusal nor a membership gate that names
+    the account: **the node keeps its money and loses its name.** Totals still
+    balance, and #43 stays fixed — an account you _can_ see is drawn by name,
+    which was the whole complaint. WP-BB.
+37. **The household plan must apply the arrival it records.** WP-AS surfaced it:
+    the chart draws `holiday · £500.00` arriving with £500 left over, while the
+    table beside it prints LEFT OVER `£0.00`, same account, same date.
+    `packages/domain/src/household.ts:382` computes
+    `leftoverMinor: availableLeftoverMinor + committedMinor` and
+    `movementInMinor` is not in it, though the invariant at `:271` names it.
+    **Decision 13** — `leftoverMinor` keeps its meaning to the penny on every
+    surface — is what makes this a defect rather than a difference of opinion.
+    Pre-existing; WP-AS made the two figures sit side by side. WP-BC.
+38. **The projection is #45's unfixed other half.** WP-AT found it in a browser
+    after fixing the banner: `projectedBalanceMinor` returns **`-22294`** for
+    Ben's account — literally −£222.94, the issue's own figure — drawn as a
+    12-month line on an account with £2,000/mo income that is not overdrawn.
+    `packages/domain/src/projection.ts:418` (`sim.balance += setAside - paidOut`)
+    pays month 1's goals out in full while crediting only that month's set-aside,
+    and **never credits the £234.64 already recorded as saved**. It is the exact
+    mirror of the banner's error: the banner treated the record as money that
+    ought to be in the account; the projection treats it as money that never
+    existed. Same assumption, opposite sign. The plan's "surfaces that disagree"
+    table named only `RealityStrip.tsx:28` for #45, which is why this half was
+    missed. WP-BD.
+
 **Also found stale, and worth deleting from `BACKLOG.md`:** the entry "A derived
 transfer you confirmed does not survive an export" is no longer true.
 `derivedTransferConfirmations` is carried end to end —
@@ -570,17 +609,99 @@ harness and spec).
 
 ---
 
+## WP-BB · An account you cannot see is drawn, not refused
+
+**Goal:** decision 36. A household flow renders for every member, with
+accounts the viewer lacks `view` on appearing as an unnamed node carrying its
+real amounts.
+
+- `apps/api/src/server.ts:1856` throws `404 Account not found` for any id the
+  caller cannot `view`. For a **household** scope that is the wrong answer —
+  `/api/households/:id/plan` shows the same member the same money in aggregate,
+  by design and by comment.
+- **Anonymise, do not omit.** Dropping the account unbalances every total that
+  reader can check; the diagram's own `elsewhere` bucket is the precedent for a
+  node with money and no name. #43 must stay fixed: an account the viewer **can**
+  see is still drawn by name.
+- Decide where the anonymising happens — the endpoint knows the ability, the page
+  knows the household. **Say why**, and do not let the client be the only thing
+  hiding a name it was sent.
+
+**Acceptance:** a member of a household containing an assigned-but-unshared
+account opens `/flow?household=…` and sees a diagram whose nodes balance, with
+that account unnamed. The same household opened by someone who **can** see the
+account draws it by name. Verified **in a real browser** with both viewers.
+
+Owns: `apps/api/src/server.ts` (flow region ~`:1830-1900`),
+`apps/api/src/server.test.ts`, `apps/web/src/pages/FlowPage.tsx`,
+`apps/web/src/lib/flow.ts` (+ tests). Size **M**. Depends: WP-AP (frees
+`server.ts`). **Choke point: `apps/api/src/server.ts`.**
+
+---
+
+## WP-BC · The household plan applies the arrival it records
+
+**Goal:** decision 37. The household plan's `leftoverMinor` and the flow
+endpoint's agree to the penny for the same account on the same date.
+
+- **Establish which figure is right before changing either.** The invariant at
+  `packages/domain/src/household.ts:271`, `ONE-ENGINE.md` decision 10 and
+  decision 13 are the authorities. It is genuinely possible `/api/flow` is the
+  wrong one.
+- The shape the fixtures avoid: **an authored movement.** Every household
+  fixture in the tree feeds its pot by a _derived_ transfer, which is the one
+  case this code gets right — which is exactly why it survived.
+
+**Acceptance:** a test that **fails against the parent commit**, demonstrated
+not asserted. Chart and table agree **on a real screen**. `pnpm coverage` still
+passes — thresholds come from `packages/domain/vitest.config.ts`, and a drop is
+fixed with a test, never a lowered threshold.
+
+Owns: `packages/domain/src/household.ts` (+ tests), and the household plan web
+view only if the fix needs it. Size **M**. Depends: none.
+
+---
+
+## WP-BD · The projection credits money already saved
+
+**Goal:** decision 38. `projectedBalanceMinor` stops returning a negative
+balance for an account that is not overdrawn.
+
+- `packages/domain/src/projection.ts:418` — `sim.balance += setAside - paidOut`
+  pays month 1's goals out in full while crediting only that month's set-aside.
+  `alreadySavedEndMinor` is 0.
+- **The mirror of WP-AT.** Read `RealityStrip.tsx`'s new wording first: WP-AT
+  decided how this codebase talks about the gap between money recorded as saved
+  and money held. This package must not contradict it.
+
+**Acceptance:** Ben's account projects a balance a person would recognise, and a
+test pins the figure. Verified **in a real browser** — this defect was found on
+a chart, and the unit tests passed throughout.
+
+Owns: `packages/domain/src/projection.ts` (+ tests). Size **M**. Depends: none —
+but **not started without Ben's sign-off**; it is scope this plan did not carry.
+
+---
+
 ## Waves
 
-| Wave | Packages                                      | Notes                                                                                        |
-| ---- | --------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| 1    | WP-AN                                         | **alone** — nothing can flip a pin that does not exist yet                                   |
-| 2    | WP-AS + WP-AT + WP-AU + WP-AW + WP-AX + WP-AY | six-way disjoint: web/flow · web/RealityStrip · one web test file · auth · api/notify · helm |
-| 3    | WP-AO                                         | **alone** — owns `apps/api/src/server.ts`                                                    |
-| 4    | WP-AP                                         | **alone** — owns `server.ts` **and** `packages/contracts` **and** all four data files        |
-| 5    | WP-AV + WP-AR                                 | portability + contracts vs. web only; disjoint, and both need WP-AP landed                   |
-| 6    | WP-AZ                                         | alone; needs AR and AS on screen, and AY's `ci.yml` edit already in                          |
-| 7    | WP-BA                                         | **alone** — owns `apps/web/src/lib/api.ts`, and needs AZ's harness to measure with           |
+| Wave | Packages                                      | Notes                                                                                                    |
+| ---- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| 1    | WP-AN                                         | **alone** — nothing can flip a pin that does not exist yet                                               |
+| 2    | WP-AS + WP-AT + WP-AU + WP-AW + WP-AX + WP-AY | six-way disjoint: web/flow · web/RealityStrip · one web test file · auth · api/notify · helm             |
+| 3    | WP-AO + WP-BC                                 | AO **alone** on `apps/api/src/server.ts`; BC entirely inside `packages/domain` — disjoint                |
+| 4    | WP-AP + WP-BD                                 | AP owns `server.ts` **and** `packages/contracts` **and** all four data files; BD is `projection.ts` only |
+| 5    | WP-AV + WP-AR + WP-BB                         | portability+contracts · web account page+`lib/api.ts` · `server.ts` flow region+`lib/flow.ts`            |
+| 6    | WP-AZ                                         | alone; needs AR and AS on screen, and AY's `ci.yml` edit already in                                      |
+| 7    | WP-BA                                         | **alone** — owns `apps/web/src/lib/api.ts`, and needs AZ's harness to measure with                       |
+
+Waves 1 and 2 have landed — `main` at `97e6a19`, five pins written and the two
+web ones already flipped. Waves 3–5 changed shape when decisions 36–38 were
+added mid-flight; the choke-point rule did not. `apps/api/src/server.ts` still
+has exactly one owner per wave: **AO in 3, AP in 4, BB in 5.**
+`packages/domain` is a second, softer choke point, because its coverage gate
+measures the whole package — so **BC and BD are deliberately one wave apart**,
+and neither is measuring the other's diff.
 
 **Choke-point files, never co-owned:** `apps/api/src/server.ts` (2657 lines,
 wanted by four issues), `packages/contracts/src/index.ts`,
