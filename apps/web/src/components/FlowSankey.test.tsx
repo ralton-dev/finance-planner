@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { Sankey } from "recharts";
 import { describe, expect, it } from "vitest";
 import type { FlowDto, FlowEdgeDto } from "../lib/types.js";
 import { buildGraph, FlowSankey, flowLabel } from "./FlowSankey.js";
@@ -162,6 +163,161 @@ describe("buildGraph", () => {
       }),
     );
     expect(links).toHaveLength(0);
+  });
+});
+
+/**
+ * Issue #62: the household plan page rendered nothing at all.
+ *
+ * Every test above draws a graph that could not have cycled — each transfer goes
+ * account → elsewhere, elsewhere → account, or one way between two accounts. The
+ * one shape none of them has is the one a household of two reaches by being
+ * ordinary: a **shared** bill paid out of each member's own current account.
+ * Alice owes her share of the bill on Bob's account and Bob owes his share of the
+ * bill on Alice's, so `computeScopePlan` derives a funded, non-zero transfer in
+ * each direction between the same two accounts — the two-cycle
+ * `packages/domain/src/scope.ts` predicts in as many words and correctly treats as
+ * costing the funding pass nothing, because neither transfer waits on the other.
+ *
+ * Neither edge is `broken_cycle`: nothing here is a funding loop, and the pass
+ * reports no cycle at all. So the note below the chart never fired, and the graph
+ * went to Recharts with a loop in it — whose `updateDepthOfTargets` recurses
+ * along targets with no visited set and overflows the stack before React commits
+ * anything. `root` innerHTML length 0.
+ *
+ * These tests are why jsdom never saw it: `ResponsiveContainer` measures 0×0
+ * here, so the layout that blows up is never reached by rendering `<FlowSankey>`.
+ * The graph is therefore checked directly, and laid out at a real size.
+ */
+describe("buildGraph — two accounts that each fund a share of the other's bills", () => {
+  const mutual = () =>
+    flow({
+      accounts: [
+        node("Alice current", { incomeMinor: 300_000, leftoverMinor: 188_800 }),
+        node("Bob current", { incomeMinor: 200_000, leftoverMinor: 111_200 }),
+      ],
+      edges: [
+        // Alice's 66% of the council tax that leaves Bob's account.
+        edge({
+          fromAccountId: "Alice current",
+          toAccountId: "Bob current",
+          amountMinor: 13_200,
+          requestedMinor: 13_200,
+          memberUserId: "u-alice",
+          memberName: "Alice",
+        }),
+        // Bob's 34% of the broadband that leaves Alice's.
+        edge({
+          fromAccountId: "Bob current",
+          toAccountId: "Alice current",
+          amountMinor: 2_040,
+          requestedMinor: 2_040,
+          memberUserId: "u-bob",
+          memberName: "Bob",
+        }),
+      ],
+      totalInflowMinor: 500_000,
+    });
+
+  /** A Sankey lays out by walking depth along its links. A graph it can reach
+   *  itself from does not terminate, so the graph handed to it may not have one. */
+  const cycles = (links: readonly { source: number; target: number }[]): boolean => {
+    const out = new Map<number, number[]>();
+    for (const l of links) out.set(l.source, [...(out.get(l.source) ?? []), l.target]);
+    const state = new Map<number, "open" | "done">();
+    const walk = (n: number): boolean => {
+      if (state.get(n) === "open") return true;
+      if (state.get(n) === "done") return false;
+      state.set(n, "open");
+      for (const next of out.get(n) ?? []) if (walk(next)) return true;
+      state.set(n, "done");
+      return false;
+    };
+    return [...new Set(links.flatMap((l) => [l.source, l.target]))].some((n) => walk(n));
+  };
+
+  it("hands the chart a graph with no way back to where it started", () => {
+    const { links } = buildGraph(mutual());
+    expect(cycles(links)).toBe(false);
+  });
+
+  it("still moves every penny both members send, under their own names", () => {
+    const { nodes, links } = buildGraph(mutual());
+    const transfers = links.filter((l) => l.kind === "transfer");
+    // Nothing is dropped and nothing is netted off: both members' transfers are
+    // still on the picture at the figure the pass derived, and still attributed.
+    expect(transfers.map((l) => l.note)).toEqual(expect.arrayContaining(["Alice", "Bob"]));
+
+    const alice = nodes.findIndex((n) => n.name === "Alice current");
+    const bob = nodes.findIndex((n) => n.name === "Bob current");
+    const leaving = (i: number) =>
+      links.filter((l) => l.kind === "transfer" && l.source === i).map((l) => l.value);
+    const arriving = (i: number) =>
+      links.filter((l) => l.kind === "transfer" && l.target === i).map((l) => l.value);
+    // Alice sends her £132 and receives Bob's £20.40; Bob the mirror. The cut
+    // ribbon still leaves the one account and still arrives at the other.
+    expect(leaving(alice)).toEqual([13_200]);
+    expect(arriving(alice)).toEqual([2_040]);
+    expect(leaving(bob)).toEqual([2_040]);
+    expect(arriving(bob)).toEqual([13_200]);
+  });
+
+  /** The crash itself: Recharts' own layout, at a size jsdom will not give it. */
+  it("lays out at a real size instead of overflowing the stack", () => {
+    const data = buildGraph(mutual());
+    expect(() =>
+      render(<Sankey width={800} height={400} data={data} nodeWidth={10} nodePadding={26} />),
+    ).not.toThrow();
+  });
+
+  it("draws the ribbon it had to cut as a leaving half and an arriving half", () => {
+    const { nodes, links } = buildGraph(mutual());
+    const halves = links.filter((l) => l.value === 2_040);
+    // Bob's £20.40 is the one the walk comes back along, so it is the one cut.
+    expect(halves).toHaveLength(2);
+    expect(nodes[halves[0]!.target]).toEqual({ name: "to Alice current", isAccount: false });
+    expect(nodes[halves[1]!.source]).toEqual({ name: "from Bob current", isAccount: false });
+    // Alice's £132 is left as one ribbon: only what closes the loop is cut.
+    expect(links.filter((l) => l.value === 13_200)).toHaveLength(1);
+  });
+
+  it("says a ribbon was cut rather than leaving the diagram to be misread", () => {
+    render(<FlowSankey flow={mutual()} />);
+    expect(screen.getByText(/drawn in two halves/i)).toBeInTheDocument();
+  });
+
+  it("leaves a diagram with no loop in it alone", () => {
+    const { links, splitLoop } = buildGraph(
+      flow({
+        accounts: [node("cur", { incomeMinor: 100_000 }), node("pot")],
+        edges: [
+          edge({ fromAccountId: "cur", toAccountId: "pot", amountMinor: 40_000 }),
+          edge({ fromAccountId: "cur", toAccountId: "pot", amountMinor: 10_000 }),
+        ],
+        totalInflowMinor: 100_000,
+      }),
+    );
+    expect(splitLoop).toBe(false);
+    expect(links.filter((l) => l.kind === "transfer")).toHaveLength(2);
+  });
+
+  /** Three accounts round a ring — one ribbon cut, not three. */
+  it("cuts one ribbon per loop, however long the loop is", () => {
+    const { links, splitLoop } = buildGraph(
+      flow({
+        accounts: [node("a", { incomeMinor: 100_000 }), node("b"), node("c")],
+        edges: [
+          edge({ fromAccountId: "a", toAccountId: "b", amountMinor: 10_000 }),
+          edge({ fromAccountId: "b", toAccountId: "c", amountMinor: 10_000 }),
+          edge({ fromAccountId: "c", toAccountId: "a", amountMinor: 10_000 }),
+        ],
+        totalInflowMinor: 100_000,
+      }),
+    );
+    expect(splitLoop).toBe(true);
+    // Three ribbons, one of them drawn as two halves.
+    expect(links.filter((l) => l.kind === "transfer")).toHaveLength(4);
+    expect(cycles(links)).toBe(false);
   });
 });
 
