@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { api, ApiError } from "../lib/api.js";
 import { toMajor, toMinor } from "../lib/money.js";
 import {

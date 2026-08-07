@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { usePrivacy } from "../contexts/PrivacyContext.js";
 import { useQuickAdd } from "../contexts/QuickAddContext.js";
 import { api } from "../lib/api.js";

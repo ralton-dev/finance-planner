@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.js";
 import { ProductLogo } from "../components/ProductLogo.js";
 import { api, ApiError } from "../lib/api.js";

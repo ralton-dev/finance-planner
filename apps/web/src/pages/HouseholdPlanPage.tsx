@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router";
 import { Fold } from "../components/Fold.js";
 import { HouseholdPlanView, memberLeftOverMinor } from "../components/HouseholdPlanView.js";
 import { MemberTagBars } from "../components/MemberTagBars.js";

@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes as RouterRoutes } from "react-router-dom";
+import { MemoryRouter, Route, Routes as RouterRoutes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api.js";
 import type {

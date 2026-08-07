@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router";
 import { api } from "../lib/api.js";
 import type { PlanDebugDto, PlanDebugLabelsDto, PlanDebugScopeDto } from "../lib/types.js";
 import { useAsync } from "../lib/useAsync.js";

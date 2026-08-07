@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes as RouterRoutes } from "react-router-dom";
+import { MemoryRouter, Route, Routes as RouterRoutes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stubApiFetch, type Routes } from "../test/apiMock.js";
 import { HouseholdHomePage } from "./HouseholdHomePage.js";
