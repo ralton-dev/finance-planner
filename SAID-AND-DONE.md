@@ -195,6 +195,29 @@ rebuilt; a project is personal or shared).
     summed into `leftoverMinor` and `membersLeftoverMinor`, so dropping one is a
     different decision entirely.
 
+43. **A contribution cannot be recorded for a month that has not started** (Ben,
+    2026-08-08). `POST /api/payments/:paymentId/contributions` took `body.month`
+    unbounded, so a row filed for next December **counts toward that payment's
+    already-saved today** — and `reservedMinor` is `Σ alreadySavedMinor`
+    (decision 26), the cumulative figure the reality banner is built on. WP-AO
+    found it; WP-AP owned the region and **routed it up rather than deciding it**,
+    because "The regression to fear" names exactly three intended user-visible
+    losses and this is a fourth. **It is now sanctioned, and the list is four.**
+    WP-AP had already bounded `PATCH` with `refuseFutureMonth(month, verb)`;
+    WP-BI makes both ends agree. WP-BI.
+44. **A reader is not "a household member" to themselves.** Decision 42's fix
+    removed the supply of an outsider's `displayName`, so the client's fallback
+    began firing **about the person reading it** — three sites print
+    "a household member" to an outsider looking at their own ribbon. WP-BG
+    reported it rather than re-supplying the name server-side, which would mean a
+    `getUserById` per account in two overview loops **to return a fact the client
+    already holds from `/api/me`**. Fixed client-side. WP-BJ.
+
+    Worth watching: the phrase was correct while the only reason a name could be
+    missing was that the client had not been sent one. Decision 42 added a second
+    reason, and the wording did not move with it — **a label written for one
+    cause, still firing after a second appeared underneath it.**
+
 **Also found stale, and worth deleting from `BACKLOG.md`:** the entry "A derived
 transfer you confirmed does not survive an export" is no longer true.
 `derivedTransferConfirmations` is carried end to end —
@@ -832,6 +855,53 @@ Owns: `packages/domain/src/scope.ts`, `apps/api/src/plan.ts`,
 
 ---
 
+## WP-BH · The household plan page stops swallowing a failed read
+
+**Goal:** `HouseholdPlanPage.tsx:50`'s `api.getPlan(a.accountId).catch(() => null)`
+turns "we could not find out" into "there is nothing there". A 404 produces **no
+error strip at all** — invisible to a person, not merely to a text assertion.
+
+WP-BA fixed the two on `OverviewPage.tsx`; this is the last one. Its argument —
+a user is in at most one household, so page-level failure has no payer — **may
+not transfer**, because this loop is over accounts _within_ one household. Decide
+and say which.
+
+Owns: `apps/web/src/pages/HouseholdPlanPage.tsx` (+ test). Size **S**.
+
+---
+
+## WP-BI · A contribution cannot be recorded for a month that has not started
+
+**Goal:** decision 43. Reuse `refuseFutureMonth(month, verb)` — WP-AP already
+extracted it and applied it to `PATCH`; the two ends stop disagreeing.
+
+The boundary is **"has not started", not "is not past"**: the current month is
+still accepted, and an off-by-one here silently blocks the common case. **An
+export written before this change must still import** — `portability.ts` creates
+contributions on restore, and a backup that stops restoring is a worse defect
+than the one being fixed.
+
+Owns: `apps/api/src/server.ts` (contribution region), `server.test.ts`,
+`packages/contracts/src/index.ts` (`createContributionBody` only). Size **S**.
+**Choke point: `apps/api/src/server.ts`.**
+
+---
+
+## WP-BJ · A reader is not "a household member" to themselves
+
+**Goal:** decision 44, fixed client-side from `/api/me`, at
+`AccountMovements.tsx:551`, `PlanTable.tsx:362` and `needsYou.ts:566`.
+
+**The half that is easy to break:** a _different_ reader must still see the
+anonymised fallback. Decision 41 must not regress, and the two-viewer fixture
+(WP-BB's, extended by WP-BG with an outsider reachable via one inflow from an
+outside account) is how you prove it. Note the refresh cookie **rotates**, so one
+`storageState` cannot be replayed into two contexts — log in freshly per context.
+
+Owns: those three files (+ tests). Size **S**.
+
+---
+
 ## Waves
 
 | Wave | Packages                                      | Notes                                                                                                    |
@@ -843,7 +913,8 @@ Owns: `packages/domain/src/scope.ts`, `apps/api/src/plan.ts`,
 | 5    | WP-AV + WP-AR + WP-BB                         | portability+contracts · web account page+`lib/api.ts` · `server.ts` flow region+`lib/flow.ts`            |
 | 6    | WP-AZ + WP-BE                                 | AZ owns `apps/web/e2e/` + `ci.yml`; BE owns `server.ts` reality region + `contracts` — disjoint          |
 | 7    | WP-BF                                         | **alone** — owns `apps/api/src/server.ts`, `notify.ts` and `packages/domain/src/household.ts`            |
-| 8    | WP-BA + WP-BG                                 | BA owns `apps/web/src/lib/**`; BG owns `packages/domain/src/scope.ts` + `apps/api` — disjoint            |
+| 8    | WP-BA + WP-BG                                 | BA owns `apps/web/src/lib/**`; BG owns `apps/api/src/plan.ts` + `server.ts` — disjoint                   |
+| 9    | WP-BH + WP-BI + WP-BJ                         | one web page · the api contribution region · three web components — three-way disjoint                   |
 
 WP-BA is deliberately **last**, after WP-BF: it counts the requests a real
 session makes, and WP-BF changes what several of those requests return. Measuring
