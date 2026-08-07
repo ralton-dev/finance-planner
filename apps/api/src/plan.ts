@@ -517,6 +517,33 @@ async function closeScope(
  * does, so that a sender pulled in from outside the household cannot take a slice
  * of its shared rent. Their own personal bills are still attributed to them,
  * which is what they were pulled in for.
+ *
+ * ## A scope is not a roster (decision 41)
+ *
+ * That outsider branch is why this set is **wider than any roster**: `closeScope`
+ * walks funding edges, so one authored inflow from an outside account is enough
+ * to put a stranger in a household's scope. Right for the arithmetic — their
+ * money is genuinely in the picture — and wrong for their **name**, which no
+ * household here has any licence to publish. So when a household applies, an
+ * outsider joins with a share of zero and no `displayName` at all.
+ *
+ * Everything downstream reads this one set. `memberNames` is built from it and
+ * is gated by the endpoints on **household visibility**, never on membership —
+ * `/api/flow`'s ribbons, `planInflowSources` and `inflowSourcesFor` all read it
+ * that way — and `input.members` carries the name on into `labels.users`,
+ * `trace.members` and `ScopeMemberPlan.displayName`. Withholding it here is what
+ * makes those five surfaces right at once instead of five times over.
+ *
+ * **No figure moves.** The pass is never told a name for any purpose but
+ * carrying it back out (`scope.ts`'s two `displayName:` sites are both writes
+ * into output), and the member row itself is untouched: `leftoverMinor` and
+ * `membersLeftoverMinor` are sums over these rows and decision 13 fixes their
+ * meaning to the penny, so dropping the row — rather than the name — would be a
+ * different decision from this one.
+ *
+ * When no household applies there is nobody to withhold from: the scope's
+ * members are the owners of its own accounts, at 100%, and the endpoints publish
+ * only the caller's own name out of it. The solo case keeps its name.
  */
 async function scopeMembers(
   store: Store,
@@ -530,16 +557,19 @@ async function scopeMembers(
       if (!members.has(m.userId)) members.set(m.userId, m);
     }
   }
-  const outsiderShareBp = households.size > 0 ? 0 : 10_000;
+  // One fact, read once, deciding both halves of what an outsider is: a share
+  // they cannot spend and a name nobody may be told. Reading the share back as
+  // the condition would tie the name to a number that is free to change.
+  const householdApplies = households.size > 0;
   for (const entry of accounts) {
     if (householdOf.has(entry.account.id)) continue;
     const owner = entry.account.ownerUserId;
     if (members.has(owner)) continue;
-    const user = await store.getUserById(owner);
+    const user = householdApplies ? null : await store.getUserById(owner);
     members.set(owner, {
       userId: owner,
-      displayName: user?.displayName,
-      shareBp: outsiderShareBp,
+      ...(user?.displayName === undefined ? {} : { displayName: user.displayName }),
+      shareBp: householdApplies ? 0 : 10_000,
     });
   }
   return [...members.values()];

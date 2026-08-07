@@ -663,3 +663,155 @@ describe("the scope loader — whose account each one is", () => {
     );
   });
 });
+
+// =============================================================================
+// A scope is not a roster
+// =============================================================================
+
+/**
+ * **The scope is deliberately wider than any roster** — right for arithmetic,
+ * wrong for names (decision 41).
+ *
+ * `closeScope` walks funding edges, so one authored inflow from an outside
+ * account puts its owner in the scope: `scopeMembers`' outsider branch adds them
+ * at a **zero** share so they cannot take a slice of a household's shared rent,
+ * and their own bills are still attributed to them, which is what they were
+ * pulled in for. Their name has no such reason to be there. Three surfaces read
+ * `memberNames` gated on **household visibility** and never on membership —
+ * `/api/flow`'s ribbons, `planInflowSources`, and `inflowSourcesFor` below — so
+ * a household of two could publish a third person's display name.
+ *
+ * WP-BF fixed `householdPlanFromScope` by filtering its output against the
+ * roster. This is the same fact at its source, which is why the other three need
+ * no gate of their own: the name is never published, so no reader can be told
+ * it.
+ *
+ * **The name only.** Her row and her figures stay: `leftoverMinor` and
+ * `membersLeftoverMinor` are sums over these member rows and decision 13 fixes
+ * their meaning to the penny. Every figure pinned below was read off the parent
+ * commit and is unchanged by the withholding — the pass is never told a name for
+ * anything but carrying it back out again.
+ */
+describe("the scope loader — a scope is not a roster", () => {
+  const user = (email: string, displayName: string) =>
+    store.createUser({ email, passwordHash: null, displayName });
+
+  /**
+   * A household of two with a lodger: Carol is on nobody's roster and pays £500
+   * a month into the house pot from her own account. That inflow is the whole
+   * of her relationship to this household, and it is enough to put her in its
+   * scope.
+   */
+  async function householdWithALodger() {
+    const alice = await user("alice@example.com", "Alice");
+    const bob = await user("bob@example.com", "Bob");
+    const carol = await user("carol@example.com", "Carol Outsider");
+    const household = await store.createHousehold("Home", alice.id);
+    await store.addMembership(household.id, bob.id, "member");
+    await store.updateMembershipShare(household.id, alice.id, 6000);
+    await store.updateMembershipShare(household.id, bob.id, 4000);
+
+    const aliceCur = await account(alice.id, "alice-cur");
+    const bobCur = await account(bob.id, "bob-cur");
+    const bills = await account(alice.id, "house-bills");
+    await salary(aliceCur, 300_000);
+    await salary(bobCur, 200_000);
+    await bill(bills, "Rent", 100_000);
+    for (const [accountId, role, memberUserId] of [
+      [aliceCur.id, "personal", alice.id],
+      [bobCur.id, "personal", bob.id],
+      [bills.id, "shared", null],
+    ] as const) {
+      await store.upsertAccountAssignment({
+        householdId: household.id,
+        accountId,
+        role,
+        memberUserId,
+      });
+    }
+
+    // Carol's own pair, assigned to nothing: the salary account the lodging
+    // comes out of, and a pot of her own with a bill on it, so the pass derives
+    // a transfer that is hers and names her on it.
+    const carolCur = await account(carol.id, "carol-cur");
+    const carolPot = await account(carol.id, "carol-pot");
+    await salary(carolCur, 500_000);
+    await bill(carolPot, "Car insurance", 30_000);
+    await movement(carolCur, bills, 50_000);
+
+    return { alice, bob, carol, household, aliceCur, bobCur, bills, carolCur, carolPot };
+  }
+
+  it("puts an outsider in the arithmetic and keeps their name out of it", async () => {
+    const { alice, bob, carol, bills, carolCur, carolPot } = await householdWithALodger();
+    const scope = await scopeForAccount(store, bills, ASOF);
+
+    // She is in the scope, by the funding edge and by her own sibling account.
+    expect(scope.accountIds).toEqual(expect.arrayContaining([carolCur.id, carolPot.id]));
+    const carolRow = scope.input.members.find((m) => m.userId === carol.id)!;
+    expect(carolRow).toBeDefined();
+    // Zero share: a sender pulled in from outside cannot take a slice of the
+    // household's rent. That is the row's whole reason to exist here.
+    expect(carolRow.shareBp).toBe(0);
+
+    // And her name is not published, to anybody, by anything.
+    expect(carolRow.displayName).toBeUndefined();
+    expect([...scope.memberNames.entries()].sort()).toEqual(
+      [
+        [alice.id, "Alice"],
+        [bob.id, "Bob"],
+      ].sort(),
+    );
+
+    // `inflowSourcesFor` is `plan.ts`'s own reader of that map, and the one both
+    // gated endpoints go through. Her transfer is still itemised, in full, to
+    // the penny; it simply has nobody's name on it.
+    const arriving = inflowSourcesFor(scope, carolPot.id, "GBP");
+    expect(arriving).toHaveLength(1);
+    expect(arriving[0]).toMatchObject({
+      memberUserId: carol.id,
+      fromAccountId: carolCur.id,
+      amountMinor: 30_000,
+      confirmedMinor: 0,
+    });
+    expect(arriving[0]!.displayName).toBeUndefined();
+    expect(JSON.stringify(arriving)).not.toContain("Carol Outsider");
+    expect(JSON.stringify(scope.input)).not.toContain("Carol Outsider");
+  });
+
+  /** The mirror, and the half easiest to break: the roster's own names are
+   *  published exactly as before, and so is every figure in the scope. */
+  it("names the roster, and moves no figure", async () => {
+    const { alice, bob, carol, bills } = await householdWithALodger();
+    const scope = await scopeForAccount(store, bills, ASOF);
+    const gbp = scope.plan.partitions.find((p) => p.currency === "GBP")!;
+
+    const rowOf = (userId: string) => gbp.members.find((m) => m.userId === userId)!;
+    expect(rowOf(alice.id).displayName).toBe("Alice");
+    expect(rowOf(bob.id).displayName).toBe("Bob");
+
+    // Every figure below was read off the parent commit, with the name still on
+    // the wire. Decision 13's two sums are the last two.
+    expect(gbp.members.map((m) => [m.userId, m.shareBp, m.monthlyIncomeMinor])).toEqual([
+      [alice.id, 6000, 300_000],
+      [bob.id, 4000, 200_000],
+      [carol.id, 0, 500_000],
+    ]);
+    expect(rowOf(carol.id).obligationMinor).toBe(30_000);
+    expect(gbp.transfers.map((t) => [t.memberUserId, t.amountMinor]).sort()).toEqual(
+      [
+        [alice.id, 60_000],
+        [bob.id, 40_000],
+        [carol.id, 30_000],
+      ].sort(),
+    );
+    expect(gbp.members.map((m) => [m.leftoverMinor, m.availableLeftoverMinor])).toEqual([
+      [240_000, 240_000],
+      [160_000, 160_000],
+      // Carol's £500 of lodging leaves her account as a movement, so it is
+      // reserved rather than free — the one row where the two differ.
+      [470_000, 420_000],
+    ]);
+    expect(gbp.accounts.map((a) => a.leftoverMinor).reduce((s, n) => s + n, 0)).toBe(870_000);
+  });
+});
