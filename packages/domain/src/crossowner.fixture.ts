@@ -21,7 +21,7 @@ import type { ScopeInput } from "./scope.js";
  * implementation wired to `residual + committed` over the household roster
  * passes every estate figure. Here it does not: Bob's £400 is added back into
  * his current account's roster figure **and** counted again in the pot's
- * residual, so the roster basis reads £3,300 where the members' sum is £2,900.
+ * residual, so the roster basis reads £3,300 where the members' sum is £2,500.
  *
  * **And a derived transfer provably cannot produce the case.** The pass derives
  * transport equal to what the destination cannot pay out of its own income, so
@@ -61,12 +61,16 @@ import type { ScopeInput } from "./scope.js";
  * | `acc-x-bob-cur`    | 1500 − 300 − 400 = **£800**             | bob   |
  * | `acc-x-house-pot`  | 300 + 300 + 400 − 600 = **£400**        | alice |
  *
- * - **Alice £2,100** — her current account plus the pot, £400 of which is Bob's
- *   money sitting in an account of hers;
+ * - **Alice £1,700** — her current account, and nothing from the pot. The £400
+ *   is in an account of hers and is genuinely not hers to spend, so
+ *   `availableLeftoverMinor` leaves it out: an authored movement's arrival is
+ *   money in the place, not money free in it (`235988c`);
  * - **Bob £800**;
- * - **the household £2,900**, which is every pound of external income (£3,500)
- *   less every pound spent (£600). The £400 is counted once: added to Alice's
- *   figure and subtracted from Bob's.
+ * - **the members' sum £2,500**, which is `membersLeftoverMinor`. The roster
+ *   basis over the same three accounts reads £3,300, and £800 of daylight
+ *   between them is Bob's £400 counted at both ends — subtracting the £400
+ *   committed removes one end and still leaves the other at £2,900, which is
+ *   exactly why a household headline reads the ownership basis instead.
  *
  * Nothing here is tuned to a date: every income is monthly and the one bill is a
  * monthly recurring one, so the pass answers the same on any as-of date.
