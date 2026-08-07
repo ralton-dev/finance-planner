@@ -32,6 +32,28 @@ import type { FlowAccountDto, FlowDto, FlowEdgeDto } from "./types.js";
  * `packages/domain/src/scope.ts`.
  */
 
+/**
+ * What a node the caller may not see is called.
+ *
+ * A household's roster can hold an account assigned to it and shared with
+ * nobody, and a member opening that household's picture is entitled to the
+ * money in it and not to the name on it — so the endpoint sends the node with
+ * its figures and without its `name`, and this is the word the diagram puts
+ * there instead (decision 36). Anonymised, never dropped: an omitted node would
+ * unbalance every total on the screen, which is the lie `elsewhere` exists to
+ * avoid at the scope's edge.
+ *
+ * The absence is the server's; this only reads it. `PlanTable` prints "another
+ * account" for a sender it may not name and `TransferChecklist` prints exactly
+ * this phrase for a source off its page, both for the same reason.
+ */
+export const UNNAMED_ACCOUNT = "other account";
+
+/** An account as the diagram labels it — its name, or `UNNAMED_ACCOUNT`. */
+export function accountLabel(account: { name?: string }): string {
+  return account.name ?? UNNAMED_ACCOUNT;
+}
+
 /** Money entering from outside — own income, plus everything crossing the edge
  *  of what is drawn. The share denominator; see `visibleFlow`. */
 export function totalInflowMinor(

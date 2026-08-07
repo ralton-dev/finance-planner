@@ -5,7 +5,7 @@ import { ChartFrame } from "../components/ChartFrame.js";
 import { DownloadButton } from "../components/DownloadButton.js";
 import { FlowSankey } from "../components/FlowSankey.js";
 import { ApiError, api } from "../lib/api.js";
-import { parseAccountIds, visibleFlow } from "../lib/flow.js";
+import { accountLabel, parseAccountIds, visibleFlow } from "../lib/flow.js";
 import { formatMinor } from "../lib/money.js";
 import { deleteScope, readScopes, type SavedScope, saveScope } from "../lib/scopes.js";
 import { useAsync } from "../lib/useAsync.js";
@@ -325,7 +325,14 @@ export function FlowPage() {
                 {flow!.accounts.map((a) => (
                   <tr key={a.accountId} className={hidden.has(a.accountId) ? "dim-row" : ""}>
                     <td className="name sticky-col">
-                      <span>{a.name}</span>
+                      {/* An account on this household's roster that the reader
+                          may not see arrives with its figures and without its
+                          name, and the row prints the absence rather than
+                          leaving a blank cell or dropping a row the totals
+                          above are counted over. See `accountLabel`. */}
+                      <span className={a.name === undefined ? "muted" : undefined}>
+                        {accountLabel(a)}
+                      </span>
                       {a.shortfallMinor > 0 && (
                         <span className="row-sub">
                           {"short "}
@@ -357,7 +364,7 @@ export function FlowPage() {
                         type="button"
                         className="ghost tiny"
                         aria-pressed={!hidden.has(a.accountId)}
-                        aria-label={`${hidden.has(a.accountId) ? "show" : "hide"} ${a.name}`}
+                        aria-label={`${hidden.has(a.accountId) ? "show" : "hide"} ${accountLabel(a)}`}
                         onClick={() => toggleVisible(a.accountId)}
                       >
                         {hidden.has(a.accountId) ? "show" : "hide"}

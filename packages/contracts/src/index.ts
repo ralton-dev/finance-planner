@@ -678,6 +678,50 @@ export type ExportFile = z.infer<typeof exportFileSchema>;
 export type ExportAccount = z.infer<typeof exportAccount>;
 export type ExportPayment = z.infer<typeof exportPayment>;
 
-/** Import takes exactly what export produced. Same schema, both directions. */
-export const importBody = exportFileSchema;
+/**
+ * Import takes what export produced — and refuses what it cannot restore.
+ *
+ * An account name is this file's only way of saying *which account*. A movement
+ * names the account it leaves, a derived confirmation names its sender, and a
+ * contribution names the confirmation that wrote it, all by name, because ids
+ * are minted fresh on import. Two accounts called the same thing make every one
+ * of those references ambiguous, and resolving them to whichever account came
+ * first is a guess wearing a restore's clothes: **the file is refused, naming
+ * the duplicate** (Ben, 2026-08-07, decision 29).
+ *
+ * Refused whole, and whether or not anything in it happens to point at the twin.
+ * A document whose names are not identities is not one this schema can promise
+ * to restore, and "it would have been fine this time" is not a property a backup
+ * should be trusted on.
+ *
+ * The rule lives here, at the one point the file is validated, rather than at
+ * each of the four places a name is looked up — so it is asked once, and
+ * answered before a single row is written.
+ *
+ * `exportFileSchema` itself stays permissive on purpose: a user really can own
+ * two accounts called "Savings", and the export of that estate is an honest
+ * record of it. What it is not is importable, and the loud refusal is the point
+ * — the alternative is a restore that silently reassembles somebody's money
+ * under the wrong account.
+ */
+export const importBody = exportFileSchema.superRefine((file, ctx) => {
+  const firstIndex = new Map<string, number>();
+  const count = new Map<string, number>();
+  file.accounts.forEach((a, index) => {
+    if (!firstIndex.has(a.name)) firstIndex.set(a.name, index);
+    count.set(a.name, (count.get(a.name) ?? 0) + 1);
+  });
+  for (const [name, n] of count) {
+    if (n < 2) continue;
+    // Single quotes around the name deliberately: this message travels to the
+    // client inside a JSON-encoded issue list, and a double-quoted name comes
+    // out the far side backslash-escaped and harder to read than the name it
+    // is trying to show somebody.
+    ctx.addIssue({
+      code: "custom",
+      path: ["accounts", firstIndex.get(name)!, "name"],
+      message: `${n} accounts in this file are named '${name}'. An account name is how this file says which account, so a repeated one cannot be restored faithfully - rename one of them and export again.`,
+    });
+  }
+});
 export type ImportBody = ExportFile;

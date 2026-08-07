@@ -79,9 +79,12 @@ const FLOW: FlowDto = {
   totalInflowMinor: 440_000,
 };
 
+// Every account of this fixture is one Alice can see, so every one of them has
+// a name; a flow node's name is optional because an account on a household's
+// roster she may not see arrives without one (decision 36).
 const ACCOUNTS: AccountDto[] = FLOW.accounts.map((a) => ({
   id: a.accountId,
-  name: a.name,
+  name: a.name ?? a.accountId,
   description: null,
   currency: "GBP",
   openingBalanceMinor: 0,

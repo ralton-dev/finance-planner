@@ -1,3 +1,4 @@
+import { importBody } from "@finance-planner/contracts";
 import type { ExportAccount, ExportFile } from "@finance-planner/contracts";
 import type { Account, Store } from "@finance-planner/data";
 
@@ -252,9 +253,9 @@ export async function buildExport(
  * delete their accounts first — a destructive import would be a much sharper
  * tool than a restore button needs to be.
  *
- * Imported contributions are attributed to the importing user and carry no
- * transfer confirmation: the household transfer they may once have recorded
- * doesn't exist on this side of the import.
+ * Imported contributions are attributed to the importing user. One that a
+ * confirmation in the same file wrote comes back tied to it; see the
+ * `confirmationKey` comments below for which ties can travel and which cannot.
  *
  * Accounts are all created first, before anything inside them, because a
  * movement names the account it comes from and that account may appear later in
@@ -264,8 +265,17 @@ export async function buildExport(
 export async function importExport(
   store: Store,
   userId: string,
-  file: ExportFile,
+  input: ExportFile,
 ): Promise<ImportCounts> {
+  // Validated here and not only at the route, because "nothing is written"
+  // is a promise about this function rather than about one caller of it: the
+  // duplicate-account-name refusal (decision 29, and see `importBody`) has to
+  // be answered before the first `createAccount`, for the route and for
+  // anything else that ever calls this. The same schema the route parses with,
+  // so there is one rule and not two — re-running it over an already-parsed
+  // file costs a walk of the document and buys a guarantee.
+  const file = importBody.parse(input);
+
   const counts: ImportCounts = {
     accounts: 0,
     incomes: 0,
@@ -279,10 +289,10 @@ export async function importExport(
     projects: 0,
   };
 
-  // Pass one: the accounts themselves, and the name → id map a movement needs.
-  // A file naming two accounts the same keeps the first, which is the same rule
-  // `accountPlacements` uses for an account assigned twice: deterministic, and
-  // never a reference to nothing.
+  // Pass one: the accounts themselves, and the name → id map a movement, a
+  // derived confirmation and a contribution's tie all resolve through. Every
+  // name in it is unique — the schema above refuses a file where one is not —
+  // so this map answers "which account" rather than guessing at it.
   const created = new Map<string, string>();
   const accounts: { input: ExportFile["accounts"][number]; account: Account }[] = [];
   for (const a of file.accounts) {
@@ -295,7 +305,7 @@ export async function importExport(
       monthlyBufferMinor: a.monthlyBufferMinor,
     });
     counts.accounts += 1;
-    if (!created.has(a.name)) created.set(a.name, account.id);
+    created.set(a.name, account.id);
     accounts.push({ input: a, account });
   }
 

@@ -1924,8 +1924,20 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    *
    * The pass reaches beyond the picture, to whatever the drawn accounts share
    * money with; only the requested accounts are drawn, and money crossing that
-   * edge is drawn with a null end. Access is checked per account, so a set is
-   * exactly as visible as its least visible member.
+   * edge is drawn with a null end.
+   *
+   * **An account you cannot see is drawn, not refused** (decision 36). Access is
+   * checked per account and decides two separate things. Whether the account may
+   * be drawn at all is the leak rule: no relationship to it — no share, and not
+   * on the roster of a household the caller belongs to — and the answer is the
+   * same 404 an id that does not exist gets, because its existence is not the
+   * caller's to learn. Whether its *name* travels is `view`. So a member of a
+   * household holding an assigned-but-unshared account gets the diagram with
+   * that account's money in it and no name on it: `/api/households/:id/plan`
+   * already shows the same member the same money in aggregate, by design and by
+   * comment, so refusing the whole picture withheld nothing and cost them the
+   * one drawing that would have balanced. Omitting the account instead would
+   * unbalance every total the reader can check.
    *
    * **Visibility is not scope.** Hiding a noisy account from a diagram is a
    * presentation act and must not change a computed figure, so it is never sent
@@ -1960,14 +1972,44 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     }
 
     const ability = await abilityFor(userId);
+
+    /**
+     * Every account on the roster of a household the caller belongs to.
+     *
+     * The api's ability deliberately knows nothing about households — see
+     * `abilityFor`, which passes an empty membership list — so this is the one
+     * question it cannot answer and the store has to. Read at most once per
+     * request, and only when the scope holds an account the caller cannot view:
+     * the ordinary picture, every account of it visible, costs exactly the
+     * queries it always did.
+     */
+    let rosters: Promise<Set<string>> | undefined;
+    const assignedToMyHouseholds = (): Promise<Set<string>> =>
+      (rosters ??= store.listHouseholdsForUser(userId).then(async (households) => {
+        const assignments = await Promise.all(
+          households.map((h) => store.listAccountAssignments(h.id)),
+        );
+        return new Set(assignments.flat().map((a) => a.accountId));
+      }));
+
     const scope: Account[] = [];
+    /** Drawn with its money and without its name. */
+    const unnamed = new Set<string>();
     for (const id of ids) {
       const ref = subject("Account", { id });
-      if (!ability.hasAnyAccess(ref) || !ability.can("view", ref)) {
+      // Two questions, and only the first is the 404-vs-403 leak rule.
+      // `hasAnyAccess` asks whether the caller has any relationship to this
+      // account; membership of a household it is assigned to is a second way to
+      // have one, and it is the way this diagram is most often asked for. A
+      // stranger's account is still not there and never was. `can("view")` then
+      // decides one thing only: whether the name travels.
+      const nameable = ability.hasAnyAccess(ref) && ability.can("view", ref);
+      if (!nameable && !(await assignedToMyHouseholds()).has(id)) {
         throw new HttpError(404, "not_found", "Account not found");
       }
       const account = await store.getAccount(id);
       if (!account) throw new HttpError(404, "not_found", "Account not found");
+      if (!nameable) unnamed.add(id);
       scope.push(account);
     }
 
@@ -2007,8 +2049,20 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return {
       asOfDate,
       currency: currencies[0]!,
+      // **The name is dropped here, on the wire.** Every figure above was
+      // computed over the whole scope — an account left out of the pass would
+      // take its money out of everyone else's plan — and only the response
+      // withholds anything. Absence, not a stand-in: `accountName`,
+      // `toAccountName` and `memberName` are all gated by simply not being
+      // there, and a client that renders the same honest absence for a sender
+      // it cannot see renders it for a node. A placeholder invented here would
+      // also be indistinguishable from an account genuinely called that.
       accounts: picture.flatMap((entry) =>
-        flows.flatMap((f) => f.accounts.filter((a) => a.accountId === entry.accountId)),
+        flows.flatMap((f) =>
+          f.accounts
+            .filter((a) => a.accountId === entry.accountId)
+            .map(({ name, ...node }) => (unnamed.has(entry.accountId) ? node : { ...node, name })),
+        ),
       ),
       edges: flows.flatMap((f) => f.edges),
       totalInflowMinor: flows.reduce((sum, f) => sum + f.totalInflowMinor, 0),

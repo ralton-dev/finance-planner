@@ -397,36 +397,6 @@ describe("importExport — movements survive the round trip", () => {
     expect(await importExport(store, userId, file)).toMatchObject({ accountInflows: 0 });
   });
 
-  it("resolves a repeated account name to the first of them", async () => {
-    const userId = await seedUser();
-    const file = exportFileSchema.parse({
-      version: 1,
-      exportedAt: "2026-08-04T00:00:00.000Z",
-      accounts: [
-        { name: "Twin", currency: "GBP" },
-        { name: "Twin", currency: "GBP" },
-        {
-          name: "Pot",
-          currency: "GBP",
-          accountInflows: [
-            {
-              name: "Top-up",
-              fromAccountName: "Twin",
-              amountMinor: 10_000,
-              frequency: "monthly",
-              anchorDate: "2026-08-25",
-            },
-          ],
-        },
-      ],
-    });
-    await importExport(store, userId, file);
-    const restored = await store.listAccountsForOwner(userId);
-    const twins = restored.filter((a) => a.name === "Twin");
-    const pot = restored.find((a) => a.name === "Pot")!;
-    expect((await store.listInflows(pot.id))[0]!.sourceAccountId).toBe(twins[0]!.id);
-  });
-
   it("imports a file written before movements existed", async () => {
     const userId = await seedUser();
     const file = exportFileSchema.parse({
@@ -503,6 +473,117 @@ describe("importExport — movements survive the round trip", () => {
       contributions: 1,
       balanceSnapshots: 1,
     });
+  });
+});
+
+/**
+ * Two accounts with the same name — the fixture nothing else in this repository
+ * has, and without which #52 is invisible.
+ *
+ * An account name is the file's only way of saying *which* account: a movement
+ * names the account it leaves, a derived confirmation names its sender, a
+ * contribution names the confirmation that wrote it. The import used to resolve
+ * a repeated name to whichever account came first, which is a guess, so a file
+ * carrying one is now refused whole (decision 29).
+ *
+ * The figures here are deliberately not round. A restore reassembles somebody's
+ * actual money, and £122.37 is what that looks like.
+ */
+describe("importExport — a file whose names are not identities is refused", () => {
+  const twinFile = () =>
+    exportFileSchema.parse({
+      version: 1,
+      exportedAt: "2026-08-04T00:00:00.000Z",
+      accounts: [
+        { name: "Savings", currency: "GBP", openingBalanceMinor: 12_237 },
+        { name: "Everyday", currency: "GBP", openingBalanceMinor: 41_908 },
+        { name: "Savings", currency: "GBP", openingBalanceMinor: 409 },
+        {
+          name: "Bills pot",
+          currency: "GBP",
+          accountInflows: [
+            {
+              name: "Savings top-up",
+              fromAccountName: "Savings",
+              amountMinor: 8_144,
+              frequency: "monthly",
+              anchorDate: "2026-08-25",
+            },
+          ],
+        },
+      ],
+      projects: [{ name: "Kitchen" }],
+      closes: [
+        {
+          month: "2026-07-01",
+          currency: "GBP",
+          incomeMinor: 301_17,
+          plannedMinor: 88_43,
+          contributedMinor: 88_43,
+        },
+      ],
+    });
+
+  it("refuses a file with two accounts of the same name, naming the duplicate", async () => {
+    const userId = await seedUser();
+
+    const refused = await importExport(store, userId, twinFile()).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(Error);
+    expect((refused as Error).message).toMatch(/2 accounts in this file are named 'Savings'/);
+    // The duplicate, named — not a shrug about a bad file. The account that is
+    // only there once is not accused of anything.
+    expect((refused as Error).message).not.toMatch(/Everyday/);
+  });
+
+  it("writes nothing when it refuses", async () => {
+    const userId = await seedUser();
+
+    await expect(importExport(store, userId, twinFile())).rejects.toThrow();
+
+    // Not merely "the call failed". Accounts are the first thing an import
+    // creates and projects and closes the last, so an estate with none of any
+    // of them is proof it stopped before the first row rather than part-way
+    // through leaving half a restore behind.
+    expect(await store.listAccountsForOwner(userId)).toEqual([]);
+    expect(await store.listProjectsForOwner(userId)).toEqual([]);
+    expect(await store.listMonthCloses({ userId })).toEqual([]);
+  });
+
+  it("refuses a repeated name even when nothing in the file points at it", async () => {
+    // What is wrong is the document, not one reference in it. "It would have
+    // been fine this time" is not a property to trust a backup on.
+    const userId = await seedUser();
+    const file = exportFileSchema.parse({
+      version: 1,
+      exportedAt: "2026-08-04T00:00:00.000Z",
+      accounts: [
+        { name: "Joint", currency: "GBP" },
+        { name: "Joint", currency: "GBP" },
+      ],
+    });
+
+    await expect(importExport(store, userId, file)).rejects.toThrow(/named 'Joint'/);
+    expect(await store.listAccountsForOwner(userId)).toEqual([]);
+  });
+
+  /**
+   * The asymmetry, stated on purpose: a person really can own two accounts
+   * called "Savings", and the export of that estate is an honest record of it.
+   * What it is not is restorable, and saying so at the restore is better than a
+   * backup that silently reassembles their money under the wrong account.
+   */
+  it("still exports an estate whose accounts share a name — it is the restore that refuses", async () => {
+    const userId = await seedUser();
+    await account(userId, "Savings");
+    await account(userId, "Savings");
+
+    const file = await buildExport(store, userId, ASOF);
+    expect(file.accounts.map((a) => a.name)).toEqual(["Savings", "Savings"]);
+    expect(exportFileSchema.safeParse(file).success).toBe(true);
+
+    await expect(importExport(store, await seedUser("restore@example.com"), file)).rejects.toThrow(
+      /named 'Savings'/,
+    );
   });
 });
 

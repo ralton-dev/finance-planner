@@ -910,7 +910,12 @@ export type FlowEdgeStatus = "funded" | "short" | "unfunded" | "broken_cycle" | 
 
 export interface FlowAccountDto {
   accountId: string;
-  name: string;
+  /** The account's name, when the caller may be told it. Absent for an account
+   *  drawn because it is on a household's roster and not because the caller can
+   *  see it: the money is theirs to know and the name is not (decision 36). The
+   *  same absence `PlanTable` and `AccountMovements` already print — see
+   *  `accountLabel` in `lib/flow.ts`. */
+  name?: string;
   /** Money entering from outside the estate — never what another account sent. */
   incomeMinor: number;
   /** Obligations funded out of this account this month. */

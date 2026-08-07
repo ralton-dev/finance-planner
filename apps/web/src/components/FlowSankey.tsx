@@ -1,6 +1,7 @@
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { Layer, Rectangle, ResponsiveContainer, Sankey, Tooltip } from "recharts";
 import { type ChartColors, useChartColors } from "../lib/chartColors.js";
+import { accountLabel } from "../lib/flow.js";
 import { formatMinor } from "../lib/money.js";
 import type { FlowDto, FlowEdgeDto } from "../lib/types.js";
 
@@ -265,7 +266,11 @@ export function buildGraph(flow: FlowDto): {
   const nodes: SankeyNodeDatum[] = [];
   const links: SankeyLinkDatum[] = [];
   const accountNode = new Map<string, number>();
-  const accountName = new Map(flow.accounts.map((a) => [a.accountId, a.name]));
+  // What each account is called *here*. An account the caller may not see
+  // arrives with no name at all and is drawn as `UNNAMED_ACCOUNT` — with every
+  // figure it came with, because a node dropped for want of a name would
+  // unbalance the ones either side of it.
+  const nodeLabel = new Map(flow.accounts.map((a) => [a.accountId, accountLabel(a)]));
 
   const addNode = (name: string, isAccount: boolean): number => {
     nodes.push({ name, isAccount });
@@ -274,11 +279,12 @@ export function buildGraph(flow: FlowDto): {
 
   // Account nodes first so edges can reference them by index.
   for (const a of flow.accounts) {
-    accountNode.set(a.accountId, addNode(a.name, true));
+    accountNode.set(a.accountId, addNode(accountLabel(a), true));
   }
 
   for (const a of flow.accounts) {
     const idx = accountNode.get(a.accountId)!;
+    const name = accountLabel(a);
     if (a.incomeMinor > 0) {
       links.push({
         source: addNode("income", false),
@@ -286,7 +292,7 @@ export function buildGraph(flow: FlowDto): {
         value: a.incomeMinor,
         kind: "income",
         fromName: "income",
-        toName: a.name,
+        toName: name,
       });
     }
     if (a.spendingMinor > 0) {
@@ -295,7 +301,7 @@ export function buildGraph(flow: FlowDto): {
         target: addNode("spending", false),
         value: a.spendingMinor,
         kind: "spending",
-        fromName: a.name,
+        fromName: name,
         toName: "spending",
       });
     }
@@ -305,7 +311,7 @@ export function buildGraph(flow: FlowDto): {
         target: addNode("left over", false),
         value: a.leftoverMinor,
         kind: "leftover",
-        fromName: a.name,
+        fromName: name,
         toName: "left over",
       });
     } else if (a.leftoverMinor < 0) {
@@ -318,7 +324,7 @@ export function buildGraph(flow: FlowDto): {
         value: -a.leftoverMinor,
         kind: "consolidate",
         fromName: TO_CONSOLIDATE,
-        toName: a.name,
+        toName: name,
         note: "more is committed to leave here than reaches it",
       });
     }
@@ -345,8 +351,8 @@ export function buildGraph(flow: FlowDto): {
       target: to,
       value: e.amountMinor,
       kind: "transfer",
-      fromName: e.fromAccountId === null ? OFF_PICTURE : (accountName.get(e.fromAccountId) ?? ""),
-      toName: e.toAccountId === null ? OFF_PICTURE : (accountName.get(e.toAccountId) ?? ""),
+      fromName: e.fromAccountId === null ? OFF_PICTURE : (nodeLabel.get(e.fromAccountId) ?? ""),
+      toName: e.toAccountId === null ? OFF_PICTURE : (nodeLabel.get(e.toAccountId) ?? ""),
       ...(note !== undefined ? { note } : {}),
     });
   }
