@@ -1368,3 +1368,95 @@ describe("account settings + erasure", () => {
     expect(empty.statusCode).toBe(422);
   });
 });
+
+/** The rest of the suite builds apps with `rateLimit: false`. These build it
+ *  *on*, because the only evidence that the throttle is wired is a request that
+ *  comes back 429 — asserting that the plugin is registered passes against code
+ *  where the plugin never sees a single route. */
+function makeThrottledApp() {
+  const store = new MemoryStore();
+  const mailer = new LogMailer();
+  const app = buildServer({ store, mailer, env });
+  return { app, store, mailer };
+}
+
+describe("rate limiting", () => {
+  it("throttles /auth/register at 3 requests per window, with headers", async () => {
+    const { app, store } = makeThrottledApp();
+    // The route's rate-limit hook is installed by an onRoute hook that only sees
+    // routes declared after the plugin has booted. Registering the routes in a
+    // child plugin is what puts them on the right side of that boot; this test
+    // fails with a 201 if they ever move back.
+    const attempt = (n: number) =>
+      app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: { email: `rl${n}@example.com`, password: "password123", displayName: "RL" },
+      });
+
+    const first = await attempt(1);
+    const second = await attempt(2);
+    const third = await attempt(3);
+    expect([first.statusCode, second.statusCode, third.statusCode]).toEqual([201, 201, 201]);
+    // The allowance counts down over the accepted requests.
+    expect(first.headers["x-ratelimit-limit"]).toBe("3");
+    expect(first.headers["x-ratelimit-remaining"]).toBe("2");
+    expect(third.headers["x-ratelimit-remaining"]).toBe("0");
+
+    const fourth = await attempt(4);
+    expect(fourth.statusCode).toBe(429);
+    expect(fourth.headers["x-ratelimit-limit"]).toBe("3");
+    expect(fourth.headers["x-ratelimit-remaining"]).toBe("0");
+    // Both the reset and the retry-after are seconds remaining in the window.
+    expect(Number(fourth.headers["x-ratelimit-reset"])).toBeGreaterThan(0);
+    expect(Number(fourth.headers["retry-after"])).toBeGreaterThan(0);
+    expect(fourth.json().error.code).toBe("rate_limited");
+    // The throttled request must not have created the user it was refused: the
+    // limiter runs as an onRequest hook, ahead of the handler.
+    expect(await store.getUserByEmail("rl4@example.com")).toBeNull();
+
+    await app.close();
+  });
+
+  it("throttles login, password reset and the OIDC callback too", async () => {
+    // Every credential-guessing surface in the service, not just register.
+    const { app } = makeThrottledApp();
+    /** Send `max + 1` requests — one more than the route allows — and report
+     *  the status of the last one. */
+    const flood = async (
+      method: "GET" | "POST",
+      url: string,
+      max: number,
+      payload?: Record<string, string>,
+    ): Promise<number> => {
+      let status = 0;
+      for (let i = 0; i <= max; i++) {
+        const res = await app.inject({ method, url, payload });
+        status = res.statusCode;
+      }
+      return status;
+    };
+    // /auth/login is 5/min; /auth/password/forgot is 3/min. Neither depends on
+    // the credentials being valid — the throttle runs before the handler, so
+    // these come back 401/200 until the limit and 429 after it.
+    expect(await flood("POST", "/auth/login", 5, { email: "a@b.co", password: "nope12345" })).toBe(
+      429,
+    );
+    expect(await flood("POST", "/auth/password/forgot", 3, { email: "a@b.co" })).toBe(429);
+    // The OIDC callback is a GET at 20/min and carries its state in the query.
+    expect(await flood("GET", "/auth/oidc/callback?code=x&state=y", 20)).toBe(429);
+
+    await app.close();
+  });
+
+  it("leaves the throttle off when a caller opts out", async () => {
+    // What the rest of the suite relies on: back-to-back logins must not trip it.
+    const { app } = makeApp();
+    await app.inject({ method: "POST", url: "/auth/register", payload: register });
+    for (let i = 0; i < 8; i++) {
+      const res = await app.inject({ method: "POST", url: "/auth/login", payload: register });
+      expect(res.statusCode).toBe(200);
+    }
+    await app.close();
+  });
+});
