@@ -21,9 +21,28 @@ while being reported green:
 pnpm -w typecheck && pnpm lint && pnpm build && pnpm exec prettier --check . && pnpm test
 ```
 
-Plus `pnpm coverage` when `packages/domain` is touched (floor: **99.87% statements /
-95.84% branches** — do not ratchet down), and
+Plus `pnpm coverage` when `packages/domain` is touched, and
 `pnpm --filter @finance-planner/data test:int` when a migration is added.
+
+**What the coverage gate actually is.** The thresholds that fail the build live in
+`packages/domain/vitest.config.ts` — statements, lines and functions **95**, branches
+**80**. Those are the only numbers that can break CI; read them there rather than from
+here, because a figure copied into prose goes stale and this one did.
+
+For a long time this section named a floor of "99.87% statements / 95.84% branches —
+do not ratchet down". It was unmeetable. Measured on an unmodified tree on
+**2026-08-07**: **99.89% statements (969/970), 95.62% branches (546/571), 100%
+functions, 100% lines** — and 95.84% is not a value 571 branches can produce at all.
+Anyone obeying it literally would have concluded they had broken something they had
+not touched. The same tree measured identically under vitest 4.1.8 and 4.1.10, which
+is worth knowing on its own: a coverage-tool bump is not a plausible explanation for a
+number that moved.
+
+The anti-ratchet intent was right even though the number was wrong, so keep it, and
+keep it honest: the enforced thresholds are a floor with a lot of slack, and coverage
+sliding from 95.6% branches to 80.1% would pass CI in silence. Treat the observed
+figures above as the reference a change should be explained against, re-measure rather
+than trusting them, and **date any figure you write down here**.
 
 `prettier --check` is repo-wide and fatal. A stray untracked file breaks it.
 
@@ -134,18 +153,44 @@ statically — Vite's proxy is hardcoded. **Forward every response header includ
 `getSetCookie()`**: a harness that dropped `set-cookie` silently 401'd every navigation
 and cost an agent its whole browser pass.
 
-**There is no `tsx` binary**, in `node_modules/.bin` or on the path, so a harness
-written as `tsx harness.ts` fails before it does anything and reads like a missing
-dependency. The package is installed; only the shim is absent. Run the loader
-directly:
+**There is no `tsx` binary in the _root_ `node_modules/.bin`**, so a harness run as
+`tsx harness.ts` from the repo root fails before it does anything and reads like a
+missing dependency. `tsx` is a devDependency of the three services, not of the root,
+and pnpm links a binary only into the packages that declare it. So the shim does
+exist — one per service:
 
 ```
-node --import node_modules/.pnpm/tsx@4.22.3/node_modules/tsx/dist/loader.mjs harness.ts
+./apps/api/node_modules/.bin/tsx  harness.mts
+./apps/auth/node_modules/.bin/tsx harness.mts
+./apps/calc/node_modules/.bin/tsx harness.mts
 ```
+
+Use one of those. **Do not write down a `node --import .../.pnpm/tsx@<version>/...`
+loader path**, which is what this section used to recommend. That path carries the
+resolved version in it, so it is wrong again on the next bump — and it goes stale
+faster than that: the range `^4.23.1` resolved to **4.23.10** on the very install that
+introduced it. The per-app binary has no version in it and survives.
 
 Ports already spent, so the next run picks elsewhere: **4310–4312, 4410–4412 and
-4510–4512** across three harnesses in the mine-and-ours work. Three ports per harness,
-because auth, api and the static server each need one.
+4510–4512** across three harnesses in the mine-and-ours work, and **4610–4611, 4620,
+4630–4631** across the dependency-refresh harnesses. Three ports per harness, because
+auth, api and the static server each need one.
+
+**Name the harness `.mts`, not `.ts`.** The scratchpad has no `package.json`, so a
+`.ts` file there is treated as CommonJS and every top-level `await` fails at transform
+time with `Top-level await is currently not supported with the "cjs" output format` —
+a dozen errors that say nothing about the actual problem, which is the file extension.
+`.mts` forces ESM and the same file runs unchanged.
+
+A harness outside the repo also cannot resolve bare specifiers like `@finance-planner/data`
+or `jose`: the lookup walks up from the scratchpad and never reaches the repo's
+`node_modules`. Import by absolute `file://` URL instead, pointing straight at the
+TypeScript source — which is what the workspace packages export anyway:
+
+```
+const ROOT = "file:///abs/path/to/worktree";
+const { MemoryStore } = await import(`${ROOT}/packages/data/src/memory-store.ts`);
+```
 
 ## The scratchpad
 
