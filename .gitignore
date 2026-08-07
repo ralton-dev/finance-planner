@@ -13,3 +13,6 @@ playwright-report/
 .DS_Store
 .idea/
 .vscode/
+# Claude Code's agent worktrees live here. `prettier --check` is repo-wide and
+# fatal, so a half-written file in one would break the gate for everyone.
+.claude/
