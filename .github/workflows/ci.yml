@@ -91,11 +91,31 @@ jobs:
       - uses: azure/setup-helm@v5
       - name: Lint chart
         run: helm lint deploy/helm/finance-planner
-      - name: Render manifests (default + prod values)
+      # Renders both values files and checks which services get an HPA. auth
+      # must never get one: it holds refresh-token rotation state in process, so
+      # a second replica reads a retried refresh as token theft (see the note on
+      # its entry in values.yaml). Rendering alone asserts nothing about that.
+      - name: Render manifests and check which services autoscale
         run: |
-          helm template fp deploy/helm/finance-planner > /dev/null
-          helm template fp deploy/helm/finance-planner \
-            -f deploy/helm/finance-planner/values-prod.yaml > /dev/null
+          set -euo pipefail
+          assert_hpas() {
+            label=$1
+            shift
+            rendered=$(helm template fp deploy/helm/finance-planner "$@")
+            # Guard against a vacuous pass: prove auth is in this render at all,
+            # so an empty or half-rendered chart fails here rather than quietly
+            # matching no HPA and reporting success.
+            grep -q '^  name: fp-auth$' <<<"$rendered"
+            # Compare the whole set, so an HPA going missing fails as loudly as
+            # an auth HPA coming back.
+            echo "== $label"
+            diff <(printf 'fp-api\nfp-calc\nfp-web\n') \
+              <(awk '/^kind: HorizontalPodAutoscaler$/ {f=1; next}
+                     f && /^  name: / {print $2; f=0}' <<<"$rendered" | sort)
+          }
+          assert_hpas "default values"
+          assert_hpas "values-prod.yaml" -f deploy/helm/finance-planner/values-prod.yaml
+          echo "OK: api, calc and web autoscale; auth does not."
 
   # Build each architecture on its NATIVE runner — emulated (QEMU) arm64 builds
   # of the vite/esbuild bundles blew past GitHub's 6h job limit. Each leg pushes
