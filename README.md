@@ -334,13 +334,14 @@ deploy/
 
 ## Prerequisites
 
-- Node.js 22 (`.nvmrc`)
-- pnpm 10 (`corepack enable`)
+- Node.js 24 (`.nvmrc`)
+- pnpm 10 (via corepack — Node 25+ no longer bundles it)
 - Docker (for the full stack and integration tests)
 
 ## Getting started
 
 ```bash
+npm i -g corepack   # Node 25 dropped the bundled copy
 corepack enable
 pnpm install
 ```
@@ -398,7 +399,7 @@ probes `/healthz` on each service.
 ## Tooling
 
 - **Monorepo:** pnpm workspaces + Turborepo
-- **Language:** TypeScript (strict), Node 22
+- **Language:** TypeScript (strict), Node 24
 - **Frontend:** React 19 + Vite + React Router 7 (plain CSS — no Tailwind /
   no component library; design tokens in `apps/web/src/styles.css`). Recharts
   for charts, lazily loaded. Installable PWA (manifest + hand-written service
