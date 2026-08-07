@@ -148,6 +148,25 @@ Every brief gets: **never run `git stash`, `git checkout --`, `git restore`, or
 Expect to see the other agent's failures in a whole-repo run. Tell agents to check
 whether a failure is theirs before reacting to it.
 
+**Do not let agents use `git add` at all. Have them commit by explicit path:
+`git commit -- <path> <path>`.** "Stage owned paths explicitly, by name" is not
+enough, and the sentence above said exactly that for four plans while being
+insufficient. Concurrent agents share one working tree **and one git index**. In
+the said-and-done work, one agent staged its three files with `git add` and a
+second agent's `git commit` ran before the first's did — sweeping the first
+agent's finished work into a commit belonging to a different package, under a
+different message. It happened **twice in one wave**, to the same pair. Nothing
+was lost, because the code was correct and the tree was shared; what was lost was
+the provenance, which is most of what a commit is for.
+
+`git commit -- <paths>` bypasses the index entirely and cannot pick up another
+agent's staged work. It costs nothing and removes the whole class. The agent that
+diagnosed it put it best: _never `git add`; use `git commit -- <paths>`._
+
+A related consequence worth stating: **a wave's commits are not a reliable record
+of which package did what** unless this rule is followed. Verify by file, not by
+commit message, when it matters.
+
 ## Booting the app
 
 In DB-less dev mode the api and auth services each create **private** `MemoryStore`s,

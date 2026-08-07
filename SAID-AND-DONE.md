@@ -161,6 +161,25 @@ rebuilt; a project is personal or shared).
     cause** — a roster account owned by a non-member, where "elsewhere" is
     correct — so this wants **two words, not a swap**: the savings case reads
     _reserved_, the non-member case keeps _elsewhere_. Granted to WP-BE.
+41. **Decision 36 extends to every surface, not just the diagram** (Ben,
+    2026-08-07). WP-BB anonymised the flow and then found it was the **only** one
+    of several surfaces that withholds a name the viewer may not see. Four sites,
+    all verified on the wire: `apps/api/src/notify.ts:184` builds its name map
+    from `scope.input.accounts` — the whole planned scope, un-access-checked —
+    and names **both ends of every derived transfer**, in an email, where the
+    reader cannot re-check the gate; the same file gets it right 50 lines earlier
+    at `:136`, where `movementLines` looks the far end up in `visible` and falls
+    back to "another account". `GET /api/households/:id/accounts` and
+    `GET /api/households/:id/plan` name every assigned account.
+    `GET /api/debug/plan?household=` lets an account's **owner** being a
+    household member license that account's name, including a wholly private one.
+    And `householdPlanFromScope` filters `accounts`, `lines` and `transfers` to
+    the roster but leaves `members` unfiltered. WP-BF.
+
+    The cost is low and already anticipated by the client:
+    `HouseholdAccountPlanDto.name` is **already optional** and three client
+    surfaces already print a fallback for its absence — the server simply never
+    withholds it.
 
 **Also found stale, and worth deleting from `BACKLOG.md`:** the entry "A derived
 transfer you confirmed does not survive an export" is no longer true.
@@ -730,6 +749,43 @@ Size **M**. Depends: WP-BB and WP-AV (both free `server.ts` and `contracts`).
 
 ---
 
+## WP-BF · A name you may not see is withheld everywhere
+
+**Goal:** decision 41. Every surface answers the question the flow endpoint now
+answers — may this reader be told what this account is called?
+
+- **`apps/api/src/notify.ts:184` first.** It is the strongest of the four: an
+  email cannot be re-checked against the gate, and the file already holds the
+  correct pattern 50 lines above. Make the two agree.
+- `GET /api/households/:id/accounts`, `GET /api/households/:id/plan`,
+  `GET /api/debug/plan?household=`, and `householdPlanFromScope`'s unfiltered
+  `members`.
+- **Follow WP-BB's shape, do not invent a second one.** It chose **absence over
+  placeholder** — no `name` key on the wire at all — because the house already
+  does exactly that in `planInflowSources`, `withTransferDestinations`,
+  `withTransferSources` and the project route, and because a server-invented
+  "other account" is indistinguishable from an account genuinely called that.
+  The word lives client-side in `apps/web/src/lib/flow.ts` as
+  `accountLabel` / `UNNAMED_ACCOUNT`.
+- The api's ability **structurally cannot** answer household membership —
+  `abilityFor` passes `households: []` deliberately. WP-BB answered it from the
+  store, memoised per request. Reuse that rather than teaching
+  `packages/policies` about rosters, which would widen `requireAccess`
+  everywhere and hand every member the account detail page.
+
+**Acceptance:** for each of the four, a test asserting the forbidden name is **not
+on the wire** — matched on the encoded field (`"name":"…"`), since a substring
+match gives false positives on names that contain one another. The digest is
+verified by rendering one for a reader who cannot see the far account. Nothing a
+viewer _can_ see loses its name.
+
+Owns: `apps/api/src/server.ts`, `apps/api/src/notify.ts` (+ tests),
+`packages/domain/src/household.ts` (+ tests), and the web surfaces that print
+the fallback. Size **L**. Depends: WP-BE (frees `server.ts`).
+**Choke point: `apps/api/src/server.ts` — runs alone.**
+
+---
+
 ## Waves
 
 | Wave | Packages                                      | Notes                                                                                                    |
@@ -740,7 +796,12 @@ Size **M**. Depends: WP-BB and WP-AV (both free `server.ts` and `contracts`).
 | 4    | WP-AP + WP-BD                                 | AP owns `server.ts` **and** `packages/contracts` **and** all four data files; BD is `projection.ts` only |
 | 5    | WP-AV + WP-AR + WP-BB                         | portability+contracts · web account page+`lib/api.ts` · `server.ts` flow region+`lib/flow.ts`            |
 | 6    | WP-AZ + WP-BE                                 | AZ owns `apps/web/e2e/` + `ci.yml`; BE owns `server.ts` reality region + `contracts` — disjoint          |
-| 7    | WP-BA                                         | **alone** — owns `apps/web/src/lib/api.ts`, and needs AZ's harness to measure with                       |
+| 7    | WP-BF                                         | **alone** — owns `apps/api/src/server.ts`, `notify.ts` and `packages/domain/src/household.ts`            |
+| 8    | WP-BA                                         | **alone** — owns `apps/web/src/lib/api.ts`, and needs AZ's harness to measure with                       |
+
+WP-BA is deliberately **last**, after WP-BF: it counts the requests a real
+session makes, and WP-BF changes what several of those requests return. Measuring
+before it landed would date the numbers on the day they were written.
 
 Waves 1 and 2 have landed — `main` at `97e6a19`, five pins written and the two
 web ones already flipped. Waves 3–5 changed shape when decisions 36–38 were
