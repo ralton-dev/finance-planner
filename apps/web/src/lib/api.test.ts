@@ -23,6 +23,14 @@ function stubFetch(handler: (call: Call) => Response | Promise<Response>) {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+/** A token shaped like the one auth issues — HS256 header, `exp` in the payload,
+ *  a signature nobody here verifies — expiring `inSeconds` from now. */
+function jwt(inSeconds: number): string {
+  const b64 = (o: unknown) => btoa(JSON.stringify(o)).replace(/=+$/, "");
+  const exp = Math.floor(Date.now() / 1000) + inSeconds;
+  return `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ sub: "u1", exp })}.signature`;
+}
+
 describe("ApiClient.tryRefresh", () => {
   let client: ApiClient;
   beforeEach(() => {
@@ -102,6 +110,92 @@ describe("ApiClient.tryRefresh", () => {
 
     expect(stub.refreshes()).toHaveLength(1);
     expect(client.getToken()).toBe("fresh");
+  });
+});
+
+/**
+ * The burst WP-BA measured. A page mounts six or seven reads in one tick; if
+ * the access token has expired while the tab sat idle, every one of them 401s,
+ * one refresh runs, and every one of them is sent again. Counted in a browser
+ * against a real expired token: the account page sent **19** requests where it
+ * normally sends 12, and six of the nineteen were 401s.
+ *
+ * The token says when it expires. Reading that before sending turns 2N+1 into
+ * N+1 — and the 401 path stays exactly where it was, because a clock is not
+ * evidence and only the server can say a token is dead.
+ */
+describe("ApiClient · a token it can see has expired", () => {
+  let client: ApiClient;
+  beforeEach(() => {
+    client = new ApiClient();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("refreshes before sending, so a wave of reads costs no 401s at all", async () => {
+    client.setToken(jwt(-60));
+    const stub = stubFetch(({ url, authorization }) => {
+      if (url.endsWith("/api/auth/refresh")) return json({ accessToken: jwt(900) });
+      return authorization === "Bearer expired-token"
+        ? json({ error: { code: "unauthorized", message: "expired" } }, 401)
+        : json([]);
+    });
+
+    await Promise.all([client.listAccounts(), client.listProjects(), client.overview()]);
+
+    // One refresh for the wave, and one request each — never two.
+    expect(stub.refreshes()).toHaveLength(1);
+    expect(stub.calls).toHaveLength(4);
+  });
+
+  it("still sends when the refresh fails, and does not then refresh again", async () => {
+    // A dead refresh cookie. The server is the authority on the token, so the
+    // request goes anyway — but the retry has been spent, so the 401 is final
+    // and the client does not sit there refreshing per read.
+    client.setToken(jwt(-60));
+    const stub = stubFetch(({ url }) =>
+      url.endsWith("/api/auth/refresh")
+        ? json({ error: { code: "unauthorized", message: "no cookie" } }, 401)
+        : json({ error: { code: "unauthorized", message: "expired" } }, 401),
+    );
+
+    await expect(client.listAccounts()).rejects.toMatchObject({ status: 401 });
+
+    expect(stub.refreshes()).toHaveLength(1);
+    expect(stub.calls).toHaveLength(2);
+  });
+
+  it("leaves a token that is still good alone", async () => {
+    client.setToken(jwt(900));
+    const stub = stubFetch(() => json([]));
+
+    await client.listAccounts();
+
+    expect(stub.refreshes()).toHaveLength(0);
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("says nothing about a token it cannot read, and takes the 401 path", async () => {
+    // An opaque token — a test double, or an issuer that stops using JWTs. The
+    // expiry is unknown, so nothing is pre-empted and the behaviour is the one
+    // this client always had.
+    client.setToken("not-a-jwt");
+    const stub = stubFetch(({ url, authorization }) =>
+      url.endsWith("/api/auth/refresh")
+        ? json({ accessToken: "fresh" })
+        : authorization === "Bearer fresh"
+          ? json([])
+          : json({ error: { code: "unauthorized", message: "expired" } }, 401),
+    );
+
+    await client.listAccounts();
+
+    expect(stub.calls.map((c) => c.url)).toEqual([
+      "/api/accounts",
+      "/api/auth/refresh",
+      "/api/accounts",
+    ]);
   });
 });
 

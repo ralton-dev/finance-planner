@@ -119,20 +119,30 @@ export function OverviewPage() {
   // that same read already carries. Nothing on this page renders their lines.
   const households = me.data?.households ?? [];
   const householdKey = households.map((h) => h.id).join(",");
+  //
+  // Neither read is caught. Both used to be — the plan fell back to dropping
+  // the household, the confirmations to an empty list — and a 404 from
+  // `/api/households/:id/plan` therefore produced no error strip anywhere on
+  // this page: the household section simply was not there, and a reader had no
+  // way to tell "nothing to show" from "could not read it". A swallowed
+  // confirmations read is quieter still, because the card renders and only its
+  // "transfers to make" chip is missing, which reads as *nothing to do*.
+  //
+  // Letting them reject costs one thing: a household whose plan cannot be read
+  // takes the others down with it. A user is in at most one household (WP-W),
+  // so in practice there are no others — and where there are, one strip saying
+  // so beats one card silently absent.
   const plans = useAsync<HouseholdEntry[]>(
     () =>
       Promise.all(
-        households.map(async (household): Promise<HouseholdEntry | null> => {
-          const plan = await api.householdPlan(household.id).catch(() => null);
-          if (!plan) return null;
+        households.map(async (household): Promise<HouseholdEntry> => {
+          const plan = await api.householdPlan(household.id);
           // Server-side default is the current month, which is the month the
           // checklist filters to anyway.
-          const confirmations = await api
-            .listTransferConfirmations(household.id)
-            .catch((): TransferConfirmationDto[] => []);
+          const confirmations = await api.listTransferConfirmations(household.id);
           return { household, plan, confirmations };
         }),
-      ).then((entries) => entries.filter((e): e is HouseholdEntry => e !== null)),
+      ),
     [householdKey],
   );
 
@@ -248,6 +258,17 @@ export function OverviewPage() {
         <NoAccounts onSeeded={refetchAll} />
       ) : (
         <>
+          {/* Said before the checklist, because the checklist is what the
+              missing read would have filled: a household plan that will not
+              load takes its shortfall and transfer rows down with it, and a
+              fold with rows missing looks exactly like a fold with nothing to
+              do. */}
+          {plans.error && (
+            <p className="error" role="alert">
+              could not read your household plan — anything it was owed is missing below.
+            </p>
+          )}
+
           {/* The headline and the checklist must not appear before the data
               they are derived from, or the page greets you with a confident
               "nothing planned yet" it is about to take back. */}

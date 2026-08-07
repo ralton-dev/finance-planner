@@ -580,6 +580,42 @@ describe("OverviewPage — fold + doorways", () => {
     expect(stub.calls("GET /api/accounts/side/balances")).toBe(0);
   });
 
+  /**
+   * The failure this page used to eat. `1409e5f` deleted routes the client
+   * still called and CI stayed green; on this page a 404 from the household
+   * plan was invisible to a *person* too, because the read was caught and the
+   * household section simply was not rendered. "Nothing to show" and "could not
+   * read it" looked identical.
+   */
+  it("says so when the household plan cannot be read, rather than going quiet", async () => {
+    renderPlanned({
+      "GET /api/households/hh/plan": {
+        status: 404,
+        body: { error: { code: "not_found", message: "gone" } },
+      },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /could not read your household plan/,
+    );
+    expect(screen.queryByRole("link", { name: /Chestnut Road/ })).not.toBeInTheDocument();
+  });
+
+  it("says so when the confirmations behind the card cannot be read", async () => {
+    // Quieter than the plan failing and worse: the card renders, and only the
+    // "transfers to make" chip is missing — which reads as nothing to do.
+    renderPlanned({
+      "GET /api/households/hh/transfers/confirmations": {
+        status: 500,
+        body: { error: { code: "server_error", message: "boom" } },
+      },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /could not read your household plan/,
+    );
+  });
+
   it("sends an empty household to the screen that can fill it", async () => {
     renderPlanned({
       "GET /api/households/hh/plan": {
