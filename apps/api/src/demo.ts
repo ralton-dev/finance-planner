@@ -42,10 +42,11 @@ export async function seedDemoData(
   userId: string,
   asOfDate: string,
 ): Promise<DemoSeedCounts> {
-  const existingHouseholds = await store.listHouseholdsForUser(userId);
-  const household =
-    existingHouseholds[0] ?? (await store.createHousehold("Demo Household", userId));
-  const createdHousehold = existingHouseholds.length === 0;
+  // Always its own household, never one that already exists. The caller has
+  // checked there isn't one — and if that check ever slips, failing loudly here
+  // beats quietly adding a fabricated member to somebody's real household and
+  // rewriting the shares underneath them.
+  const household = await store.createHousehold("Demo Household", userId);
   const partnerEmail = `demo-partner-${userId}@example.com`;
   const existingPartner = await store.getUserByEmail(partnerEmail);
   const partner =
@@ -55,8 +56,7 @@ export async function seedDemoData(
       passwordHash: null,
       displayName: "Demo Partner",
     }));
-  const existingPartnerMembership = await store.getMembership(household.id, partner.id);
-  if (!existingPartnerMembership) await store.addMembership(household.id, partner.id, "member");
+  await store.addMembership(household.id, partner.id, "member");
   await store.updateMembershipShare(household.id, userId, 6_000);
   await store.updateMembershipShare(household.id, partner.id, 4_000);
 
@@ -251,8 +251,9 @@ export async function seedDemoData(
 
   return {
     users: existingPartner ? 0 : 1,
-    households: createdHousehold ? 1 : 0,
-    householdMemberships: (createdHousehold ? 1 : 0) + (existingPartnerMembership ? 0 : 1),
+    households: 1,
+    // The creator's, from `createHousehold`, plus the partner's.
+    householdMemberships: 2,
     accounts: 4,
     accountShares: 1,
     accountAssignments: 4,

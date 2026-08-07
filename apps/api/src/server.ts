@@ -2641,6 +2641,17 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     if ((await store.listAccountsForOwner(userId)).length > 0) {
       throw new HttpError(409, "demo_not_empty", "Demo data is only seeded into an empty profile");
     }
+    // Owning no accounts is not the same as being new: somebody invited into a
+    // household who has not made an account yet passes the check above. The
+    // seed builds its own household of two, so letting it run here would put a
+    // fabricated member into a real one and rewrite everybody's share with it.
+    if ((await store.listHouseholdsForUser(userId)).length > 0) {
+      throw new HttpError(
+        409,
+        "demo_not_empty",
+        "Demo data is only seeded into a profile that is not in a household yet",
+      );
+    }
     const counts = await seedDemoData(store, userId, today());
     return reply.code(201).send(counts);
   });
