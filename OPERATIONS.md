@@ -67,13 +67,75 @@ same value here — it is sent verbatim in both the authorize request and the
 token exchange, so the three must match exactly. The flow uses PKCE (S256);
 state and verifier live in those cookies, not in server-side storage.
 
-In Kubernetes these come from the chart's ConfigMap (`config:`), Secret
+### Tracing
+
+Distributed tracing over OTLP/HTTP. These span api, auth and calc together
+rather than belonging to one service, because a request that crosses a process
+boundary is still one request — half a fleet exporting spans is a trace that
+stops at the hop.
+
+| Var                                  | Services        | Default                 | Notes                                                                                                                                                                                                                                            |
+| ------------------------------------ | --------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OTEL_ENABLED`                       | api, auth, calc | `false`                 | Must be the literal string `true`. Every image starts through a `--import ./dist/otel.js` preload whose entire body sits behind this check, so anything else loads no OpenTelemetry module at all. On costs ~1 ms of startup; off costs nothing. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`        | api, auth, calc | _unset_                 | **A bare origin, no path** — the SDK appends `/v1/traces`. Required whenever tracing is on: the service **refuses to start** without it. See the footgun below.                                                                                  |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | api, auth, calc | _unset_                 | The per-signal alternative, accepted in place of the row above and used **verbatim**. Prefer the generic one — the chart and `.env.example` both do.                                                                                             |
+| `OTEL_EXPORTER_OTLP_HEADERS`         | api, auth, calc | _unset_                 | `key=value,key=value` for a collector behind authentication. Carries a token — keep it a secret.                                                                                                                                                 |
+| `OTEL_TRACES_SAMPLER`                | api, auth, calc | `parentbased_always_on` | Head sampler, the SDK's own variable. Leave it alone until the volume hurts, then `parentbased_traceidratio`. **Set it on all three or the ratio is decided twice** and you keep half-traces.                                                    |
+| `OTEL_TRACES_SAMPLER_ARG`            | api, auth, calc | _unset_                 | The sampler's argument, e.g. `0.1` for a tenth of traces.                                                                                                                                                                                        |
+| `OTEL_RESOURCE_ATTRIBUTES`           | api, auth, calc | _unset_                 | Comma-separated resource attributes. The chart sets `service.version` and `deployment.environment.name` (the current stable name — not the older `deployment.environment`) plus `service.instance.id` from the pod name via the downward API.    |
+| `OTEL_LOG_LEVEL`                     | api, auth, calc | `info`                  | The SDK's own diagnostic level. `debug` is the escape hatch for a collector that is refusing connections — see the tracing runbook in §3.                                                                                                        |
+| `APP_VERSION`                        | api, auth, calc | `0.0.0`                 | Reported as `version` by `GET /healthz` and as `service.version` on every span. Read before `npm_package_version`, which containers never set because they run `node dist/index.js` rather than npm.                                             |
+
+**The footgun, and it is silent.** The two endpoint variables are not
+interchangeable. The generic one is a base that the SDK appends `/v1/traces`
+to; the per-signal one is used exactly as given. So `http://collector:4318`
+— correct in the first — POSTs to `/` in the second, and every span is dropped
+without a word in any log. Use the generic variable with a bare origin. The
+chart's `tracing.endpoint` and `.env.example` both do, and `values.yaml` says
+why beside the key.
+
+Both variables are checked directly from `process.env` **before the SDK is
+constructed**, and an enabled service with neither set throws at startup naming
+both. This is deliberate: the OTLP spec _defaults_ the generic endpoint to
+`http://localhost:4318`, so an unset endpoint does not look unset to the SDK —
+it looks like a collector on localhost, and exports into the void. Failing to
+boot is the louder half of that choice. `OTEL_SDK_DISABLED` is **not** honoured:
+it defaults to enabled and swaps in a no-op SDK rather than skipping the load,
+which is the opposite of what the flag above promises.
+
+**The reported version is only as honest as whatever sets that variable.** The chart renders it from
+`.Values.image.tag`, which is the only version a container actually carries —
+all three app `package.json` versions are literally `0.0.0`. But nothing deploys
+the chart yet ([issue #75](https://github.com/ralton-dev/finance-planner/issues/75)),
+and `values.yaml` ships `tag: latest`, so until something stamps the tag with a
+build the pods report `latest`. That is a different lie from `0.0.0`, not the
+absence of one. `values-staging.yaml` claims images are SHA-tagged by CI one line
+above its own `tag: latest`. Compose sets it to `dev` for the same reason:
+a locally-built image has no tag worth reporting.
+
+Two settings are made for you inside the bootstrap and are not operator knobs:
+`OTEL_METRICS_EXPORTER` and `OTEL_LOGS_EXPORTER` are forced to `none` (the
+SDK otherwise auto-configures both from the same endpoint and posts metrics
+this repo never asked for), and `OTEL_EXPORTER_OTLP_TIMEOUT` is defaulted to
+`5000` ms. Both carry their measurements in comments in
+`packages/telemetry/src/telemetry.ts`.
+
+In Kubernetes most of these come from the chart's ConfigMap (`config:`), Secret
 (`secrets:`), and the per-service `serviceEnv:` map — see
 `deploy/helm/finance-planner/values.yaml`. `serviceEnv` renders as `env:` on a
 single Deployment and **omits empty values**, so a setting left blank arrives
 unset rather than as `""` (which `PUBLIC_WEB_URL` would otherwise accept as
 real configuration). Put `SMTP_URL` and `OIDC_CLIENT_SECRET` in `secrets:`;
-everything else in this section is non-secret and belongs in `serviceEnv`.
+everything else in the sections above is non-secret and belongs in `serviceEnv`.
+
+Tracing is the exception, and deliberately so: it is a **chart-level** switch
+under its own top-level `tracing:` block, not a `serviceEnv` entry, because it
+has to be the same answer for every service at once. The chart renders it onto
+the three backends and never onto `web`, which is nginx and runs no SDK. The one
+secret among them is read out of the Secret **by key** rather than through the
+bulk `secretRef`, so an OTLP token lands only on the pods that export spans —
+worth knowing because every _other_ Secret key does reach every pod, `web`
+included (see `BACKLOG.md`).
 
 ## 2. Deployment (Helm)
 
@@ -84,10 +146,22 @@ post-upgrade hook that globs the chart's own `files/*.sql` mirror of
 `db/migrations/` into a ConfigMap and applies each in lexical order), HPA, and
 PodDisruptionBudgets per service.
 
-Env reaches the pods three ways: `config:` → a ConfigMap and `secrets:` → a
-Secret, both `envFrom`'d by every service; and `serviceEnv.<service>` → an
-`env:` block on that one Deployment, for settings only one service reads
-(`NOTIFY_*`/`ENABLE_DEMO_SEED` on api, `PUBLIC_WEB_URL`/`OIDC_*` on auth).
+Env reaches the pods four ways, and the fourth is the newest:
+
+1. `config:` → a ConfigMap, `envFrom`'d by **every** service including `web`.
+2. `secrets:` → a Secret, likewise `envFrom`'d by every service. Every key of it
+   therefore reaches every pod, `web` included — true today of
+   `JWT_SIGNING_KEY`, `DATABASE_URL`, `SMTP_URL` and `OIDC_CLIENT_SECRET`, and
+   filed in `BACKLOG.md` rather than fixed here.
+3. `serviceEnv.<service>` → an `env:` block on that one Deployment, for settings
+   only one service reads: `NOTIFY_ENABLED`/`NOTIFY_HOUR`/`ENABLE_DEMO_SEED` and
+   `ENABLE_PLAN_DEBUG` on api, `PUBLIC_WEB_URL` and the four `OIDC_*` on auth.
+   Nothing is set per service on calc or web.
+4. The template itself, for values derived from the release rather than
+   configured: `APP_VERSION` from `.Values.image.tag` on **every** service, and —
+   when `tracing.enabled` is true — the tracing block from §1 on the three
+   backends only, with the pod name injected through the downward API and the
+   OTLP headers pulled from the Secret by key with `optional: true`.
 
 Per environment:
 
@@ -112,22 +186,38 @@ helm upgrade --install finance-planner deploy/helm/finance-planner \
 2. **integration** — Testcontainers Postgres, applies every migration in order,
    exercises the store contract end-to-end
 3. **e2e** — Playwright against the built SPA
-4. **helm** — `helm lint` + `helm template` (default + prod values)
-5. **docker** — build all four images (matrix). On pushes to `main`,
-   additionally publishes to
-   `ghcr.io/ralton-dev/finance-planner/<service>` tagged with the commit
-   SHA and `:latest`. PR builds verify-only (no push). Uses
-   `GITHUB_TOKEN` (no PAT required); the chart's `image.registry` points
-   at the same path so a real deploy is just
-   `helm upgrade --install --set image.tag=$SHA`.
-6. **stack-smoke** — `docker compose up -d --build --wait`, then curl
+4. **helm** — `helm lint` + `helm template` (default + prod values), then a
+   diff of the exact set of services that get an HPA. Auth must never get one;
+   the render is proved non-empty first so a half-rendered chart cannot match
+   no HPA and call it success.
+5. **docker** — a matrix of four services × two platforms, **each architecture
+   on its own native runner** (emulated arm64 builds of the bundles blew past
+   GitHub's 6h limit). Each leg pushes by digest only. Uses `GITHUB_TOKEN`,
+   no PAT.
+6. **docker-merge** — one job per service, assembling the multi-arch manifest
+   list from those digests and tagging it `sha-<full-commit-sha>` and
+   `:latest` under `ghcr.io/ralton-dev/finance-planner/<service>`. Runs on
+   pushes to `main` only; PR builds are verify-only. The chart's
+   `image.registry` points at the same path, so a real deploy is just
+   `helm upgrade --install --set image.tag=sha-$SHA`.
+7. **stack-smoke** — `docker compose up -d --build --wait`, then curl
    `/healthz` on api/auth/calc and `/` on web; tears down on success or
    failure. **This is the job that catches runtime regressions a unit test
    can't see** (bundler issues, missing migrations, wrong env wiring).
-7. **codeql** — security scanning on a separate workflow
+8. **otel-smoke** — the same compose stack brought up with the `otel` profile
+   and `OTEL_ENABLED=true`, then one request through the api → auth proxy hop.
+   It asserts on the collector's own output that **auth's server span names
+   api's undici client span as its parent** — structurally joined, not merely
+   sharing a trace id, because two processes that each started their own trace
+   can produce the same id twice by coincidence and this repository has already
+   been bitten by exactly that shape. It prints its whole inventory before
+   asserting: a job that asserted over zero spans and passed is the defect
+   rather than the fix.
+9. **codeql** — security scanning on a separate workflow
 
-All seven gate merges to `main` via branch protection. CodeQL runs in
-parallel to the rest.
+Those eight job definitions expand to **18 jobs** on a push to `main` (the
+docker matrix is eight and docker-merge is four), and all of them gate merges
+via branch protection. CodeQL runs in parallel to the rest.
 
 Auto-deploying staging/prod is intentionally **not** wired — it needs
 cluster credentials that aren't committed. Plug into your CD with
@@ -191,8 +281,21 @@ must be the same for api and auth.
 
 ### Health
 
-Every service exposes `GET /healthz` (liveness) and `GET /readyz`
-(readiness). Probes are wired in the chart with reasonable initial delays.
+Every service exposes `GET /healthz` and `GET /readyz`, and both probes in the
+chart point at **`/healthz`** — `values.yaml` sets one `health:` path per
+service (`/` for web, `/healthz` for the three backends) and
+`templates/services.yaml` renders it into the readinessProbe and the
+livenessProbe alike, with reasonable initial delays.
+
+**So `/readyz` is not wired to anything, and neither endpoint asks a question.**
+`/healthz` returns a literal `status: "ok"` and `/readyz` a literal
+`{ ready: true, checks: {} }` in all three services — nothing pings the
+Postgres pool, nothing checks that api can reach auth. A pod with a dead
+database therefore reports ready and takes traffic, and the `readinessProbe`
+is a liveness check under another name. The `checks` map exists in the
+contract to carry named results and has never carried one. Filed in
+`BACKLOG.md`; the fix is not uniform across the three services, which is why
+it is an entry rather than a one-line change.
 
 ### Scaling
 
@@ -333,6 +436,57 @@ Leave it off outside demo installs.
 Structured JSON (Pino). Centralised log aggregation isn't wired — adding a
 Loki / ELK sink is on the backlog. For dev, `make logs` tails the compose
 stack.
+
+With `OTEL_ENABLED=true` every Pino line also carries `trace_id`, `span_id` and
+`trace_flags`, injected into Fastify's internally-constructed logger with no
+app code involved. **That is the field to join on across services.** Do not join
+on `reqId`: Fastify 5's default `requestIdHeader` is `false`, so `reqId` is a
+per-process counter that starts at one in every service. In a captured
+two-process login, api and auth both called the same request `req-4` — which is
+worse than a mismatch, because it invites a join that is silently wrong the
+moment the counters drift.
+
+### Tracing
+
+`make up-otel` starts the local collector and turns tracing on; `make logs-otel`
+prints every span it receives. In a cluster, set `tracing.enabled` and
+`tracing.endpoint` in values — there is no collector in the chart, so point it
+at one you already run.
+
+**When no spans arrive, read this first: a refused collector is completely
+silent.** The service starts, serves 200s, produces spans, and never says that
+none of them reached anywhere — the symptom of a wrong endpoint and the symptom
+of a working one are the same thing on stdout. That is deliberate (tracing must
+not take the service down with it) and it means the absence of errors proves
+nothing. In order:
+
+1. Set `OTEL_LOG_LEVEL=debug` on one service and restart it. The exporter's
+   failures are then printed. `.env.example` ships the line commented out for
+   exactly this.
+2. Check the endpoint is a **bare origin** if you used the generic variable, and
+   a full `/v1/traces` URL if you used the per-signal one. Getting these the
+   wrong way round drops every span silently — see §1.
+3. Confirm the service is enabled at all: `OTEL_ENABLED` must be the literal
+   string `true`. An enabled service with no endpoint does not start, so a
+   running service that emits nothing is enabled-and-exporting-nowhere or not
+   enabled.
+4. Give it time before concluding. `BatchSpanProcessor`'s default delay is
+   5000 ms; a single poll immediately after a request legitimately sees nothing.
+
+**What a healthy trace looks like across the hop.** One trace spans api's server
+span, api's undici client span and auth's server span, with auth's server span
+naming api's client span as its **parent** — the `traceparent` header rides the
+proxy without a hook, because `@fastify/http-proxy` forwards through undici and
+the undici instrumentation injects it. `pg` spans nest under the api request
+that issued them, and `http.route` is set on server spans so grouping works.
+A shared trace id alone is not the assertion; `otel-smoke` checks the parent
+link for the reason given above about `req-4`.
+
+Shutdown flushes the SDK on SIGTERM and SIGINT — without that, a container
+stopped a second after a request exported **zero** spans rather than a lost
+tail, because the OTLP HTTP exporter does not flush on exit. The handler exits
+without draining in-flight HTTP requests, exactly as the services did before it
+existed; see `BACKLOG.md`.
 
 ### Backups
 
