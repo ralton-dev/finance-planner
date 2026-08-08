@@ -132,6 +132,23 @@ which one it is holding.
     true rather than aspirational. The genuinely new case is **calc**, which
     externalises nothing today.
 
+    > **Amended by WP-BO, 2026-08-08, on `6d59448` — the premise above is
+    > false and `fastify` was never bundled.** tsup externalises everything in
+    > `dependencies` by default, and `fastify` is a declared dependency of all
+    > three apps. Three proofs: the pre-change alpine image contains
+    > `from "fastify"` in `dist/index.js`; rebuilding calc's pre-change config
+    > verbatim — the one called "externalises nothing today" — produced a
+    > byte-identical 619,786 B bundle that also imports `from "fastify"`, so
+    > calc was never the new case; and `index.js` shrank by **1,783 bytes**, not
+    > ~700 KB, that figure being esbuild's helpers moving into a shared chunk.
+    > Independently reproduced by the orchestrator: building calc with no
+    > `external` key at all keeps `from "fastify"` as an external import.
+    >
+    > So `external: ["fastify"]` is a **statement of intent, not a change of
+    > behaviour**. It was kept, and the configs say why: it stops someone
+    > widening `noExternal` and silently losing Fastify's spans. The decision's
+    > conclusion stands; its stated mechanism had already happened by accident.
+
 51. **Issue #73's "startup time unchanged" is amended, with a measured figure.**
     Decision 50 costs **~57 ms of startup, unconditionally** (median 58.9 ms
     bundled → 115.8 ms external, macOS/pnpm; **not** re-measured inside
@@ -141,6 +158,18 @@ which one it is holding.
     ~1 ms and loads nothing when disabled; the externalisation costs a measured,
     named, one-off amount._ You cannot have both route-named spans and unchanged
     startup, and route-named spans are worth more.
+
+    > **Amended by WP-BO, 2026-08-08, on `6d59448` — the ~57 ms is not a cost
+    > this repo pays**, which follows directly from decision 50's correction: if
+    > `fastify` was already external, externalising it changes nothing to time.
+    > Measured inside `node:24-alpine`, `--no-cache` images, ten runs each, spawn
+    > to `Server listening`, two independent pairs: medians **197.7 → 202.3 ms**
+    > (+4.6) and **198.1 → 193.7 ms** (−4.4). **The delta is zero within noise on
+    > a ~198 ms median and the sign flips between pairs.** The macOS 58.9 → 115.8
+    > figure must have compared against a forcibly-bundled build that has never
+    > shipped. Note alpine's absolute startup is ~198 ms against the 58.9 ms
+    > quoted for macOS. **Issue #73's "startup time unchanged" clause therefore
+    > survives intact** — this plan costs the preload's ~1 ms and nothing else.
 
 52. **The preload is conditional and lazy, and that is what makes "off" mean
     off.** `dist/otel.js` is in the `CMD` permanently, but its entire body sits
@@ -700,6 +729,14 @@ zero of them OpenTelemetry** — the same count as a process started with no
 `--import` at all. If a package makes that number move, it has broken decision 52
 and the acceptance criterion issue #73 cares most about. Check the count, not the
 absence of errors.
+
+> **Measured by WP-BO, 2026-08-08, on `6d59448`, and it holds.** With
+> `OTEL_ENABLED` unset, modules in `require.cache` at listen, without the
+> `--import` and then with it: api **444 → 444**, auth **322 → 322**, calc
+> **271 → 271**. Identical, **zero** OTEL, zero `import-in-the-middle`. The
+> "273" above was **per-service and got generalised** — it matches calc's 271,
+> not api's. Name the service whenever you quote one of these. With
+> `OTEL_ENABLED=true`, api loads **966**, of which **437 are OTEL**.
 
 **What will move, and is meant to:** startup time, by a measured amount, on every
 service, in every environment, whether tracing is on or off (decisions 50 and
