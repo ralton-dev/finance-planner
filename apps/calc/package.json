@@ -14,6 +14,16 @@
   "dependencies": {
     "@finance-planner/contracts": "workspace:*",
     "@finance-planner/domain": "workspace:*",
+    "@finance-planner/telemetry": "workspace:*",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/instrumentation": "^0.221.0",
+    "@opentelemetry/instrumentation-fastify": "^0.57.0",
+    "@opentelemetry/instrumentation-http": "^0.221.0",
+    "@opentelemetry/instrumentation-pg": "^0.73.0",
+    "@opentelemetry/instrumentation-pino": "^0.67.0",
+    "@opentelemetry/instrumentation-undici": "^0.31.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
     "fastify": "^5.11.0"
   },
   "devDependencies": {
