@@ -8,7 +8,7 @@ import {
 import Fastify, { type FastifyInstance } from "fastify";
 
 const SERVICE = "calc";
-const VERSION = process.env.npm_package_version ?? "0.0.0";
+const VERSION = process.env.APP_VERSION ?? process.env.npm_package_version ?? "0.0.0";
 const startedAt = Date.now();
 
 /**

@@ -80,7 +80,7 @@ import {
 import { buildExport, importExport } from "./portability.js";
 
 const SERVICE = "api";
-const VERSION = process.env.npm_package_version ?? "0.0.0";
+const VERSION = process.env.APP_VERSION ?? process.env.npm_package_version ?? "0.0.0";
 const startedAt = Date.now();
 /** Row cap on the upcoming feed — see the handler comment. */
 const MAX_UPCOMING_ITEMS = 50;

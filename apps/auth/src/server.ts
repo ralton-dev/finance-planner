@@ -40,7 +40,7 @@ import { HttpOidcClient, type OidcClient } from "./oidc.js";
 import { generateRecoveryCode, normaliseRecoveryCode, RECOVERY_CODE_COUNT } from "./recovery.js";
 
 const SERVICE = "auth";
-const VERSION = process.env.npm_package_version ?? "0.0.0";
+const VERSION = process.env.APP_VERSION ?? process.env.npm_package_version ?? "0.0.0";
 const startedAt = Date.now();
 const REFRESH_COOKIE = "fp_refresh";
 const OIDC_STATE_COOKIE = "fp_oidc_state";
