@@ -1,6 +1,11 @@
 # Default values. Cloud-agnostic; override per environment with values-*.yaml.
 image:
   registry: ghcr.io/ralton-dev/finance-planner
+  # This tag is also the version the pods report: it is rendered as APP_VERSION,
+  # which /healthz returns, and as `service.version` on every span. Nothing in
+  # this repository deploys, so whoever does must pass a real tag — left at
+  # `latest` the services report `latest`, which names an image rather than a
+  # release and cannot be traced back to a commit.
   tag: latest
   pullPolicy: IfNotPresent
 
