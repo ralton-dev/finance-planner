@@ -1,6 +1,8 @@
 # Production overlay. Use managed Postgres/Redis (provider-agnostic): disable the
 # in-cluster instances and point config/secrets at the managed endpoints
 # (ideally injected via an external secrets operator, not committed here).
+environment: production
+
 postgres:
   enabled: false
 redis:
@@ -38,3 +40,14 @@ ingress:
 serviceEnv:
   auth:
     PUBLIC_WEB_URL: https://finance.example.com
+
+# Tracing is off until an endpoint exists to send it to; the chart refuses to
+# render `enabled: true` with an empty endpoint rather than deploy pods that
+# crash on boot. A collector authenticated by a token reads it from the release
+# Secret — add OTEL_EXPORTER_OTLP_HEADERS there, not here. At production volume
+# set `sampler: parentbased_traceidratio` with a `samplerArg`, and set it for
+# every service: a ratio decided twice is a trace sampled in one hop and dropped
+# in the next.
+tracing:
+  enabled: false
+  endpoint: ""

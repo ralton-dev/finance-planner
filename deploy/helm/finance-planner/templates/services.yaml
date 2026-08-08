@@ -5,6 +5,20 @@
 {{- range $k, $v := (index ($.Values.serviceEnv | default dict) $name | default dict) }}
 {{- if $v }}{{- $_ := set $extraEnv $k $v }}{{- end }}
 {{- end }}
+{{- /* Tracing is a chart-level switch (.Values.tracing) rather than a serviceEnv
+       entry per service, because a collector endpoint set on two of three
+       services is a trace that stops at the hop. A service opts out with
+       `tracing: false` on its entry — today that is web, which is nginx and has
+       no SDK to start. `dig` rather than `default true` for the reason on the
+       autoscaling test below. */}}
+{{- $tracing := and $.Values.tracing.enabled (dig "tracing" true $svc) }}
+{{- if and $.Values.tracing.enabled (not $.Values.tracing.endpoint) }}
+{{- /* Refuse to render rather than ship pods that crash on boot: the preload
+       throws when OTEL_ENABLED is true with no endpoint, because the OTLP spec
+       defaults the endpoint to localhost and "enabled with no endpoint" would
+       otherwise export into the void. */}}
+{{- fail "tracing.enabled is true but tracing.endpoint is empty — set it to the bare origin of an OTLP/HTTP collector, e.g. http://opentelemetry-collector:4318 (the SDK appends /v1/traces)" }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -55,13 +69,51 @@ spec:
                 name: {{ $.Release.Name }}-config
             - secretRef:
                 name: {{ $.Release.Name }}-secrets
-          {{- if $extraEnv }}
           env:
+            {{- /* The image tag is the only version the container actually has.
+                   All three package.json versions are "0.0.0" and the runtime
+                   never sets npm_package_version under `node dist/index.js`, so
+                   without this /healthz reports a version no deploy ever had. */}}
+            - name: APP_VERSION
+              value: {{ $.Values.image.tag | quote }}
             {{- range $k, $v := $extraEnv }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-          {{- end }}
+            {{- if $tracing }}
+            - name: OTEL_ENABLED
+              value: "true"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $.Values.tracing.endpoint | quote }}
+            {{- /* service.instance.id has to come from the downward API: under an
+                   HPA these pods are two to six identical processes, and the pod
+                   name is the only thing that tells one of them from another.
+                   kubelet expands $(POD_NAME) from the entry declared above it. */}}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.version={{ $.Values.image.tag }},deployment.environment.name={{ $.Values.environment }},service.instance.id=$(POD_NAME)"
+            {{- with $.Values.tracing.sampler }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $.Values.tracing.samplerArg }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ . | quote }}
+            {{- end }}
+            {{- /* Optional: absent from the Secret, the variable is unset and the
+                   exporter sends no headers. It is read by key rather than left to
+                   the bulk secretRef above so that it lands only on the services
+                   that export spans. */}}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Release.Name }}-secrets
+                  key: OTEL_EXPORTER_OTLP_HEADERS
+                  optional: true
+            {{- end }}
           resources:
             {{- toYaml $.Values.resources | nindent 12 }}
 ---

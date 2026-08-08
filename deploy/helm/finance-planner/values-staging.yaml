@@ -1,6 +1,7 @@
 # Staging overlay. Images are SHA-tagged by CI.
 image:
   tag: latest
+environment: staging
 services:
   api:
     replicas: 2
@@ -8,3 +9,12 @@ services:
     replicas: 2
 ingress:
   host: staging.finance.example.com
+
+# Staging is the first place with more than one api pod, so it is the first place
+# a per-process account of a request stops being enough. Left off, and named here
+# rather than in the chart so turning it on is a two-line edit to this file:
+# point `endpoint` at your collector's OTLP/HTTP port as a bare origin, with no
+# /v1/traces on the end — the SDK appends that itself.
+tracing:
+  enabled: false
+  endpoint: ""

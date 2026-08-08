@@ -4,12 +4,21 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
+# Which deployment this release is. Rendered as `deployment.environment.name` on
+# every span (see `tracing` below), so it is the field that tells staging traces
+# from production ones in a shared backend. Set it in every overlay.
+environment: development
+
 # Application services. Each entry produces a Deployment + Service.
 services:
   web:
     port: 8080
     replicas: 1
     health: /
+    # web is nginx serving a static bundle: there is no Node process to start an
+    # SDK, so tracing variables on it would be dead weight on every pod. Every
+    # other entry here is a Node service and traces when `tracing.enabled` is on.
+    tracing: false
   api:
     port: 4000
     replicas: 1
@@ -75,6 +84,33 @@ serviceEnv:
     OIDC_CLIENT_ID: ""
     OIDC_REDIRECT_URI: ""
 
+# Distributed tracing (OpenTelemetry). One switch, because a request that crosses
+# a process boundary is still one request: half a fleet exporting spans is a trace
+# that stops at the hop, which is the exact defect this exists to show. It is
+# therefore set here once rather than per service in `serviceEnv` above — that
+# block stays the place for a variable only one service wants.
+#
+# Off is the default and off means off: with `enabled: false` no OTEL_* variable
+# is rendered onto any pod, and the preload in each image loads no SDK at all.
+# There is no collector in this chart — point `endpoint` at whichever one you
+# already run.
+tracing:
+  enabled: false
+  # A bare origin, no path. The SDK appends /v1/traces to this; the per-signal
+  # variable OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is used verbatim instead, so a
+  # bare origin there POSTs to / and drops every span in silence. Use this one.
+  # e.g. http://opentelemetry-collector.observability:4318
+  endpoint: ""
+  # Head sampler. Empty leaves the SDK's default (parentbased_always_on), which
+  # is what you want until the volume hurts. Then: parentbased_traceidratio with
+  # samplerArg "0.1". Set it on all services or the ratio is decided twice.
+  sampler: ""
+  samplerArg: ""
+  # An OTLP endpoint behind auth needs OTEL_EXPORTER_OTLP_HEADERS, which carries a
+  # token — so it is not written here. Add an `OTEL_EXPORTER_OTLP_HEADERS` key to
+  # `secrets:` below and the traced services pick it up; leave it out and the
+  # reference is optional, so the variable is simply unset.
+
 # DB migration Job (Helm pre-install/pre-upgrade hook).
 migrations:
   enabled: true
@@ -101,6 +137,13 @@ secrets:
   SMTP_URL: ""
   # Client secret for the OIDC provider configured in serviceEnv.auth.
   OIDC_CLIENT_SECRET: ""
+  # Every key in this map is rendered into the Secret and every key of that Secret
+  # reaches every pod, `web` included, through the bulk `secretRef` on each
+  # Deployment. That is why OTEL_EXPORTER_OTLP_HEADERS is not listed here with an
+  # empty default: unlike serviceEnv, an empty value here is still rendered. Add
+  # the key only when you have a value for it:
+  #
+  #   OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer <token>"
 
 # In-cluster Postgres/Redis for non-prod. In prod, disable these and point
 # config/secrets at managed instances.
