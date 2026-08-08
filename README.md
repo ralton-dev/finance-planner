@@ -57,6 +57,19 @@ Installable as a PWA. Deployed cloud-agnostically on Kubernetes via Helm.
   [`MINE-AND-OURS.md`](./MINE-AND-OURS.md), which continues `MONTH-CLOSE.md`'s
   decision sequence at 19 and supersedes one clause of `ONE-ENGINE.md`'s
   decision 13
+- **Said-and-done plan (delivered, WP-AN…WP-BK):**
+  [`SAID-AND-DONE.md`](./SAID-AND-DONE.md), which continues `MINE-AND-OURS.md`'s
+  decision sequence at 26. Thirteen packages were planned and twenty-three
+  landed: decisions 36–45 each record a package that found something and
+  reported it rather than patching it quietly
+- **Which-hop plan (delivered, WP-BM…WP-BT):**
+  [`WHICH-HOP.md`](./WHICH-HOP.md), which continues `SAID-AND-DONE.md`'s
+  decision sequence at 49 and closes
+  [issue #73](https://github.com/ralton-dev/finance-planner/issues/73) —
+  distributed tracing across the api → auth hop, `trace_id` on every log line,
+  and a CI job that fails if a trace stops at the process boundary. Two of its
+  own decisions (50 and 51) were overturned by measurement while it ran and
+  carry amendments saying so
 - **How a plan gets run with parallel agents:**
   [`ORCHESTRATION.md`](./ORCHESTRATION.md)
 - **Contributing:** [`CONTRIBUTING.md`](./CONTRIBUTING.md)
@@ -320,6 +333,7 @@ packages/
   policies  per-request authorisation rules (action + subject)
   security  scrypt password hashing, HS256 JWT (jose), TOTP
   mailer    Mailer interface + SmtpMailer (nodemailer) / LogMailer fallback
+  telemetry OpenTelemetry bootstrap, loaded by each service's --import preload
 db/          SQL migrations (0001_init.sql … 0013_user_month_closes.sql) + seed
 deploy/
   local/     docker-compose stack, compose nginx, kind helper
@@ -327,8 +341,9 @@ deploy/
              files/ mirrors db/migrations — keep the two in sync
 .github/workflows/   format, lint, typecheck, test, coverage, build,
                      integration (Testcontainers), e2e (Playwright),
-                     helm lint/render, docker image matrix,
+                     helm lint/render, docker image matrix + manifest merge,
                      stack-smoke (full compose + /healthz probes),
+                     otel-smoke (one trace across the api -> auth hop),
                      CodeQL
 ```
 
@@ -375,8 +390,16 @@ Useful Make targets: `make migrate`, `make seed`, `make down`, `make up-kind`
 (kind cluster).
 
 Optional features are env-gated and off by default — outbound mail, the daily
-digest, single sign-on, and the demo seed. `.env.example` documents each one;
-`OPERATIONS.md` §1 is the full table.
+digest, single sign-on, the demo seed, the plan-debug view, and distributed
+tracing. `.env.example` documents each one; `OPERATIONS.md` §1 is the full
+table.
+
+Off means off for the newest of them: every service image starts through an
+OpenTelemetry preload whose entire body sits behind `OTEL_ENABLED`, so with it
+unset the process loads not one OpenTelemetry module and its startup is
+unchanged — measured, per service, as an identical module count with and
+without the preload. `make up-otel` turns it on and starts a collector that
+prints every span it receives.
 
 ## Common tasks
 
@@ -410,5 +433,10 @@ probes `/healthz` on each service.
   when `SMTP_URL` is unset
 - **Auth:** scrypt password hash + HS256 JWT access token + opaque refresh
   cookie + per-route rate-limit + reuse detection + TOTP 2FA + OIDC (PKCE)
+- **Tracing:** OpenTelemetry over OTLP/HTTP, started by a `--import` preload
+  (`packages/telemetry`) and off unless `OTEL_ENABLED=true`. Auto-instruments
+  http, Fastify, undici, `pg` and Pino with no app code — so `traceparent`
+  crosses the api → auth proxy hop on its own and every log line carries the
+  `trace_id` of its request
 - **Tests:** Vitest + React Testing Library + Playwright + Testcontainers
 - **CI/CD:** GitHub Actions · **Runtime:** Kubernetes (Helm, cloud-agnostic)
