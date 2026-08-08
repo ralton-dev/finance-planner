@@ -70,7 +70,7 @@ renders an autoscaler for six. A test waits for the thing it is not asserting.
 
 Every package below closes the gap between a claim and the thing it claims.
 
-## Decisions (26–45, continuing MINE-AND-OURS' numbering — do not relitigate)
+## Decisions (26–48, continuing MINE-AND-OURS' numbering — do not relitigate)
 
 **26–35 were taken when this plan was written; 36–45 were taken while it ran**, as
 the work uncovered things the board had not. That is the normal shape here, not a
