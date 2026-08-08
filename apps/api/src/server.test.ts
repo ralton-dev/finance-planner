@@ -1556,6 +1556,77 @@ describe("api service", () => {
     expect(res.statusCode).toBe(403);
   });
 
+  /**
+   * A household is denominated once, by the first account assigned to it.
+   *
+   * The funding pass partitions by currency and lets nothing derived cross one
+   * (`ONE-ENGINE.md` decision 10), so a household holding two currencies had a
+   * plan that could only be one of them: the second account stayed on the roster,
+   * was dropped from `/plan`, and vanished from the flow diagram drawn off the
+   * plan's own account list — with no warning on any surface. Refused at the door
+   * instead, which makes the state unreachable rather than explained.
+   */
+  it("denominates a household by its first account and refuses a second currency", async () => {
+    const { user, auth } = await seedUser(store, "onecurrency@example.com");
+    const household = await store.createHousehold("Home", user.id);
+    const account = async (name: string, currency: string) =>
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/accounts",
+          headers: auth,
+          payload: { name, currency },
+        })
+      ).json();
+    const assign = (accountId: string, payload: object = { role: "shared" }) =>
+      app.inject({
+        method: "PUT",
+        url: `/api/households/${household.id}/accounts/${accountId}`,
+        headers: auth,
+        payload,
+      });
+
+    // An empty roster has no currency and takes whatever comes first.
+    const sterling = await account("Sterling Current", "GBP");
+    expect((await assign(sterling.id)).statusCode).toBe(200);
+
+    // A second GBP account is the ordinary case and is untouched.
+    const isa = await account("Sterling ISA", "GBP");
+    expect((await assign(isa.id)).statusCode).toBe(200);
+
+    // The defect, refused: named currencies and the named account, so the screen
+    // can say which account it would not take and what the household plans in.
+    const euros = await account("Euro Savings", "EUR");
+    const refused = await assign(euros.id);
+    expect(refused.statusCode).toBe(422);
+    expect(refused.json().error.message).toMatch(
+      /a household cannot mix currencies: this one plans in GBP, and Euro Savings is in EUR/,
+    );
+    // Refused means not on the roster — no half-assignment left behind.
+    expect((await store.listAccountAssignments(household.id)).map((a) => a.accountId)).toEqual([
+      sterling.id,
+      isa.id,
+    ]);
+
+    // Re-assigning an account already on the roster must not be refused for
+    // disagreeing with itself: the role control on `HouseholdDetailPage` sends
+    // exactly this request.
+    expect(
+      (await assign(sterling.id, { role: "personal", memberUserId: user.id })).statusCode,
+    ).toBe(200);
+
+    // The currency is derived from the roster, never stored, so emptying the
+    // roster frees the household to be denominated again.
+    for (const id of [sterling.id, isa.id]) {
+      await app.inject({
+        method: "DELETE",
+        url: `/api/households/${household.id}/accounts/${id}`,
+        headers: auth,
+      });
+    }
+    expect((await assign(euros.id)).statusCode).toBe(200);
+  });
+
   it("derives a payment's already-saved from its contributions", async () => {
     const { auth } = await seedUser(store);
     const account = (
@@ -7330,11 +7401,17 @@ describe("flow over any scope", () => {
         payload: { name: "bob-euros", currency: "EUR" },
       })
     ).json();
-    await app.inject({
-      method: "PUT",
-      url: `/api/households/${(await store.listHouseholdsForUser(bob.id))[0]!.id}/accounts/${euros.id}`,
-      headers: bobAuth,
-      payload: { role: "personal", memberUserId: bob.id },
+    // Through the store: the assignment endpoint now refuses a second currency
+    // in a household, and this test is about the *flow* guard rather than that
+    // one. The scope it needs is still reachable without any household at all —
+    // `/api/flow?accounts=` takes whatever set the caller names, and `closeScope`
+    // walks funding edges across currencies — so the refusal below is not made
+    // unreachable by the door being shut, only this shortcut to it.
+    await store.upsertAccountAssignment({
+      householdId: (await store.listHouseholdsForUser(bob.id))[0]!.id,
+      accountId: euros.id,
+      role: "personal",
+      memberUserId: bob.id,
     });
 
     const res = await flow(auth, [current.id, bobCurrent.id, euros.id]);

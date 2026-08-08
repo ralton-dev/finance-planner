@@ -2330,6 +2330,55 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     );
   });
 
+  /**
+   * A household holds one currency, and the first account assigned to it decides
+   * which.
+   *
+   * **The rule is derived, never stored.** A household's currency *is* the
+   * currency of the accounts on its roster, read here at the moment of the
+   * assignment — so there is no column to migrate, no constraint that would have
+   * to be validated against rows that pre-date it, and nothing that can drift out
+   * of agreement with the roster it describes. An empty roster has no currency
+   * and accepts anything; unassigning the last account empties it again and the
+   * next account is free to set it afresh.
+   *
+   * ## Why the door, and not the plan
+   *
+   * `ONE-ENGINE.md` decision 10 partitions the funding pass by currency and lets
+   * nothing derived cross one — correctly, because two currencies cannot be added
+   * without a rate and this system has none. A household spanning two therefore
+   * had a plan that could only ever be *one* of them, and
+   * `householdPlanFromScope` picked a partition and dropped the rest of the
+   * roster on the floor: the account was assigned, listed by the roster endpoint,
+   * and silently absent from the plan and from the flow diagram drawn off it.
+   * Nothing anywhere said so.
+   *
+   * Refusing here makes that state unreachable rather than explaining it after
+   * the fact. Decision 10 is untouched — this narrows what a household can be so
+   * that a household never meets it.
+   *
+   * The same shape as `PATCH /api/accounts/:id` refusing to redenominate an
+   * account, and it needs that refusal to hold: an account whose currency could
+   * change after assignment would walk straight back out of the rule.
+   */
+  const requireOneCurrency = async (householdId: string, account: Account): Promise<void> => {
+    const others = (await store.listAccountAssignments(householdId)).filter(
+      // Re-assigning an account already on the roster — the role control on
+      // `HouseholdDetailPage` — must not be refused for disagreeing with itself.
+      (a) => a.accountId !== account.id,
+    );
+    const roster = await Promise.all(others.map((a) => store.getAccount(a.accountId)));
+    // An assignment whose account has gone names no currency and cannot object.
+    const held = [...new Set(roster.flatMap((a) => (a ? [a.currency] : [])))].sort();
+    if (held.length === 0 || (held.length === 1 && held[0] === account.currency)) return;
+    throw new HttpError(
+      422,
+      "validation_error",
+      `a household cannot mix currencies: this one plans in ${held.join(", ")}, ` +
+        `and ${account.name} is in ${account.currency}`,
+    );
+  };
+
   /** Assign an account a role in the household plan (shared, or personal to a
    *  member). Owner/admin only; the caller must be able to see the account. */
   app.put("/api/households/:id/accounts/:accountId", async (req) => {
@@ -2340,11 +2389,14 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     if (!(await store.getAccess(userId, accountId))) {
       throw new HttpError(404, "not_found", "Account not found");
     }
+    const account = await store.getAccount(accountId);
+    if (!account) throw new HttpError(404, "not_found", "Account not found");
     if (body.role === "personal" && body.memberUserId) {
       if (!(await store.getMembership(id, body.memberUserId))) {
         throw new HttpError(422, "validation_error", "memberUserId is not a household member");
       }
     }
+    await requireOneCurrency(id, account);
     return store.upsertAccountAssignment({
       householdId: id,
       accountId,

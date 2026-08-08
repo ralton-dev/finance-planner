@@ -775,12 +775,24 @@ async function seedBigHouse(u: User): Promise<void> {
   say(`Forty One House id ${h.id} — /flow?household=${h.id}`);
 }
 
-/** §2b, second refusal — one household, two currencies. */
+/**
+ * §2b, second refusal — a household is denominated once, by its first account.
+ *
+ * This fixture used to *build* the two-currency household and check that the
+ * flow diagram refused to draw it. It could not build one now: the second
+ * currency is refused at the assignment door, because a household holding two
+ * had a plan that could only be one of them and dropped the other account
+ * silently — off the plan, and off the diagram drawn from the plan's own account
+ * list, which is why the diagram's refusal was never even reached.
+ *
+ * So the fixture proves the refusal instead of the symptom, and leaves the EUR
+ * account owned, un-assigned and visible — which is the state a user is left in.
+ */
 async function seedCurrencies(u: User): Promise<void> {
   heading("currencies@fp.test — §2b, the two-currency refusal");
   await reset(u);
 
-  const h = await household(u, "Two Currency House");
+  const h = await household(u, "One Currency House");
   const gbpAccount = await account(u, {
     name: "Sterling Current",
     currency: "GBP",
@@ -806,23 +818,37 @@ async function seedCurrencies(u: User): Promise<void> {
     dueDate: `${THIS_MONTH}-09`,
     priority: 10,
   });
+  // The first account denominates the household. Nothing refuses this one.
   await assign(u, h.id, gbpAccount.id, { role: "personal", memberUserId: u.id });
-  await assign(u, h.id, eurAccount.id, { role: "personal", memberUserId: u.id });
 
   let refused = "";
   try {
-    await u.call("GET", `/api/flow?accounts=${[gbpAccount.id, eurAccount.id].join(",")}`);
+    await assign(u, h.id, eurAccount.id, { role: "personal", memberUserId: u.id });
   } catch (e) {
     if (e instanceof ApiError) refused = `${e.status} ${e.code}: ${e.message}`;
   }
   check(
-    refused.includes("currencies"),
-    `§2b two currencies are refused — ${refused || "NOT REFUSED"}`,
+    refused.includes("cannot mix currencies"),
+    `§2b a second currency is refused at assignment — ${refused || "NOT REFUSED"}`,
   );
-  // The refusal is the diagram's alone; the household plan must still answer.
-  await u.call("GET", `/api/households/${h.id}/plan`);
-  check(true, "§2b the household plan page still works");
-  say(`Two Currency House id ${h.id} — /flow?household=${h.id}`);
+
+  // Refused means not on the roster: the account is not half-in, and the plan
+  // is not quietly missing one of the accounts its own roster lists.
+  const roster = await u.call<{ accountId: string }[]>("GET", `/api/households/${h.id}/accounts`);
+  check(
+    roster.length === 1 && roster[0]?.accountId === gbpAccount.id,
+    `§2b the roster holds only the GBP account — ${roster.length} account(s)`,
+  );
+
+  const plan = await u.call<{ currency: string; accounts: unknown[] }>(
+    "GET",
+    `/api/households/${h.id}/plan`,
+  );
+  check(
+    plan.currency === "GBP" && plan.accounts.length === roster.length,
+    `§2b the plan covers every account on the roster — ${plan.accounts.length} of ${roster.length} in ${plan.currency}`,
+  );
+  say(`One Currency House id ${h.id} — /households/${h.id} to retry the refused assignment`);
 }
 
 /**
