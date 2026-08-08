@@ -15,4 +15,7 @@ ENV NODE_ENV=production
 COPY --from=build /repo ./
 WORKDIR /repo/apps/auth
 EXPOSE 4001
-CMD ["node", "dist/index.js"]
+# `./dist/otel.js`, not `dist/otel.js`: without the `./` the specifier is read as
+# a bare package name and the process exits with ERR_MODULE_NOT_FOUND. It is
+# relative to the WORKDIR above. Loads nothing unless OTEL_ENABLED=true.
+CMD ["node", "--import", "./dist/otel.js", "dist/index.js"]

@@ -16,4 +16,10 @@ ENV NODE_ENV=production
 COPY --from=build /repo ./
 WORKDIR /repo/apps/api
 EXPOSE 4000
-CMD ["node", "dist/index.js"]
+# The preload is permanent; whether it does anything is OTEL_ENABLED's business.
+# With the flag unset it costs one `if` and loads no OpenTelemetry module at all.
+#
+# The `./` is load-bearing. `--import dist/otel.js` is read as a *bare package
+# specifier* and dies with ERR_MODULE_NOT_FOUND before the app is reached;
+# `./dist/otel.js` is a relative path and resolves against the cwd set above.
+CMD ["node", "--import", "./dist/otel.js", "dist/index.js"]
