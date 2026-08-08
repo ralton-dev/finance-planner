@@ -29,6 +29,15 @@ import { buildServer } from "../server.js";
  * confirm requires**, the stricter side, and losing this ability is intended
  * rather than a regression.
  *
+ * **Where these live now (WP-BL).** Both routes moved to
+ * `POST /api/transfers/confirm` and `DELETE /api/transfers/confirmations/
+ * :confId` when the household-derived and household-free halves of one event
+ * were collapsed into one. The rule did not move with them: it is now read off
+ * the row's `householdId` rather than off which route was called, and this
+ * fixture is the case where there is none. Alice's pot is on no roster, so
+ * "yours only" is the whole of it and Bob is refused at both verbs — which is
+ * exactly what the collapse was required to leave untouched.
+ *
  * The standing assumption, in its access-control clothes:
  *
  * > **that writing a record and the event it records are the same fact.**
@@ -166,7 +175,7 @@ describe("un-confirming somebody else's transfer", () => {
   async function aliceConfirms(s: Awaited<ReturnType<typeof seed>>) {
     const res = await app.inject({
       method: "POST",
-      url: `/api/accounts/${s.pot.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: s.auth,
       payload: {
         fromAccountId: s.current.id,
@@ -198,7 +207,7 @@ describe("un-confirming somebody else's transfer", () => {
 
     const res = await app.inject({
       method: "POST",
-      url: `/api/accounts/${s.pot.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: s.bobAuth,
       payload: {
         fromAccountId: s.current.id,
@@ -224,7 +233,7 @@ describe("un-confirming somebody else's transfer", () => {
 
     const res = await app.inject({
       method: "DELETE",
-      url: `/api/accounts/${s.pot.id}/transfers/confirmations/${confirmation.id}`,
+      url: `/api/transfers/confirmations/${confirmation.id}`,
       headers: s.bobAuth,
     });
     expect(res.statusCode).toBe(403);

@@ -390,7 +390,7 @@ describe("Fold · shortfall", () => {
 
 describe("Fold · transfer", () => {
   const confirmed: Routes = {
-    "POST /api/households/hh/transfers/confirm": {
+    "POST /api/transfers/confirm": {
       status: 201,
       body: { confirmation: { id: "conf-new" }, contributions: [] },
     },
@@ -402,7 +402,7 @@ describe("Fold · transfer", () => {
     fireEvent.click(screen.getByRole("button", { name: "mark done" }));
 
     await waitFor(() => expect(onActioned).toHaveBeenCalledTimes(1));
-    expect(stub.bodyOf("POST /api/households/hh/transfers/confirm")).toEqual({
+    expect(stub.bodyOf("POST /api/transfers/confirm")).toEqual({
       fromAccountId: "alex-current",
       toAccountId: "bills",
       memberUserId: "alex",
@@ -424,21 +424,21 @@ describe("Fold · transfer", () => {
   it("puts the row back when the undo goes through", async () => {
     const { onActioned } = renderFold({
       ...confirmed,
-      "DELETE /api/households/hh/transfers/confirmations/conf-new": { status: 204 },
+      "DELETE /api/transfers/confirmations/conf-new": { status: 204 },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "mark done" }));
     fireEvent.click(await screen.findByRole("button", { name: "undo" }));
 
     await waitFor(() => expect(onActioned).toHaveBeenCalledTimes(2));
-    expect(stub.calls("DELETE /api/households/hh/transfers/confirmations/conf-new")).toBe(1);
+    expect(stub.calls("DELETE /api/transfers/confirmations/conf-new")).toBe(1);
     expect(screen.getByRole("button", { name: "mark done" })).toBeInTheDocument();
     expect(screen.queryByText("✓ done")).toBeNull();
   });
 
   it("rolls the tick back and names the error code when the server refuses", async () => {
     const { onActioned } = renderFold({
-      "POST /api/households/hh/transfers/confirm": {
+      "POST /api/transfers/confirm": {
         status: 409,
         body: { error: { code: "already_confirmed", message: "already confirmed" } },
       },

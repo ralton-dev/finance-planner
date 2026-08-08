@@ -638,12 +638,9 @@ describe("AccountMovements — the movements nobody authored", () => {
         {
           ...mine,
           [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: () => ({
-            body:
-              stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`) > 0
-                ? [CONFIRMATION]
-                : [],
+            body: stub.calls(`POST /api/transfers/confirm`) > 0 ? [CONFIRMATION] : [],
           }),
-          [`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`]: {
+          [`POST /api/transfers/confirm`]: {
             status: 201,
             body: { confirmation: CONFIRMATION, contributions: [] },
           },
@@ -654,11 +651,12 @@ describe("AccountMovements — the movements nobody authored", () => {
       fireEvent.click(await screen.findByRole("button", { name: "moved" }));
       // Ticked, and now offering to un-tick it.
       expect(await screen.findByRole("button", { name: "undo" })).toBeEnabled();
-      expect(stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toBe(1);
-      expect(stub.bodyOf(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toEqual({
+      expect(stub.calls(`POST /api/transfers/confirm`)).toBe(1);
+      expect(stub.bodyOf(`POST /api/transfers/confirm`)).toEqual({
         fromAccountId: "current",
         toAccountId: "pot",
         memberUserId: "me",
+        month: MONTH,
       });
     });
 
@@ -668,11 +666,9 @@ describe("AccountMovements — the movements nobody authored", () => {
         {
           ...mine,
           [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: () => ({
-            body: stub.calls("DELETE /api/accounts/pot/transfers/confirmations/conf-1")
-              ? []
-              : [CONFIRMATION],
+            body: stub.calls("DELETE /api/transfers/confirmations/conf-1") ? [] : [CONFIRMATION],
           }),
-          "DELETE /api/accounts/pot/transfers/confirmations/conf-1": { status: 204 },
+          "DELETE /api/transfers/confirmations/conf-1": { status: 204 },
         },
         { plan: derivedPlan({ confirmedInflowMinor: 30_320 }) },
       );
@@ -680,7 +676,7 @@ describe("AccountMovements — the movements nobody authored", () => {
       fireEvent.click(await screen.findByRole("button", { name: "undo" }));
       // Un-ticked, and back to asking whether you moved it.
       expect(await screen.findByRole("button", { name: "moved" })).toBeEnabled();
-      expect(stub.calls("DELETE /api/accounts/pot/transfers/confirmations/conf-1")).toBe(1);
+      expect(stub.calls("DELETE /api/transfers/confirmations/conf-1")).toBe(1);
     });
 
     it("offers nothing on somebody else's transfer", async () => {
@@ -718,19 +714,21 @@ describe("AccountMovements — the movements nobody authored", () => {
    *
    * A household pot's account page drew its co-member's derived transfer with no
    * button and no sentence — while the household's own checklist offered exactly
-   * that action, and `POST /households/:id/transfers/confirm` granted it. The
-   * gate here had one rule for two endpoints: `POST /accounts/:id/transfers/
-   * confirm` really does refuse anybody else's, because a scope with no
-   * household in it has no roster to make anyone an admin — but a **household**
-   * transfer is ticked through the household, which keeps decision 28's other
-   * half: the member themselves, **or an owner or admin of that household**.
+   * that action. Decision 28 grants it: the member themselves, **or an owner or
+   * admin of the household that derived it**.
    *
    * Which household is the part the account plan never says. `AccountPlanDto`
    * carries no household id and neither does `AccountDto`; what the wire does
    * carry is the reader's own membership list, and a `member` source naming
    * somebody *else* — which `planInflowSources` publishes only to a member of
    * the household the account is planned in. So the roster that holds that
-   * member is the household, and `yourRole` arrives on the same read.
+   * member is the household, and `yourRole` arrives on the same read. That is
+   * still how the *button* decides whether to appear.
+   *
+   * What has gone is the second endpoint. There is one route for confirming a
+   * derived transfer and one list to read it back from, so this page no longer
+   * asks a household anything about what has been ticked — and the row an owner
+   * could see but not act on is the row they act on.
    */
   describe("a co-member's transfer, and who may tick it", () => {
     const MONTH = new Date().toISOString().slice(0, 7);
@@ -816,18 +814,17 @@ describe("AccountMovements — the movements nobody authored", () => {
     /** The mate's row, found by the name the arrow prints. */
     const mateRow = (): HTMLElement => screen.getByText("Mate →").closest("li")!;
 
-    it("lets an owner say a co-member's transfer moved, through the household that derives it", async () => {
+    it("lets an owner say a co-member's transfer moved, through the one route", async () => {
       renderFor(
         POT,
         {
           ...asMe("owner"),
-          [`GET /api/households/${HH}/transfers/confirmations?month=${MONTH}`]: () => ({
-            body:
-              stub.calls(`POST /api/households/${HH}/transfers/confirm`) > 0
-                ? [HOUSEHOLD_CONFIRMATION]
-                : [],
+          // Read back from the *account's* own list, which now carries a
+          // household's derived rows as readily as anybody's.
+          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: () => ({
+            body: stub.calls(`POST /api/transfers/confirm`) > 0 ? [HOUSEHOLD_CONFIRMATION] : [],
           }),
-          [`POST /api/households/${HH}/transfers/confirm`]: {
+          [`POST /api/transfers/confirm`]: {
             status: 201,
             body: { confirmation: HOUSEHOLD_CONFIRMATION, contributions: [] },
           },
@@ -841,16 +838,16 @@ describe("AccountMovements — the movements nobody authored", () => {
       await waitFor(() =>
         expect(within(mateRow()).getByRole("button", { name: "undo" })).toBeEnabled(),
       );
-      expect(stub.calls(`POST /api/households/${HH}/transfers/confirm`)).toBe(1);
-      expect(stub.bodyOf(`POST /api/households/${HH}/transfers/confirm`)).toEqual({
+      expect(stub.calls(`POST /api/transfers/confirm`)).toBe(1);
+      expect(stub.bodyOf(`POST /api/transfers/confirm`)).toEqual({
         fromAccountId: "theirs",
         toAccountId: "pot",
         memberUserId: "mate",
         month: MONTH,
       });
-      // Never the account route, which would refuse it — and refuse it with a
-      // 403 the row could do nothing about.
-      expect(stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toBe(0);
+      // No household in the path. The server works out which plan derived the
+      // transfer, so the page the owner was standing on cannot change the row.
+      expect(stub.calls(`POST /api/households/${HH}/transfers/confirm`)).toBe(0);
     });
 
     it("and take it back again — decision 28, the same people either way", async () => {
@@ -858,12 +855,12 @@ describe("AccountMovements — the movements nobody authored", () => {
         POT,
         {
           ...asMe("admin"),
-          [`GET /api/households/${HH}/transfers/confirmations?month=${MONTH}`]: () => ({
-            body: stub.calls(`DELETE /api/households/${HH}/transfers/confirmations/hh-conf-1`)
+          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: () => ({
+            body: stub.calls(`DELETE /api/transfers/confirmations/hh-conf-1`)
               ? []
               : [HOUSEHOLD_CONFIRMATION],
           }),
-          [`DELETE /api/households/${HH}/transfers/confirmations/hh-conf-1`]: { status: 204 },
+          [`DELETE /api/transfers/confirmations/hh-conf-1`]: { status: 204 },
         },
         { plan: shared },
       );
@@ -873,7 +870,7 @@ describe("AccountMovements — the movements nobody authored", () => {
       await waitFor(() =>
         expect(within(mateRow()).getByRole("button", { name: "moved" })).toBeEnabled(),
       );
-      expect(stub.calls(`DELETE /api/households/${HH}/transfers/confirmations/hh-conf-1`)).toBe(1);
+      expect(stub.calls(`DELETE /api/transfers/confirmations/hh-conf-1`)).toBe(1);
     });
 
     it("offers a plain member nothing on a co-member's row, and says whose it is", async () => {
@@ -891,45 +888,65 @@ describe("AccountMovements — the movements nobody authored", () => {
       );
     });
 
-    it("will not re-record a transfer the member already ticked on their own", async () => {
-      // Their own account page files it with no household on it, and that route
-      // un-ticks only for the member who made it. Offering "moved" here would
-      // post a second confirmation and book the month's contributions twice.
+    /**
+     * The defect, in the shape it was reported.
+     *
+     * A row with no household on it is one the member ticked on **their own**
+     * account page. This page could not see it at all — the account list asked
+     * for `household_id IS NULL AND inflow_id IS NULL` and the household list
+     * asked for the household, so a row was in exactly one of them and each
+     * surface saw only its own kind. The best this screen could do was notice
+     * the row somewhere else and print "only they can undo it", because the
+     * route that could reach it un-ticked for the member alone. Offering "moved"
+     * instead would have recorded the movement a second time.
+     *
+     * Now there is one list and one route: the row is simply *there*, it reads
+     * as done, and an owner may undo it. Nothing is offered twice because
+     * nothing is written twice.
+     */
+    it("shows a transfer the member ticked on their own page as done, and lets an owner undo it", async () => {
+      const THEIRS = {
+        id: "solo-conf-1",
+        householdId: null,
+        inflowId: null,
+        month: `${MONTH}-01`,
+        fromAccountId: "theirs",
+        toAccountId: "pot",
+        memberUserId: "mate",
+        amountMinor: 9_000,
+        createdAt: "2026-08-01T00:00:00.000Z",
+      };
       renderFor(
         POT,
         {
           ...asMe("owner"),
-          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: {
-            body: [
-              {
-                id: "solo-conf-1",
-                householdId: null,
-                inflowId: null,
-                month: `${MONTH}-01`,
-                fromAccountId: "theirs",
-                toAccountId: "pot",
-                memberUserId: "mate",
-                amountMinor: 9_000,
-                createdAt: "2026-08-01T00:00:00.000Z",
-              },
-            ],
-          },
+          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: () => ({
+            body: stub.calls(`DELETE /api/transfers/confirmations/solo-conf-1`) ? [] : [THEIRS],
+          }),
+          [`DELETE /api/transfers/confirmations/solo-conf-1`]: { status: 204 },
         },
         { plan: shared },
       );
 
       await mounted();
-      const row = mateRow();
-      expect(within(row).queryByRole("button", { name: "moved" })).toBeNull();
-      expect(row).toHaveTextContent(/only they can undo it/);
+      // Done, not "moved" again — and no sentence explaining why nothing can be
+      // done, because something can.
+      expect(within(mateRow()).queryByRole("button", { name: "moved" })).toBeNull();
+      expect(mateRow()).not.toHaveTextContent(/only they can undo it/);
+
+      fireEvent.click(within(mateRow()).getByRole("button", { name: "undo" }));
+      await waitFor(() =>
+        expect(within(mateRow()).getByRole("button", { name: "moved" })).toBeEnabled(),
+      );
+      expect(stub.calls(`DELETE /api/transfers/confirmations/solo-conf-1`)).toBe(1);
     });
 
-    it("leaves the reader's own row on the route with no household in it", async () => {
+    it("sends the reader's own row down the very same route", async () => {
       renderFor(
         POT,
         {
           ...asMe("owner"),
-          [`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`]: {
+          [`POST /api/transfers/confirm`]: {
             status: 201,
             body: { confirmation: { id: "solo" }, contributions: [] },
           },
@@ -940,10 +957,13 @@ describe("AccountMovements — the movements nobody authored", () => {
       await mounted();
       const mine = screen.getByText("Ben →").closest("li")!;
       fireEvent.click(within(mine).getByRole("button", { name: "moved" }));
-      await waitFor(() =>
-        expect(stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toBe(1),
-      );
-      expect(stub.calls(`POST /api/households/${HH}/transfers/confirm`)).toBe(0);
+      await waitFor(() => expect(stub.calls(`POST /api/transfers/confirm`)).toBe(1));
+      expect(stub.bodyOf(`POST /api/transfers/confirm`)).toEqual({
+        fromAccountId: "current",
+        toAccountId: "pot",
+        memberUserId: "me",
+        month: MONTH,
+      });
     });
   });
 

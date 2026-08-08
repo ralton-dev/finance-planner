@@ -1977,7 +1977,7 @@ describe("api service", () => {
 
     const res = await app.inject({
       method: "POST",
-      url: `/api/accounts/${pot.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: auth,
       payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
     });
@@ -2016,7 +2016,7 @@ describe("api service", () => {
     // And the one door that does undo it takes both halves, as it always has.
     const unconfirmed = await app.inject({
       method: "DELETE",
-      url: `/api/accounts/${pot.id}/transfers/confirmations/${confirmation.id}`,
+      url: `/api/transfers/confirmations/${confirmation.id}`,
       headers: auth,
     });
     expect(unconfirmed.statusCode).toBe(204);
@@ -2254,7 +2254,7 @@ describe("api service", () => {
     const confirm = () =>
       app.inject({
         method: "POST",
-        url: `/api/households/${h.household.id}/transfers/confirm`,
+        url: `/api/transfers/confirm`,
         headers: h.auth,
         payload: {
           fromAccountId: h.aliceCur.id,
@@ -2298,7 +2298,7 @@ describe("api service", () => {
     // Un-confirming takes the contributions it created with it.
     const removed = await app.inject({
       method: "DELETE",
-      url: `/api/households/${h.household.id}/transfers/confirmations/${confirmation.id}`,
+      url: `/api/transfers/confirmations/${confirmation.id}`,
       headers: h.auth,
     });
     expect(removed.statusCode).toBe(204);
@@ -2314,7 +2314,7 @@ describe("api service", () => {
     const h = await seedHousehold(store, app);
     const res = await app.inject({
       method: "POST",
-      url: `/api/households/${h.household.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: h.auth,
       payload: {
         fromAccountId: h.bills.id, // the plan never moves money this way
@@ -2330,7 +2330,7 @@ describe("api service", () => {
     const h = await seedHousehold(store, app);
     const res = await app.inject({
       method: "POST",
-      url: `/api/households/${h.household.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: h.bobAuth,
       payload: {
         fromAccountId: h.aliceCur.id,
@@ -2343,7 +2343,7 @@ describe("api service", () => {
     // Their own transfer is fine, though.
     const own = await app.inject({
       method: "POST",
-      url: `/api/households/${h.household.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: h.bobAuth,
       payload: {
         fromAccountId: h.bobCur.id,
@@ -2355,13 +2355,21 @@ describe("api service", () => {
   });
 
   /**
-   * The household's un-confirm keeps the rule its confirm has always had — a
-   * plain member their own, an owner or admin anybody's — and decision 28
-   * tightening the other two routes must not reach in here and take the admin
-   * arm with it. Both directions asserted, because a rule is only kept if it
-   * still lets through what it was written to let through.
+   * Un-confirming keeps the rule confirming has always had — a plain member
+   * their own, an owner or admin anybody's — and decision 28 tightening the
+   * household-free case must not reach in here and take the admin arm with it.
+   * Both directions asserted, because a rule is only kept if it still lets
+   * through what it was written to let through.
+   *
+   * The rule now reads off the **row's** household rather than off which route
+   * was called, and it is the same route either way. This used to close with a
+   * third assertion — that a household's confirmation met a 404 at the account
+   * route — which was the split, stated as a guarantee. It was also the defect:
+   * whichever surface had not written the row could not withdraw it. The
+   * assertion is inverted below, because reaching the row from anywhere is now
+   * the point and the rule that guards it has not moved an inch.
    */
-  it("keeps the household un-confirm on its own admin rule", async () => {
+  it("keeps un-confirming on its admin rule, whichever surface reaches the row", async () => {
     const h = await seedHousehold(store, app);
     const confirm = (
       headers: { authorization: string },
@@ -2370,7 +2378,7 @@ describe("api service", () => {
     ) =>
       app.inject({
         method: "POST",
-        url: `/api/households/${h.household.id}/transfers/confirm`,
+        url: `/api/transfers/confirm`,
         headers,
         payload: { fromAccountId, toAccountId: h.bills.id, memberUserId },
       });
@@ -2380,7 +2388,7 @@ describe("api service", () => {
     const unconfirm = (headers: { authorization: string }, confId: string) =>
       app.inject({
         method: "DELETE",
-        url: `/api/households/${h.household.id}/transfers/confirmations/${confId}`,
+        url: `/api/transfers/confirmations/${confId}`,
         headers,
       });
     // Bob is a plain member, and Alice's statement is not his to withdraw.
@@ -2388,17 +2396,19 @@ describe("api service", () => {
     // Alice owns the household, so Bob's is hers to withdraw — the arm the
     // roster exists to provide, and the one route that still has it.
     expect((await unconfirm(h.auth, bobs.id)).statusCode).toBe(204);
-    // Nor can the household's confirmation be reached through the route that no
-    // longer has an admin arm: it carries a household, so that door is a 404.
+    // And a household-attributed row is reachable — by the person whose it is,
+    // through the one route there now is. It used to 404 here for carrying a
+    // household at all, which is what left a tick made on one surface
+    // un-withdrawable from the other.
     expect(
       (
         await app.inject({
           method: "DELETE",
-          url: `/api/accounts/${h.bills.id}/transfers/confirmations/${alices.id}`,
+          url: `/api/transfers/confirmations/${alices.id}`,
           headers: h.auth,
         })
       ).statusCode,
-    ).toBe(404);
+    ).toBe(204);
   });
 
   // --- an account inside a household is planned with what the household sends it
@@ -2415,7 +2425,7 @@ describe("api service", () => {
     for (const t of plan.transfers) {
       const res = await app.inject({
         method: "POST",
-        url: `/api/households/${h.household.id}/transfers/confirm`,
+        url: `/api/transfers/confirm`,
         headers: h.auth,
         payload: {
           fromAccountId: t.fromAccountId,
@@ -2579,7 +2589,7 @@ describe("api service", () => {
     const confirm = () =>
       app.inject({
         method: "POST",
-        url: `/api/accounts/${pot.id}/transfers/confirm`,
+        url: `/api/transfers/confirm`,
         headers: auth,
         payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
       });
@@ -2605,7 +2615,7 @@ describe("api service", () => {
     // ...and un-confirming takes the contributions it created with it.
     const removed = await app.inject({
       method: "DELETE",
-      url: `/api/accounts/${pot.id}/transfers/confirmations/${confirmation.id}`,
+      url: `/api/transfers/confirmations/${confirmation.id}`,
       headers: auth,
     });
     expect(removed.statusCode).toBe(204);
@@ -2655,7 +2665,7 @@ describe("api service", () => {
     const post = (payload: object) =>
       app.inject({
         method: "POST",
-        url: `/api/accounts/${pot.id}/transfers/confirm`,
+        url: `/api/transfers/confirm`,
         headers: auth,
         payload,
       });
@@ -2679,12 +2689,15 @@ describe("api service", () => {
   });
 
   /**
-   * All three confirm handlers now measure a confirmation against the month it
-   * names rather than against today (#50) — which means all three inherit the
-   * one thing that arithmetic cannot do. A month that has not started has no
-   * plan to derive an amount from, so there is nothing to confirm, and the
-   * refusal is the same one closing a future month has always given:
-   * `422 future_month`, from the same helper.
+   * Both confirm handlers measure a confirmation against the month it names
+   * rather than against today (#50) — which means both inherit the one thing
+   * that arithmetic cannot do. A month that has not started has no plan to
+   * derive an amount from, so there is nothing to confirm, and the refusal is
+   * the same one closing a future month has always given: `422 future_month`,
+   * from the same helper.
+   *
+   * Two, not three: the derived handler is one route now, and it answers the
+   * same way for a transfer a household derived and one it did not.
    */
   it("refuses to confirm a month that has not started, whichever handler is asked", async () => {
     const nextYear = `${new Date().getUTCFullYear() + 1}-01`;
@@ -2700,22 +2713,27 @@ describe("api service", () => {
     expect(inflow.statusCode).toBe(422);
     expect(inflow.json().error.code).toBe("future_month");
 
-    // The derived transfer, keyed on its two accounts.
+    // The derived transfer, keyed on its two accounts. The month rides in the
+    // body, which is the one shape the route has.
     const derived = await app.inject({
       method: "POST",
-      url: `/api/accounts/${pot.id}/transfers/confirm?month=${nextYear}`,
+      url: `/api/transfers/confirm`,
       headers: auth,
-      payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
+      payload: {
+        fromAccountId: current.id,
+        toAccountId: pot.id,
+        memberUserId: user.id,
+        month: nextYear,
+      },
     });
     expect(derived.statusCode).toBe(422);
     expect(derived.json().error.code).toBe("future_month");
 
-    // And the household's, which takes its month in the body rather than the
-    // query and reaches the same refusal by the same route.
+    // And one a household derives, through that same route, refused alike.
     const h = await seedHousehold(store, app);
     const household = await app.inject({
       method: "POST",
-      url: `/api/households/${h.household.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: h.auth,
       payload: {
         fromAccountId: h.aliceCur.id,
@@ -2752,7 +2770,7 @@ describe("api service", () => {
     });
     const res = await app.inject({
       method: "DELETE",
-      url: `/api/accounts/${pot.id}/transfers/confirmations/${authored.id}`,
+      url: `/api/transfers/confirmations/${authored.id}`,
       headers: auth,
     });
     expect(res.statusCode).toBe(404);
@@ -3067,7 +3085,7 @@ describe("api service", () => {
     // the savings movement's own confirmation neither needed nor consulted.
     const confirmed = await app.inject({
       method: "POST",
-      url: `/api/accounts/${pot.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: auth,
       payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
     });
@@ -3087,7 +3105,7 @@ describe("api service", () => {
     ]);
     await app.inject({
       method: "POST",
-      url: `/api/accounts/${pot.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: auth,
       payload: { fromAccountId: current.id, toAccountId: pot.id, memberUserId: user.id },
     });
@@ -3278,24 +3296,131 @@ describe("api service", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("keeps household confirmations out of the account-scoped list", async () => {
+  /**
+   * **The defect, as it was reported, in both directions.**
+   *
+   * A transfer a household derives and one it does not were the same event
+   * written two ways — `household_id` set or null, decided by which page the
+   * confirmer was standing on — and the two reads behind the two surfaces were
+   * mutually exclusive: the account list asked for `household_id IS NULL AND
+   * inflow_id IS NULL`, the household list asked for the household. So a
+   * household row was in exactly one of them.
+   *
+   * Standing on the shared pot's account page, Ben found that his partner's
+   * tick could not be undone by him, and that his own tick on the household
+   * plan left her page offering "moved" again — which, taken, would have
+   * recorded the movement twice and booked its contributions twice with it.
+   *
+   * Both surfaces read the same rows now. This test fails on the parent commit
+   * at the very first assertion: Bob's confirmation, made as a plain member,
+   * simply is not in the account-scoped list.
+   */
+  it("shows one derived confirmation on both surfaces, and undoes it from either", async () => {
+    const h = await seedHousehold(store, app);
+
+    // Bob is a plain member. He records his own transfer into the shared pot —
+    // his account page's button and the household checklist's are the same call
+    // now, so there is only one thing he can have done.
+    const bobs = await app.inject({
+      method: "POST",
+      url: `/api/transfers/confirm`,
+      headers: h.bobAuth,
+      payload: {
+        fromAccountId: h.bobCur.id,
+        toAccountId: h.bills.id,
+        memberUserId: h.bob.id,
+      },
+    });
+    expect(bobs.statusCode).toBe(201);
+    const bobsId = bobs.json().confirmation.id;
+
+    const listed = async (url: string) =>
+      (await app.inject({ method: "GET", url, headers: h.auth })).json() as { id: string }[];
+
+    // Alice, the owner, sees it in both places: on the household's checklist…
+    expect(
+      (await listed(`/api/households/${h.household.id}/transfers/confirmations`)).map((c) => c.id),
+    ).toContain(bobsId);
+    // …and on the pot's own page, which is where she was standing when she
+    // could not undo it.
+    expect(
+      (await listed(`/api/accounts/${h.bills.id}/transfers/confirmations`)).map((c) => c.id),
+    ).toContain(bobsId);
+
+    // Confirming it a second time is refused, whoever asks and from wherever —
+    // one event, one record, one set of contributions.
+    const again = await app.inject({
+      method: "POST",
+      url: `/api/transfers/confirm`,
+      headers: h.auth,
+      payload: {
+        fromAccountId: h.bobCur.id,
+        toAccountId: h.bills.id,
+        memberUserId: h.bob.id,
+      },
+    });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error.code).toBe("already_confirmed");
+
+    // And the owner may withdraw it — decision 28's admin arm, reading off the
+    // row's household rather than off which page she came from.
+    expect(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: `/api/transfers/confirmations/${bobsId}`,
+          headers: h.auth,
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(await listed(`/api/accounts/${h.bills.id}/transfers/confirmations`)).toEqual([]);
+
+    // The reverse. Alice records Bob's transfer for him, as an owner may…
+    const hers = await app.inject({
+      method: "POST",
+      url: `/api/transfers/confirm`,
+      headers: h.auth,
+      payload: {
+        fromAccountId: h.bobCur.id,
+        toAccountId: h.bills.id,
+        memberUserId: h.bob.id,
+      },
+    });
+    expect(hers.statusCode).toBe(201);
+    // …and it is done on the account page too, rather than offered again.
+    expect(
+      (await listed(`/api/accounts/${h.bills.id}/transfers/confirmations`)).map((c) => c.id),
+    ).toEqual([hers.json().confirmation.id]);
+    // Bob's own attempt from his side meets the same refusal, from the same
+    // row: the second tick that would have double-booked the month.
+    const bobAgain = await app.inject({
+      method: "POST",
+      url: `/api/transfers/confirm`,
+      headers: h.bobAuth,
+      payload: {
+        fromAccountId: h.bobCur.id,
+        toAccountId: h.bills.id,
+        memberUserId: h.bob.id,
+      },
+    });
+    expect(bobAgain.statusCode).toBe(409);
+  });
+
+  /**
+   * An **authored** movement is still a different movement, and still keeps its
+   * own route and its own rule. That split is real: somebody wrote it down.
+   */
+  it("keeps authored movements out of the derived surfaces", async () => {
     const h = await seedHousehold(store, app);
     await confirmAllInflow(h);
-    // The household's own view is unchanged...
     const household = await app.inject({
       method: "GET",
       url: `/api/households/${h.household.id}/transfers/confirmations`,
       headers: h.auth,
     });
-    expect(household.json().length).toBeGreaterThan(0);
-    // ...and none of it shows up as a movement, because none of it is one: a
-    // household transfer is derived from the plan, not authored as an inflow.
-    const perAccount = await app.inject({
-      method: "GET",
-      url: `/api/accounts/${h.bills.id}/transfers/confirmations`,
-      headers: h.auth,
-    });
-    expect(perAccount.json()).toEqual([]);
+    const rows = household.json() as { inflowId: string | null }[];
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((c) => c.inflowId === null)).toBe(true);
   });
 
   it("funds a household pot from the household's allocation, awaiting the transfer", async () => {
@@ -5461,7 +5586,7 @@ async function seedEstate(
     if (whole && assigned) {
       const res = await app.inject({
         method: "POST",
-        url: `/api/households/${household.id}/transfers/confirm`,
+        url: `/api/transfers/confirm`,
         headers: auth.get(c.memberUserId)!,
         payload: {
           month: month.slice(0, 7),

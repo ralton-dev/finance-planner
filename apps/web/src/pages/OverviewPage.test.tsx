@@ -839,28 +839,29 @@ describe("OverviewPage — money moving between your own accounts", () => {
           },
         ]),
       },
-      "POST /api/accounts/pot/transfers/confirm?month=2026-08": {
+      "POST /api/transfers/confirm": {
         status: 201,
         body: { confirmation: { id: "conf-derived" }, contributions: [] },
       },
-      "DELETE /api/accounts/pot/transfers/confirmations/conf-derived": { status: 204 },
+      "DELETE /api/transfers/confirmations/conf-derived": { status: 204 },
     });
 
     expect(await screen.findByText("Ben → Holiday pot")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "mark done" }));
-    await waitFor(() =>
-      expect(stub.calls("POST /api/accounts/pot/transfers/confirm?month=2026-08")).toBe(1),
-    );
-    expect(stub.bodyOf("POST /api/accounts/pot/transfers/confirm?month=2026-08")).toEqual({
+    await waitFor(() => expect(stub.calls("POST /api/transfers/confirm")).toBe(1));
+    // The month rides in the body now, not the query: one route, one shape,
+    // whether or not a household derived the transfer.
+    expect(stub.bodyOf("POST /api/transfers/confirm")).toEqual({
       fromAccountId: "current",
       toAccountId: "pot",
       memberUserId: "u1",
+      month: "2026-08",
     });
 
     fireEvent.click(await screen.findByRole("button", { name: "undo" }));
     await waitFor(() =>
-      expect(stub.calls("DELETE /api/accounts/pot/transfers/confirmations/conf-derived")).toBe(1),
+      expect(stub.calls("DELETE /api/transfers/confirmations/conf-derived")).toBe(1),
     );
   });
 

@@ -170,7 +170,7 @@ describe("a confirmation and the ledger rows it wrote", () => {
   async function confirm(s: Awaited<ReturnType<typeof seed>>) {
     const res = await app.inject({
       method: "POST",
-      url: `/api/accounts/${s.pot.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: s.auth,
       payload: {
         fromAccountId: s.current.id,

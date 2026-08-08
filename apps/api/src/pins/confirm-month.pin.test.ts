@@ -267,7 +267,7 @@ describe("a confirmation for a past month", () => {
 
     const res = await app.inject({
       method: "POST",
-      url: `/api/households/${h.household.id}/transfers/confirm`,
+      url: `/api/transfers/confirm`,
       headers: h.auth,
       payload: {
         fromAccountId: h.aliceCur.id,
