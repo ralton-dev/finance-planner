@@ -1,5 +1,31 @@
 # Implementation plan — said, and done
 
+> **Complete, 2026-08-08.** All twenty-three packages are on `main`; CI green.
+> The plan's own completion signal — **no `it.fails` in any `*.pin.test.*` file**
+> — was met at wave 4, and all five pins are plain `it`.
+>
+> **Thirteen packages were planned; ten more were added while it ran.** That is
+> the number worth carrying: WP-BB, BC, BD, BE, BF, BG, BH, BI, BJ and BK all
+> exist because a package found something and **reported it instead of patching
+> it quietly**, or because Ben decided something the plan had not asked. Six came
+> from a browser pass. Decisions 36–45 record every one.
+>
+> Two known instances of this plan's own defect class are **left open** and want a
+> next plan, both found in the last wave:
+>
+> - `apps/api/src/plan.ts:354` — `savedByPayment(store, account.id)` takes no
+>   month, while the sibling call one line down in the same `Promise.all` does. A
+>   plan asked for June sums July's contributions into June's already-saved. It is
+>   the **reader** half of what WP-BI bounded at the writer, and closing it means
+>   a date on the store interface, both implementations and `savedByPayment` —
+>   a semantic decision, not a side effect.
+> - `NewPaymentDrawer.tsx:296` and `NewIncomeDrawer.tsx:139` — a failed accounts
+>   read renders _"no editable accounts. create one first"_ inside a form whose
+>   purpose is to write. Same conversion WP-BK closed on the Overview, with an
+>   instruction rather than a button. Also `HouseholdDetailPage.tsx:599`, where
+>   `?? "unassigned"` is reachable **only** when a name lookup failed — a word
+>   that answers "is it assigned?" when the absence says "we could not name them".
+
 Fifteen open issues on the board, read in full and verified against `main` at
 `76ee2f2` on **2026-08-07**. One (#42) was already fixed before it was filed and
 is closed with its evidence; the rest are planned below. One (#56) is a rule in
@@ -44,9 +70,9 @@ renders an autoscaler for six. A test waits for the thing it is not asserting.
 
 Every package below closes the gap between a claim and the thing it claims.
 
-## Decisions (26–44, continuing MINE-AND-OURS' numbering — do not relitigate)
+## Decisions (26–45, continuing MINE-AND-OURS' numbering — do not relitigate)
 
-**26–35 were taken when this plan was written; 36–44 were taken while it ran**, as
+**26–35 were taken when this plan was written; 36–45 were taken while it ran**, as
 the work uncovered things the board had not. That is the normal shape here, not a
 failure of planning: six of this plan's nineteen packages exist because a package
 found something and reported it rather than patching it quietly.
@@ -222,6 +248,26 @@ rebuilt; a project is personal or shared).
     missing was that the client had not been sent one. Decision 42 added a second
     reason, and the wording did not move with it — **a label written for one
     cause, still firing after a second appeared underneath it.**
+
+    **Three sites were four**, and the fourth is why grepping the phrase was not
+    enough: `FlowSankey.tsx:193` prints `"member"`, not `"a household member"`,
+    for the same withheld value from the same cause. The wording reads **"you"**
+    at all four, and only in the fallback branch — `ProjectDetailPage.tsx:43`
+    already said `isMine ? "you" : …` for the same idea.
+
+    **The phrase itself stays**, argued and declined by WP-BJ rather than taken:
+    on `/api/flow` it has **two** causes (not on any roster, _or_ you cannot see
+    that household) and is honest for the second; on the account-plan surfaces
+    `planInflowSources` **drops** the row rather than anonymising it
+    (`server.ts:915`), so after this fix the reader is the only person who can
+    reach the fallback there — and they now see "you".
+
+45. **A failed read is not an empty account list.** `OverviewPage.tsx:165`
+    guarded `overview.error` and not `accounts.error`, so a failed
+    `GET /api/accounts` rendered the **first-run** state over a profile whose
+    accounts had not been read. **The seed it offered was already guarded
+    server-side** (`server.ts:2993`, `409 demo_not_empty`), so nothing could have
+    been written — the defect was the false claim, not a data loss. WP-BK.
 
 **Also found stale, and worth deleting from `BACKLOG.md`:** the entry "A derived
 transfer you confirmed does not survive an export" is no longer true.
@@ -892,6 +938,26 @@ Owns: `apps/api/src/server.ts` (contribution region), `server.test.ts`,
 
 ---
 
+## WP-BK · A failed read is not an empty account list
+
+**Goal:** decision 45. `OverviewPage.tsx:165` guarded `overview.error` and not
+`accounts.error`, so a failed `GET /api/accounts` gave `totalAccounts = 0` and
+rendered the **first-run** state — "no accounts yet", with a "load demo data"
+button — over a profile whose accounts had not been read. `AccountsPage.tsx:280`
+had the same shape, and `byId` (`:168`) silently emptied every currency table
+with it.
+
+**Correction to the alarm, on the record:** the seed was **already guarded
+server-side** — `POST /api/demo/seed` 409s `demo_not_empty` if you own any
+account or are in any household (`server.ts:2993`). So the realised failure was
+a false report that your money was gone plus a button that could not have done
+what it offered. The offer was worth killing; no data was at risk.
+
+Owns: `apps/web/src/pages/{OverviewPage,AccountsPage}.tsx` (+ tests),
+`apps/web/e2e/journey.spec.ts` (stale comments only). Size **S**.
+
+---
+
 ## WP-BJ · A reader is not "a household member" to themselves
 
 **Goal:** decision 44, fixed client-side from `/api/me`, at
@@ -919,7 +985,7 @@ Owns: those three files (+ tests). Size **S**.
 | 6    | WP-AZ + WP-BE                                 | AZ owns `apps/web/e2e/` + `ci.yml`; BE owns `server.ts` reality region + `contracts` — disjoint          |
 | 7    | WP-BF                                         | **alone** — owns `apps/api/src/server.ts`, `notify.ts` and `packages/domain/src/household.ts`            |
 | 8    | WP-BA + WP-BG                                 | BA owns `apps/web/src/lib/**`; BG owns `apps/api/src/plan.ts` + `server.ts` — disjoint                   |
-| 9    | WP-BH + WP-BI + WP-BJ                         | one web page · the api contribution region · three web components — three-way disjoint                   |
+| 9    | WP-BH + WP-BI + WP-BJ + WP-BK                 | one web page · the api contribution region · four web components · two web pages — four-way disjoint     |
 
 WP-BA is deliberately **last**, after WP-BF: it counts the requests a real
 session makes, and WP-BF changes what several of those requests return. Measuring
