@@ -74,8 +74,8 @@ Every package below closes the gap between a claim and the thing it claims.
 
 **26–35 were taken when this plan was written; 36–45 were taken while it ran**, as
 the work uncovered things the board had not. That is the normal shape here, not a
-failure of planning: six of this plan's nineteen packages exist because a package
-found something and reported it rather than patching it quietly.
+failure of planning: **ten of this plan's twenty-three packages** exist because a
+package found something and reported it rather than patching it quietly.
 
 Still binding from earlier plans, carried forward explicitly because packages
 here touch all four: **ONE-ENGINE decision 10** (the pass partitions by currency
