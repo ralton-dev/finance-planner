@@ -1,12 +1,15 @@
 import { MemoryStore } from "@finance-planner/data";
+import { startTelemetry } from "@finance-planner/telemetry";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { ApiEnv } from "../env.js";
 import { buildServer } from "../server.js";
 
 /**
- * **Red pin — issue #73. Flipped by WP-BS.**
+ * **Issue #73 — green since WP-BS.** Everything below describes the defect as it
+ * stood at `56ffc61`; it is kept in the past tense it was written in, because a
+ * pin is the record of what went wrong and stays readable as one.
  *
  * > A request that crosses a process boundary is still one request, and every
  * > process here is certain it is the only one.
@@ -109,9 +112,28 @@ import { buildServer } from "../server.js";
  *
  * **Do not "fix" this pin by widening it.** The span objects, the `http.route`
  * attribute and the correlated Pino line are proven by **WP-BS**'s `otel-smoke`
- * CI job, which brings up two real containers and asserts on a collector's
- * output. WP-BS is also the package that flips this pin from `it.fails` to a
- * plain `it`.
+ * CI job, which brings up the whole compose stack with the `otel` profile and
+ * asserts on the collector's own stdout: one trace id on both an api span and an
+ * auth span, joined structurally by auth's server span naming api's undici
+ * client span as its parent.
+ *
+ * ## Why this pin starts the bootstrap itself
+ *
+ * WP-BS flipped this from `it.fails` to a plain `it`, and **flipping alone left
+ * it red.** The header does not appear because the code shipped; it appears
+ * because tracing is *running*. Nothing starts it in a vitest process — there is
+ * no `--import` preload, no setup file, and `OTEL_ENABLED` is unset — so the
+ * `beforeAll` below calls the real `startTelemetry("api")` out of
+ * `packages/telemetry`. Deliberately the shipped bootstrap rather than a
+ * hand-assembled `UndiciInstrumentation`, so that a change to what the services
+ * actually load is a change this pin sees.
+ *
+ * Two consequences, both accepted knowingly. `startTelemetry` installs the
+ * SIGTERM/SIGINT handlers of decision 54, so an interrupted vitest run in this
+ * worker exits 0. And it constructs an exporter: it is pointed at a dead port
+ * with `OTEL_BSP_SCHEDULE_DELAY` set past the life of the run, so the batch is
+ * never flushed and the test does no network I/O at all. **The spans are not
+ * the assertion here — the bytes on the wire are.**
  */
 
 const env: ApiEnv = {
@@ -174,6 +196,22 @@ describe("one request across the api → auth hop", () => {
   let stub: Awaited<ReturnType<typeof startStub>>;
   let app: ReturnType<typeof buildServer>;
 
+  /**
+   * Tracing, started once, by the same call the three services make.
+   *
+   * `startTelemetry` returns nothing to shut down and its effects are
+   * process-global, which is why this is `beforeAll` and why the endpoint points
+   * at a port nothing is listening on: with the batch delay set past the life of
+   * the run, no export is ever attempted and the pin costs no I/O. Vitest gives
+   * each test file its own child process, so none of this reaches another file.
+   */
+  beforeAll(async () => {
+    process.env.OTEL_ENABLED = "true";
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:5041";
+    process.env.OTEL_BSP_SCHEDULE_DELAY = "300000";
+    await startTelemetry("api");
+  });
+
   beforeEach(async () => {
     stub = await startStub();
     app = buildServer({
@@ -202,9 +240,9 @@ describe("one request across the api → auth hop", () => {
    * The fixture's precondition, and **a plain `it` on purpose**.
    *
    * The pin below says nothing at all unless the request genuinely left this
-   * process and arrived at the stub with its prefix rewritten. Kept out of the
-   * `it.fails` so that a proxy which stops forwarding turns the build red
-   * instead of joining the expected failures.
+   * process and arrived at the stub with its prefix rewritten. It was kept out
+   * of the `it.fails` while the pin was red, so that a proxy which stopped
+   * forwarding turned the build red instead of joining the expected failures.
    */
   it("really does cross the boundary, with the prefix rewritten", async () => {
     const res = await login();
@@ -218,13 +256,13 @@ describe("one request across the api → auth hop", () => {
    * **The pin.** One request, two processes, and nothing on the wire that says
    * so.
    *
-   * Silent on *how* the header comes to exist — decision 56 expects
-   * `instrumentation-undici` to inject it with no code change at all, but a
-   * manual `onRequest` hook on the proxy would satisfy this assertion equally.
-   * What is refused is the state today: a hop that carries a correlation header
-   * fine and is never given one.
+   * Silent on *how* the header comes to exist — decision 56 expected
+   * `instrumentation-undici` to inject it with no code change at all, and that
+   * is what happened, but a manual `onRequest` hook on the proxy would satisfy
+   * this assertion equally. What is refused is the state at `56ffc61`: a hop
+   * that carried a correlation header fine and was never given one.
    */
-  it.fails("carries a traceparent into auth", async () => {
+  it("carries a traceparent into auth", async () => {
     await login();
     const headers = stub.received[0]!.headers;
     const traceparent = typeof headers.traceparent === "string" ? headers.traceparent : "«absent»";
