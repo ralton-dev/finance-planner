@@ -52,6 +52,12 @@ services:
       ENABLE_DEMO_SEED: ${ENABLE_DEMO_SEED:-false}
       ENABLE_PLAN_DEBUG: ${ENABLE_PLAN_DEBUG:-false}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tracing. Off unless OTEL_ENABLED=true, and the endpoint defaults to the
+      # collector below, which only exists under `make up-otel`. See .env.example.
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_LOG_LEVEL: ${OTEL_LOG_LEVEL:-}
+      APP_VERSION: ${APP_VERSION:-dev}
     ports:
       - "4000:4000"
     depends_on:
@@ -79,6 +85,10 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_LOG_LEVEL: ${OTEL_LOG_LEVEL:-}
+      APP_VERSION: ${APP_VERSION:-dev}
     ports:
       - "4001:4001"
     depends_on:
@@ -89,18 +99,22 @@ services:
     build:
       context: ../..
       dockerfile: apps/calc/Dockerfile
+    # No DATABASE_URL and no REDIS_URL: calc has never opened either. Its one
+    # route computes in-process out of packages/domain, and nothing under
+    # apps/calc/src reads `databaseUrl`, `createStore` or `createDb`. The two
+    # variables were configuration for callers that do not exist. The waits on
+    # postgres and redis went with them — they only existed to make those
+    # connections safe, and a service that connects to neither has no reason to
+    # be held back by either.
     environment:
       CALC_PORT: "4002"
-      DATABASE_URL: postgres://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@postgres:5432/${POSTGRES_DB:-finance}
-      REDIS_URL: redis://redis:6379
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_LOG_LEVEL: ${OTEL_LOG_LEVEL:-}
+      APP_VERSION: ${APP_VERSION:-dev}
     ports:
       - "4002:4002"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
 
   web:
     build:
@@ -114,6 +128,32 @@ services:
       - "8080:8080"
     depends_on:
       - api
+
+  # Traces, printed. `make up-otel` starts this alongside everything else and
+  # `make up` does not — the profile is the whole reason a collector can live in
+  # this file without appearing in every dev loop and in the stack-smoke CI job,
+  # which runs `up -d --build --wait` over the default profile.
+  #
+  # This is the first compose profile in the repository. A service with
+  # `profiles:` is started only when its profile is named, and — the part worth
+  # knowing before you add a second — a service in the default profile may not
+  # `depends_on` a profiled one, which is why api, auth and calc name the
+  # collector's address in an environment variable and nowhere else. With the
+  # collector absent, their exports are refused and dropped; nothing waits on it
+  # and nothing fails because of it.
+  otel-collector:
+    profiles: ["otel"]
+    # Pinned, and contrib rather than core because that is the image the OTEL
+    # docs point at. Do not move this to `latest`: Docker Hub's recent-tag list
+    # for this image is mostly `0.159.0-nightly.*`, which are not releases.
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      # OTLP/HTTP. Published so a service run outside compose can export here
+      # too; inside the network the services use http://otel-collector:4318.
+      - "4318:4318"
 
 volumes:
   pgdata:

@@ -1,4 +1,4 @@
-.PHONY: install dev build test lint typecheck format up down logs migrate seed up-kind down-kind help
+.PHONY: install dev build test lint typecheck format up up-otel down logs logs-otel migrate seed up-kind down-kind help
 
 help:
 	@echo "Targets:"
@@ -10,8 +10,10 @@ help:
 	@echo "  typecheck  typecheck all workspaces"
 	@echo "  format     prettier --write ."
 	@echo "  up         docker-compose up the local stack (postgres, redis, services)"
+	@echo "  up-otel    up, plus a collector, with tracing on (OTEL_ENABLED=true)"
 	@echo "  down       docker-compose down"
 	@echo "  logs       tail docker-compose logs"
+	@echo "  logs-otel  tail the collector, which prints every span it receives"
 	@echo "  migrate    apply DB migrations against the local DB"
 	@echo "  seed       load seed data into the local DB"
 	@echo "  up-kind    build images, load into kind, helm install (local overlay)"
@@ -41,11 +43,22 @@ format:
 up:
 	docker compose -f deploy/local/docker-compose.yml up -d --build
 
+# The same stack plus an OTLP collector that prints every span it receives.
+# OTEL_ENABLED is set here rather than in .env so that `make up` and `make up`
+# after it stay honest about what they started; the endpoint comes from the
+# compose default. Read the traces with `make logs-otel`.
+up-otel:
+	OTEL_ENABLED=true docker compose -f deploy/local/docker-compose.yml --profile otel up -d --build
+
+# `down` must name the profile too, or the collector is left running.
 down:
-	docker compose -f deploy/local/docker-compose.yml down
+	docker compose -f deploy/local/docker-compose.yml --profile otel down
 
 logs:
 	docker compose -f deploy/local/docker-compose.yml logs -f
+
+logs-otel:
+	docker compose -f deploy/local/docker-compose.yml --profile otel logs -f otel-collector
 
 migrate:
 	docker compose -f deploy/local/docker-compose.yml exec -T postgres sh -c \

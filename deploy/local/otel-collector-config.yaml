@@ -1,0 +1,41 @@
+# Collector for the local dev loop. Reached at http://otel-collector:4318 from
+# inside the compose network, http://localhost:4318 from the host.
+#
+# The image ships a working default config, and it is deliberately not used: it
+# also stands up Jaeger, Zipkin, zpages and a self-scrape, none of which this
+# stack sends anything to. What a person wants here is to run one request and
+# read the spans it produced, so the whole file is one traces pipeline whose
+# exporter is stdout.
+#
+# Only traces. The bootstrap in packages/telemetry pins OTEL_METRICS_EXPORTER
+# and OTEL_LOGS_EXPORTER to "none", so nothing here will ever be sent a metric
+# or a log record. The receiver still accepts all three signals — that costs
+# nothing and means a service configured by hand is not silently refused.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Defaults (8192 spans / 200 ms). The services' own BatchSpanProcessor already
+  # waits 5000 ms before it exports, so this one adds no perceptible delay to
+  # `docker compose logs -f otel-collector`.
+  batch: {}
+
+exporters:
+  # `debug`, not `logging` — the `logging` exporter was removed from the
+  # collector. Its default `basic` verbosity prints one counted line per batch
+  # ("TracesExporter {... spans: 11}") and nothing else, which reads exactly
+  # like tracing not working. `detailed` is what prints the trace id, the span
+  # names and the attributes, and printing those is the entire point of running
+  # a collector locally.
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
