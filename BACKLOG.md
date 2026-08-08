@@ -194,14 +194,118 @@ nobody reads their absence as an oversight and rebuilds them.
   with `NOTIFY_ENABLED=true` means N replicas racing on the same INSERT.
 - **Redis caching + nightly recompute CronJob.** Redis is provisioned but the
   caching/queue path isn't required yet (plans recompute on read).
-- **Observability stack.** Prometheus + Grafana + Loki + OpenTelemetry — none
-  wired. Services already log structured JSON (Pino).
+- **Observability stack: metrics and log aggregation.** Prometheus, Grafana and
+  Loki — none wired. **Traces are.** OpenTelemetry ships in every backend image
+  behind `OTEL_ENABLED`, one trace spans the api → auth hop with auth's server
+  span parented on api's client span, and every Pino line carries the
+  `trace_id` of the request that produced it, so logs and traces already
+  correlate ([`WHICH-HOP.md`](./WHICH-HOP.md), [issue #73](https://github.com/ralton-dev/finance-planner/issues/73)). What is
+  missing is a metrics pipeline — the SDK's metrics and logs exporters are
+  deliberately forced to `none` — and somewhere to send the logs.
+- **`/readyz` asserts a readiness it never checked, and nothing probes it
+  anyway.** All three services return a hardcoded `{ ready: true, checks: {} }`
+  (`apps/api/src/server.ts:1164`, `apps/auth/src/server.ts:390`,
+  `apps/calc/src/server.ts:50`), and `checks` is typed in
+  `packages/contracts/src/index.ts` as a record built to carry named results
+  that has never carried one. Worse, the chart never calls the endpoint:
+  `values.yaml` sets a single `health:` path per service and
+  `templates/services.yaml` points **both** the readinessProbe and the
+  livenessProbe at it, so readiness is a liveness check under another name.
+  `/healthz` is a literal `status: "ok"` while the contract allows
+  `"degraded"`, so a pod with a dead Postgres pool reports ready and takes
+  traffic. **The fix is not uniform**, which is why this is one entry and not
+  one line: api needs a pool ping plus auth reachability — and `StoreHandle` is
+  `{ store, close }` with **no ping**, so that is a new Store capability, with
+  MemoryStore parity; auth needs store, mailer and its in-process JWT rotation
+  state, because SAID-AND-DONE decision 33 makes a freshly-started replica
+  genuinely not-ready in a way only auth knows; calc genuinely needs nothing
+  and `ready: true` is honest there. Found independently by three packages of
+  the tracing work.
+- **A refused collector is completely silent.** With `OTEL_ENABLED=true` and an
+  endpoint that nothing is listening on, `startTelemetry` resolves, the service
+  serves 200s, spans are produced, and **nothing logs the failed export** at the
+  default level. The symptom of a wrong endpoint and the symptom of a working
+  one are identical on stdout. That the service survives is the intended half —
+  tracing must not take the process with it — but the silence is not, and it was
+  confirmed independently by four packages. `.env.example` ships a commented
+  `OTEL_LOG_LEVEL=debug` as the escape hatch and `OPERATIONS.md` §3 makes it
+  step one of the runbook; a real fix logs the first export failure once at
+  `warn` without becoming a log flood.
+- **The bulk `secretRef` puts every Secret key on every pod.** Each Deployment
+  in `templates/services.yaml` does `envFrom: secretRef`, including the nginx
+  `web` container, which has no use for any of them — so `JWT_SIGNING_KEY`,
+  `DATABASE_URL`, `SMTP_URL` and `OIDC_CLIENT_SECRET` are all readable from a
+  container that serves static files. Pre-existing and unchanged by the tracing
+  work, which routed **around** it: the OTLP headers secret is read by
+  `secretKeyRef` with `optional: true` so it lands only on the three backends.
+  Closing it properly means splitting the Secret per service in
+  `templates/config.yaml` and giving each Deployment its own reference.
+- **The orphan `calc` service.** `POST /internal/calc/account-plan` is calc's
+  only route and it is referenced solely by calc's own test; api computes plans
+  in-process through `packages/domain` and has never called it
+  ([`WHICH-HOP.md`](./WHICH-HOP.md) decision 49). So a whole service, image,
+  Deployment, Service, HPA and PDB exist for one caller that does not exist.
+  It is instrumented and traced like the other two, which means it is ready on
+  the day something calls it — but the honest options are to give it work or to
+  delete it, and issue #73's stated "SPA → api → auth → calc" trace cannot be
+  observed until one of those happens.
+- **Graceful HTTP shutdown.** The SIGTERM/SIGINT handler added with tracing
+  flushes the span exporter and then calls `process.exit(0)` **without closing
+  Fastify**, so in-flight requests are dropped — exactly as they were before it
+  existed, when the repository had no signal handler at all
+  ([`WHICH-HOP.md`](./WHICH-HOP.md) decision 60). A correct drain needs the
+  server handle, which a `--import` preload does not have, and it changes how
+  every deploy behaves, so it was named rather than built. Do not let it grow
+  an `app.close()` path inside the preload.
+- **Browser / RUM instrumentation for `apps/web`.** [Issue #73](https://github.com/ralton-dev/finance-planner/issues/73) put it out
+  of scope deliberately. Today a trace begins at the api server span, so the
+  first hop of a real user request — browser → nginx → api — is invisible, and
+  the time a user waits is not the time any span measures.
+- **`@opentelemetry/instrumentation-fastify` is deprecated** in favour of
+  [`@fastify/otel`](https://github.com/fastify/otel), maintained by the Fastify
+  authors. It is the sole reason `@opentelemetry/instrumentation@0.213.0` and
+  `@0.221.0` both exist in the lockfile. **Kept deliberately:** `@fastify/otel`
+  is a _plugin_, so adopting it means registering it in all three `server.ts`
+  files, which destroys the zero-app-code premise the current instrumentation
+  was chosen for ([`WHICH-HOP.md`](./WHICH-HOP.md) decision 55). Proven untidy
+  rather than broken — one physical `import-in-the-middle` and one
+  `require-in-the-middle` on disk, both bases resolving to the same realpaths,
+  so Node keys them as a single singleton. The attribute that goes missing if
+  that ever stops being true is `http.route`, and it goes missing silently.
+- **`deploy/helm/finance-planner/Chart.yaml:6` says `appVersion: "0.0.0"`.** A
+  fourth altitude telling the version lie the tracing work fixed at the other
+  three. Inert today — nothing references `.Chart.AppVersion` — and owned by
+  nobody, which is why it is here rather than fixed in passing.
+- **What `otel-smoke` still cannot see.** The job is green and proves a trace
+  crosses one process boundary; it is worth being explicit that this is less
+  than it sounds, so a green tick does not get read as coverage. It runs two
+  pods on one host rather than through a Service VIP, an ingress or a mesh
+  sidecar, any of which can strip `traceparent`. It never restarts a service
+  mid-request. A collector that is simply down would fail it as "0 spans",
+  indistinguishable from a broken hop. **`calc` is entirely unasserted** — it
+  gets the same preload and nothing makes it emit a span. The nginx → api and
+  ingress → api hops, which are the real first hop of a user request, are not
+  exercised at all. Nor is sampling.
 - **DB backups.** No `pg_dump` CronJob for non-prod; prod is left to whichever
   managed-Postgres provider you point the chart at.
-- **Live-cluster CD.** CI builds, tests, and renders the chart; the actual
-  `helm upgrade` against a real cluster is intentionally **not** automated —
-  it needs credentials that aren't committed. Plug into your CD with provider
-  auth when ready.
+- **Live-cluster CD, and the image tag that names no build** —
+  [issue #75](https://github.com/ralton-dev/finance-planner/issues/75). CI
+  builds, tests, and renders the chart; the actual `helm upgrade` against a real
+  cluster is intentionally **not** automated, because it needs credentials that
+  aren't committed. The consequence has grown a second head: the chart now
+  renders `APP_VERSION` and `service.version` from `.Values.image.tag`, on the
+  argument that the image tag is the one version a container honestly has — and
+  until something stamps that tag with a build, it stays `latest`.
+  `values-staging.yaml` says images are SHA-tagged by CI one line above its own
+  `tag: latest`. So `/healthz` reports `latest` where it used to report `0.0.0`:
+  a different lie, not the absence of one, and it stops being one the moment
+  this entry is done.
+- **Auth rate-limits every caller as one client** —
+  [issue #74](https://github.com/ralton-dev/finance-planner/issues/74). The
+  per-route limiter keys on the peer IP, which for every request through the
+  gateway is **api's** IP: there is no `keyGenerator`, no `trustProxy`, and no
+  `x-forwarded-for` crosses the hop. The effective global limit is therefore
+  `max × api replica count` and it moves with the HPA.
 - **NetworkPolicies.** The chart doesn't ship them — any pod in the cluster
   can reach auth and calc directly today.
 - **Image scanning + SBOM + signing.** No Trivy, no syft, no cosign. CI
