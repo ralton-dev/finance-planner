@@ -259,6 +259,97 @@ describe("SettingsPage — data: import", () => {
     // The file is rejected outright, so the confirmation goes with it.
     expect(screen.queryByText(/import is additive/i)).toBeNull();
   });
+
+  /**
+   * The duplicate-account-name refusal, as it actually arrives: a `ZodError`'s
+   * message, which is its issue list JSON-stringified. The point of the test is
+   * that the sentence the server wrote — the one **naming the account** —
+   * reaches the screen, because the file in this case is a perfectly good
+   * export and "that doesn't look like an export" is both wrong and useless.
+   */
+  const DUPLICATE_NAME =
+    "2 accounts in this file are named 'Savings'. An account name is how this file says " +
+    "which account, so a repeated one cannot be restored faithfully - rename one of them " +
+    "and export again.";
+
+  function zodIssues(issues: unknown[]): Routes {
+    return {
+      "POST /api/import": {
+        status: 422,
+        body: { error: { code: "validation_error", message: JSON.stringify(issues, null, 2) } },
+      },
+    };
+  }
+
+  it("names the duplicate account the server refused on", async () => {
+    renderPage(
+      zodIssues([{ code: "custom", path: ["accounts", 0, "name"], message: DUPLICATE_NAME }]),
+    );
+
+    await screen.findByLabelText(/import from export/i);
+    chooseFile(EXPORT_FILE);
+    fireEvent.click(await screen.findByRole("button", { name: /^import$/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/2 accounts in this file are named 'Savings'/);
+    expect(alert).toHaveTextContent(/rename one of them and export again/i);
+    // Not the shrug: this file *is* a finance-planner export.
+    expect(alert).not.toHaveTextContent(/doesn't look like a finance-planner export/i);
+    // Still refused outright, so the confirmation still goes with it.
+    expect(screen.queryByText(/import is additive/i)).toBeNull();
+  });
+
+  it("shows every name a file repeated, not just the first", async () => {
+    renderPage(
+      zodIssues([
+        { code: "custom", path: ["accounts", 0, "name"], message: "two are named 'Savings'." },
+        { code: "custom", path: ["accounts", 1, "name"], message: "two are named 'Joint'." },
+      ]),
+    );
+
+    await screen.findByLabelText(/import from export/i);
+    chooseFile(EXPORT_FILE);
+    fireEvent.click(await screen.findByRole("button", { name: /^import$/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/two are named 'Savings'/);
+    expect(alert).toHaveTextContent(/two are named 'Joint'/);
+  });
+
+  it("keeps the plain refusal when the issues only describe the shape", async () => {
+    // What a file that genuinely isn't an export produces. These messages are
+    // written for a programmer reading a schema, so none of them goes on screen.
+    renderPage(
+      zodIssues([
+        { code: "invalid_value", path: ["version"], message: "Invalid input: expected 1" },
+        {
+          code: "invalid_type",
+          path: ["exportedAt"],
+          message: "Invalid input: expected string, received undefined",
+        },
+      ]),
+    );
+
+    await screen.findByLabelText(/import from export/i);
+    chooseFile(JSON.stringify({ version: 9, accounts: [] }));
+    fireEvent.click(await screen.findByRole("button", { name: /^import$/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/that file doesn't look like a finance-planner export/i);
+    expect(alert).not.toHaveTextContent(/expected string, received undefined/i);
+  });
+
+  it("still offers a retry when the failure isn't the file", async () => {
+    // A 500 says nothing about the document, so the queued file survives it.
+    renderPage({ "POST /api/import": { status: 500, body: {} } });
+
+    await screen.findByLabelText(/import from export/i);
+    chooseFile(EXPORT_FILE);
+    fireEvent.click(await screen.findByRole("button", { name: /^import$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not import that file/i);
+    expect(screen.getByText(/import is additive/i)).toBeInTheDocument();
+  });
 });
 
 describe("SettingsPage — danger zone", () => {

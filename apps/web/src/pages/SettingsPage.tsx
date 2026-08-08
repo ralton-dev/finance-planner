@@ -184,15 +184,15 @@ function DataSection() {
       setImported(await api.importData(pending.data));
       setPending(null);
     } catch (err) {
-      const rejected = err instanceof ApiError && err.status === 422;
-      setImportError(
-        rejected
-          ? "that file doesn't look like a finance-planner export"
-          : "could not import that file — try again.",
-      );
-      // A rejected file will be rejected again; anything else is worth retrying,
-      // so only drop the confirmation when the file itself is the problem.
-      if (rejected) setPending(null);
+      if (err instanceof ApiError && err.status === 422) {
+        setImportError(refusalReason(err.message));
+        // A rejected file will be rejected again; anything else is worth
+        // retrying, so only drop the confirmation when the file itself is the
+        // problem.
+        setPending(null);
+      } else {
+        setImportError("could not import that file — try again.");
+      }
     } finally {
       setImporting(false);
     }
@@ -400,6 +400,42 @@ function DangerZone({ email }: { email: string }) {
       )}
     </section>
   );
+}
+
+/** Shown for a 422 the server gave no readable reason for. */
+const GENERIC_REFUSAL = "that file doesn't look like a finance-planner export";
+
+/**
+ * Why the server refused an import, in its own words where it has them.
+ *
+ * A 422 from /api/import is a `ZodError`, and its message is that error's issue
+ * list JSON-stringified rather than a sentence — so it has to be opened to be
+ * read. Two kinds of issue live in there. Shape complaints the schema generated
+ * ("Invalid input: expected string, received undefined") describe the document
+ * to a programmer, and a file producing only those really is the case
+ * `GENERIC_REFUSAL` describes. `custom` issues are the other kind: their text
+ * was written for the person holding the file. The duplicate-account-name
+ * refusal is one of those, and it **names the account** — which is the whole
+ * reason to show it rather than shrug at a perfectly good export.
+ *
+ * Anything unexpected — not JSON, not a list, no authored issue in it — falls
+ * back, because a message we cannot vouch for is worse on screen than a plain
+ * one. Several authored issues are shown together: a file may repeat two names.
+ */
+function refusalReason(message: string): string {
+  let issues: unknown;
+  try {
+    issues = JSON.parse(message);
+  } catch {
+    return GENERIC_REFUSAL;
+  }
+  if (!Array.isArray(issues)) return GENERIC_REFUSAL;
+
+  const authored = (issues as { code?: unknown; message?: unknown }[])
+    .filter((issue) => issue?.code === "custom" && typeof issue.message === "string")
+    .map((issue) => issue.message as string);
+
+  return authored.length > 0 ? authored.join(" ") : GENERIC_REFUSAL;
 }
 
 /** "2 accounts · 7 payments · 1 project" — what a picked file says it carries,
