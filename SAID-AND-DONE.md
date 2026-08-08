@@ -269,6 +269,58 @@ rebuilt; a project is personal or shared).
     server-side** (`server.ts:2993`, `409 demo_not_empty`), so nothing could have
     been written — the defect was the false claim, not a data loss. WP-BK.
 
+### Found by Ben, testing the plan itself, 2026-08-08
+
+The three below came out of `TEST-PLAN.md` being run by a person, which is the
+thing this project's history keeps saying works and its test suites keep not
+doing. Two were live defects the suites were green through.
+
+46. **A household is denominated once, by the first account assigned to it**
+    (Ben, 2026-08-08). `apps/api/src/plan.ts:673` took
+    `currency: accounts[0]?.currency`, and **neither store orders that query** —
+    so it was not even "first assigned", it was whichever row Postgres handed
+    back first. `householdPlanFromScope` then kept that partition and **dropped
+    the rest of the roster silently**: an assigned EUR account appeared on the
+    roster, vanished from the plan, and nothing anywhere said so. The diagram
+    followed suit, because `HouseholdSankey` asks `/api/flow` for the
+    already-narrowed list, so the endpoint's own `a diagram cannot span
+currencies` refusal was **never reached**.
+
+    Ben's answer, in his words: _"we dont need to plan multiple currencies in a
+    house — I would just make it so you can only add 1 currency to a house and
+    adding another account states that you cant mix currencies in a house"_.
+    Enforced at the assignment handler; the currency is **derived from the
+    roster, never stored**, so an empty roster accepts anything and unassigning
+    the last account frees it again. No migration, no backfill: nobody live has
+    a mixed household. WP-BB(2).
+
+47. **A refused import says what the server said.** `SettingsPage.tsx` replaced
+    every 422 with _"that file doesn't look like a finance-planner export"_,
+    which is false about a perfectly good export and throws away a sentence that
+    **names the duplicate account**. The message was arriving all along — but a
+    422 from `/api/import` is a `ZodError`, and zod 4 puts the whole issue list,
+    JSON-stringified, in `ZodError.message`. The fix reads the `custom` issues,
+    which are author-written prose for the person holding the file, and leaves
+    machine shape complaints on the old wording — a file producing only those
+    genuinely is not an export.
+48. **A derived transfer is confirmed once, wherever you are standing** (Ben,
+    2026-08-08). `core.transfer_confirmations` is one table whose rows take
+    **three** shapes by which nullable column is set — household-derived,
+    authored, and derived-with-no-household — and the two store queries behind
+    the two surfaces are **mutually exclusive**, so a household row matches
+    neither. Ben found the consequence in ninety seconds: the partner confirms
+    on their account page and the owner cannot undo it; the owner confirms on
+    the household page and the partner's account page offers to record it again.
+
+    **Two kinds of event, not three.** _Authored_ (`inflowId` set) stays a real
+    distinction — an authored movement and a derived feed between the same two
+    accounts are two movements and must be countable apart. _Derived_ carries
+    `householdId` as an **attribute**, not a type: one route, one list, one tick,
+    set or not. The column stays rather than being derived from the receiving
+    account's assignment because an account can be unassigned later and **a
+    confirmation is a record of something that happened** — it must not lose its
+    context because current state moved. WP-BL.
+
 **Also found stale, and worth deleting from `BACKLOG.md`:** the entry "A derived
 transfer you confirmed does not survive an export" is no longer true.
 `derivedTransferConfirmations` is carried end to end —
