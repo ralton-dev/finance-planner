@@ -538,9 +538,9 @@ export interface Store {
    * from either side: money that arrived here and money that left here are the
    * same row read two ways.
    *
-   * Household-derived confirmations are not here — they confirm a transfer the
-   * plan derived rather than an inflow anyone authored, and they are read
-   * through `listTransferConfirmations`. Asking this question needs no
+   * Derived confirmations are not here — they confirm a transfer the plan
+   * derived rather than an inflow anyone authored, and they are read through
+   * `listDerivedTransferConfirmationsForAccount`. Asking this question needs no
    * household, which is the point: "has this movement happened?" is a fact
    * about two accounts.
    */
@@ -550,18 +550,29 @@ export interface Store {
   ): Promise<TransferConfirmation[]>;
   /**
    * Confirmations of **derived transfers** touching an account in one month,
-   * from either side — the rows carrying neither a household nor an inflow.
+   * from either side — every row no inflow authored, whether or not a household
+   * attributes it.
    *
    * These are the feeds the plan works out for itself: an expense pot with no
-   * income of its own, fed from the member's source account, for a scope no
-   * household applies to. Nobody authored the movement, so there is no inflow
-   * to ask about; the question is the same one `listTransferConfirmationsForAccount`
-   * asks and the answer is a fact about two accounts and a month.
+   * income of its own, fed from the member's source account. Nobody authored the
+   * movement, so there is no inflow to ask about; the question is the same one
+   * `listTransferConfirmationsForAccount` asks and the answer is a fact about
+   * two accounts and a month.
    *
-   * Deliberately its own method rather than a widening of the authored list: a
-   * derived feed and an authored movement between the same two accounts are
-   * two different movements, each confirmed on its own, and a caller totalling
-   * both must be able to see them apart.
+   * **`householdId` is not a filter here and must never become one.** It is
+   * attribution — *which plan derived this* — and whether one was doing the
+   * deriving is a property of the page the confirmer happened to be standing
+   * on, not of the event. While this asked for `household_id IS NULL`, a
+   * household-derived transfer confirmed on the household plan page was
+   * invisible to the account page, which then offered to record the very same
+   * movement a second time; and one confirmed on the account page could not be
+   * undone by the owner who could see it on the plan. One event, two records,
+   * neither aware of the other.
+   *
+   * Deliberately still its own method rather than a widening of the authored
+   * list: a derived feed and an authored movement between the same two accounts
+   * are two different movements, each confirmed on its own, and a caller
+   * totalling both must be able to see them apart. *That* split is real.
    */
   listDerivedTransferConfirmationsForAccount(
     accountId: string,

@@ -200,14 +200,19 @@ describe("ApiClient · a token it can see has expired", () => {
 });
 
 /**
- * The third shape of "I moved the money", and the one the client could not
- * speak until now.
+ * "I moved the money" for a transfer the plan **derived** — one call, from
+ * every surface.
  *
- * A transfer the pass derives for a scope no household applies to (decision 9)
- * carries neither a household nor an inflow — migration 0010 is what made it
- * storable at all — so it is confirmed against the *receiving* account and
- * scoped by its two accounts, its month and the member who moves it. The other
- * two shapes keep their own routes and their own rules.
+ * There used to be two: `confirmTransfer(householdId, …)` for a transfer a
+ * household derived and `confirmDerivedTransfer(accountId, …)` for one no
+ * household applied to. They wrote two differently-shaped rows for one event,
+ * and each surface could read back only its own — so the household plan and the
+ * member's account page disagreed about whether a movement had happened. A
+ * derived transfer is located by its two accounts, its month and the member who
+ * moves it, and that needs no parent id at all.
+ *
+ * An **authored** movement keeps its own route and its own rule. That split is
+ * real: somebody wrote that one down.
  */
 describe("ApiClient · confirming a derived transfer", () => {
   let client: ApiClient;
@@ -218,21 +223,28 @@ describe("ApiClient · confirming a derived transfer", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts to the receiving account, naming the sender and the member", async () => {
+  it("posts to one route with no parent id, naming both accounts and the member", async () => {
     const { calls } = stubFetch(() => json({ confirmation: { id: "conf-1" }, contributions: [] }));
-    const result = await client.confirmDerivedTransfer(
-      "pot",
-      { fromAccountId: "current", toAccountId: "pot", memberUserId: "ben" },
-      "2026-08",
-    );
+    const result = await client.confirmTransfer({
+      fromAccountId: "current",
+      toAccountId: "pot",
+      memberUserId: "ben",
+      month: "2026-08",
+    });
 
-    expect(calls[0]!.url).toContain("/api/accounts/pot/transfers/confirm?month=2026-08");
+    expect(calls[0]!.url).toContain("/api/transfers/confirm");
+    // Neither a household nor an account in the path: what the caller was
+    // looking at cannot decide what gets written.
+    expect(calls[0]!.url).not.toContain("/api/households/");
+    expect(calls[0]!.url).not.toContain("/api/accounts/");
     expect(result.confirmation.id).toBe("conf-1");
   });
 
-  it("un-confirms under the receiving account, never under a household", async () => {
+  it("un-confirms by the confirmation's own id, under neither a household nor an account", async () => {
     const { calls } = stubFetch(() => new Response(null, { status: 204 }));
-    await client.unconfirmDerivedTransfer("pot", "conf-1");
-    expect(calls[0]!.url).toContain("/api/accounts/pot/transfers/confirmations/conf-1");
+    await client.unconfirmTransfer("conf-1");
+    expect(calls[0]!.url).toContain("/api/transfers/confirmations/conf-1");
+    expect(calls[0]!.url).not.toContain("/api/households/");
+    expect(calls[0]!.url).not.toContain("/api/accounts/");
   });
 });

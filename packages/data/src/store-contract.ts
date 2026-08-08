@@ -702,11 +702,22 @@ export async function exerciseStore(store: Store): Promise<void> {
   expect(
     (await store.listDerivedTransferConfirmationsForAccount(pot.id, "2026-08-01")).map((t) => t.id),
   ).toEqual([derived.id]);
+  // …and `confirmation` beside it, which a household derived out of
+  // `currentAccount` into this very `account`. **Both are derived transfers.**
+  // Whether a household was doing the deriving is attribution, not a second
+  // kind of event, so this list carries it too — while it asked for
+  // `household_id IS NULL` the account surface could not see a household's tick
+  // at all, and offered to record the same movement again.
   expect(
     (await store.listDerivedTransferConfirmationsForAccount(account.id, "2026-08-01")).map(
       (t) => t.id,
     ),
-  ).toEqual([derived.id]);
+  ).toEqual([confirmation.id, derived.id]);
+  expect(
+    (await store.listDerivedTransferConfirmationsForAccount(currentAccount.id, "2026-08-01")).map(
+      (t) => t.id,
+    ),
+  ).toEqual([confirmation.id]);
   expect(
     (await store.listDerivedTransferConfirmationsForAccount(pot.id, "2026-09-01")).length,
   ).toBe(0);
@@ -739,7 +750,7 @@ export async function exerciseStore(store: Store): Promise<void> {
     (await store.listDerivedTransferConfirmationsForAccount(account.id, "2026-08-01")).map(
       (t) => t.id,
     ),
-  ).toEqual([derived.id, derivedElsewhere.id, derivedByAnother.id]);
+  ).toEqual([confirmation.id, derived.id, derivedElsewhere.id, derivedByAnother.id]);
   for (const spare of [derivedElsewhere, derivedByAnother, derivedSeptember]) {
     await store.deleteTransferConfirmation(spare.id);
   }

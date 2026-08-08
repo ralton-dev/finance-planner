@@ -31,6 +31,7 @@ import {
   type NewConfirmedContribution,
   type Project,
   type Store,
+  type TransferConfirmation,
 } from "@finance-planner/data";
 import {
   type AccountPlan,
@@ -40,7 +41,6 @@ import {
   computeScopeProjection,
   explainScopePlan,
   flowFromScope,
-  householdPlanFromScope,
   householdProjectionFromScope,
   leftoverForUser,
   overviewFromPlans,
@@ -2415,30 +2415,101 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
 
   // ---- transfer confirmations ("I moved the money") ----
   /**
-   * Confirm one of the transfers the household plan derived. The confirmation
-   * credits the receiving account's payments with the member's funded slice, so
-   * the plan reflects money that has actually moved. Members confirm their own
-   * transfers; owners/admins may confirm on anyone's behalf.
+   * Who may say a derived transfer moved — and, identically, un-say it
+   * (decision 28).
+   *
+   *   * the **member** whose transfer it is, always; or
+   *   * an **owner or admin of the household that derived it**, when one did.
+   *
+   * Nothing else. A plain co-editor of the receiving pot is neither, and gets
+   * nothing: recording that somebody moved their own money is a claim about a
+   * person, not an edit to an account.
+   *
+   * The rule reads off the **row's** `householdId` rather than off which route
+   * was called, and that is the whole of this package. It used to be spelt out
+   * twice, once per surface, and the two spellings disagreed: the household
+   * route asked for membership, the account route asked for `edit` on the pot,
+   * and each was blind to what the other had written. Both entitlements survive
+   * here — a household member confirming through the roster, a solo user
+   * confirming through account access — but they are now two arms of one rule
+   * over one row instead of two rules over two tables' worth of the same fact.
+   *
+   * A derived transfer with **no** household is yours only. There is no roster
+   * to make anybody an admin of it, so account access is what is left to ask
+   * for, and it is asked for exactly as the standalone route always asked it:
+   * `edit` where the money lands, `view` where it comes from. Recording that
+   * money moved commits nothing, so it does not take `edit` at both ends.
    */
-  app.post("/api/households/:id/transfers/confirm", async (req, reply) => {
-    const userId = await authenticate(req);
-    const { id } = req.params as { id: string };
-    await requireMembership(userId, id);
-    const body = confirmTransferBody.parse(req.body);
-    if (body.memberUserId !== userId) {
-      await requireMembership(userId, id, ["owner", "admin"]);
+  const requireDerivedTransferActor = async (
+    userId: string,
+    transfer: { fromAccountId: string; toAccountId: string; memberUserId: string },
+    householdId: string | null,
+    verb: "confirm" | "un-confirm",
+  ): Promise<void> => {
+    if (householdId !== null) {
+      await requireMembership(userId, householdId);
+      if (transfer.memberUserId !== userId) {
+        await requireMembership(userId, householdId, ["owner", "admin"]);
+      }
+      return;
     }
+    if (transfer.memberUserId !== userId) {
+      throw new HttpError(403, "forbidden", `You may only ${verb} your own transfer`);
+    }
+    await requireAccess(userId, transfer.toAccountId, "edit");
+    await requireAccess(userId, transfer.fromAccountId, "view");
+  };
+
+  /**
+   * Confirm a transfer the plan **derived** — one tick, wherever the confirmer
+   * is standing. The confirmation credits the receiving account's payments with
+   * the member's funded slice, so the plan reflects money that has actually
+   * moved.
+   *
+   * Parented on nothing, and that is deliberate. This replaces
+   * `POST /households/:id/transfers/confirm` and
+   * `POST /accounts/:id/transfers/confirm`, which recorded **the same event two
+   * ways**: the household route stamped `household_id`, the account route left
+   * it null, and the reads behind the two surfaces were mutually exclusive —
+   * so a transfer confirmed on one page was still offered on the other, and
+   * confirming it there booked its contributions a second time. The parent in
+   * the URL was what decided the shape of the row, which made "which page were
+   * you on" a property of the movement. A derived transfer is located by
+   * `(from, to, month, member)` and needs no parent at all; with none to name,
+   * a surface cannot change what gets written.
+   *
+   * `householdId` is still recorded, and is now **derived rather than
+   * declared**: the plan is asked which household the money lands in, so both
+   * surfaces necessarily agree. It stays on the row because a confirmation is a
+   * record of something that happened — un-assign the account tomorrow and the
+   * row must not silently lose the context it was written in, nor the answer to
+   * who may withdraw it.
+   */
+  app.post("/api/transfers/confirm", async (req, reply) => {
+    const userId = await authenticate(req);
+    const body = confirmTransferBody.parse(req.body);
     const monthKey = body.month ?? monthOf(today());
     const month = monthToFirstDay(monthKey);
     // The month this confirmation is *for* decides which plan it is measured
     // against — a June confirmation is June's figure, not today's (#50). Refused
-    // here rather than after the idempotency guard because a month that has not
-    // started is a malformed request, not a plan that moved on.
+    // before anything else because a month that has not started is a malformed
+    // request, not a plan that moved on.
     const asOfDate = asOfDateForMonth(monthKey, "confirm");
 
-    // Idempotency guard first: once confirmed, stay confirmed even if the plan
-    // has since moved on and no longer derives that transfer.
-    const confirmed = await store.listTransferConfirmations(id, month);
+    const to = await store.getAccount(body.toAccountId);
+    if (!to) throw new HttpError(404, "not_found", "Account not found");
+    const ctx = createPlanContext();
+    const scope = await scopeForAccount(store, to, asOfDate, ctx);
+    // Which plan derived this. The scope's own answer, not the caller's.
+    const householdId = scope.householdOf.get(to.id) ?? null;
+    await requireDerivedTransferActor(userId, body, householdId, "confirm");
+
+    // Idempotency guard, household-agnostic exactly as the store read now is:
+    // once confirmed, stay confirmed even if the plan has since moved on. This
+    // is also what keeps the rows written before this route existed from being
+    // recorded a second time — they carry no household, the new row would carry
+    // one, and no partial unique index spans both.
+    const confirmed = await store.listDerivedTransferConfirmationsForAccount(to.id, month);
     const duplicate = confirmed.some(
       (c) =>
         c.fromAccountId === body.fromAccountId &&
@@ -2449,13 +2520,8 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
       throw new HttpError(409, "already_confirmed", "Transfer already confirmed this month");
     }
 
-    const { scope, accountIds, memberUserIds, currency } = await scopeForHousehold(
-      store,
-      id,
-      asOfDate,
-    );
-    const plan = householdPlanFromScope(scope.plan, id, accountIds, currency, memberUserIds);
-    const transfer = plan.transfers.find(
+    const partition = scope.plan.partitions.find((p) => p.currency === to.currency);
+    const transfer = (partition?.transfers ?? []).find(
       (t) =>
         t.fromAccountId === body.fromAccountId &&
         t.toAccountId === body.toAccountId &&
@@ -2470,9 +2536,10 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     // movement standing over a ledger that accounts for less than it claims.
     const { confirmation, contributions } = await store.createTransferConfirmationWithContributions(
       {
-        householdId: id,
-        // A household transfer is derived from the plan, not authored: there is
-        // no inflow row behind it to point at.
+        householdId,
+        // Derived, not authored: there is no inflow row behind it to point at.
+        // *This* is the split that survives — an authored movement and a derived
+        // feed between the same two accounts are two different movements.
         inflowId: null,
         month,
         fromAccountId: body.fromAccountId,
@@ -2480,33 +2547,74 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
         memberUserId: body.memberUserId,
         amountMinor: transfer.amountMinor,
       },
-      fundedSlices(plan.lines, body.toAccountId, body.memberUserId, month),
+      fundedSlices(partition?.lines ?? [], body.toAccountId, body.memberUserId, month),
     );
     return reply.code(201).send({ confirmation, contributions });
   });
 
+  /**
+   * Un-confirm a derived transfer: drops it and the contributions it created.
+   *
+   * The twin of the route above and parented on nothing for the same reason.
+   * The two routes it replaces could each only reach their own half of the
+   * table — the household one required `household_id = :id`, the account one
+   * required it null — so whichever surface had not written the row could not
+   * withdraw it, however plainly it was displayed there. Found by id and judged
+   * by what the row says, this reaches every derived confirmation and refuses
+   * on the same rule either surface would have applied.
+   */
+  app.delete("/api/transfers/confirmations/:confId", async (req, reply) => {
+    const userId = await authenticate(req);
+    const { confId } = req.params as { confId: string };
+    const confirmation = await store.getTransferConfirmation(confId);
+    // An authored movement is un-confirmed through the inflow that authors it,
+    // and that route keeps its own rule. This one is for what nobody wrote down.
+    if (!confirmation || confirmation.inflowId !== null) {
+      throw new HttpError(404, "not_found", "Confirmation not found");
+    }
+    await requireDerivedTransferActor(userId, confirmation, confirmation.householdId, "un-confirm");
+    await store.deleteTransferConfirmation(confId);
+    return reply.code(204).send();
+  });
+
+  /**
+   * This month's derived confirmations for a household's plan — every tick its
+   * checklist may show, whichever surface made it.
+   *
+   * Two reads unioned, because they answer two different halves of one question.
+   * The rows **attributed** to this household are what a plan that has since
+   * moved on still owes an undo for: un-assign the pot and its confirmations
+   * stop touching any account on the roster, but the record stands and must
+   * stay reachable. The rows **touching the household's accounts** are the live
+   * ones, and they are asked for without reference to attribution — which is
+   * what lets this page see a tick made on somebody's account page, including
+   * the ones written before any of this existed, which carry no household at
+   * all. Reading only the first is how the owner came to be told a transfer was
+   * outstanding that his partner had already recorded.
+   *
+   * Arriving side only: a transfer belongs to the household its money lands in,
+   * which is the same rule the checklist itself states about naming the sender.
+   */
   app.get("/api/households/:id/transfers/confirmations", async (req) => {
     const userId = await authenticate(req);
     const { id } = req.params as { id: string };
     const { month } = req.query as { month?: string };
     await requireMembership(userId, id);
-    return store.listTransferConfirmations(id, monthToFirstDay(month ?? monthOf(today())));
-  });
-
-  /** Un-confirm: drops the confirmation and the contributions it created. */
-  app.delete("/api/households/:id/transfers/confirmations/:confId", async (req, reply) => {
-    const userId = await authenticate(req);
-    const { id, confId } = req.params as { id: string; confId: string };
-    await requireMembership(userId, id);
-    const confirmation = await store.getTransferConfirmation(confId);
-    if (!confirmation || confirmation.householdId !== id) {
-      throw new HttpError(404, "not_found", "Confirmation not found");
-    }
-    if (confirmation.memberUserId !== userId) {
-      await requireMembership(userId, id, ["owner", "admin"]);
-    }
-    await store.deleteTransferConfirmation(confId);
-    return reply.code(204).send();
+    const asked = monthToFirstDay(month ?? monthOf(today()));
+    const assignments = await store.listAccountAssignments(id);
+    const [attributed, ...arriving] = await Promise.all([
+      store.listTransferConfirmations(id, asked),
+      ...assignments.map(async (a) =>
+        (await store.listDerivedTransferConfirmationsForAccount(a.accountId, asked)).filter(
+          (c) => c.toAccountId === a.accountId,
+        ),
+      ),
+    ]);
+    const byId = new Map<string, TransferConfirmation>();
+    for (const row of [...(attributed ?? []), ...arriving.flat()]) byId.set(row.id, row);
+    return [...byId.values()].sort((a, b) =>
+      a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
+    );
   });
 
   // ---- standalone movements ("I moved the money", with no household) ----
@@ -2614,11 +2722,16 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
    * Movements touching this account this month, from both sides: what arrived
    * here and what left here. No household needed to ask.
    *
-   * Both shapes a household-free movement comes in — the authored one, which
-   * names its `inflowId`, and the one the pass derived, which names neither a
-   * household nor an inflow because nobody wrote it down. They are two different
-   * movements between the same two accounts, each confirmed on its own, and a
-   * caller that could see only the first had no way to un-confirm the second.
+   * Both shapes a movement comes in — the authored one, which names its
+   * `inflowId`, and the one the pass derived, which names none because nobody
+   * wrote it down. They are two different movements between the same two
+   * accounts, each confirmed on its own, and a caller that could see only the
+   * first had no way to un-confirm the second.
+   *
+   * The derived half is **household-agnostic**, and that is what lets this page
+   * show a tick made on the household plan as done rather than offering to
+   * record the same movement again. Whether a household derived the transfer
+   * decides who may withdraw it, never whether it can be seen.
    */
   app.get("/api/accounts/:id/transfers/confirmations", async (req) => {
     const userId = await authenticate(req);
@@ -2633,125 +2746,6 @@ export function buildServer(deps: ApiDeps = {}): FastifyInstance {
     return [...authored, ...derived].sort((a, b) =>
       a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0,
     );
-  });
-
-  /**
-   * Confirm a transfer the plan **derived** — the feed into a pot nobody
-   * authored a movement for.
-   *
-   * The household handler above answers the same question when a household
-   * attributes the transfer; this one asks no household anything, because a
-   * solo user's derived feed has none in it. That case had nowhere to go before
-   * migration 0010: a derived solo transfer carries neither a `household_id` nor
-   * an `inflow_id`, and the old CHECK constraint required one of them. It is
-   * scoped by `(from, to, month, member)`, which is what it always was.
-   *
-   * `edit` on the receiving account and `view` on the sending one — the same
-   * rule the authored-movement handler applies, for the same reason: recording
-   * that money moved commits nothing, so it does not take `edit` at both ends.
-   */
-  app.post("/api/accounts/:id/transfers/confirm", async (req, reply) => {
-    const userId = await authenticate(req);
-    const { id } = req.params as { id: string };
-    const { month: monthParam } = req.query as { month?: string };
-    const { account } = await requireAccess(userId, id, "edit");
-    const body = confirmTransferBody.parse(req.body);
-    if (body.toAccountId !== id) {
-      throw new HttpError(422, "validation_error", "toAccountId must be this account");
-    }
-    // Only your own: a derived transfer is a member's own money moving, and
-    // there is no household roster here to make anybody an admin of it.
-    if (body.memberUserId !== userId) {
-      throw new HttpError(403, "forbidden", "You may only confirm your own transfer");
-    }
-    await requireAccess(userId, body.fromAccountId, "view");
-    const month = monthQuery(monthParam);
-    // The month asked for, as the other two handlers now read it (#50): the row
-    // is keyed by this month, so the amount on it is this month's.
-    const asOfDate = asOfDateForMonth(monthOf(month), "confirm");
-
-    // Idempotency guard first, exactly as the other two handlers do it: once
-    // confirmed, stay confirmed even if the plan has since moved on. The
-    // database says the same thing through
-    // `transfer_confirmations_derived_month_unique`.
-    const confirmed = await store.listDerivedTransferConfirmationsForAccount(id, month);
-    if (
-      confirmed.some(
-        (c) =>
-          c.fromAccountId === body.fromAccountId &&
-          c.toAccountId === id &&
-          c.memberUserId === userId,
-      )
-    ) {
-      throw new HttpError(409, "already_confirmed", "Transfer already confirmed this month");
-    }
-
-    const scope = await scopeForAccount(store, account, asOfDate);
-    const partition = scope.plan.partitions.find((p) => p.currency === account.currency);
-    const transfer = (partition?.transfers ?? []).find(
-      (t) =>
-        t.fromAccountId === body.fromAccountId && t.toAccountId === id && t.memberUserId === userId,
-    );
-    if (!transfer) {
-      throw new HttpError(422, "no_planned_transfer", "No matching planned transfer");
-    }
-
-    // One write, exactly as the household twin does it.
-    const { confirmation, contributions } = await store.createTransferConfirmationWithContributions(
-      {
-        // Neither: a transfer the pass derived for a scope no household applies
-        // to is scoped by its two accounts, its month and the member who moves it.
-        householdId: null,
-        inflowId: null,
-        month,
-        fromAccountId: body.fromAccountId,
-        toAccountId: id,
-        memberUserId: userId,
-        amountMinor: transfer.amountMinor,
-      },
-      fundedSlices(partition?.lines ?? [], id, userId, month),
-    );
-    return reply.code(201).send({ confirmation, contributions });
-  });
-
-  /**
-   * Un-confirm a derived transfer: drops it and the contributions it created.
-   *
-   * Nested under the receiving account deliberately, so it can only ever reach a
-   * confirmation with no household and no inflow. The household route keeps its
-   * own rule — a plain member may only un-confirm their own — and this must not
-   * become a way around it.
-   *
-   * **Un-confirming takes exactly what confirming took** (decision 28): `edit`
-   * on the receiving account *and* being the member the row names. Deleting the
-   * row used to count as an edit to the account it lives in, so anybody who
-   * could edit the pot could withdraw somebody else's statement that they had
-   * moved their own money — a claim the confirm handler had refused to let them
-   * make in the first place (`:2292`). But the fact is the member's, not the
-   * pot's: un-saying it is not an edit to an account, it is contradicting a
-   * person. The stricter side wins, and a co-editor losing this is the intended
-   * cost of the rule rather than a casualty of it.
-   */
-  app.delete("/api/accounts/:id/transfers/confirmations/:confId", async (req, reply) => {
-    const userId = await authenticate(req);
-    const { id, confId } = req.params as { id: string; confId: string };
-    const confirmation = await store.getTransferConfirmation(confId);
-    if (
-      !confirmation ||
-      confirmation.toAccountId !== id ||
-      confirmation.householdId !== null ||
-      confirmation.inflowId !== null
-    ) {
-      throw new HttpError(404, "not_found", "Confirmation not found");
-    }
-    await requireAccess(userId, id, "edit");
-    // Access first, then whose claim it is — the order the confirm handler asks
-    // its two questions in, so the two halves refuse alike.
-    if (confirmation.memberUserId !== userId) {
-      throw new HttpError(403, "forbidden", "You may only un-confirm your own transfer");
-    }
-    await store.deleteTransferConfirmation(confId);
-    return reply.code(204).send();
   });
 
   /**

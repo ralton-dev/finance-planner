@@ -897,7 +897,8 @@ export class MemoryStore implements Store {
     return [...this.transferConfirmations.values()]
       .filter(
         (t) =>
-          t.householdId === null &&
+          // Household or not — see the interface. `householdId` is attribution,
+          // not a second kind of row.
           t.inflowId === null &&
           t.month === month &&
           (t.fromAccountId === accountId || t.toAccountId === accountId),

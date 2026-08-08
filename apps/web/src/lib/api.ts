@@ -448,17 +448,26 @@ export class ApiClient {
   }
 
   // ---- transfer confirmations ----
-  /** Confirm a planned transfer actually moved; books the member's funded slice
-   *  against each payment in the destination account. */
-  confirmTransfer(
-    householdId: string,
-    body: { fromAccountId: string; toAccountId: string; memberUserId: string; month?: string },
-  ) {
-    return this.request<ConfirmTransferResultDto>(
-      "POST",
-      `/api/households/${householdId}/transfers/confirm`,
-      body,
-    );
+  /**
+   * Confirm a **derived** transfer actually moved; books the member's funded
+   * slice against each payment in the destination account.
+   *
+   * One call from every surface. It replaces `confirmTransfer(householdId, …)`
+   * and `confirmDerivedTransfer(accountId, …)`, which posted to two routes that
+   * wrote two differently-shaped rows for one event — so the household plan and
+   * the account page each saw only their own, and the second surface offered to
+   * record a movement the first had already recorded. There is no parent id to
+   * pass because the movement has no parent: it is located by its two accounts,
+   * its month and the member moving it, and the server works out for itself
+   * which plan derived it.
+   */
+  confirmTransfer(body: {
+    fromAccountId: string;
+    toAccountId: string;
+    memberUserId: string;
+    month?: string;
+  }) {
+    return this.request<ConfirmTransferResultDto>("POST", `/api/transfers/confirm`, body);
   }
   /** Defaults to the current month server-side. */
   listTransferConfirmations(householdId: string, month?: string) {
@@ -467,12 +476,12 @@ export class ApiClient {
       `/api/households/${householdId}/transfers/confirmations${month ? `?month=${month}` : ""}`,
     );
   }
-  /** Un-confirm: drops the confirmation and the contributions it created. */
-  unconfirmTransfer(householdId: string, confirmationId: string) {
-    return this.request<void>(
-      "DELETE",
-      `/api/households/${householdId}/transfers/confirmations/${confirmationId}`,
-    );
+  /** Un-confirm: drops the confirmation and the contributions it created. The
+   *  twin of `confirmTransfer`, reaching every derived confirmation whichever
+   *  surface recorded it — an owner can now undo what a member ticked on their
+   *  own account page, which is the point. */
+  unconfirmTransfer(confirmationId: string) {
+    return this.request<void>("DELETE", `/api/transfers/confirmations/${confirmationId}`);
   }
 
   // ---- incomes ----
@@ -534,35 +543,6 @@ export class ApiClient {
    *  confirmation — a household one keeps its own route and its own rule. */
   unconfirmMovement(inflowId: string, confirmationId: string) {
     return this.request<void>("DELETE", `/api/inflows/${inflowId}/confirmations/${confirmationId}`);
-  }
-  /**
-   * "I moved the money" for a transfer the plan **derived** with no household
-   * anywhere — the feed into a pot nobody authored a movement for (decision 9).
-   *
-   * The third shape, and the one migration 0010 made storable: it carries
-   * neither a household nor an inflow, and is scoped by its two accounts, its
-   * month and the member who moves it. Posted against the *receiving* account,
-   * which is the side the app holds a plan for.
-   */
-  confirmDerivedTransfer(
-    accountId: string,
-    body: { fromAccountId: string; toAccountId: string; memberUserId: string },
-    month?: string,
-  ) {
-    return this.request<ConfirmTransferResultDto>(
-      "POST",
-      `/api/accounts/${accountId}/transfers/confirm${month ? `?month=${month}` : ""}`,
-      body,
-    );
-  }
-  /** Nested under the receiving account, so it can only ever reach a
-   *  confirmation with no household and no inflow — the household route keeps
-   *  its own rule about whose transfers a plain member may un-confirm. */
-  unconfirmDerivedTransfer(accountId: string, confirmationId: string) {
-    return this.request<void>(
-      "DELETE",
-      `/api/accounts/${accountId}/transfers/confirmations/${confirmationId}`,
-    );
   }
 
   // ---- payments ----

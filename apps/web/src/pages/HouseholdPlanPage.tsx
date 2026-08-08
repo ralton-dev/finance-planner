@@ -260,8 +260,12 @@ export function HouseholdPlanPage() {
         plan={p}
         confirmations={confirmations.data ?? []}
         month={month}
+        // No household id in either call. This page derives the transfer, but
+        // the movement it derives is the same movement the member's own account
+        // page shows, and both tick it through the one route — which is why the
+        // checklist above now reads as done when they recorded it there.
         onConfirm={async (t) => {
-          await api.confirmTransfer(id, {
+          await api.confirmTransfer({
             fromAccountId: t.fromAccountId,
             toAccountId: t.toAccountId,
             memberUserId: t.memberUserId,
@@ -271,7 +275,7 @@ export function HouseholdPlanPage() {
           plan.refetch();
         }}
         onUndo={async (confirmationId) => {
-          await api.unconfirmTransfer(id, confirmationId);
+          await api.unconfirmTransfer(confirmationId);
           confirmations.refetch();
           plan.refetch();
         }}

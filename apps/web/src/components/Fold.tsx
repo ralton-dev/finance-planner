@@ -141,34 +141,22 @@ export function Fold({ input, loading = false, onActioned }: Props) {
     const action = item.action;
     if (!action) return;
 
-    if (action.kind === "confirmTransfer") {
+    // Both derived-transfer shapes, through one call. `confirmTransfer` names
+    // the household that derived the transfer and `confirmDerivedTransfer` names
+    // the receiving account, but they describe one event — the engine worked out
+    // that money should move, and it did — and there is now one route that
+    // records it. All the branch still does is find the receiving account, which
+    // the two descriptors happen to spell differently.
+    if (action.kind === "confirmTransfer" || action.kind === "confirmDerivedTransfer") {
+      const toAccountId = action.kind === "confirmTransfer" ? action.toAccountId : action.accountId;
       void run(item, async () => {
-        const result = await api.confirmTransfer(action.householdId, {
+        const result = await api.confirmTransfer({
           fromAccountId: action.fromAccountId,
-          toAccountId: action.toAccountId,
+          toAccountId,
           memberUserId: action.memberUserId,
           month: action.month,
         });
-        return () => api.unconfirmTransfer(action.householdId, result.confirmation.id);
-      });
-      return;
-    }
-
-    // The same tick with no household and no authored row: a transfer the plan
-    // derived, confirmed against the receiving account and scoped by the two
-    // accounts, the month and the member.
-    if (action.kind === "confirmDerivedTransfer") {
-      void run(item, async () => {
-        const result = await api.confirmDerivedTransfer(
-          action.accountId,
-          {
-            fromAccountId: action.fromAccountId,
-            toAccountId: action.accountId,
-            memberUserId: action.memberUserId,
-          },
-          action.month,
-        );
-        return () => api.unconfirmDerivedTransfer(action.accountId, result.confirmation.id);
+        return () => api.unconfirmTransfer(result.confirmation.id);
       });
       return;
     }

@@ -161,6 +161,14 @@ export async function buildExport(
       for (const c of await store.listDerivedTransferConfirmationsForAccount(account.id, month)) {
         // Arriving side only, same rule as above.
         if (c.toAccountId !== account.id) continue;
+        // A household's rows stay out of the file entirely, unchanged: what a
+        // household attributed is not the exporter's to carry away, and a
+        // restore into an estate with no such household could not re-attribute
+        // it honestly. The store read stopped filtering on `householdId` when
+        // one tick replaced two (WP-BL) — it is attribution, not a kind of row —
+        // so the rule this file has always applied is now stated here, where it
+        // is a rule about *exports* rather than an accident of the query.
+        if (c.householdId !== null) continue;
         // Not the exporter's to carry: a confirmation somebody else recorded is
         // their record of their own money, and re-creating it under the
         // importing user would invent a fact — the reasoning that keeps

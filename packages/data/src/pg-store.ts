@@ -1216,7 +1216,9 @@ export class PgStore implements Store {
       .from(s.transferConfirmations)
       .where(
         and(
-          isNull(s.transferConfirmations.householdId),
+          // Household or not: a household attributing a derived transfer is
+          // which plan worked it out, never a second kind of event. Filtering
+          // on it here is what made the two surfaces blind to each other.
           isNull(s.transferConfirmations.inflowId),
           eq(s.transferConfirmations.month, month),
           or(
