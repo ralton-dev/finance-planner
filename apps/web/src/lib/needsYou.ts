@@ -1,3 +1,4 @@
+import { accountLabel, UNNAMED_ACCOUNT } from "./flow.js";
 import { formatDayMonth, formatMonth, monthOf } from "./months.js";
 import { money, type Phrase, type PhrasePart } from "./money.js";
 import { tagKey, UNTAGGED } from "./tags.js";
@@ -494,7 +495,11 @@ const transferKey = (t: {
 
 function transferItems(entry: NeedsYouHouseholdInput, month: string): NeedsYouItem[] {
   const { plan } = entry;
-  const accountName = new Map(plan.accounts.map((a) => [a.accountId, a.name ?? "account"]));
+  // A destination the reader may not be told the name of (decision 41) still
+  // has their money going into it, so the row stays and is theirs to tick off.
+  // "account" claimed to be its name; this is the phrase the rest of the app
+  // uses for the same absence.
+  const accountName = new Map(plan.accounts.map((a) => [a.accountId, accountLabel(a)]));
   const memberName = new Map(plan.members.map((m) => [m.userId, m.displayName ?? "member"]));
   // The caller passes this month's confirmations; filtering again keeps the
   // rule honest if it ever hands over a wider list.
@@ -512,7 +517,7 @@ function transferItems(entry: NeedsYouHouseholdInput, month: string): NeedsYouIt
       return {
         key: `transfer:${plan.householdId}:${transferKey(t)}`,
         kind: "transfer" as const,
-        label: `${who} → ${accountName.get(t.toAccountId) ?? "account"}`,
+        label: `${who} → ${accountName.get(t.toAccountId) ?? UNNAMED_ACCOUNT}`,
         amountMinor: t.amountMinor,
         currency: plan.currency,
         meta: [`transfer · ${formatMonth(month)} · ${done} of ${total} done · waiting on ${who}`],

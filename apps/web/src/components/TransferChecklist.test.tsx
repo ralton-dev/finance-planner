@@ -317,6 +317,34 @@ describe("TransferChecklist · a source the household does not hold", () => {
     expect(screen.getAllByRole("button", { name: "mark done" })).toHaveLength(2);
   });
 
+  /**
+   * The gap the fallback above did not cover: an account that **is** on the
+   * roster and still has no name.
+   *
+   * Assignment entitles a member to the row's figures; `view` entitles them to
+   * the label, and they are two separate controls (decision 41). Such a row was
+   * seeded into the lookup as the literal "account", which meant it never
+   * reached the single fallback this component resolves through — so the FROM
+   * cell printed the exact bare word the block above exists to abolish, on a
+   * household plan page whose error strip was making the same mistake.
+   */
+  it("says other account for a roster account whose name was withheld", () => {
+    const withheld = {
+      ...plan,
+      accounts: plan.accounts.map((a) =>
+        a.accountId === "acc-ada" ? { ...a, name: undefined } : a,
+      ),
+    };
+    render(<TransferChecklist plan={withheld} confirmations={[]} onConfirm={noop} onUndo={noop} />);
+
+    const row = screen.getByText("Ada").closest("tr")!;
+    expect(row).toHaveTextContent("other account");
+    // …and nowhere a bare "account" survives as though it were the name.
+    expect(row.textContent?.replaceAll("other account", "")).not.toMatch(/\baccount\b/);
+    // Gated on the name and nothing else.
+    expect(row).toHaveTextContent("£1,200.00");
+  });
+
   it("says the same of an account this page has genuinely never heard of", () => {
     // An old confirmation against something since deleted or unassigned: no name
     // is being withheld and there is still none to print. One fallback, true of

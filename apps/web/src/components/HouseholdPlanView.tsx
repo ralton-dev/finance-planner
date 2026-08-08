@@ -1,4 +1,5 @@
 import { lazy, Suspense, useRef } from "react";
+import { accountLabel } from "../lib/flow.js";
 import { formatMinor } from "../lib/money.js";
 import type { HouseholdMemberPlanDto, HouseholdPlanDto } from "../lib/types.js";
 import { Amount } from "./Amount.js";
@@ -254,7 +255,11 @@ export function HouseholdPlanView({ plan }: { plan: HouseholdPlanDto }) {
             {plan.accounts.map((a) => (
               <tr key={a.accountId} className={a.shortfallMinor > 0 ? "at-risk" : ""}>
                 <td className="name sticky-col">
-                  <span>{a.name ?? "account"}</span>
+                  {/* A roster account whose name was withheld (decision 41) is
+                      still every figure in this row; only the label is gated.
+                      "account", in a column headed ACCOUNT, read as a lookup
+                      that had broken. */}
+                  <span>{accountLabel(a)}</span>
                   {/* What the two dropped columns say, once they are gone.
                       Written flat rather than as copies of their cells: the
                       sub-line is already quiet, and a chip inside it would

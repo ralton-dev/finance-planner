@@ -788,6 +788,30 @@ describe("HouseholdPlanView · money that is somebody else's", () => {
     });
   });
 
+  /**
+   * The account column's version of the same rule the owner column follows
+   * above: describe what cannot be named, never print a stand-in that reads as
+   * a name.
+   *
+   * Being on a household's roster entitles a member to this row's figures and
+   * not to the label on it (decision 41), so the row arrives complete and
+   * nameless. It used to print "account" — in a column headed ACCOUNT, which
+   * reads as a lookup that broke rather than a thing deliberately withheld.
+   */
+  it("describes an account it may not name rather than printing a bare word", () => {
+    const withheld: HouseholdPlanDto = {
+      ...PLAN,
+      accounts: PLAN.accounts.map((a, i) => (i === 0 ? { ...a, name: undefined } : a)),
+    };
+    const { container } = render(<HouseholdPlanView plan={withheld} />);
+    const [first] = [...tables(container)[0]!.querySelectorAll("tbody tr")];
+
+    expect(first!.firstElementChild).toHaveTextContent("other account");
+    expect(first!.firstElementChild?.textContent?.replaceAll("other account", "")).not.toMatch(
+      /\baccount\b/,
+    );
+  });
+
   it("describes an owner it cannot name rather than printing their id", () => {
     // An owner the roster cannot name is described, never printed as an id.
     const stranger: HouseholdPlanDto = {

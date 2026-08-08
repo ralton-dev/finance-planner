@@ -64,7 +64,15 @@ export function TransferChecklist({ plan, confirmations, onConfirm, onUndo, mont
   const c = plan.currency;
   // The household's own accounts name themselves; a transfer's source need not
   // be one of them, and brings its own name when the caller may have it.
-  const named = new Map(plan.accounts.map((a) => [a.accountId, a.name ?? "account"]));
+  // An account **on** the roster can still arrive without a name: assignment is
+  // what entitles a member to the row's figures, `view` is what entitles them to
+  // the label (decision 41). Seeding the map with a bare "account" for those put
+  // them past the one fallback below and printed the very string this component
+  // exists not to print — so they are left out and resolve like any other
+  // account this page cannot name.
+  const named = new Map(
+    plan.accounts.flatMap((a) => (a.name === undefined ? [] : [[a.accountId, a.name] as const])),
+  );
   for (const t of plan.transfers) {
     if (t.fromAccountName) named.set(t.fromAccountId, t.fromAccountName);
   }

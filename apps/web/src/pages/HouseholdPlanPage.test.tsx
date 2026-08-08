@@ -129,6 +129,49 @@ const ALEX_PLAN = accountPlan({
   ],
 });
 
+const WITHHELD_ID = "withheld";
+
+/**
+ * The same household with one more account on its roster — one this reader may
+ * not see.
+ *
+ * Two server behaviours, both correct, and the pair is the whole case: the
+ * roster row arrives with its figures and **no `name` key at all** (decision
+ * 41 — being on the roster entitles a member to the money, not to the name),
+ * and the account's own plan is refused for the same reason. The absent name
+ * is therefore not a gap in the data. It is the reason the read was refused,
+ * and the only signal this page needs to tell a boundary from a breakage.
+ */
+function withWithheldAccount(): ApiRoutes {
+  return {
+    "GET /api/households/hh/plan": {
+      body: {
+        ...PLAN,
+        accounts: [
+          ...PLAN.accounts,
+          {
+            accountId: WITHHELD_ID,
+            role: "personal",
+            memberUserId: null,
+            currency: "GBP",
+            monthlyIncomeMinor: 0,
+            requiredOutflowMinor: 0,
+            fundedOutflowMinor: 0,
+            transferInMinor: 0,
+            transferOutMinor: 0,
+            leftoverMinor: 12_000,
+            shortfallMinor: 0,
+          },
+        ],
+      } satisfies HouseholdPlanDto,
+    },
+    [`GET /api/accounts/${WITHHELD_ID}/plan`]: {
+      status: 404,
+      body: { error: { code: "not_found", message: "no such account" } },
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -324,5 +367,71 @@ describe("HouseholdPlanPage · a read that fails", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /could not read which transfers have already been made/,
     );
+  });
+});
+
+/**
+ * The other half, and the one that looks identical from inside the `catch`.
+ *
+ * A 404 on an account the reader was never allowed to open is not a failed
+ * read. It is the access boundary doing its job, and the page had been dressing
+ * it as a breakage — an error strip, in red, naming the account "account"
+ * because withholding the name is exactly what made the read fail. Two correct
+ * behaviours rendered as a fault.
+ *
+ * So the roster row's absent name is not a nuisance to paper over with a
+ * placeholder; it is the discriminator. Unreadable **and** unnamed is a
+ * boundary and belongs nowhere near the error strip. Unreadable **and** named
+ * is a genuine failure and must still be shouted, by name — that is the fix
+ * above and these tests are also here to keep it.
+ */
+describe("HouseholdPlanPage · an account the reader may not see", () => {
+  it("does not dress a refused read as a failed one", async () => {
+    renderPage(withWithheldAccount());
+    // The batch has to have settled before "no strip" means anything — this row
+    // comes off an account plan, so it only appears once the reads are back.
+    await screen.findByText("record Rainy day");
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("never prints a nameless account as though 'account' were its name", async () => {
+    const { container } = renderPage(withWithheldAccount());
+    await screen.findByText("record Rainy day");
+
+    expect(container.textContent).not.toMatch(/the plan for account\b/);
+  });
+
+  /**
+   * Silence would be wrong here in a way it would not be on a single-account
+   * screen: this page's headline claim is a *pooled* one, and a reader who
+   * counts the names finds one fewer than the subhead promises. The note says
+   * why, in the register of a fact rather than a fault.
+   */
+  it("says why the totals cover more accounts than it can name", async () => {
+    renderPage(withWithheldAccount());
+
+    const note = await screen.findByText(/this household holds an account you may not see/);
+    // A fact, in the muted register — not the red strip wearing softer words.
+    expect(note).toHaveClass("muted");
+    expect(note).not.toHaveClass("error");
+    expect(note).not.toHaveAttribute("role", "alert");
+  });
+
+  it("still names a genuine failure standing beside it", async () => {
+    renderPage({
+      ...withWithheldAccount(),
+      "GET /api/accounts/bills/plan": {
+        status: 500,
+        body: { error: { code: "server_error", message: "boom" } },
+      },
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/could not read the plan for Bills joint/);
+    // And *only* that one. The refused read is not folded into the sentence
+    // under a placeholder, which would tell the reader two things broke.
+    expect(alert.textContent).not.toMatch(/Bills joint and\b/);
+    expect(alert).not.toHaveTextContent(/other account/);
   });
 });

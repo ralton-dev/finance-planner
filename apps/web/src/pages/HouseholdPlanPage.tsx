@@ -7,6 +7,7 @@ import { ProjectionView } from "../components/ProjectionView.js";
 import { TagBreakdown } from "../components/TagBreakdown.js";
 import { TransferChecklist } from "../components/TransferChecklist.js";
 import { api } from "../lib/api.js";
+import { accountLabel, UNNAMED_ACCOUNT } from "../lib/flow.js";
 import { currentMonth } from "../lib/months.js";
 import { formatMinor } from "../lib/money.js";
 import type { NeedsYouAccountInput, NeedsYouInput } from "../lib/needsYou.js";
@@ -24,24 +25,43 @@ import type {
 const UPCOMING_DAYS = 14;
 
 /**
- * The reality half of this household's accounts: the ones that answered, and
- * the names of the ones that did not.
+ * The reality half of this household's accounts: the ones that answered, the
+ * names of the ones that failed to, and a count of the ones this reader was
+ * never entitled to ask about.
  *
- * The second half is the whole point. A read that fails and is folded back into
- * the same shape as "this account had nothing to report" does not leave a gap on
- * the checklist — it leaves a checklist that says *nothing is waiting on you
- * here*, which is a different sentence from "we could not find out" and the more
- * dangerous one.
+ * The second bucket is the whole point of WP-BH. A read that fails and is folded
+ * back into the same shape as "this account had nothing to report" does not
+ * leave a gap on the checklist — it leaves a checklist that says *nothing is
+ * waiting on you here*, which is a different sentence from "we could not find
+ * out" and the more dangerous one.
+ *
+ * The third bucket exists because that fix, left alone, over-claimed. A 404 on
+ * an account the reader may not open is not a failed read: it is the access
+ * boundary working, and the error strip was reporting a fault where the system
+ * had just behaved correctly — in red, and unable even to say which account,
+ * because withholding the name is precisely what made the read fail. Counted
+ * apart, and said in a different register below.
  */
 interface Realities {
   entries: NeedsYouAccountInput[];
   /** Accounts whose plan could not be read, by name, in plan order. */
   unreadable: string[];
+  /** How many roster accounts the reader may not see and whose plan was
+   *  therefore refused. A boundary, never a failure. */
+  withheld: number;
 }
 
-/** One account's plan read: what it contributes, or what to call it if it
- *  could not be read. */
-type AccountRead = { read: true; entry: NeedsYouAccountInput } | { read: false; name: string };
+/**
+ * One account's plan read: what it contributes, or what to call it if it could
+ * not be read.
+ *
+ * `name: null` is the boundary — the roster row arrived without a name, so the
+ * reader may not view the account (decision 41) and the refusal downstream is
+ * the same rule enforced twice. That absence is the only signal this page needs
+ * to tell the two apart, and it rides on the DTO it was already looping over.
+ */
+type AccountRead =
+  { read: true; entry: NeedsYouAccountInput } | { read: false; name: string | null };
 
 /** "Bills joint" · "Bills joint and Alex current" · "A, B and C". */
 function nameList(names: readonly string[]): string {
@@ -81,25 +101,35 @@ export function HouseholdPlanPage() {
   // and a checklist missing a row looks precisely like a checklist with nothing
   // to do. The catch below records the name instead of discarding it, and the
   // page says it above the fold.
+  //
+  // What is *also* gone is the over-claim. Every account on the roster is asked,
+  // including the ones this reader may not open, and those answer 404 by design.
+  // Sorting on the roster row's own name — absent exactly when the reader may
+  // not view the account — keeps the shouting for the reads that genuinely
+  // broke.
   const planAccounts = plan.data?.accounts ?? [];
   const accountKey = planAccounts.map((a) => a.accountId).join(",");
   const realities = useAsync<Realities>(
     () =>
       Promise.all(
         planAccounts.map(async (a): Promise<AccountRead> => {
-          const name = a.name ?? "account";
           try {
             return {
               read: true,
-              entry: { plan: await api.getPlan(a.accountId), name, householdId: id },
+              entry: {
+                plan: await api.getPlan(a.accountId),
+                name: accountLabel(a),
+                householdId: id,
+              },
             };
           } catch {
-            return { read: false, name };
+            return { read: false, name: a.name ?? null };
           }
         }),
       ).then((reads) => ({
         entries: reads.flatMap((r) => (r.read ? [r.entry] : [])),
-        unreadable: reads.flatMap((r) => (r.read ? [] : [r.name])),
+        unreadable: reads.flatMap((r) => (!r.read && r.name !== null ? [r.name] : [])),
+        withheld: reads.filter((r) => !r.read && r.name === null).length,
       })),
     [accountKey, id],
   );
@@ -115,7 +145,10 @@ export function HouseholdPlanPage() {
   const p = plan.data;
   const c = p.currency;
 
-  const accountName = new Map(p.accounts.map((a) => [a.accountId, a.name ?? "account"]));
+  // "account" was this page's own word for a row it could not name, in a column
+  // headed `account` — so the cell read "account" and told the reader nothing.
+  // The house already owns the phrase for it (decision 36).
+  const accountName = new Map(p.accounts.map((a) => [a.accountId, accountLabel(a)]));
 
   // Everything the checklist is derived from, dated by the plan's own as-of.
   //
@@ -157,6 +190,18 @@ export function HouseholdPlanPage() {
     ...(confirmations.error ? ["which transfers have already been made"] : []),
   ];
 
+  // Not an error, and not silence either.
+  //
+  // Nothing is wrong when a member cannot open one of the household's accounts,
+  // and nothing on the checklist is missing that was ever this reader's to act
+  // on. But this page's headline claim is a *pooled* one — the subhead counts
+  // the accounts, the stat row adds them up, the transfer checklist moves money
+  // between them — and a reader who counts the names it prints finds fewer than
+  // the subhead promised, with no account of the difference. So: stated once, as
+  // a fact about who may see what, in the register of the muted line rather than
+  // the red one.
+  const withheld = realities.data?.withheld ?? 0;
+
   /** Re-read everything an action in the fold can have moved. */
   function refreshReality(): void {
     plan.refetch();
@@ -191,6 +236,15 @@ export function HouseholdPlanPage() {
         <p className="error" role="alert">
           could not read {nameList(unread)} — anything{" "}
           {unread.length === 1 ? "it was" : "they were"} owed is missing from the checklist below.
+        </p>
+      )}
+
+      {withheld > 0 && (
+        <p className="muted" style={{ fontSize: "12px" }}>
+          this household holds {withheld === 1 ? "an account" : `${withheld} accounts`} you may not
+          see — {withheld === 1 ? "its" : "their"} money is in the totals here,{" "}
+          {withheld === 1 ? "its name and its" : "their names and their"} rows on the checklist are
+          not.
         </p>
       )}
 
@@ -252,7 +306,7 @@ export function HouseholdPlanPage() {
                 .map((l) => (
                   <tr key={l.paymentId} className={l.onTrack ? "" : "at-risk"}>
                     <td className="name sticky-col">{l.name}</td>
-                    <td className="muted">{accountName.get(l.accountId) ?? "account"}</td>
+                    <td className="muted">{accountName.get(l.accountId) ?? UNNAMED_ACCOUNT}</td>
                     <td>
                       <span className={l.scope === "shared" ? "tag-status idle" : "shared"}>
                         {l.scope}

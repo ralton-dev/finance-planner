@@ -383,6 +383,35 @@ describe("deriveNeedsYou · transfer", () => {
     expect(phraseText(items[0]!.meta)).toBe("transfer · aug 2026 · 1 of 2 done · waiting on Alex");
   });
 
+  /**
+   * The destination is on the household's roster and the reader still may not
+   * be told its name (decision 41) — assignment carries the figures, `view`
+   * carries the label. The row stays: it is this member's money and their job
+   * to move it. Only the name is gated, and it is gated in the words the rest
+   * of the app uses rather than a bare "account" that reads like a broken
+   * lookup.
+   */
+  it("labels a destination it may not name without inventing one", () => {
+    const input = fullInput();
+    const household = input.households![0]!;
+    const items = deriveNeedsYou({
+      ...input,
+      households: [
+        {
+          ...household,
+          plan: {
+            ...household.plan,
+            accounts: household.plan.accounts.map((a) =>
+              a.accountId === "bills" ? { ...a, name: undefined } : a,
+            ),
+          },
+        },
+      ],
+    }).filter((i) => i.kind === "transfer");
+
+    expect(items[0]!.label).toBe("Alex → other account");
+  });
+
   it("hands the UI everything the confirm endpoint needs", () => {
     const items = deriveNeedsYou(fullInput()).filter((i) => i.kind === "transfer");
     expect(items[0]!.action).toEqual({
