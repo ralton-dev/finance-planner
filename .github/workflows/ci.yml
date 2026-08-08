@@ -285,3 +285,214 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f deploy/local/docker-compose.yml down -v
+
+  # Proves a trace survives the api -> auth process boundary, which is the one
+  # thing no in-process test can check and stack-smoke above cannot see. That
+  # job probes /healthz on three ports and GET / on web; every span it would
+  # produce is a /healthz span, and a /healthz span never crosses a process. A
+  # CMD that lost its `--import`, a bundler that swallowed fastify, or an
+  # instrumentation that stopped injecting `traceparent` would all leave it
+  # entirely green while a trace died at the boundary.
+  #
+  # Two things this job does deliberately:
+  #
+  #   - it asserts the join **structurally** — auth's server span naming api's
+  #     undici client span as its parent — not a trace id that merely appears
+  #     twice. Two processes that each started their own trace can produce the
+  #     same id twice by coincidence, and this repository has already been
+  #     bitten by exactly that shape: both services independently called the
+  #     same request `req-4`. Do not weaken this to a shared-id grep;
+  #   - it **prints its whole inventory** before it asserts anything. A job that
+  #     asserted over zero spans and reported success is the defect rather than
+  #     the fix, and a listener that never fires is this project's signature
+  #     failure.
+  otel-smoke:
+    runs-on: ubuntu-latest
+    needs: build-test
+    env:
+      # Set once, for every step including the teardown. COMPOSE_PROFILES is
+      # what stops `down` leaving the collector running — the Makefile has to
+      # repeat `--profile otel` on its own down target for want of this.
+      COMPOSE_FILE: deploy/local/docker-compose.yml
+      COMPOSE_PROFILES: otel
+      # Overrides the live `OTEL_ENABLED=false` in .env.example, exactly as
+      # `make up-otel` does: compose takes the shell environment over the .env
+      # file. Asserted below rather than assumed.
+      OTEL_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Bring up the stack with the collector
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          docker compose up -d --build --wait
+
+      - name: Confirm the profile gate opened and tracing is on
+        run: |
+          set -euo pipefail
+          # Without this the job's failure mode is "0 spans", which reads like a
+          # broken trace rather than a stack that was never asked to trace.
+          docker compose ps --services --filter status=running | sort | tee /tmp/running
+          grep -qx otel-collector /tmp/running || { echo "✗ no collector: the otel profile did not open"; exit 1; }
+          for svc in api auth; do
+            on=$(docker compose config | awk -v s="  $svc:" '$0 == s {f=1} f && /OTEL_ENABLED:/ {gsub(/[" ]/, "", $2); print $2; exit}')
+            echo "$svc OTEL_ENABLED=$on"
+            [ "$on" = "true" ] || { echo "✗ $svc would not have traced"; exit 1; }
+          done
+
+      # `--wait` above reports these services Healthy, and it does not mean
+      # what it looks like: none of api, auth, calc or web declares a
+      # healthcheck, so "Healthy" there is only "the container is running".
+      # Ask the port.
+      - name: Wait for api and auth to answer
+        run: |
+          set -euo pipefail
+          for port in 4000 4001; do
+            for i in $(seq 1 30); do
+              if curl -sf "http://localhost:$port/healthz" >/dev/null; then
+                echo "✓ :$port healthz"; break
+              fi
+              if [ "$i" = "30" ]; then echo "✗ :$port never came up"; exit 1; fi
+              sleep 2
+            done
+          done
+
+      # Two, concurrently. One request proves the header crossed; two prove the
+      # trace ids are per-request rather than per-process, which is the whole
+      # difference between a trace and a service name.
+      - name: Two concurrent logins, crossing api into auth
+        run: |
+          set -euo pipefail
+          login() {
+            curl -s -o /dev/null -w '%{http_code}' \
+              -X POST http://localhost:4000/api/auth/login \
+              -H 'content-type: application/json' \
+              -d "{\"email\":\"otel-smoke-$1@example.test\",\"password\":\"not-a-real-password\"}"
+          }
+          login one >/tmp/code-one & p1=$!
+          login two >/tmp/code-two & p2=$!
+          wait "$p1"; wait "$p2"
+          echo "login A -> HTTP $(cat /tmp/code-one), login B -> HTTP $(cat /tmp/code-two)"
+          # 401 is the expected answer: nothing seeds a user here, and an
+          # unknown password still travels the whole hop and still queries pg.
+          # What matters is that *auth* answered — a 404 would mean the proxy
+          # route is gone and a 502 that the hop itself broke.
+          for code in $(cat /tmp/code-one) $(cat /tmp/code-two); do
+            case "$code" in
+              200|401) ;;
+              *) echo "✗ auth did not answer: HTTP $code"; exit 1 ;;
+            esac
+          done
+
+      - name: Read the collector's spans and assert the hop
+        run: |
+          set -euo pipefail
+
+          # The collector's `debug` exporter at verbosity: detailed, flattened
+          # to one line per span. `service.name` comes from the enclosing
+          # ResourceSpans block, so this has to be a state machine rather than
+          # a grep — which is also why it can tell an api span from an auth one
+          # at all.
+          flatten() {
+            sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^[:space:]]*[[:space:]]+[a-z]+[[:space:]]+//' | awk '
+              function val(s) { sub(/^[^:]*:[ ]?/, "", s); return s }
+              function str(s) { s = val(s); sub(/^Str\(/, "", s); sub(/\)$/, "", s); return s }
+              function emit() {
+                if (have && trace != "")
+                  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", svc, trace, id, parent, kind, route, name
+                have = 0
+              }
+              /^ResourceSpans #/                  { emit(); svc = ""; res = 1; att = 0; next }
+              /^Resource attributes:/             { res = 1; att = 0; next }
+              res && /^ *-> service\.name: Str\(/ { svc = str($0); next }
+              /^ScopeSpans #/                     { emit(); res = 0; att = 0; next }
+              /^InstrumentationScope /            { emit(); res = 0; att = 0; next }
+              /^Span #/                           { emit(); trace = id = parent = kind = route = name = ""; att = 0; have = 1; next }
+              have && /^ *Trace ID  *:/           { trace  = val($0); next }
+              have && /^ *Parent ID  *:/          { parent = val($0); next }
+              have && /^ *ID  *:/                 { id     = val($0); next }
+              have && /^ *Name  *:/               { name   = val($0); next }
+              have && /^ *Kind  *:/               { kind   = val($0); next }
+              /^Attributes:/                      { att = 1; next }
+              have && att && /^ *-> http\.route: Str\(/ { route = str($0); next }
+              END { emit() }
+            '
+          }
+
+          # A trace crosses when an auth /auth/login server span names an api
+          # client span as its parent. Same trace id on both sides is necessary
+          # and not sufficient; this is the edge itself.
+          crossings() {
+            awk -F'\t' '
+              $1 == "api"  && $5 == "Client"                       { client[$2 "/" $3] = 1 }
+              $1 == "auth" && $5 == "Server" && $6 == "/auth/login" { srv[$2 "/" $4] = $2 }
+              END { for (k in srv) if (k in client) print srv[k] }
+            ' "$1" | sort -u
+          }
+
+          # Nothing is here for the first five seconds: each service's
+          # BatchSpanProcessor holds its first batch for OTEL_BSP_SCHEDULE_DELAY
+          # (5000 ms by default, and not settable from here — the compose file
+          # passes only the variables it names), and the collector's own batch
+          # processor adds 200 ms. Poll, because one early look and one look at
+          # a broken trace are the same picture.
+          SPANS=/tmp/spans.tsv
+          for i in $(seq 1 30); do
+            docker compose logs --no-log-prefix otel-collector | flatten >"$SPANS" || true
+            found=$(crossings "$SPANS" | wc -l | tr -d ' ')
+            echo "  poll $i: $(wc -l <"$SPANS" | tr -d ' ') spans, $found crossing"
+            [ "$found" -ge 2 ] && break
+            sleep 2
+          done
+
+          echo
+          echo "--- what this job inspected ---"
+          echo "spans:     $(wc -l <"$SPANS" | tr -d ' ')"
+          echo "trace ids: $(cut -f2 "$SPANS" | sort -u | wc -l | tr -d ' ')"
+          echo "by service and kind:"
+          awk -F'\t' '{printf "  %-5s %s\n", $1, $5}' "$SPANS" | sort | uniq -c
+          echo "http.route on server spans:"
+          awk -F'\t' '$5 == "Server" && $6 != "" {printf "  %-5s %s\n", $1, $6}' "$SPANS" | sort | uniq -c
+          echo
+
+          fail=0
+          note() { echo "✗ $1"; fail=1; }
+
+          # Assert something was looked at, first and separately, so an empty
+          # collector fails as "nothing arrived" rather than as a missing join.
+          [ -s "$SPANS" ] || note "the collector printed no spans at all"
+
+          mapfile -t crossed < <(crossings "$SPANS")
+          [ "${#crossed[@]}" -ge 2 ] || note "expected 2 traces crossing api -> auth, got ${#crossed[@]}"
+
+          for t in "${crossed[@]}"; do
+            echo "trace $t"
+            # http.route is what dies first when fastify is not patched: the
+            # server span survives as a bare `POST` with no route at all, which
+            # destroys grouping in any backend without dropping a single span.
+            awk -F'\t' -v t="$t" '$2 == t && $1 == "api" && $5 == "Server" && $6 != "" {n++} END {exit !n}' "$SPANS" ||
+              note "trace $t has no api server span carrying http.route"
+
+            # The far side of the boundary, in its own words. This is the line
+            # that proves the request entered auth rather than being answered
+            # by api, and it is the join the two Pino streams never had.
+            for svc in api auth; do
+              line=$(docker compose logs --no-log-prefix "$svc" | grep -F "\"trace_id\":\"$t\"" | head -1 || true)
+              if [ -n "$line" ]; then echo "  $svc said: $line"; else note "no $svc log line carries trace_id $t"; fi
+            done
+          done
+
+          [ "$fail" = 0 ] || exit 1
+          echo
+          echo "OK: ${#crossed[@]} traces crossed api -> auth, route-named, and carried into both Pino streams."
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          docker compose logs --tail=400 otel-collector
+          docker compose logs --tail=200 api auth
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
