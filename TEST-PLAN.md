@@ -7,29 +7,113 @@ live defect in this project has ever been found** — never by a passing test.
 Fourteen issues are fixed and **deliberately left open** so you can close them
 yourself. Each section below names the issue it verifies.
 
-> **Read this first.** The most valuable thing you can do is §1 and §2 on **your
-> own data**, not the demo seed. Your £222.94 was found in thirty seconds on your
-> own accounts page, and the fixtures in this repository still avoid the shapes
-> your data has.
+> **Read this first.** The most valuable thing you can do is still §1 and §2 on
+> **your own data**. Your £222.94 was found in thirty seconds on your own
+> accounts page, and no fixture ever finds a defect the way a real estate does.
+>
+> But your own data cannot run half of this plan — §5b wipes a profile, §6
+> deliberately exhausts the auth rate limits, §9 needs an account assigned and
+> deliberately not shared. So §0 now hands you **ten disposable logins** that
+> carry every shape the sections below name, `reality@fp.test`'s Holiday Fund
+> included, which is your £222.94 rebuilt figure for figure.
 
 ---
 
 ## 0 · Setup
 
-### Full stack (needed for anything touching Postgres, import/export, or the digest)
+### The stack, and the URL to use
 
 ```bash
 corepack enable && pnpm install
-cp .env.example .env
-make up                                    # postgres, redis, services
-pnpm --filter @finance-planner/web dev     # web on :5173
+cp .env.example .env                       # if you have not already
+make up                                    # postgres, redis, api, auth, calc, web
 ```
+
+**Test against `http://localhost:8080`** — nginx serving the production bundle
+and proxying `/api` to the gateway. Not `pnpm dev`; see the caution below.
+
+### The fixtures
+
+This plan used to ask you to work on shapes no fixture in this repository had,
+which is why so much of it said "find (or make)". They exist now, planted
+through the real HTTP API — never through SQL, because half of them exist to
+exercise a confirm handler, a guard or a refusal that only runs on the route:
+
+```bash
+./apps/api/node_modules/.bin/tsx deploy/local/seed-test-fixtures.mts
+```
+
+**The first run takes about five minutes and will look stalled.** It is not:
+that is §6's own register limit throttling it to three accounts a minute, and
+every wait is announced. A second run resumes the sessions it cached and starts
+in seconds.
+
+Re-run it whenever you have wrecked something. Each fixture login is torn down
+and rebuilt from nothing, and **nothing outside those ten logins is touched** —
+your own accounts, and the dev data already in this database, are not read let
+alone written. It prints the figures it actually planted and fails loudly if any
+of them came out wrong, so a fixture that has drifted tells you rather than
+letting the app take the blame.
+
+### The logins
+
+**One password for every one of them: `TestPlan!2026`.**
+
+| Login                | Serves                           | What it carries                                                                                                       |
+| -------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `reality@fp.test`    | §1, §1a, §1b, §1c, §9a, §11      | **Holiday Fund** (§1), Covered Pot (§1a), Stale Pot (§1b), Rent Pot (§9a), and the Current Account that feeds them    |
+| `flow@fp.test`       | §2, §2a                          | **Flow House** — a pot fed by an **authored** movement out of Flow Current, not a derived transfer                    |
+| `flowmate@fp.test`   | §2 (the second member)           | Mate Current, inside Flow House                                                                                       |
+| `bighouse@fp.test`   | §2b (first refusal)              | **Forty One House** — 41 accounts, one over `MAX_FLOW_ACCOUNTS`                                                       |
+| `currencies@fp.test` | §2b (second refusal)             | **Two Currency House** — Sterling Current in GBP, Euro Savings in EUR                                                 |
+| `ledger@fp.test`     | §3, §3a, §3b, §4a, §4b, §4c, §9  | **Ledger House** — Ledger Goals (two goals, one confirmable movement), Ledger Private (assigned, never shared), a pot |
+| `ledgermate@fp.test` | §4b, §9 (the reader who may not) | Co-editor on Ledger Current and Ledger Goals; **cannot see** Ledger Private                                           |
+| `dupe@fp.test`       | §5a                              | Two accounts both called **Savings**                                                                                  |
+| `roundtrip@fp.test`  | §5b                              | **Disposable.** RT Goals, two goals, one confirmable movement. Export, wipe and re-import it as roughly as you like   |
+| `newbie@fp.test`     | §10                              | Nothing at all — the first-run screen is the fixture                                                                  |
+
+§6 (rate limits), §8 (helm) and §10's blocked-request half need no login: curl,
+`helm template` and devtools drive those.
+
+### Two switches
+
+**`ENABLE_DEMO_SEED=true` is already set in `.env`**, and the api container has
+been recreated to pick it up — `GET /api/meta` now answers
+`{"demoSeedEnabled":true}`. Without it `POST /api/demo/seed` 404s and §10's
+**load demo data** button is not rendered at all, so §10 would pass for the wrong
+reason.
+
+> **`make up` does not read this `.env`.** Compose takes its project directory
+> from the compose file, so `-f deploy/local/docker-compose.yml` looks for
+> `deploy/local/.env` and finds nothing — every switch in `.env.example` is
+> silently ignored, `JWT_SIGNING_KEY` included. Name the file explicitly:
+>
+> ```bash
+> docker compose --env-file .env -f deploy/local/docker-compose.yml up -d api
+> ```
+
+**`NOTIFY_ENABLED` is deliberately still `false`** — §7 is the one section left
+switched off, because turning the digest on silently would start a sender
+against the fixture users on a fifteen-minute tick. For §7, set in `.env`:
+
+```
+NOTIFY_ENABLED=true
+NOTIFY_HOUR=0          # else nothing sends until 08:00 local
+SMTP_URL=smtp://127.0.0.1:2525   # a port with nothing on it = a mailer that always fails
+```
+
+then recreate api with the `--env-file` form above. `SMTP_URL` unset is the
+**log** mailer, which never fails and so cannot show you a retry. Point it at a
+dead port for the always-fails case; run something on 2525 that refuses once and
+then accepts for the fails-once case. Opt a user in with
+`PATCH /api/auth/me {"notifyEmail":true}`
+— `reality@fp.test` has upcoming payments and is the one with something to say.
 
 ### What "demo data" gives you
 
 `load demo data` on an empty profile seeds **4 accounts and 1 household**. It
 refuses (`409 demo_not_empty`) if you already own an account or are in a
-household — so it cannot touch a real profile.
+household — so it cannot touch a real profile. `newbie@fp.test` is the empty one.
 
 ### A caution about `pnpm dev`
 
@@ -52,7 +136,13 @@ behaviour, not a bug.
 
 ## 1 · The account headline · issue #45
 
-**This is the one you reported. Do it on the account that produced £222.94.**
+**This is the one you reported. Do it on the account that produced £222.94** —
+and if that account is not to hand, sign in as **`reality@fp.test`** and open
+**Holiday Fund**, which is your arithmetic rebuilt from nothing: £11.70 observed
+in the account today, £234.64 recorded as saved across two payments, £46.39
+arriving from a movement out of the current account. `reserved − balance` is
+`234.64 − 11.70` = **£222.94**, so the sentence this section retired is exactly
+the sentence the old code would print here.
 
 | Step              | Expect                                                      |
 | ----------------- | ----------------------------------------------------------- |
@@ -76,15 +166,17 @@ gap without saying which of the two explanations it might be.
 
 ### 1a · An account that can cover itself
 
-Find (or make) an account where arriving money covers the shortfall.
+`reality@fp.test` → **Covered Pot**. The same £11.70 and the same £234.64
+recorded as saved, but **£300.00 arriving** instead of £46.39.
 
 - [ ] **No banner at all.** The old rule was `reserved > balance`; it is now
       `reserved > balance + arriving`.
 
 ### 1b · A stale balance
 
-Take an account whose balance check-in is **more than 10 days old** (the same
-threshold the accounts page's "stale N d" chip uses).
+`reality@fp.test` → **Stale Pot**, whose balance check-in is **20 days old** —
+past the 10-day threshold the accounts page's "stale N d" chip uses. £50.00
+observed then, £200.00 recorded as saved, nothing arriving.
 
 - [ ] The banner fires but **leads with the age**, and explicitly says a balance
       that old is not evidence the money is gone.
@@ -112,6 +204,12 @@ amount the projection refuses to move.
 transfer. Derived transfers always drew correctly; the authored case is where the
 defect lived, and no fixture in the repo had one until this work.
 
+`flow@fp.test` → **Flow House**. Flow Pot draws **three** ribbons: two derived
+transfers of £215.00, one from each member, funding £430.00 of bills; and the
+**authored £500.00 movement** out of Flow Current, which is the one this section
+is about. Having both on the same picture is the point — the authored one is the
+one that used to vanish into `elsewhere`.
+
 - [ ] `/flow?household=…` draws a ribbon **account → pot**.
 - [ ] There is **no `elsewhere` node** for a sending account that is on screen.
 - [ ] Node totals balance: for each node, `income + in == spending + out + leftover`.
@@ -128,7 +226,9 @@ defect lived, and no fixture in the repo had one until this work.
 
 ### 2b · The two refusals
 
-Both are correct behaviour, not bugs:
+Both are correct behaviour, not bugs. One login each, because **a user belongs
+to exactly one household** — `bighouse@fp.test` for the first,
+`currencies@fp.test` for the second.
 
 - [ ] A household with **more than 40 accounts** prints the server's own
       sentence and draws nothing. **Nothing is silently truncated** — all the
@@ -141,7 +241,9 @@ Both are correct behaviour, not bugs:
 
 ## 3 · The contribution ledger · issues #46, #49
 
-On an account page, under the plan table.
+On an account page, under the plan table. `ledger@fp.test` → **Ledger Goals**,
+which carries two goals and **one contribution already recorded two months
+back**, so the last bullet here has something to fail on.
 
 - [ ] Record a contribution against a goal → **it appears in the ledger**, with
       its amount and its month. Previously it vanished; `listContributions` was
@@ -154,7 +256,10 @@ On an account page, under the plan table.
 
 ### 3a · A row a confirmation wrote
 
-Confirm a transfer that funds a goal, then look at the ledger.
+Confirm a transfer that funds a goal, then look at the ledger. The **Goals
+sweep** movement into Ledger Goals is the one — £300.00 a month out of Ledger
+Current, and it funds **both** goals, which is also §4c's shape. Confirm it from
+the checklist row, or `POST /api/inflows/{id}/confirm`.
 
 - [ ] The row shows **where it came from** (a "from a confirmed transfer" badge).
 - [ ] It offers **no edit and no remove control**, at 1280 **and** 390.
@@ -180,6 +285,13 @@ You need a plan whose shape **differs between two months** — a payment that
 started partway, or an amount that changed. If both months agree, this proves
 nothing.
 
+`ledger@fp.test` → **Ledger Goals** → **Christmas fund**, a `fixed_point` goal
+due **31 December**. The divisor is the whole months left, so every month wants
+a different figure: at the time of writing last month asked **£110.00** and this
+month asks **£137.50**. The seeding script asserts the two disagree and prints
+both, so if the calendar has moved on you have the current pair rather than
+these.
+
 - [ ] Confirm a transfer for a **past** month.
 - [ ] The amount booked is **that month's**, not today's.
 - [ ] Confirming a **future** month is refused, with the same message closing a
@@ -191,7 +303,11 @@ payment edits. Closing a month always had this limit; confirmations now share it
 
 ### 4b · Who can un-confirm · #47 — **this is an intended loss**
 
-Two users, an account shared with `edit`.
+Two users, an account shared with `edit`. **`ledger@fp.test` is A,
+`ledgermate@fp.test` is B**: Ledger Current and Ledger Goals are both shared into
+Ledger House with `edit`, so B is a genuine co-editor of the accounts the
+movement runs between. The household transfer for the last bullet is the one
+into **Ledger House Pot**, which both members fund.
 
 - [ ] User A confirms a movement.
 - [ ] User B (a co-editor, but **not** the member on the confirmation) tries to
@@ -219,6 +335,8 @@ failure path against real Postgres. What you can check:
 
 ### 5a · Duplicate account names · #52 — **this is an intended loss**
 
+`dupe@fp.test`, which already owns two accounts called **Savings**.
+
 - [ ] Make two accounts with the **same name** (e.g. two called "Savings").
 - [ ] Export. **The export succeeds** — that file is an honest record of your
       data.
@@ -229,6 +347,11 @@ The asymmetry is deliberate: you really can own two accounts with one name; what
 that file is not is _restorable_.
 
 ### 5b · Confirmations survive a round trip · #51
+
+**`roundtrip@fp.test` exists to be destroyed.** RT Goals holds two goals fed by
+one confirmable movement out of RT Current; wipe the login as roughly as you
+like, because `deploy/local/seed-test-fixtures.mts` rebuilds it in seconds.
+Nothing else in this database depends on it.
 
 - [ ] Confirm a transfer that generates contributions.
 - [ ] Export → wipe → import.
@@ -241,6 +364,11 @@ that file is not is _restorable_.
 
 - [ ] Import an export file written **before** this work. It must still restore
       in full. The schema change is additive only.
+
+**No fixture can supply this one** — it needs a file this codebase can no longer
+write. If you have an export from before the confirmation work, use it; if not,
+this bullet cannot be run, and saying so is better than substituting a file that
+proves nothing.
 
 ---
 
@@ -306,6 +434,12 @@ Needs two users and an **assigned-but-unshared** account: assign an account to a
 household without sharing it with the other member. The UI offers assign and
 share as separate controls, so this is a configuration your own product invites.
 
+**`ledger@fp.test` can see it, `ledgermate@fp.test` cannot.** The account is
+**Ledger Private** — on Ledger House's roster, never shared with the household,
+carrying a £120.00 subscription and a £200.00 movement in from Ledger Current.
+The seeding script checks both halves over the API: the mate's roster row comes
+back with no `accountName` at all, and the owner's comes back with one.
+
 - [ ] The member who **cannot** see that account opens the household flow → the
       diagram **draws**, with that node named **"other account"**, carrying its
       real amounts.
@@ -316,6 +450,17 @@ share as separate controls, so this is a configuration your own product invites.
       "other".
 - [ ] The household plan page and the household accounts list also withhold that
       name.
+
+> **Watch what else the household plan page does**, because a browser found it
+> while these fixtures were being checked. The page fetches a plan per rostered
+> account, and `GET /api/accounts/{Ledger Private}/plan` answers **404** to the
+> mate — correctly, since 404 is what hides existence. The page reads that as a
+> failed read and prints _"could not read the plan for account — anything it was
+> owed is missing from the checklist below"_, **with no account name in it**,
+> because the name is the very thing being withheld. So a working access
+> boundary is rendered as an error, in a strip whose whole job (§10) is to name
+> which account it could not read. Verified on `ledgermate@fp.test`.
+
 - [ ] **The daily digest** for a reader who cannot see the far account says
       "another account", not its name. Email is the one surface where you cannot
       re-check the gate.
@@ -326,6 +471,27 @@ share as separate controls, so this is a configuration your own product invites.
       sees **"you"** on their own ribbon and their own inflow sources — not
       "a household member".
 - [ ] A different reader still sees the anonymised fallback.
+
+**Neither bullet has a fixture, and the reason is worth knowing.** `"you"` is a
+_fallback_: `derivedTransferItems` reads `displayName ?? (sender is me ? "you" :
+"a household member")`, so it only appears when the **server withheld the name**
+— which decision 42 makes it do only for a sender no household in the scope
+rosters. Every arrangement these fixtures can reach through the API has the
+server naming the sender properly.
+
+`reality@fp.test` → **Rent Pot** gets you the _shape_: a pot with a £400.00 rent
+bill and no income, fed by a transfer the pass derives out of Current Account.
+It reads "£400.00 arriving from Reality Ben this month" — the reader's own name
+where the design wants "you", which is worth a look in its own right, but it is
+not the withheld case.
+
+To reach the real one you need an account **assigned to a household its owner is
+not a member of**, and the guards make that unreachable by construction: sharing
+needs membership, and assigning needs access that only sharing grants. The one
+door left is to assign first and remove the member afterwards —
+`DELETE /auth/households/:id/members/:userId` drops the membership and leaves the
+assignment standing. **Untested here**, and it would take `ledgermate@fp.test`
+out of Ledger House, so re-seed afterwards.
 
 ---
 
@@ -339,7 +505,9 @@ blocking, or by stopping the api mid-session.
       or offer **"load demo data"**.
 - [ ] Same on the **accounts page**.
 - [ ] A genuinely **new** profile still gets the first-run screen, create button
-      and demo button. This is the half that is easy to break.
+      and demo button. This is the half that is easy to break. `newbie@fp.test`
+      owns nothing at all, and `ENABLE_DEMO_SEED` is on, so the demo button is
+      rendered — without it this bullet passes for the wrong reason.
 - [ ] Block one account's plan on the **household plan page** → a strip names
       **which** account could not be read, and the other accounts still render
       their rows.
@@ -352,7 +520,8 @@ The regression surface. **Nothing in this work was about a lone user with one
 account**, and every figure on that path must be identical to before.
 
 - [ ] A solo account with one or two goals: the plan table, the leftover, the
-      already-saved and the projection all read as they did.
+      already-saved and the projection all read as they did. `reality@fp.test` →
+      **Holiday Fund** is exactly that account, and it is in no household.
 - [ ] Recording a contribution for the **current** month still works, and for a
       **past** month still works — only future months are refused.
 - [ ] Month close is unchanged. Its wording still says "Cannot close a future
@@ -406,6 +575,30 @@ Listed so you are not surprised, and so the next plan starts from them.
 - **Two authored movements** between the same pair of accounts, confirmed in the
   same month, collide on the export's confirmation key and come back untied.
   Safe — never a wrong tie — but real.
+
+### Two more, found while building the fixtures
+
+Neither was known when the sections above were written. Both are in the seeding
+script's comments as well, because it has to work around them.
+
+- **A `fixed_point` payment paced by `fixedMonthlyMinor` alone is a 500.**
+  `createPaymentBody` says such a payment needs "a dueDate **or**
+  fixedMonthlyMinor", and the engine agrees — `contributionCapMinor` returns the
+  cap and `required = min(cap, remaining)`, so no date is needed to pace it. But
+  `db/migrations/0001_init.sql:112` carries
+  `CHECK (category <> 'fixed_point' OR due_date IS NOT NULL)`. The route accepts
+  the body, validates it, and then the insert violates the constraint: the caller
+  gets **500 `internal`** for a request the contract documents as valid. The
+  in-memory store has no such check, which is why every suite is green. Either
+  the migration should be relaxed or the contract should stop promising it.
+- **`allocatedInflowMinor` counts an authored movement and a derived transfer
+  into the same pot as separate money.** It is `transferIn + movementIn`, and the
+  pass transports a pot's expenses (decision 9) whether or not somebody has
+  already authored a sweep into it. A pot with £46.39 of bills and an authored
+  £46.39 sweep therefore reports **£92.78 arriving** — and that is the figure §1's
+  banner subtracts and the ARRIVING tile prints. It may be defensible (a standing
+  order is not the bills' funding), but nothing on screen says so, and it is why
+  each §1 pot in the fixtures has an income of its own.
 
 ---
 
