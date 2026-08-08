@@ -20,6 +20,16 @@
  *    puts the ESM loader hook in place before Fastify, `pg` or Pino are
  *    resolved. Instrumentation that arrives after its target module has been
  *    loaded patches nothing.
+ *
+ * **On `@opentelemetry/api`'s version range.** It is declared `~1.9.1` here and
+ * in all three apps, and the tilde is doing real work: `~1.9.1` is exactly
+ * `>=1.9.1 <1.10.0`, and `<1.10.0` is the ceiling imposed by the
+ * `peerDependencies` of `@opentelemetry/sdk-node` (`>=1.3.0 <1.10.0`) and of
+ * `resources`, `core` and `sdk-trace-*`. A caret would float past it the day
+ * 1.10.0 ships, and `.npmrc` sets `strict-peer-dependencies=false`, so nothing
+ * would fail — it would just be out of range and quietly unsupported. Re-read
+ * those peers before widening this; the repo's policy is the highest version
+ * *within supported ranges*, which is not the same as the latest version.
  */
 
 /**
@@ -57,6 +67,34 @@ export async function startTelemetry(serviceName: string): Promise<void> {
         "Unset OTEL_ENABLED to run without tracing.",
     );
   }
+
+  // This is a *tracing* bootstrap, and `NodeSDK` does not believe that. Given
+  // only a `traceExporter` it still auto-configures metrics and logs from the
+  // environment and points them at the same OTLP endpoint. Measured against a
+  // recording stub collector: a four-second run POSTed 13 times to
+  // `/v1/traces` and **8 times to `/v1/metrics`** that nothing in this repo
+  // asked for, and stood up a logs exporter that would start posting the moment
+  // anything emitted a log record. A process doing work nobody requested, and
+  // not saying so, is the thing this package exists to stop.
+  //
+  // Assigned, not defaulted (`??=`): a service that ships no metric instruments
+  // has no honest use for a metrics pipeline, and leaving the env var able to
+  // switch one on means the leak comes back the first time someone copies a
+  // generic OTEL block into the chart. Turning these on again is a change to
+  // this file — one place, reviewed — rather than a change to a deployment.
+  process.env.OTEL_METRICS_EXPORTER = "none";
+  process.env.OTEL_LOGS_EXPORTER = "none";
+
+  // Bound how long a dying process will wait on a collector that is not there.
+  // Measured, dead collector, time from SIGTERM to exit: default (10000 ms)
+  // → 7.6–8.6 s; 5000 → 5.05 s; 3000 → 2.94 s; 2000 → 1.22 s. Shutdown time is
+  // simply the export budget being burnt on retries. A *healthy* collector
+  // answered the same flush in 0.07 s, so 5000 ms keeps ~70x headroom over the
+  // real cost while halving the worst case — at 2000 ms a loaded collector
+  // could start dropping the final batch, which is exactly what the SIGTERM
+  // handler below exists to prevent. Defaulted, not assigned: an operator with
+  // a genuinely slow collector must be able to raise it.
+  process.env.OTEL_EXPORTER_OTLP_TIMEOUT ??= "5000";
 
   // The ESM loader hook, first: it only patches modules resolved *after* it is
   // registered, so it has to be in place before the SDK — and before the app —
