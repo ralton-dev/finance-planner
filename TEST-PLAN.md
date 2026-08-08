@@ -169,7 +169,7 @@ gap without saying which of the two explanations it might be.
 `reality@fp.test` → **Covered Pot**. The same £11.70 and the same £234.64
 recorded as saved, but **£300.00 arriving** instead of £46.39.
 
-- [ ] **No banner at all.** The old rule was `reserved > balance`; it is now
+- [x] **No banner at all.** The old rule was `reserved > balance`; it is now
       `reserved > balance + arriving`.
 
 ### 1b · A stale balance
@@ -178,18 +178,18 @@ recorded as saved, but **£300.00 arriving** instead of £46.39.
 past the 10-day threshold the accounts page's "stale N d" chip uses. £50.00
 observed then, £200.00 recorded as saved, nothing arriving.
 
-- [ ] The banner fires but **leads with the age**, and explicitly says a balance
+- [x] The banner fires but **leads with the age**, and explicitly says a balance
       that old is not evidence the money is gone.
-- [ ] Check in a fresh balance → the sentence changes to the ordinary one.
+- [x] Check in a fresh balance → the sentence changes to the ordinary one.
 
 ### 1c · The projection chart, same page
 
 This half was **not in your report** — it was found in a browser while fixing the
 banner.
 
-- [ ] The projected balance line is **not negative** on an account that is not
+- [x] The projected balance line is **not negative** on an account that is not
       overdrawn. It was pinned at **−£222.94 across all twelve months**.
-- [ ] The y-axis has no negative region.
+- [x] The y-axis has no negative region.
 
 **Note what it does _not_ do:** it does not credit the £234.64 into the opening
 balance. That would assert the account holds money the banner says it doesn't.
@@ -210,17 +210,17 @@ transfers of £215.00, one from each member, funding £430.00 of bills; and the
 is about. Having both on the same picture is the point — the authored one is the
 one that used to vanish into `elsewhere`.
 
-- [ ] `/flow?household=…` draws a ribbon **account → pot**.
-- [ ] There is **no `elsewhere` node** for a sending account that is on screen.
-- [ ] Node totals balance: for each node, `income + in == spending + out + leftover`.
-- [ ] The subhead's "N of N drawn" matches the chips.
+- [x] `/flow?household=…` draws a ribbon **account → pot**.
+- [x] There is **no `elsewhere` node** for a sending account that is on screen.
+- [x] Node totals balance: for each node, `income + in == spending + out + leftover`.
+- [x] The subhead's "N of N drawn" matches the chips.
 
 ### 2a · The same fix on the household plan page
 
 `HouseholdSankey` was kept and now asks the same endpoint.
 
-- [ ] Open the household **plan** page. Its chart draws the same ribbon.
-- [ ] **The chart and the table beside it agree.** Previously the chart drew
+- [x] Open the household **plan** page. Its chart draws the same ribbon.
+- [x] **The chart and the table beside it agree.** Previously the chart drew
       £500 arriving into a pot while the table printed LEFT OVER £0.00 for the
       same account on the same date. They are about 130px apart on screen.
 
@@ -230,12 +230,12 @@ Both are correct behaviour, not bugs. One login each, because **a user belongs
 to exactly one household** — `bighouse@fp.test` for the first,
 `currencies@fp.test` for the second.
 
-- [ ] A household with **more than 40 accounts** prints the server's own
+- [x] A household with **more than 40 accounts** prints the server's own
       sentence and draws nothing. **Nothing is silently truncated** — all the
       account chips stay on screen so you can build a smaller picture by hand.
 - [ ] A household whose accounts span **two currencies** prints
       "a diagram cannot span currencies: …". The household _plan_ page still
-      works — only the diagram refuses.
+      works — only the diagram refuses. - **FAILURE** - Diagram drawn for only 1 currency - other account doesnt even show in house despite being added. might as well not be in the house, but there are no warnings or indications that it isnt going to work.
 
 ---
 
@@ -245,13 +245,13 @@ On an account page, under the plan table. `ledger@fp.test` → **Ledger Goals**,
 which carries two goals and **one contribution already recorded two months
 back**, so the last bullet here has something to fail on.
 
-- [ ] Record a contribution against a goal → **it appears in the ledger**, with
+- [x] Record a contribution against a goal → **it appears in the ledger**, with
       its amount and its month. Previously it vanished; `listContributions` was
       typed, tested and called from nowhere.
-- [ ] Edit the amount → **the plan moves with it.** The "still needed" figure and
+- [x] Edit the amount → **the plan moves with it.** The "still needed" figure and
       the plan table's `✓` tick both follow.
-- [ ] Delete a hand-recorded row → it goes, and the plan moves back.
-- [ ] The list shows **earlier months too**, not just this one — a row corrected
+- [x] Delete a hand-recorded row → it goes, and the plan moves back.
+- [x] The list shows **earlier months too**, not just this one — a row corrected
       back to its true month must not vanish, which would read as a deletion.
 
 ### 3a · A row a confirmation wrote
@@ -261,18 +261,20 @@ sweep** movement into Ledger Goals is the one — £300.00 a month out of Ledger
 Current, and it funds **both** goals, which is also §4c's shape. Confirm it from
 the checklist row, or `POST /api/inflows/{id}/confirm`.
 
-- [ ] The row shows **where it came from** (a "from a confirmed transfer" badge).
-- [ ] It offers **no edit and no remove control**, at 1280 **and** 390.
-- [ ] Un-confirm the transfer → **the row goes with it.**
+- [x] The row shows **where it came from** (a "from a confirmed transfer" badge).
+- [x] It offers **no edit and no remove control**, at 1280 **and** 390.
+- [x] Un-confirm the transfer → **the row goes with it.**
 
 The API refuses `PATCH`/`DELETE` on such rows with `409 confirmation_generated`,
 so a control here would be an action the API would reject.
 
+**NOTES** I assumed this was not talking about the manual entry created - and was instead talking about confirming the derived transfer, as manual entries do not add rows to the recorded.
+
 ### 3b · Privacy mode
 
-- [ ] Turn on privacy mode. **Every figure in the ledger blurs**, including the
+- [x] Turn on privacy mode. **Every figure in the ledger blurs**, including the
       summary sentence.
-- [ ] The plan table's `✓ £nnn.nn` tick blurs too — it was the only unblurred
+- [x] The plan table's `✓ £nnn.nn` tick blurs too — it was the only unblurred
       figure on the whole account page.
 
 ---
@@ -292,9 +294,9 @@ month asks **£137.50**. The seeding script asserts the two disagree and prints
 both, so if the calendar has moved on you have the current pair rather than
 these.
 
-- [ ] Confirm a transfer for a **past** month.
-- [ ] The amount booked is **that month's**, not today's.
-- [ ] Confirming a **future** month is refused, with the same message closing a
+- [x] Confirm a transfer for a **past** month.
+- [x] The amount booked is **that month's**, not today's.
+- [x] Confirming a **future** month is refused, with the same message closing a
       future month gives.
 
 **Known limit, not introduced here:** a past month is re-derived from payment and
@@ -309,12 +311,12 @@ Ledger House with `edit`, so B is a genuine co-editor of the accounts the
 movement runs between. The household transfer for the last bullet is the one
 into **Ledger House Pot**, which both members fund.
 
-- [ ] User A confirms a movement.
-- [ ] User B (a co-editor, but **not** the member on the confirmation) tries to
+- [x] User A confirms a movement.
+- [x] User B (a co-editor, but **not** the member on the confirmation) tries to
       un-confirm → **403**.
-- [ ] User A can still un-confirm their own.
+- [x] User A can still un-confirm their own.
 - [ ] On a **household** transfer, an owner/admin **can** still un-confirm
-      somebody else's — that route keeps its own admin rule deliberately.
+      somebody else's — that route keeps its own admin rule deliberately. - **FAIL** this isnt working, even as an admin I cannot confirm and undo someone elses transfer in a house pot.
 
 **This removes an ability co-editors have today. That is the point of the
 change.** If it feels wrong in practice, that is worth knowing — but it is
@@ -325,9 +327,9 @@ working as decided, not broken.
 Hard to trigger by hand — it is covered by a contract test that drives the
 failure path against real Postgres. What you can check:
 
-- [ ] Confirm a transfer funding **two or more** goals → all the contribution
+- [x] Confirm a transfer funding **two or more** goals → all the contribution
       rows appear together, and the ledger total matches the confirmed amount.
-- [ ] Un-confirm → **all** of them go. No half-standing state.
+- [x] Un-confirm → **all** of them go. No half-standing state.
 
 ---
 
@@ -337,10 +339,10 @@ failure path against real Postgres. What you can check:
 
 `dupe@fp.test`, which already owns two accounts called **Savings**.
 
-- [ ] Make two accounts with the **same name** (e.g. two called "Savings").
-- [ ] Export. **The export succeeds** — that file is an honest record of your
+- [x] Make two accounts with the **same name** (e.g. two called "Savings").
+- [x] Export. **The export succeeds** — that file is an honest record of your
       data.
-- [ ] Import it. **It is refused, naming the duplicate.**
+- [ ] Import it. **It is refused, naming the duplicate.** - **FAIL** It rejected the import but gave a weird error "that file doesn't look like a finance-planner export"
 - [ ] **Nothing is written** — check no accounts, projects or closes appeared.
 
 The asymmetry is deliberate: you really can own two accounts with one name; what
@@ -353,16 +355,16 @@ one confirmable movement out of RT Current; wipe the login as roughly as you
 like, because `deploy/local/seed-test-fixtures.mts` rebuilds it in seconds.
 Nothing else in this database depends on it.
 
-- [ ] Confirm a transfer that generates contributions.
-- [ ] Export → wipe → import.
-- [ ] Un-confirm the restored confirmation → **the contribution rows go with
+- [x] Confirm a transfer that generates contributions.
+- [x] Export → wipe → import.
+- [x] Un-confirm the restored confirmation → **the contribution rows go with
       it.** Previously they were orphaned.
-- [ ] Try to delete a restored confirmation-generated row directly → **refused**,
+- [x] Try to delete a restored confirmation-generated row directly → **refused**,
       exactly as a natively-created one is.
 
 ### 5c · An old backup still restores
 
-- [ ] Import an export file written **before** this work. It must still restore
+- [x] Import an export file written **before** this work. It must still restore
       in full. The schema change is additive only.
 
 **No fixture can supply this one** — it needs a file this codebase can no longer
@@ -370,7 +372,7 @@ write. If you have an export from before the confirmation work, use it; if not,
 this bullet cannot be run, and saying so is better than substituting a file that
 proves nothing.
 
----
+<!-- ---
 
 ## 6 · Auth rate limiting · issue #66
 
@@ -389,11 +391,12 @@ password/reset 5/min, OIDC 20/min, refresh 20/min, TOTP 10/min,
 `DELETE /auth/me` 3/min.
 
 **Still unthrottled and worth an issue:** `/auth/verify-email`, which consumes a
-guessable token.
+guessable token. -->
 
+NO test. needs to go live for this to check with cloudflare.
 ---
 
-## 7 · The daily digest · issue #54
+<!-- ## 7 · The daily digest · issue #54
 
 - [ ] Point the mailer at something that fails once, then succeeds → the digest
       **is delivered on the retry, the same day**.
@@ -407,11 +410,12 @@ code can't duplicate because it never retried — it silently lost the day inste
 
 **Still open:** a process restart between failure and retry loses the day. The
 retry lives in process memory. Closing that needs a releasable claim in the
-store.
+store. -->
 
+Mailer not in use right now. we will leave this test
 ---
 
-## 8 · Helm · issue #53
+<!-- ## 8 · Helm · issue #53
 
 ```bash
 helm template fp deploy/helm/finance-planner | grep -A2 HorizontalPodAutoscaler | grep name:
@@ -424,7 +428,9 @@ helm template fp deploy/helm/finance-planner -f deploy/helm/finance-planner/valu
       declared numbers were dead text.
 - [ ] The PodDisruptionBudget says `maxUnavailable: 1`, not `minAvailable: 1`
       (which permitted zero disruptions and hung `kubectl drain` forever).
-- [ ] Re-enable auth's autoscaling in `values.yaml` → **CI fails**. Revert.
+- [ ] Re-enable auth's autoscaling in `values.yaml` → **CI fails**. Revert. -->
+
+not fucking with helm.
 
 ---
 
@@ -440,15 +446,15 @@ carrying a £120.00 subscription and a £200.00 movement in from Ledger Current.
 The seeding script checks both halves over the API: the mate's roster row comes
 back with no `accountName` at all, and the owner's comes back with one.
 
-- [ ] The member who **cannot** see that account opens the household flow → the
+- [x] The member who **cannot** see that account opens the household flow → the
       diagram **draws**, with that node named **"other account"**, carrying its
       real amounts.
-- [ ] Node totals still balance — the money is in the picture, only the name is
+- [x] Node totals still balance — the money is in the picture, only the name is
       not.
-- [ ] The member who **can** see it sees it **by name**. This is the half that
+- [x] The member who **can** see it sees it **by name**. This is the half that
       matters: the original complaint was an account you _could_ see showing as
       "other".
-- [ ] The household plan page and the household accounts list also withhold that
+- [x] The household plan page and the household accounts list also withhold that
       name.
 
 > **Watch what else the household plan page does**, because a browser found it
@@ -461,12 +467,9 @@ back with no `accountName` at all, and the owner's comes back with one.
 > boundary is rendered as an error, in a strip whose whole job (§10) is to name
 > which account it could not read. Verified on `ledgermate@fp.test`.
 
-- [ ] **The daily digest** for a reader who cannot see the far account says
-      "another account", not its name. Email is the one surface where you cannot
-      re-check the gate.
-
 ### 9a · Your own name
 
+<!--
 - [ ] A user whose money is pulled into a household they are **not** a member of
       sees **"you"** on their own ribbon and their own inflow sources — not
       "a household member".
@@ -491,8 +494,9 @@ needs membership, and assigning needs access that only sharing grants. The one
 door left is to assign first and remove the member afterwards —
 `DELETE /auth/households/:id/members/:userId` drops the membership and leaves the
 assignment standing. **Untested here**, and it would take `ledgermate@fp.test`
-out of Ledger House, so re-seed afterwards.
+out of Ledger House, so re-seed afterwards. -->
 
+not sure what the fucking point of this was. its not reachable at all.
 ---
 
 ## 10 · Error states, not empty states
@@ -500,15 +504,15 @@ out of Ledger House, so re-seed afterwards.
 Two fixes that only show up when something fails. Easiest with devtools request
 blocking, or by stopping the api mid-session.
 
-- [ ] Block `GET /api/accounts` and load the **Overview** → it says
+- [x] Block `GET /api/accounts` and load the **Overview** → it says
       **"could not read your accounts."** It must **not** say "no accounts yet"
       or offer **"load demo data"**.
-- [ ] Same on the **accounts page**.
-- [ ] A genuinely **new** profile still gets the first-run screen, create button
+- [x] Same on the **accounts page**.
+- [x] A genuinely **new** profile still gets the first-run screen, create button
       and demo button. This is the half that is easy to break. `newbie@fp.test`
       owns nothing at all, and `ENABLE_DEMO_SEED` is on, so the demo button is
       rendered — without it this bullet passes for the wrong reason.
-- [ ] Block one account's plan on the **household plan page** → a strip names
+- [x] Block one account's plan on the **household plan page** → a strip names
       **which** account could not be read, and the other accounts still render
       their rows.
 
@@ -519,14 +523,14 @@ blocking, or by stopping the api mid-session.
 The regression surface. **Nothing in this work was about a lone user with one
 account**, and every figure on that path must be identical to before.
 
-- [ ] A solo account with one or two goals: the plan table, the leftover, the
+- [x] A solo account with one or two goals: the plan table, the leftover, the
       already-saved and the projection all read as they did. `reality@fp.test` →
       **Holiday Fund** is exactly that account, and it is in no household.
-- [ ] Recording a contribution for the **current** month still works, and for a
+- [x] Recording a contribution for the **current** month still works, and for a
       **past** month still works — only future months are refused.
-- [ ] Month close is unchanged. Its wording still says "Cannot close a future
+- [x] Month close is unchanged. Its wording still says "Cannot close a future
       month".
-- [ ] Back-dating a contribution is still allowed at both ends. Money genuinely
+- [x] Back-dating a contribution is still allowed at both ends. Money genuinely
       can have been set aside in the past.
 
 ---
