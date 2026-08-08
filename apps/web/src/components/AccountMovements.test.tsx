@@ -707,6 +707,243 @@ describe("AccountMovements — the movements nobody authored", () => {
       await mounted();
       expect(screen.getByText("derived transfer")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "moved" })).toBeNull();
+      // …and says so. A row with no control and no account of why is the thing
+      // this section was reported for.
+      expect(screen.getByText(/to record/)).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Defect 2: the row an owner could act on everywhere but here.
+   *
+   * A household pot's account page drew its co-member's derived transfer with no
+   * button and no sentence — while the household's own checklist offered exactly
+   * that action, and `POST /households/:id/transfers/confirm` granted it. The
+   * gate here had one rule for two endpoints: `POST /accounts/:id/transfers/
+   * confirm` really does refuse anybody else's, because a scope with no
+   * household in it has no roster to make anyone an admin — but a **household**
+   * transfer is ticked through the household, which keeps decision 28's other
+   * half: the member themselves, **or an owner or admin of that household**.
+   *
+   * Which household is the part the account plan never says. `AccountPlanDto`
+   * carries no household id and neither does `AccountDto`; what the wire does
+   * carry is the reader's own membership list, and a `member` source naming
+   * somebody *else* — which `planInflowSources` publishes only to a member of
+   * the household the account is planned in. So the roster that holds that
+   * member is the household, and `yourRole` arrives on the same read.
+   */
+  describe("a co-member's transfer, and who may tick it", () => {
+    const MONTH = new Date().toISOString().slice(0, 7);
+    const HH = "hh-1";
+
+    /** The pot two members feed: the reader's own transfer and their mate's. */
+    const shared = derivedPlan({
+      inflowSources: [
+        {
+          kind: "member",
+          memberUserId: "me",
+          displayName: "Ben",
+          fromAccountId: "current",
+          amountMinor: 9_000,
+          confirmedMinor: 0,
+        },
+        {
+          kind: "member",
+          memberUserId: "mate",
+          displayName: "Mate",
+          fromAccountId: "theirs",
+          amountMinor: 9_000,
+          confirmedMinor: 0,
+        },
+      ],
+    });
+
+    const HOUSEHOLD_CONFIRMATION = {
+      id: "hh-conf-1",
+      householdId: HH,
+      inflowId: null,
+      month: `${MONTH}-01`,
+      fromAccountId: "theirs",
+      toAccountId: "pot",
+      memberUserId: "mate",
+      amountMinor: 9_000,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+
+    /** Who is asking, and the one household they are in. */
+    const asMe = (role: "owner" | "admin" | "member") => ({
+      "GET /api/auth/me": {
+        body: {
+          id: "me",
+          email: "b@example.com",
+          displayName: "Ben",
+          households: [{ id: HH, name: "Ledger House" }],
+        },
+      },
+      [`GET /api/auth/households/${HH}`]: {
+        body: {
+          id: HH,
+          name: "Ledger House",
+          createdAt: "2026-08-01T00:00:00.000Z",
+          yourRole: role,
+          members: [
+            {
+              membershipId: "m1",
+              userId: "me",
+              role,
+              shareBp: 5000,
+              displayName: "Ben",
+              email: "b@example.com",
+              isSelf: true,
+            },
+            {
+              membershipId: "m2",
+              userId: "mate",
+              role: "member",
+              shareBp: 5000,
+              displayName: "Mate",
+              email: "m@example.com",
+              isSelf: false,
+            },
+          ],
+          shares: [],
+        },
+      },
+      [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: { body: [] },
+      [`GET /api/households/${HH}/transfers/confirmations?month=${MONTH}`]: { body: [] },
+    });
+
+    /** The mate's row, found by the name the arrow prints. */
+    const mateRow = (): HTMLElement => screen.getByText("Mate →").closest("li")!;
+
+    it("lets an owner say a co-member's transfer moved, through the household that derives it", async () => {
+      renderFor(
+        POT,
+        {
+          ...asMe("owner"),
+          [`GET /api/households/${HH}/transfers/confirmations?month=${MONTH}`]: () => ({
+            body:
+              stub.calls(`POST /api/households/${HH}/transfers/confirm`) > 0
+                ? [HOUSEHOLD_CONFIRMATION]
+                : [],
+          }),
+          [`POST /api/households/${HH}/transfers/confirm`]: {
+            status: 201,
+            body: { confirmation: HOUSEHOLD_CONFIRMATION, contributions: [] },
+          },
+        },
+        { plan: shared },
+      );
+
+      await mounted();
+      fireEvent.click(within(mateRow()).getByRole("button", { name: "moved" }));
+      // Recorded, and now offering to take it back.
+      await waitFor(() =>
+        expect(within(mateRow()).getByRole("button", { name: "undo" })).toBeEnabled(),
+      );
+      expect(stub.calls(`POST /api/households/${HH}/transfers/confirm`)).toBe(1);
+      expect(stub.bodyOf(`POST /api/households/${HH}/transfers/confirm`)).toEqual({
+        fromAccountId: "theirs",
+        toAccountId: "pot",
+        memberUserId: "mate",
+        month: MONTH,
+      });
+      // Never the account route, which would refuse it — and refuse it with a
+      // 403 the row could do nothing about.
+      expect(stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toBe(0);
+    });
+
+    it("and take it back again — decision 28, the same people either way", async () => {
+      renderFor(
+        POT,
+        {
+          ...asMe("admin"),
+          [`GET /api/households/${HH}/transfers/confirmations?month=${MONTH}`]: () => ({
+            body: stub.calls(`DELETE /api/households/${HH}/transfers/confirmations/hh-conf-1`)
+              ? []
+              : [HOUSEHOLD_CONFIRMATION],
+          }),
+          [`DELETE /api/households/${HH}/transfers/confirmations/hh-conf-1`]: { status: 204 },
+        },
+        { plan: shared },
+      );
+
+      await mounted();
+      fireEvent.click(within(mateRow()).getByRole("button", { name: "undo" }));
+      await waitFor(() =>
+        expect(within(mateRow()).getByRole("button", { name: "moved" })).toBeEnabled(),
+      );
+      expect(stub.calls(`DELETE /api/households/${HH}/transfers/confirmations/hh-conf-1`)).toBe(1);
+    });
+
+    it("offers a plain member nothing on a co-member's row, and says whose it is", async () => {
+      renderFor(POT, { ...asMe("member") }, { plan: shared });
+
+      await mounted();
+      const row = mateRow();
+      expect(within(row).queryByRole("button", { name: "moved" })).toBeNull();
+      expect(within(row).queryByRole("button", { name: "undo" })).toBeNull();
+      expect(row).toHaveTextContent(/Mate's to record/);
+      // A member who may not act for anybody is never charged for the list they
+      // could not act on.
+      expect(stub.calls(`GET /api/households/${HH}/transfers/confirmations?month=${MONTH}`)).toBe(
+        0,
+      );
+    });
+
+    it("will not re-record a transfer the member already ticked on their own", async () => {
+      // Their own account page files it with no household on it, and that route
+      // un-ticks only for the member who made it. Offering "moved" here would
+      // post a second confirmation and book the month's contributions twice.
+      renderFor(
+        POT,
+        {
+          ...asMe("owner"),
+          [`GET /api/accounts/pot/transfers/confirmations?month=${MONTH}`]: {
+            body: [
+              {
+                id: "solo-conf-1",
+                householdId: null,
+                inflowId: null,
+                month: `${MONTH}-01`,
+                fromAccountId: "theirs",
+                toAccountId: "pot",
+                memberUserId: "mate",
+                amountMinor: 9_000,
+                createdAt: "2026-08-01T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+        { plan: shared },
+      );
+
+      await mounted();
+      const row = mateRow();
+      expect(within(row).queryByRole("button", { name: "moved" })).toBeNull();
+      expect(row).toHaveTextContent(/only they can undo it/);
+    });
+
+    it("leaves the reader's own row on the route with no household in it", async () => {
+      renderFor(
+        POT,
+        {
+          ...asMe("owner"),
+          [`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`]: {
+            status: 201,
+            body: { confirmation: { id: "solo" }, contributions: [] },
+          },
+        },
+        { plan: shared },
+      );
+
+      await mounted();
+      const mine = screen.getByText("Ben →").closest("li")!;
+      fireEvent.click(within(mine).getByRole("button", { name: "moved" }));
+      await waitFor(() =>
+        expect(stub.calls(`POST /api/accounts/pot/transfers/confirm?month=${MONTH}`)).toBe(1),
+      );
+      expect(stub.calls(`POST /api/households/${HH}/transfers/confirm`)).toBe(0);
     });
   });
 

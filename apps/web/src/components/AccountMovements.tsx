@@ -6,6 +6,7 @@ import { useAsync } from "../lib/useAsync.js";
 import type {
   AccountDto,
   AccountPlanDto,
+  HouseholdRole,
   InflowDto,
   PlanInflowSourceDto,
   TransferConfirmationDto,
@@ -109,10 +110,11 @@ export function AccountMovements({
   // applies to a sending account's name.
   const accounts = useAsync<AccountDto[]>(() => api.listAccounts(), []);
   // "I moved it", for the transfers the plan derives into this account. Who is
-  // asking, because only the member a transfer belongs to may say it moved —
-  // there is no household roster here to make anyone an admin of it — and what
-  // has already been recorded this month, because un-ticking needs the row's id
-  // and a derived confirmation has no authored inflow to find it by.
+  // asking, because whose transfer a row is decides which of the two confirm
+  // routes it takes — and, for somebody else's, which households the reader
+  // could possibly be an admin of. And what has already been recorded this
+  // month, because un-ticking needs the row's id and a derived confirmation has
+  // no authored inflow to find it by.
   const me = useAsync<UserDto>(() => api.me(), []);
   const month = currentMonth();
   const confirmations = useAsync<TransferConfirmationDto[]>(
@@ -158,37 +160,97 @@ export function AccountMovements({
   // Every movement touching this account, whichever plan derives it: the rows
   // somebody authored, and the transfers the pass works out for the bills.
   const arrivingDerived = derivedArrivals(plan, me.data?.id);
-  const settleOf = (row: DerivedRow): DerivedSettle | null => {
-    // Yours only: `POST /accounts/:id/transfers/confirm` refuses anyone else's,
-    // and a household's transfers are ticked on the household's own checklist,
-    // which knows who may tick for whom.
-    if (!canEdit || !row.fromAccountId || row.memberUserId !== me.data?.id) return null;
-    const confirmationId = derivedConfirmationId(confirmations.data ?? [], row, account.id);
+  // Somebody else's derived transfer on this page, and whether this reader may
+  // tick it. Read only when there is one: an account fed by nobody but the
+  // reader needs no roster and asks for none, and the read is per page rather
+  // than per row either way.
+  const otherMemberIds = arrivingDerived
+    .filter((r) => r.memberUserId && me.data?.id && r.memberUserId !== me.data.id)
+    .map((r) => r.memberUserId)
+    .sort()
+    .join(",");
+  const myHouseholdIds = (me.data?.households ?? []).map((h) => h.id).join(",");
+  const wantsRoster = canEdit && otherMemberIds !== "" && myHouseholdIds !== "";
+  const household = useAsync<HouseholdSettling | null>(
+    () =>
+      wantsRoster
+        ? householdSettling(myHouseholdIds.split(","), otherMemberIds.split(","), month)
+        : Promise.resolve(null),
+    [wantsRoster, myHouseholdIds, otherMemberIds, month],
+  );
+  const actionFor = (row: DerivedRow): DerivedAction | null => {
+    const fromAccountId = row.fromAccountId;
+    const memberUserId = row.memberUserId;
+    // Who is asking has not arrived yet, so the row cannot be told whose it is.
+    // It offers nothing and explains nothing: both would be guesses.
+    if (!canEdit || !fromAccountId || !memberUserId || !me.data) return null;
+
+    const settle = (fn: () => Promise<unknown>) => async (): Promise<void> => {
+      setSettling(row.key);
+      try {
+        await fn();
+        confirmations.refetch();
+        household.refetch();
+        onChanged();
+      } finally {
+        setSettling(null);
+      }
+    };
+
+    // Yours: the standalone route, scoped by the two accounts, the month and
+    // you, with no household anywhere in it. It refuses anybody else's on
+    // purpose — there is no roster in that scope to make a reader an admin of
+    // somebody's own money moving — and that rule is unchanged here.
+    if (memberUserId === me.data.id) {
+      const mine = derivedConfirmationId(confirmations.data ?? [], row, account.id);
+      return {
+        kind: "control",
+        label: mine ? "undo" : "moved",
+        busy: settling === row.key,
+        run: settle(() =>
+          mine
+            ? api.unconfirmDerivedTransfer(account.id, mine)
+            : api.confirmDerivedTransfer(
+                account.id,
+                { fromAccountId, toAccountId: account.id, memberUserId },
+                month,
+              ),
+        ),
+      };
+    }
+
+    // Somebody else's, which is not the same question. A *household* transfer is
+    // ticked through the household, and those routes keep decision 28's other
+    // half: the member themselves, **or an owner or admin of that household**.
+    // The account page simply never reached for them, so an owner got a dead row
+    // here while the household's own checklist offered the very same action.
+    if (household.loading) return null;
+    const hh = household.data;
+    if (!hh || !mayActForOthers(hh.role)) {
+      return { kind: "note", text: `${row.name}'s to record — or a household owner or admin's` };
+    }
+    const ticked = householdConfirmationId(hh.confirmations, row, account.id, hh.id);
+    if (!ticked && derivedConfirmationId(confirmations.data ?? [], row, account.id)) {
+      // Already recorded on their own account page, which files it with no
+      // household on it — and that route un-ticks only for the member who made
+      // it. Offering "moved" here would write a *second* confirmation and book
+      // the month's contributions twice, so this row says what happened instead.
+      return { kind: "note", text: `${row.name} recorded this themselves — only they can undo it` };
+    }
     return {
-      label: confirmationId ? "undo" : "moved",
+      kind: "control",
+      label: ticked ? "undo" : "moved",
       busy: settling === row.key,
-      run: async () => {
-        setSettling(row.key);
-        try {
-          if (confirmationId) {
-            await api.unconfirmDerivedTransfer(account.id, confirmationId);
-          } else {
-            await api.confirmDerivedTransfer(
-              account.id,
-              {
-                fromAccountId: row.fromAccountId!,
-                toAccountId: account.id,
-                memberUserId: row.memberUserId!,
-              },
+      run: settle(() =>
+        ticked
+          ? api.unconfirmTransfer(hh.id, ticked)
+          : api.confirmTransfer(hh.id, {
+              fromAccountId,
+              toAccountId: account.id,
+              memberUserId,
               month,
-            );
-          }
-          confirmations.refetch();
-          onChanged();
-        } finally {
-          setSettling(null);
-        }
-      },
+            }),
+      ),
     };
   };
   // The other half of "every movement touching this account, in and out": the
@@ -223,7 +285,7 @@ export function AccountMovements({
           addLabel="+ money in"
           rows={arriving}
           derived={arrivingDerived}
-          derivedSettle={settleOf}
+          derivedAction={actionFor}
           derivedArrow={(name) => `${name} →`}
           derivedNote="the plan derives this for the bills here — nobody authored it"
           account={account}
@@ -267,11 +329,76 @@ export function AccountMovements({
   );
 }
 
-/** The one button a derived row can offer: "I moved it", and its undo. */
-interface DerivedSettle {
-  label: string;
-  busy: boolean;
-  run: () => Promise<void>;
+/**
+ * What a derived row offers this reader: the one control it can have — "I moved
+ * it", and its undo — or the reason there is none.
+ *
+ * The second half is the defect this shape exists for. An owner looking at their
+ * partner's transfer got a bare line with no button and no account of why, which
+ * reads as a page that forgot to finish rather than as a rule. A row that
+ * explains itself is the floor here; a row that works is the ceiling, and which
+ * of the two it gets is decided per reader.
+ */
+type DerivedAction =
+  | { kind: "control"; label: string; busy: boolean; run: () => Promise<void> }
+  | { kind: "note"; text: string };
+
+/** The household an account is planned in, as much of it as this page needs:
+ *  which one, what the reader may do in it, and what has already been ticked
+ *  there this month. */
+interface HouseholdSettling {
+  id: string;
+  role: HouseholdRole;
+  /** This month's household confirmations — the only place a household row's id
+   *  can be read, and so the only way to offer an undo for one. Empty for a
+   *  reader who may not act for anybody else, who never asks for them. */
+  confirmations: readonly TransferConfirmationDto[];
+}
+
+/** Whether a role may act for another member — the household routes' own rule,
+ *  restated here so the button appears exactly where the API would allow it. */
+const mayActForOthers = (role: HouseholdRole): boolean => role === "owner" || role === "admin";
+
+/**
+ * Which of the reader's households derives this account's member transfers, and
+ * what the reader may do in it.
+ *
+ * **Nothing on the account plan says which household an account is planned in.**
+ * `AccountPlanDto` carries no household id and neither does `AccountDto` — the
+ * server knows (`scope.householdOf`) and simply does not publish it. What the
+ * wire *does* carry is the answer sideways: `planInflowSources` publishes
+ * another member's `memberUserId` only to a reader who is a member of the
+ * household that account is planned in, so a `member` source naming somebody
+ * else is the server's own proof that such a household exists and that the
+ * reader belongs to it. The roster that holds that member is therefore the
+ * household, and `yourRole` comes back on the same read.
+ *
+ * One request in practice, since a user belongs to exactly one household
+ * (WP-W) — and one per *page*, never one per row. The loop is for data written
+ * before that rule, and takes the first hit in the same order the API's own
+ * `accountPlacements` does, so the two cannot disagree about which household an
+ * account of a legacy two-household user is planned in.
+ */
+async function householdSettling(
+  candidateIds: readonly string[],
+  memberUserIds: readonly string[],
+  month: string,
+): Promise<HouseholdSettling | null> {
+  const wanted = new Set(memberUserIds);
+  for (const id of candidateIds) {
+    const detail = await api.getHousehold(id);
+    if (!detail.members.some((m) => wanted.has(m.userId))) continue;
+    return {
+      id,
+      role: detail.yourRole,
+      // A reader who may not act for anybody else is not charged for a list they
+      // could do nothing with.
+      confirmations: mayActForOthers(detail.yourRole)
+        ? await api.listTransferConfirmations(id, month)
+        : [],
+    };
+  }
+  return null;
 }
 
 function MovementList({
@@ -280,7 +407,7 @@ function MovementList({
   addLabel,
   rows,
   derived,
-  derivedSettle,
+  derivedAction,
   derivedArrow,
   derivedNote,
   account,
@@ -299,8 +426,9 @@ function MovementList({
   rows: readonly InflowDto[];
   /** Movements the plan derived, which have no row to edit or remove. */
   derived: readonly DerivedRow[];
-  /** What a derived row may be ticked with, when this caller may tick it. */
-  derivedSettle?: (row: DerivedRow) => DerivedSettle | null;
+  /** What a derived row may be ticked with, when this caller may tick it — or
+   *  the reason it may not be, when they may not. */
+  derivedAction?: (row: DerivedRow) => DerivedAction | null;
   derivedArrow: (name: string) => string;
   derivedNote: string;
   account: AccountDto;
@@ -334,7 +462,7 @@ function MovementList({
       {derived.length > 0 && (
         <ul className="entity-list">
           {derived.map((row) => {
-            const settle = derivedSettle?.(row) ?? null;
+            const action = derivedAction?.(row) ?? null;
             return (
               <li key={`derived:${row.key}`}>
                 <span>
@@ -353,17 +481,23 @@ function MovementList({
                 </span>
                 {/* The only thing there is to do about a transfer nobody
                     authored: say that you made it, or take it back. There is no
-                    row to edit and none to remove. */}
-                {settle && (
+                    row to edit and none to remove — and where there is nothing
+                    to offer, the reason, because a row with neither a control
+                    nor a word about it reads as an oversight. */}
+                {action && (
                   <span className="row-actions">
-                    <button
-                      type="button"
-                      className="ghost tiny"
-                      disabled={settle.busy}
-                      onClick={() => void settle.run()}
-                    >
-                      {settle.busy ? "…" : settle.label}
-                    </button>
+                    {action.kind === "control" ? (
+                      <button
+                        type="button"
+                        className="ghost tiny"
+                        disabled={action.busy}
+                        onClick={() => void action.run()}
+                      >
+                        {action.busy ? "…" : action.label}
+                      </button>
+                    ) : (
+                      <span>{action.text}</span>
+                    )}
                   </span>
                 )}
               </li>
@@ -628,6 +762,38 @@ export function derivedConfirmationId(
   const hit = confirmations.find(
     (c) =>
       c.householdId === null &&
+      !c.inflowId &&
+      c.toAccountId === accountId &&
+      c.fromAccountId === row.fromAccountId &&
+      c.memberUserId === row.memberUserId,
+  );
+  return hit?.id ?? null;
+}
+
+/**
+ * The same question of a *household's* own list: has this month's transfer been
+ * ticked there?
+ *
+ * A second function rather than a relaxed filter on the one above, because the
+ * exclusion up there is not a filter to loosen — it is the shape of the
+ * endpoint. `GET /accounts/:id/transfers/confirmations` cannot return a
+ * household's rows at all: the two store queries behind it ask for
+ * `inflow_id NOT NULL` and for `household_id IS NULL AND inflow_id IS NULL`, so
+ * a household row matches neither. And the id it yields is spent on
+ * `DELETE /accounts/:id/transfers/confirmations/:confId`, which 404s on anything
+ * carrying a household. Widening it would have produced a button that could only
+ * fail. So the household's rows are asked for where they live, un-ticked through
+ * the route that owns them, and the two lookups stay apart.
+ */
+export function householdConfirmationId(
+  confirmations: readonly TransferConfirmationDto[],
+  row: DerivedRow,
+  accountId: string,
+  householdId: string,
+): string | null {
+  const hit = confirmations.find(
+    (c) =>
+      c.householdId === householdId &&
       !c.inflowId &&
       c.toAccountId === accountId &&
       c.fromAccountId === row.fromAccountId &&
