@@ -240,7 +240,9 @@ nobody reads their absence as an oversight and rebuilds them.
   `secretKeyRef` with `optional: true` so it lands only on the three backends.
   Closing it properly means splitting the Secret per service in
   `templates/config.yaml` and giving each Deployment its own reference.
-- **The orphan `calc` service.** `POST /internal/calc/account-plan` is calc's
+- **The orphan `calc` service.**
+  [Issue #76](https://github.com/ralton-dev/finance-planner/issues/76).
+  `POST /internal/calc/account-plan` is calc's
   only route and it is referenced solely by calc's own test; api computes plans
   in-process through `packages/domain` and has never called it
   ([`WHICH-HOP.md`](./WHICH-HOP.md) decision 49). So a whole service, image,
@@ -257,7 +259,9 @@ nobody reads their absence as an oversight and rebuilds them.
   server handle, which a `--import` preload does not have, and it changes how
   every deploy behaves, so it was named rather than built. Do not let it grow
   an `app.close()` path inside the preload.
-- **Browser / RUM instrumentation for `apps/web`.** [Issue #73](https://github.com/ralton-dev/finance-planner/issues/73) put it out
+- **Browser / RUM instrumentation for `apps/web`.**
+  [Issue #77](https://github.com/ralton-dev/finance-planner/issues/77).
+  [Issue #73](https://github.com/ralton-dev/finance-planner/issues/73) put it out
   of scope deliberately. Today a trace begins at the api server span, so the
   first hop of a real user request — browser → nginx → api — is invisible, and
   the time a user waits is not the time any span measures.
