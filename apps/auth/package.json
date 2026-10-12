@@ -12,8 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@fastify/cookie": "^11.1.2",
-    "@fastify/rate-limit": "^11.2.0",
+    "@fastify/cookie": "^11.1.3",
+    "@fastify/rate-limit": "^11.2.1",
     "@finance-planner/contracts": "workspace:*",
     "@finance-planner/data": "workspace:*",
     "@finance-planner/mailer": "workspace:*",
@@ -21,21 +21,21 @@
     "@finance-planner/security": "workspace:*",
     "@finance-planner/telemetry": "workspace:*",
     "@opentelemetry/api": "~1.9.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
-    "@opentelemetry/instrumentation": "^0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
+    "@opentelemetry/instrumentation": "^0.223.0",
     "@opentelemetry/instrumentation-fastify": "^0.57.0",
-    "@opentelemetry/instrumentation-http": "^0.221.0",
-    "@opentelemetry/instrumentation-pg": "^0.73.0",
-    "@opentelemetry/instrumentation-pino": "^0.67.0",
-    "@opentelemetry/instrumentation-undici": "^0.31.0",
-    "@opentelemetry/sdk-node": "^0.221.0",
-    "fastify": "^5.11.0",
-    "pg": "^8.22.0"
+    "@opentelemetry/instrumentation-http": "^0.223.0",
+    "@opentelemetry/instrumentation-pg": "^0.75.0",
+    "@opentelemetry/instrumentation-pino": "^0.69.0",
+    "@opentelemetry/instrumentation-undici": "^0.33.0",
+    "@opentelemetry/sdk-node": "^0.223.0",
+    "fastify": "^5.12.5",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.6.4",
     "tsup": "^8.3.5",
-    "tsx": "^4.23.11",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.3",
     "vitest": "^4.1.10"
   }
