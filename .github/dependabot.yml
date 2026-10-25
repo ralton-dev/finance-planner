@@ -1,6 +1,6 @@
-# Weekly dependency updates for the pnpm workspace + GitHub Actions.
-# Vulnerability alerts and security-only updates are configured at the repo
-# level (see `gh api repos/.../security_and_analysis`).
+# Weekly reviewed minor/patch PR groups; majors remain separate.
+# Security PR groups require enabled repository alerts and security updates. No automerge.
+---
 version: 2
 updates:
   - package-ecosystem: npm
@@ -9,39 +9,123 @@ updates:
       interval: weekly
       day: monday
       time: "06:00"
-      timezone: "Europe/London"
+      timezone: Europe/London
     open-pull-requests-limit: 5
-    labels: ["dependencies"]
+    labels:
+      - dependencies
     groups:
-      # Group minor + patch bumps to reduce noise; majors stay individual.
+      opentelemetry-family:
+        patterns:
+          - "@opentelemetry/*"
+        update-types:
+          - minor
+          - patch
+      vitest-family:
+        patterns:
+          - vitest
+          - "@vitest/*"
+        update-types:
+          - minor
+          - patch
       minor-and-patch:
-        update-types: ["minor", "patch"]
+        update-types:
+          - minor
+          - patch
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
       day: monday
       time: "06:00"
-      timezone: "Europe/London"
+      timezone: Europe/London
     open-pull-requests-limit: 5
-    labels: ["dependencies", "ci"]
+    labels:
+      - dependencies
+      - ci
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: docker
     directory: "/apps/api"
     schedule:
       interval: weekly
-    labels: ["dependencies", "docker"]
+    labels:
+      - dependencies
+      - docker
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: docker
     directory: "/apps/auth"
     schedule:
       interval: weekly
-    labels: ["dependencies", "docker"]
+    labels:
+      - dependencies
+      - docker
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: docker
     directory: "/apps/calc"
     schedule:
       interval: weekly
-    labels: ["dependencies", "docker"]
+    labels:
+      - dependencies
+      - docker
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
   - package-ecosystem: docker
     directory: "/apps/web"
     schedule:
       interval: weekly
-    labels: ["dependencies", "docker"]
+    labels:
+      - dependencies
+      - docker
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
