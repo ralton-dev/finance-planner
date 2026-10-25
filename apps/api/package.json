@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@fastify/http-proxy": "^11.6.0",
+    "@fastify/http-proxy": "^11.6.5",
     "@finance-planner/contracts": "workspace:*",
     "@finance-planner/data": "workspace:*",
     "@finance-planner/domain": "workspace:*",
@@ -29,14 +29,14 @@
     "@opentelemetry/instrumentation-pino": "^0.67.0",
     "@opentelemetry/instrumentation-undici": "^0.31.0",
     "@opentelemetry/sdk-node": "^0.221.0",
-    "fastify": "^5.11.0",
-    "pg": "^8.22.0"
+    "fastify": "^5.12.7",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
-    "tsup": "^8.3.5",
-    "tsx": "^4.23.11",
+    "@types/node": "^26.6.5",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.12"
   }
 }
