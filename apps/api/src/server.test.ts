@@ -3872,9 +3872,12 @@ describe("api service", () => {
 
   it("does not change the estate's income when a pot's bills change hands", async () => {
     const h = await seedHousehold(store, app);
+    // Keep eleven whole months before the fixture's 2027-08-01 holiday, so
+    // its funding assertions do not change with the day this suite runs.
     const overview = async () =>
-      (await app.inject({ method: "GET", url: "/api/overview", headers: h.auth })).json()
-        .perCurrency[0];
+      (
+        await app.inject({ method: "GET", url: "/api/overview?asOf=2026-09-01", headers: h.auth })
+      ).json().perCurrency[0];
 
     // Take the pot back out of the household plan. It is still Alice's, and her
     // salary is still Alice's, so the pass still derives its feed — assignment
