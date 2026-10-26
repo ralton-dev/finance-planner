@@ -12,6 +12,8 @@ RUN pnpm --filter @finance-planner/api build
 FROM node:24-alpine AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
+# npm and Corepack are build tools; the service starts directly with Node.
+RUN npm uninstall --global npm --ignore-scripts --no-audit --no-fund
 # Carry the installed workspace so external deps (fastify) are available at runtime.
 COPY --from=build /repo ./
 WORKDIR /repo/apps/api
