@@ -21,6 +21,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
+          check-latest: true
           node-version: 24
           cache: pnpm
 
@@ -64,6 +65,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
+          check-latest: true
           node-version: 24
           cache: pnpm
 
@@ -96,6 +98,7 @@ jobs:
         run: corepack enable
       - uses: actions/setup-node@v6
         with:
+          check-latest: true
           node-version: 24
           cache: pnpm
       - name: Install dependencies
