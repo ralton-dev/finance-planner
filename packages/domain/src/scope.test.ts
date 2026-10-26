@@ -1774,6 +1774,30 @@ describe("computeScopePlan — the shape of the answer", () => {
     // (`apps/api/src/plan-debug-report.ts`), and is asserted there.
   });
 
+  it("keeps an account owner distinct from an absent roster assignment in explanations", () => {
+    const input = scope({
+      accounts: [
+        acc({
+          accountId: "shared-pot",
+          role: "shared",
+          ownerUserId: "owner",
+          incomes: income(100_000),
+          payments: [pay({ id: "rent", amountMinor: 40_000 })],
+        }),
+      ],
+    });
+
+    const debug = explainScopePlan(input, ASOF);
+
+    expect(debug.currencies[0]!.accounts[0]).toMatchObject({
+      accountId: "shared-pot",
+      memberUserId: null,
+      ownerUserId: "owner",
+      monthlyIncomeMinor: 100_000,
+    });
+    expect(debug.plan).toEqual(computeScopePlan(input, ASOF));
+  });
+
   /**
    * The explanations are built mid-pass, out of the same call whose result they
    * describe, so they cannot be generated anywhere else — and that is exactly
