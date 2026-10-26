@@ -146,7 +146,7 @@ services:
     # Pinned, and contrib rather than core because that is the image the OTEL
     # docs point at. Do not move this to `latest`: Docker Hub's recent-tag list
     # for this image is mostly `0.159.0-nightly.*`, which are not releases.
-    image: otel/opentelemetry-collector-contrib:0.158.0
+    image: otel/opentelemetry-collector-contrib:0.163.2
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
