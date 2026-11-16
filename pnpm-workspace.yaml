@@ -1,3 +1,28 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# pnpm settings live here, not in a "pnpm" field in package.json: pnpm 12 no
+# longer reads that field, and pnpm 10 reads both settings below from this file.
+
+# Packages whose install scripts may run. esbuild needs its postinstall; the
+# other three are optional native builds that have always been skipped, now by
+# name, because pnpm 12 fails an install on any build script left undecided.
+allowBuilds:
+  esbuild: true
+  cpu-features: false
+  protobufjs: false
+  ssh2: false
+
+# Security floors for transitive dependencies.
+overrides:
+  "undici@7": ^7.30.1
+  "brace-expansion@1": ^1.1.16
+  "brace-expansion@2": ^2.1.4
+  "brace-expansion@5": ^5.0.7
+  "fast-uri@3": ^3.1.5
+  "find-my-way@9": ^9.7.0
+  "postcss@8": ^8.5.23
+  "js-yaml@4": ^4.3.0
+  "protobufjs@7": ^7.6.5
+  "esbuild@>=0.27.3 <0.28.1": ^0.28.1
