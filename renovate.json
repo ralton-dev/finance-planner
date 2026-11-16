@@ -1,33 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "github>ralton-dev/.github"
-  ],
+  "extends": ["github>ralton-dev/.github"],
   "dependencyDashboardTitle": "Renovate Dashboard — finance-planner",
   "packageRules": [
     {
       "description": "Group related OpenTelemetry minor/patch releases together.",
-      "matchPackageNames": [
-        "@opentelemetry/**"
-      ],
-      "matchUpdateTypes": [
-        "minor",
-        "patch",
-        "digest"
-      ],
+      "matchPackageNames": ["@opentelemetry/**"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
       "groupName": "OpenTelemetry"
     },
     {
       "description": "Group related Vitest minor/patch releases together.",
-      "matchPackageNames": [
-        "vitest",
-        "@vitest/**"
-      ],
-      "matchUpdateTypes": [
-        "minor",
-        "patch",
-        "digest"
-      ],
+      "matchPackageNames": ["vitest", "@vitest/**"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
       "groupName": "Vitest"
     }
   ]
