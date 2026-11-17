@@ -162,7 +162,7 @@ postgres:
 
 redis:
   enabled: true
-  image: redis:7-alpine
+  image: redis:8-alpine
 
 ingress:
   enabled: true
