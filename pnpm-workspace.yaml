@@ -26,12 +26,3 @@ overrides:
   "js-yaml@4": ^4.3.0
   "protobufjs@7": ^7.6.5
   "esbuild@>=0.27.3 <0.28.1": ^0.28.1
-
-# GHSA-fc5q-39xc-vjpf (picomatch ReDoS, high) covers every picomatch release (<= 4.0.7) and
-# has no fixed version (advisory widened 2026-11-17). picomatch is reached only through
-# dev and build tooling (vitest, vite, tsup; typescript-eslint > tinyglobby) matching the
-# repo's own globs, and `pnpm audit --prod` is clean. Remove this once a fixed picomatch is
-# released.
-auditConfig:
-  ignoreGhsas:
-    - GHSA-fc5q-39xc-vjpf
