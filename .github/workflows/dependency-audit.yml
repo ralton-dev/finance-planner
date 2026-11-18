@@ -74,19 +74,23 @@ jobs:
           }
           const block = readFileSync('pnpm-workspace.yaml', 'utf8').match(/^  ignoreGhsas:\n((?:    - .+\n)*)/m);
           const ignored = new Set((block?.[1] ?? '').match(/GHSA(?:-[0-9a-z]{4}){3}/g) ?? []);
-          const listed = { high: 0, critical: 0 };
+          const advisories = { high: 0, critical: 0 };
+          const findings = { high: 0, critical: 0 };
           const open = { high: 0, critical: 0 };
           for (const advisory of Object.values(report.advisories)) {
-            if (!(advisory.severity in listed)) continue;
-            const findings = advisory.findings?.length ?? 0;
-            listed[advisory.severity] += findings;
-            if (!ignored.has(advisory.github_advisory_id)) open[advisory.severity] += findings;
+            if (!(advisory.severity in advisories)) continue;
+            advisories[advisory.severity] += 1;
+            findings[advisory.severity] += Array.isArray(advisory.findings) ? advisory.findings.length : 1;
+            if (!ignored.has(advisory.github_advisory_id)) open[advisory.severity] += 1;
           }
-          if (listed.high !== counts.high || listed.critical !== counts.critical) {
-            throw new Error(`Advisories list ${JSON.stringify(listed)} does not match the counts; inspect the artifact.`);
+          // pnpm 10 counts findings in the metadata and pnpm 12 counts advisories (one advisory
+          // can list several versions), so the report is accounted for if either tally matches.
+          const matches = tally => tally.high === counts.high && tally.critical === counts.critical;
+          if (!matches(advisories) && !matches(findings)) {
+            throw new Error(`Neither the advisories ${JSON.stringify(advisories)} nor their findings ${JSON.stringify(findings)} match the counts; inspect the artifact.`);
           }
           console.log('Ignored (pnpm-workspace.yaml auditConfig.ignoreGhsas):', [...ignored].join(', ') || 'none');
-          console.log('Open high/critical after ignores:', JSON.stringify(open));
+          console.log('Open high/critical advisories after ignores:', JSON.stringify(open));
           if (open.high + open.critical > 0) process.exit(1);
           NODE
       - name: Retain complete audit report
