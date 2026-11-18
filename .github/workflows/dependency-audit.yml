@@ -12,6 +12,7 @@ name: Dependency audit
       - "**/pnpm-lock.yaml"
       - "**/package-lock.json"
       - "**/npm-shrinkwrap.json"
+      - "pnpm-workspace.yaml"
       - ".github/workflows/dependency-audit.yml"
   push:
     branches:
@@ -21,6 +22,7 @@ name: Dependency audit
       - "**/pnpm-lock.yaml"
       - "**/package-lock.json"
       - "**/npm-shrinkwrap.json"
+      - "pnpm-workspace.yaml"
       - ".github/workflows/dependency-audit.yml"
 permissions:
   contents: read
@@ -48,7 +50,9 @@ jobs:
         run: |
           # Read the existing lock only; do not install packages or run lifecycle scripts.
           set +e
-          pnpm audit --json > dependency-audit.json
+          # Unfiltered (--config.audit-config={}), so the retained report is complete; the
+          # ignores in pnpm-workspace.yaml are applied below, where they can be checked.
+          pnpm audit --json --config.audit-config={} > dependency-audit.json
           native_status=$?
           set -e
           NATIVE_AUDIT_STATUS="$native_status" node --input-type=module <<'NODE'
@@ -63,7 +67,27 @@ jobs:
           if (status > 1 || (status !== 0 && !Object.values(counts).some(value => Number(value) > 0))) {
             throw new Error(`Native audit failed with status ${status}.`);
           }
-          if (counts.high + counts.critical > 0) process.exit(1);
+          // The advisories list must account for every high and critical finding the
+          // metadata counts; a report that does not (a format change) fails loudly.
+          if (!report.advisories || typeof report.advisories !== 'object') {
+            throw new Error('Audit report has no advisories list; inspect the artifact.');
+          }
+          const block = readFileSync('pnpm-workspace.yaml', 'utf8').match(/^  ignoreGhsas:\n((?:    - .+\n)*)/m);
+          const ignored = new Set((block?.[1] ?? '').match(/GHSA(?:-[0-9a-z]{4}){3}/g) ?? []);
+          const listed = { high: 0, critical: 0 };
+          const open = { high: 0, critical: 0 };
+          for (const advisory of Object.values(report.advisories)) {
+            if (!(advisory.severity in listed)) continue;
+            const findings = advisory.findings?.length ?? 0;
+            listed[advisory.severity] += findings;
+            if (!ignored.has(advisory.github_advisory_id)) open[advisory.severity] += findings;
+          }
+          if (listed.high !== counts.high || listed.critical !== counts.critical) {
+            throw new Error(`Advisories list ${JSON.stringify(listed)} does not match the counts; inspect the artifact.`);
+          }
+          console.log('Ignored (pnpm-workspace.yaml auditConfig.ignoreGhsas):', [...ignored].join(', ') || 'none');
+          console.log('Open high/critical after ignores:', JSON.stringify(open));
+          if (open.high + open.critical > 0) process.exit(1);
           NODE
       - name: Retain complete audit report
         if: always()
