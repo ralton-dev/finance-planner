@@ -119,7 +119,7 @@ tracing:
 # DB migration Job (Helm pre-install/pre-upgrade hook).
 migrations:
   enabled: true
-  image: postgres:17-alpine
+  image: postgres:19-alpine
 
 # Horizontal Pod Autoscaling. Applies to every entry in `services` except those
 # carrying `autoscaling: false` — today that is auth, for the reason recorded on
@@ -154,7 +154,7 @@ secrets:
 # config/secrets at managed instances.
 postgres:
   enabled: true
-  image: postgres:17-alpine
+  image: postgres:19-alpine
   user: finance
   password: finance
   database: finance
